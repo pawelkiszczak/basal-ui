@@ -1,6 +1,12 @@
 # 0.1.0
 
-- basal-ui is its own repository and package: `pip install basal-ui`, import `basal_ui`, the `basal-ui` command.
+Unreleased. The review fixes and contributor PRs [#4](https://github.com/pawelkiszczak/basal-ui/pull/4),
+[#5](https://github.com/pawelkiszczak/basal-ui/pull/5) and [#6](https://github.com/pawelkiszczak/basal-ui/pull/6) are merged
+on `dev`; [verification and remaining hardware limits](E2E.md#verified-dev-gate-2026-10-29) are recorded separately.
+No promotion to `stage`/`main` or PyPI publication was performed for that snapshot.
+
+- basal-ui is its own repository and package: import `basal_ui`, the `basal-ui` command, and `pip install basal-ui`
+  after the first PyPI release. Until then, use the [source install](../README.md#install).
 - It runs on upstream engine releases `>=2.4.1,<2.5` and refuses others, printing the install command, unless
   `BASAL_UI_ENGINE_UNCHECKED=1` is set (the top bar then shows an *experimental engine* badge with the version and
   commit). [README](../README.md#supported-engine-range)

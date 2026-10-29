@@ -9,13 +9,14 @@ tokenizer, prompt format and calibration of its base repository (the model card'
 `base_model_revision` when the card has one; `--model <base> --gguf <file>`), whose small metadata files are downloaded
 with it; one whose card names no base model is listed as not runnable.
 
+Install from the [README's source instructions](../README.md#install) until the first PyPI release. From that checkout:
+
 ```bash
-uv pip install "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" basal-ui
-basal-ui --port 7860                  # then open http://127.0.0.1:7860
+make run ARGS='--port 7860'           # then open http://127.0.0.1:7860
 ```
 
-The engine install takes the extra of the machine (`basal[mlx]`, `basal[gguf]`, `basal[fp8]`, `basal[vllm]`, …);
-basal-ui is a separate package with no extras of that kind — see the [README](../README.md#install).
+The Engine install takes the extra of the machine (`basal[mlx]`, `basal[gguf]`, `basal[fp8]`, `basal[vllm]`, …).
+The UI's separate `mcp` extra enables its API server's MCP endpoint; `make install` includes it.
 
 The left menu has one view per task, each with its own address (`#overview`, `#models`, `#manager`, `#backends`,
 `#playground`, `#batch`, `#inspect`, `#api`, `#history`, `#logs`), so the browser's back button and bookmarks work.
@@ -271,12 +272,14 @@ time, model, source, a preview of the state, the answer of each question with it
 status. Filter by model and source, search the state, open a row for the full request and response (its time is a
 button, so rows open from the keyboard and keep focus across refreshes), copy the request
 or **Replay in Playground** (a converted request in the Playground with its model selected; replay only fills the form).
-Media bytes are removed from history, so a request whose replay needs an original attachment is blocked with an
-explanation. Ordinary structured context, including fields named `data`, is preserved. The last 2000 decisions are kept
-in `<settings stem>.history.jsonl` (owner-only) next to the settings file, with media bytes replaced by their size.
-A live-only History view keeps the newest 500 rows. **More** enters older-page browsing: explicitly loaded pages and
-their cursor are kept across polls until the view or filters are reset.
-**Clear history** empties it. `GET /api/history?order=asc` returns oldest first for incremental consumers;
+Media payloads, including nested image/audio payload objects in recorded Decisions-style requests, are replaced by
+their size. Replay is blocked with an explanation when an original attachment is missing; redaction is not a promise
+that the API accepts every recorded media shape. Ordinary structured context and question descriptions, including
+fields named `data`, are preserved. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
+next to the settings file. A live-only History view keeps the newest 500 rows. **More** enters older-page browsing:
+explicitly loaded pages and their cursor are kept across polls until the view or filters are reset.
+**Clear history** empties the file before clearing the live view; a failed write leaves the existing records available.
+`GET /api/history?order=asc` returns oldest first for incremental consumers;
 `order=desc` remains the default, and `after` cursors outside the retained window return retained records only.
 
 **Logs** shows the output of each `basal-serve` (the last 1000 lines per model, kept after unload for the last 10
@@ -369,8 +372,10 @@ the API keys from the settings plus that process's internal admin key, read by t
 (`0600`) and holds SHA-256 hashes, never secrets. The `basal-serve` children read no key file at all — loopback and
 their private port are their only protection — and the internal key never leaves basal-ui's process. Two basal-ui instances may share one settings
 file: a key created or revoked in either is written into every matching live instance's key file, the files of exited
-instances are removed, and each instance deletes its own file when it quits. The statistics (`<stem>.stats.json`) and
-the history (`<stem>.history.jsonl`) live next to it as well; both are written under the settings lock, so two
+instances are removed, and each instance deletes its own file when it quits.
+Filename stems are matched literally, so glob characters such as `[` or `*` in `BASAL_UI_CONFIG` do not prevent
+creation or revocation from reaching the running instances.
+The statistics (`<stem>.stats.json`) and history (`<stem>.history.jsonl`) live next to it as well; both are written under the settings lock, so two
 instances add their counts up and neither rotation drops the other's decisions (each History view shows only the
 decisions its own instance answered or found in the file at startup).
 
@@ -401,6 +406,6 @@ For API routes, request and response formats, authentication details and compati
 [HTTP API reference](API.md). The Connect panel also includes TypeSafe, OpenAI, LiteLLM and MCP examples.
 
 The browser app binds `127.0.0.1` by default and refuses changes (load, delete, settings) sent from other web origins,
-so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning. The
-NVIDIA, CPU and GGUF rules are covered by tests with simulated hardware; end to end it was run on Apple Silicon (MLX,
-and basal-omni-1.0-mini with an image on MPS).
+so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
+Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
+recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).

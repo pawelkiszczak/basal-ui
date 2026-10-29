@@ -17,7 +17,7 @@ make screenshots             # refresh docs/images (see "Screenshots")
 
 `make install` syncs the environment from the lockfile; the dev group's `[tool.uv.sources]` pin decides which engine
 release it installs. `make engine REF=…` switches to another release-tag archive or a fork ref for a trial — a later
-`make install` restores the pinned tag. An engine outside `SUPPORTED` starts only with
+`make install` restores the pinned tag. An Engine outside `SUPPORTED_RANGE` starts only with
 `BASAL_UI_ENGINE_UNCHECKED=1` (see the README, "Experimental engine").
 
 ## Code style
@@ -40,6 +40,11 @@ release it installs. `make engine REF=…` switches to another release-tag archi
   machine lacks skips with the reason.
 - No tests of wiring (that a function calls another, that a field is copied), of wording, or of mocks echoing
   themselves.
+
+Prepare Chromium and the host's Engine extras as described in [E2E setup](docs/E2E.md); `make install` alone does not
+install them. Record the tested commit, hardware, models and skip reasons with an e2e result. The
+[2026-10-29 development gate](docs/E2E.md#verified-dev-gate-2026-10-29) records the merged review fixes;
+it is not release acceptance on `stage` or validation of other hardware.
 
 ## Branches and CI
 
@@ -77,6 +82,10 @@ whether the engine range is affected, the tests run (`make lint`, `make test`, a
 changes that touch loading, serving or the pages), refreshed screenshots for visible changes and a
 `docs/WHATS_NEW.md` bullet.
 
+GitHub may require a maintainer to approve a fork's workflow before checks appear. Review the proposed code before
+approving that run, then wait for the matrix and required `ci-ok` check to pass before merging. Workflow approval
+starts CI; it is not a substitute for passing checks.
+
 ## Screenshots
 
 The README's screenshots and tour GIF (`docs/images/`) come from `make screenshots` (`scripts/screenshots.py`): it
@@ -99,15 +108,15 @@ UI never blocks on a proposal. The pipeline:
 3. **Ship the UI control behind a probe.** The basal-ui control for the capability lands behind
    `basal_ui.engine.feature("<name>")` and is tried through the experimental engine route
    (`BASAL_UI_ENGINE_UNCHECKED=1`), so users of supported releases are unaffected.
-4. **Close the loop.** When the release enters `SUPPORTED` (see "Bumping the engine" below), drop the probe and
+4. **Close the loop.** When the release enters `SUPPORTED_RANGE` (see "Bumping the engine" below), drop the probe and
    update the research note's **Outcome**.
 
 `docs/adr/0003-separate-repo-on-upstream-engine.md` records why the repo is set up this way.
 
 ## Releasing
 
-1. If the engine moves, bump it ("Bumping the engine" below); add a `docs/WHATS_NEW.md` section for the version.
-   Both land on `dev` like any change.
+1. If the Engine moves, bump it ("Bumping the engine" below). Add or finalize the version's `docs/WHATS_NEW.md`
+   section and remove its **Unreleased** label before tagging. These changes land on `dev` like any change.
 2. Open the pull request `dev` → `stage`. On `stage`, run the e2e gate on real hardware (`make e2e`, `docs/E2E.md`)
    and record the run (models, hardware, results) in that pull request; fixes go to `stage` and back to `dev`
    (`stage` → `dev`).
@@ -116,6 +125,9 @@ UI never blocks on a proposal. The pipeline:
 4. After it merges, tag `vX.Y.Z` on `main` and push the tag. Before building or publishing, `publish.yml` checks that
    the tag matches `pyproject.toml` and that WHATS_NEW has a nonempty `# X.Y.Z` section. It uploads to PyPI (trusted
    publishing), then creates the GitHub release using those validated notes and the same built artifacts.
+
+For the first PyPI publication, update the README and SECURITY pre-release/source-install status once the package is available.
+Keep the exact `# X.Y.Z` changelog heading: the release workflow extracts its notes by that heading.
 
 ### Bumping the engine
 

@@ -1,5 +1,9 @@
 # Basecoat UI acceptance — 2026-10-27
 
+Historical record of the 2026-10-27 implementation run; its paths, counts and boundaries describe that run only.
+For the merged development snapshot and later verification, see the
+[2026-10-29 dev gate](E2E.md#verified-dev-gate-2026-10-29).
+
 Implemented on the current fork with three isolated Luna work packages. Shared preparation extracted the classic script without introducing a frontend build. Production bundles Basecoat 1.1.0 and its MIT license, the application styles, JavaScript, and existing fonts. Sidebar navigation, all nine views, native dialogs, and fork serving contracts are retained.
 
 ## Changes and regression coverage
