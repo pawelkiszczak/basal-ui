@@ -46,10 +46,30 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
 ## Install
 
+The verified `0.1.0` snapshot is integrated on `dev` but is not yet published on PyPI. Until the first release, run
+from source (requires [uv](https://docs.astral.sh/uv/) and `make`):
+
+```bash
+git clone --branch dev https://github.com/pawelkiszczak/basal-ui.git
+cd basal-ui
+make install
+make run                    # then open http://127.0.0.1:7860
+```
+
+Engine extras are optional. For MLX on Apple Silicon, install the extra after `make install`:
+
+```bash
+uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"
+```
+
+### Released package (after publication)
+
+Once a release is available on PyPI:
+
 ```bash
 uv venv
 uv pip install "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" basal-ui
-basal-ui                    # then open http://127.0.0.1:7860
+uv run --no-sync basal-ui    # then open http://127.0.0.1:7860
 ```
 
 Or as a standalone tool:
@@ -59,11 +79,11 @@ uv tool install basal-ui --with "basal @ https://github.com/rkinas/basal/archive
 ```
 
 The engine extras of your machine are chosen on the *engine* install, not on basal-ui, for example
-`uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" basal-ui`
+`uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"`
 on Apple Silicon (`mlx`), or `basal[gguf]`, `basal[fp8]`, `basal[vllm]` elsewhere; `basal[media]` for images and audio
-on basal-omni; `basal[mcp]` brings the MCP server. basal-ui does not declare the engine as a dependency: PyPI rejects
-direct-URL requirements, and the PyPI package named `basal` is an unrelated project. Instead basal-ui checks for the
-engine at startup and refuses to start without it, printing the install command above.
+on basal-omni. Add `basal-ui[mcp]` for the UI API server's MCP endpoint. basal-ui does not declare the Engine as a
+dependency: PyPI rejects direct-URL requirements, and the PyPI package named `basal` is an unrelated project. Instead
+basal-ui checks for the Engine at startup and refuses to start without it, printing the install command above.
 
 ## Supported engine range
 
@@ -89,7 +109,8 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | the browser app end to end |
 | [docs/API.md](docs/API.md) | basal-ui's API server: keys, CORS, errors, OpenAI Decisions, MCP, clients |
-| [docs/E2E.md](docs/E2E.md) | the end-to-end release gate |
+| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [verified development gate](docs/E2E.md#verified-dev-gate-2026-10-29) |
+| [docs/BACKENDS.md](docs/BACKENDS.md) | backend inventory, machine/model compatibility and isolated Inference tests |
 | [docs/WHATS_NEW.md](docs/WHATS_NEW.md) | the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | dev setup, code style, tests, [branches and CI](CONTRIBUTING.md#branches-and-ci) (`dev` → `stage` → `main`), pull requests, the Engine-proposal pipeline, [releasing](CONTRIBUTING.md#releasing) |
 | [CONTRIBUTORS.md](CONTRIBUTORS.md) | who built basal-ui and the work it stands on |

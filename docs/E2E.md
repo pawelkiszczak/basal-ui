@@ -18,6 +18,9 @@ BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what 
 Run it on every hardware class you ship for (Apple Silicon, an NVIDIA GPU, a CPU-only machine): each run tests the
 engines that machine has and lists the rest as skipped.
 
+Install the Engine extras for the host after syncing; `--extra e2e` installs Playwright, not MLX, media dependencies
+or another Engine backend. Keep subsequent test commands `--no-sync` so the prepared environment is reused.
+
 ## Models
 
 | Fixture | Picked | Used by |
@@ -57,6 +60,50 @@ the hardware allows.
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
 
+## Verified dev gate 2026-10-29
+
+The reviewed changes are integrated in
+[`f97ad69`](https://github.com/pawelkiszczak/basal-ui/commit/f97ad69cb62e627e686081433ab6624a4ce3165e)
+through merged [PR #6](https://github.com/pawelkiszczak/basal-ui/pull/6), including
+[@agentGreg's PR #4](https://github.com/pawelkiszczak/basal-ui/pull/4) and
+[PR #5](https://github.com/pawelkiszczak/basal-ui/pull/5). Its tree matches the locally tested
+[`c9b7661`](https://github.com/pawelkiszczak/basal-ui/commit/c9b7661e12c54c6e3d7738a51436675a2545f86f).
+This is a development verification record, not a release: no promotion to `stage`/`main` or PyPI publication was performed.
+
+Host: Apple Silicon (arm64), macOS, Python 3.13.11, Engine 2.4.1 with its MLX extra and Chromium. The models were
+already cached; no weights were downloaded.
+
+| Check | Observed result |
+|---|---|
+| Full e2e before the contributor follow-up | 111 passed, 5 skipped |
+| Full e2e after the contributor follow-up | 112 passed, 5 skipped |
+| Unit suite (`make test`) | 314 passed, 3 skipped; 88% coverage |
+| Ruff lint and format check (`make lint`) | Passed |
+| [Post-merge CI](https://github.com/pawelkiszczak/basal-ui/actions/runs/40956690254) | Ubuntu/macOS × Python 3.10/3.13 × Engine 2.4.1, plus `releases` and `ci-ok`: passed |
+
+After the setup above, reproduce the real-model run with:
+
+```sh
+HF_HUB_OFFLINE=1 \
+BASAL_E2E_MODEL=Remek/basal-2.0-mini-MLX-8bit \
+BASAL_E2E_SECOND_MODEL=Remek/basal-2.0-mini \
+BASAL_E2E_BF16_MODEL=Remek/basal-2.0-mini \
+make e2e ARGS='-v -rs --tb=short'
+```
+
+The five e2e skips were:
+
+- Thinking: requires a downloaded basal-2.0 4.5B model and vLLM.
+- Early exit: requires basal-1.0 bf16 on a CUDA GPU.
+- Three context-policy checks: Engine 2.4.1's `GET /v1/models` did not report the required policy metadata.
+
+The History regression sends ordinary structured `state.data` and a choice description named `data` through a real
+model, persisted History, browser Replay and resubmission without changing them. The translated-reason regression
+always supplies an older unavailable model and enables **Older families** in both Polish and English passes.
+Nested audio/image payload redaction is covered by unit tests; it does not add audio input support to the Decisions API.
+Browser HTTP-error, health-warning and polling edge cases use deterministic fixtures, not physical GPU failures.
+Passing this Apple Silicon run does not validate NVIDIA/Strix/TPU hardware or replace the e2e gate on `stage`.
+
 ## Writing more
 
 Use the session `ui` fixture and its helpers (`tests/e2e/support.py`): `ui.load(id, options)` brings a model to ready
@@ -66,7 +113,7 @@ so each one loads what it needs and puts back what it changes (options, calibrat
 
 ## Focused 2.3.1 gate
 
-Run `uv run pytest -q tests/test_ui_engine_features.py` for simulated capability, option lifecycle (including auto-load),
+Run `uv run --no-sync pytest -q tests/test_ui_engine_features.py` for simulated capability, option lifecycle (including auto-load),
 health caching/missing fields, both HTTP error envelopes, gateway/Playground forwarding, Batch error records, and
 calibration warning tests. Run the hardware/browser gate with existing local models only:
 
@@ -74,7 +121,7 @@ calibration warning tests. Run the hardware/browser gate with existing local mod
 BASAL_E2E=1 HF_HUB_OFFLINE=1 \
 BASAL_E2E_MODEL=Remek/basal-2.0-mini-MLX-8bit \
 BASAL_E2E_BF16_MODEL=Remek/basal-2.0-mini \
-uv run pytest -q tests/e2e/test_engine_features.py
+uv run --no-sync pytest -q tests/e2e/test_engine_features.py
 ```
 
 The example selects Apple Silicon models; change the selections for another host. MLX checks skip with a reason

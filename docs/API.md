@@ -100,8 +100,11 @@ python -c 'import hashlib,secrets; s="bsl_"+secrets.token_urlsafe(32); print("se
 ```
 
 Put the printed secret in your secret store and only the digest in the key file. Send the secret as
-`Authorization: Bearer <secret>` or `X-API-Key: <secret>`. `/health` is always open. The key file is checked again
-when its modification time or size changes, so removing a key revokes it without restarting the API server.
+`Authorization: Bearer <secret>` or `X-API-Key: <secret>`. `/health` is always open. Every authentication attempt
+checks the key file's modification time, size and inode; changes reload it immediately, and unchanged contents are
+revalidated on the first request more than two seconds after the last read. Removing a key revokes it without an API
+server restart. Key creation and revocation synchronize live instance files using literal settings filename stems,
+including filenames containing glob characters.
 `GET /v1/keys` requires an `admin: true` key and reports each key's name and in-memory `last_used` timestamp (null
 until used); it does not return secrets or hashes.
 
@@ -172,9 +175,9 @@ Full request and verified response:
 Install `typesafe-sdk` and import `typesafe_sdk`. The verified run used version 0.7.5:
 
 ```bash
-python -m pip install typesafe-sdk==0.7.5
+uv pip install typesafe-sdk==0.7.5
 export TYPESAFE_BASE_URL=http://127.0.0.1:8765
-export TYPESAFE_API_KEY=<secret>
+export TYPESAFE_API_KEY="<secret>"
 export TYPESAFE_DEFAULT_MODEL=Remek/basal-2.0-mini-MLX-8bit
 export NO_PROXY=localhost,127.0.0.1
 ```

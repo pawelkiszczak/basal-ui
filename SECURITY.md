@@ -3,6 +3,9 @@
 ## Supported versions
 
 Only the latest basal-ui release on PyPI receives security fixes.
+The `0.1.0` development snapshot is not yet published on PyPI; its
+[recorded verification](docs/E2E.md#verified-dev-gate-2026-10-29) is not a stable-release or cross-hardware security
+certification. Use [private reporting](#reporting-a-vulnerability) for development findings too.
 
 ## Reporting a vulnerability
 
