@@ -471,18 +471,34 @@ def test_new_community_ports_and_weights_only_gguf(monkeypatch):
 
 def test_community_cache_reads_weights_only_gguf_base_model(monkeypatch, tmp_path):
     readme = tmp_path / "README.md"
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    gguf = snapshot / "model-Q8_0.gguf"
+    gguf.write_bytes(b"gguf weights")
     readme.write_text("---\nbase_model:\n- Remek/basal-1.0-4.5B\nbase_model_revision: abc123\n---\n")
     readmefile = type(
         "File", (), {"file_name": "README.md", "size_on_disk": readme.stat().st_size, "file_path": readme}
     )()
-    file = type("File", (), {"file_name": "model-Q8_0.gguf", "size_on_disk": 12, "file_path": readme})()
+    file = type("File", (), {"file_name": "model-Q8_0.gguf", "size_on_disk": gguf.stat().st_size, "file_path": gguf})()
     repo = type(
         "Repo",
         (),
         {
             "repo_type": "model",
             "repo_id": "pawelkiszczak/basal-1.0-4.5B-GGUF",
-            "revisions": [type("Revision", (), {"files": [file, readmefile], "refs": {"main"}, "last_modified": 0})()],
+            "revisions": [
+                type(
+                    "Revision",
+                    (),
+                    {
+                        "files": [file, readmefile],
+                        "refs": {"main"},
+                        "last_modified": 0,
+                        "snapshot_path": snapshot,
+                        "commit_hash": "a" * 40,
+                    },
+                )()
+            ],
         },
     )()
     outsider = type(
@@ -491,7 +507,19 @@ def test_community_cache_reads_weights_only_gguf_base_model(monkeypatch, tmp_pat
         {
             "repo_type": "model",
             "repo_id": "other/basal-1.0-4.5B-GGUF",
-            "revisions": [type("Revision", (), {"files": [file, readmefile], "refs": {"main"}, "last_modified": 0})()],
+            "revisions": [
+                type(
+                    "Revision",
+                    (),
+                    {
+                        "files": [file, readmefile],
+                        "refs": {"main"},
+                        "last_modified": 0,
+                        "snapshot_path": snapshot,
+                        "commit_hash": "b" * 40,
+                    },
+                )()
+            ],
         },
     )()
     monkeypatch.setattr("huggingface_hub.scan_cache_dir", lambda _: type("Cache", (), {"repos": [repo, outsider]})())
@@ -542,7 +570,36 @@ def test_an_offline_entry_counts_the_main_snapshot_only(tmp_path):
         "b" * 40,
     )
     (v,) = catalog._cache_variants(tmp_path)
-    assert v.weights_bytes == 7
+    assert v.weights_bytes == 7 and v.cache_revision == "b" * 40
+
+
+@pytest.mark.parametrize(
+    "main_files",
+    [
+        {"config.json": b"{}"},
+        {
+            "model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}
+            ).encode(),
+            "model-00001-of-00002.safetensors": b"partial",
+        },
+    ],
+    ids=("metadata-only-main", "partial-sharded-main"),
+)
+def test_offline_catalog_falls_back_to_newest_complete_snapshot(tmp_path, main_files):
+    _bf16_cache(
+        tmp_path,
+        {
+            "a" * 40: {"model.safetensors": b"complete weights"},
+            "b" * 40: main_files,
+        },
+        "b" * 40,
+    )
+    (v,) = catalog._cache_variants(tmp_path)
+    snapshot = tmp_path / "models--Remek--basal-2.0-mini" / "snapshots" / ("a" * 40)
+    assert v.cache_revision == "a" * 40
+    assert is_downloaded(v, tmp_path) == snapshot
+    assert v.weights_bytes == len(b"complete weights")
 
 
 def test_weights_only_gguf_download_and_serve_require_base_metadata(monkeypatch, tmp_path):

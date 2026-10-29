@@ -6,6 +6,9 @@ The inventory groups execution modes under PyTorch, MLX, in-process llama.cpp, v
 
 **View matching models** filters Models by the engine's model/mode compatibility, including engines whose dependencies are missing. The visible filter can be cleared. Quantization and format remain model attributes, not backend groups.
 
+Strix and TPU modes require bf16 Llama-architecture weights. Basal-omni's Gemma and recurrent checkpoints are not
+compatible with those modes, even when their backend dependencies are installed.
+
 ## Setup
 
 Setup guidance offers copyable commands and official documentation. Nothing is installed by the UI. Commands for MLX, llama.cpp and TPU target the displayed Python interpreter; use the platform installer for PyTorch/ROCm. vLLM and SGLang need separate environments: install the engine and basal-ui in that environment, then launch basal-ui there. Restart after installing dependencies; Refresh alone does not replace already imported packages in the main app.
@@ -23,6 +26,10 @@ Basal integration limits may be narrower than upstream engine support. For examp
 ## Explicit inference test
 
 Choose an installed backend, a downloaded compatible model, and an execution mode. The smallest estimated model is preselected. The test reserves mode-aware memory and starts a private, offline child with one fixed text decision. It never downloads weights, changes saved load settings, or records decisions in History/statistics. Startup allows 30 minutes for compilation; inference allows two minutes. Cancel stops the private child and releases its reservation.
+
+The model row reports the resolved cache commit used by the test. For a loaded model, this is its active child's actual
+snapshot, even if `main` or a saved revision now names another commit. Memory estimates use that selected snapshot's
+weights rather than the size of a different revision.
 
 Optionally select idle loaded models to unload. Confirmation includes their current generation. The server blocks new decisions and model jobs for those models, rejects existing API/MCP/Playground requests and Batch/benchmark leases, and requires a fresh authenticated child health response with zero running and queued work. Unknown activity refuses the entire selection. Memory remains reserved while selected children stop. Inspector is never selected or unloaded, and its reservation still counts.
 

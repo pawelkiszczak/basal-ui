@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ import pytest
 from huggingface_hub.constants import HF_HUB_CACHE
 
 from basal_ui import settings
+from basal_ui.auth import ApiKeys
 
 
 def test_interprocess_lock_context_runs_the_wrapped_function(tmp_path, monkeypatch):
@@ -170,6 +172,27 @@ def test_key_changes_reach_every_live_instance_and_drop_dead_ones(tmp_path, monk
     settings.remove_keys_file()
     assert not (tmp_path / f"settings.keys-{os.getpid()}.json").exists() and other_file.exists()
     assert not dead_file.exists() and unrelated_file.exists()
+
+
+@pytest.mark.parametrize("filename", ["settings.json", "settings[dev].json", "settings*.json", "settings?.json"])
+def test_key_create_and_revoke_sync_only_the_exact_settings_stem(tmp_path, monkeypatch, filename):
+    config = tmp_path / filename
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    admin_secret = "internal-test-key"
+    own = settings.keys_file(hashlib.sha256(admin_secret.encode()).hexdigest())
+    unrelated = tmp_path / f"{config.stem}X.keys-{os.getpid()}.json"
+    unrelated.write_text(json.dumps({"keys": [{"name": "other", "sha256": "b" * 64}]}))
+    api_keys = ApiKeys(own)
+
+    _record, secret = settings.create_key("laptop")
+    assert api_keys.check(secret)["name"] == "laptop"
+    assert api_keys.check(admin_secret)["admin"] is True
+    assert json.loads(unrelated.read_text())["keys"][0]["name"] == "other"
+
+    settings.delete_key("laptop")
+    assert api_keys.check(secret) is None
+    assert api_keys.check(admin_secret)["admin"] is True
+    assert json.loads(unrelated.read_text())["keys"][0]["name"] == "other"
 
 
 def test_auto_load_setting_requires_boolean(tmp_path, monkeypatch):

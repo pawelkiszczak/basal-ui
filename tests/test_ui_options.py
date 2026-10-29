@@ -255,6 +255,26 @@ def test_available_modes_follow_the_hardware_and_the_variant():
     ]
 
 
+def test_strix_and_tpu_modes_follow_architecture_and_bf16_format():
+    hw = Hardware("cuda", "AMD Strix Halo", 96 * 1024**3, None, (11, 5), frozenset({"cuda", "rocm", "strix", "tpu"}))
+    supported = Variant("supported", "Remek/basal-2.0-mini", "basal-2.0", "mini", "bf16", "bf16", None, 100, False)
+    older_llama = Variant("older", "Remek/basal-1.5-4.5B", "basal-1.5", "4.5B", "bf16", "bf16", None, 100, False)
+    gemma = Variant("gemma", "Remek/basal-omni-1.0-mini", "basal-omni-1.0", "mini", "bf16", "bf16", None, 100, True)
+    recurrent = Variant(
+        "pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True
+    )
+    fp8 = Variant("fp8", "Remek/basal-2.0-mini-FP8", "basal-2.0", "mini", "FP8", "FP8", None, 100, False)
+    assert {"strix", "tpu"} <= available(supported, hw)
+    assert {"strix", "tpu"} <= available(older_llama, hw)
+    assert not available(gemma, hw) & {"strix", "tpu"}
+    assert not available(recurrent, hw) & {"strix", "tpu"}
+    assert not available(fp8, hw) & {"strix", "tpu"}
+    reasons = {row["mode"]: row["reason_code"] for row in options.available_modes(gemma, hw, catalog.assess(gemma, hw))}
+    assert reasons["strix"] == reasons["tpu"] == "mode_architecture"
+    reasons = {row["mode"]: row["reason_code"] for row in options.available_modes(fp8, hw, catalog.assess(fp8, hw))}
+    assert reasons["strix"] == "mode_strix_format" and reasons["tpu"] == "mode_tpu_format"
+
+
 def test_rocm_is_not_offered_the_nvidia_only_modes():
     rocm = Hardware(
         "cuda", "AMD Radeon 8060S", 96 * 1024**3, None, (11, 5), frozenset({"cuda", "rocm", "vllm", "sglang"})
@@ -296,6 +316,18 @@ def test_availability_messages_return_reproducible_codes_and_params():
         (GGUF, CPU),
         (recurrent, CUDA),
         (media_variant, CUDA),
+        (
+            BF16,
+            Hardware(
+                "cuda", "AMD Strix Halo", 96 * 1024**3, None, (11, 5), frozenset({"cuda", "rocm", "strix", "tpu"})
+            ),
+        ),
+        (
+            Variant("omni", "Remek/basal-omni-1.0-mini", "basal-omni-1.0", "mini", "bf16", "bf16", None, 100, True),
+            Hardware(
+                "cuda", "AMD Strix Halo", 96 * 1024**3, None, (11, 5), frozenset({"cuda", "rocm", "strix", "tpu"})
+            ),
+        ),
     )
     templates = {**catalog.ASSESSMENT_TEMPLATES, **options.OPTION_TEMPLATES}
     outputs = []

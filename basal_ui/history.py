@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -14,18 +15,68 @@ from .stats import answer_items, best_probability
 PREVIEW = 160
 
 
-def _strip_media(value):
-    """Media bytes -> their size: `data` fields of basal media and data: URLs (OpenAI input_image.image_url)."""
+def _strip_media(value, context=None, root=False):
+    """Replace media payload strings with their character count, without changing ordinary request data."""
     if isinstance(value, dict):
-        return {
-            k: (f"<{len(v)} bytes>" if k == "data" and isinstance(v, str) else _strip_media(v))
-            for k, v in value.items()
-        }
+        kind = value.get("type")
+        native = context in ("native", "alias")
+        decision = context == "decision" and kind in ("input_image", "input_audio")
+        out = {}
+        for key, item in value.items():
+            media_value = isinstance(item, str) and (
+                (native and key == "data")
+                or (context == "payload" and key in ("data", "url"))
+                or (decision and key in ("data", "image_url", "audio_url", "content"))
+            )
+            if media_value:
+                out[key] = f"<{len(item)} bytes>"
+            elif root and key == "media":
+                out[key] = _strip_media(item, "native")
+            elif root and key in ("images", "audio"):
+                out[key] = _strip_media(item, "alias")
+            elif root and key == "input":
+                out[key] = _strip_media(item, "decision")
+            elif decision and key in ("input_audio", "image_url", "audio_url"):
+                out[key] = _strip_media(item, "payload")
+            else:
+                out[key] = _strip_media(item, "decision" if context == "decision" else None)
+        return out
     if isinstance(value, list):
-        return [_strip_media(v) for v in value]
-    if isinstance(value, str) and value.startswith("data:") and len(value) > 64:
+        return [_strip_media(item, context) for item in value]
+    if context == "alias" and isinstance(value, str):
         return f"<{len(value)} bytes>"
     return value
+
+
+def _contains_redacted_media(value, context=None, root=False):
+    if isinstance(value, dict):
+        kind = value.get("type")
+        native = context in ("native", "alias")
+        decision = context == "decision" and kind in ("input_image", "input_audio")
+        for key, item in value.items():
+            relevant = (
+                (native and key == "data")
+                or (context == "payload" and key in ("data", "url"))
+                or (decision and key in ("data", "image_url", "audio_url", "content"))
+            )
+            if relevant and isinstance(item, str) and re.fullmatch(r"<\d+ bytes>", item):
+                return True
+            child_context = None
+            if root and key == "media":
+                child_context = "native"
+            elif root and key in ("images", "audio"):
+                child_context = "alias"
+            elif root and key == "input":
+                child_context = "decision"
+            elif decision and key in ("input_audio", "image_url", "audio_url"):
+                child_context = "payload"
+            next_context = child_context if child_context is not None else "decision" if context == "decision" else None
+            if _contains_redacted_media(item, next_context):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_contains_redacted_media(item, context) for item in value)
+    return context == "alias" and isinstance(value, str) and re.fullmatch(r"<\d+ bytes>", value) is not None
 
 
 def _best(answer: dict):
@@ -67,7 +118,7 @@ def make_record(model, source, body, status, response_json, latency_ms) -> dict:
         },
         "deferred": any(a.get("deferred") is True for _, a in items),
         "truncated": bool(usage.get("truncated")) if isinstance(usage, dict) else False,
-        "request": _strip_media(body),
+        "request": _strip_media(body, root=True),
         "response": response_json,
     }
 
@@ -78,33 +129,14 @@ def _summary(record: dict) -> dict:
 
 def replay_fields(request: dict) -> dict:
     """Build a Playground request from a recorded native or Decisions API request."""
-    import re
-
     from .compat import decision_body
-
-    def redacted(value, media=False):
-        if isinstance(value, dict):
-            media = media or value.get("type") in ("input_image", "input_audio")
-            return any(
-                (
-                    media
-                    and k in ("data", "image_url", "audio_url")
-                    and isinstance(v, str)
-                    and re.fullmatch(r"<\d+ bytes>", v)
-                )
-                or redacted(v, media or k in ("media", "images", "audio"))
-                for k, v in value.items()
-            )
-        if isinstance(value, list):
-            return any(redacted(v, media) for v in value)
-        return False
 
     if not isinstance(request, dict):
         return {
             "replay_request": None,
             "replay_error": "This recorded request is not a JSON object and cannot be replayed.",
         }
-    if redacted(request):
+    if _contains_redacted_media(request, root=True):
         return {
             "replay_request": None,
             "replay_error": "History removed the original media attachments. Add them again before sending this request.",
@@ -211,7 +243,7 @@ class History:
 
         with self.lock:
             n = len(self.records)
-            self.records.clear()
             settings._locked(lambda: settings._write_private(self.path, ""))()
+            self.records.clear()
             self.lines = 0
             return n

@@ -113,8 +113,9 @@ UI never blocks on a proposal. The pipeline:
    (`stage` → `dev`).
 3. Bump `version` in `pyproject.toml` to X.Y.Z on `stage` (`publish.yml` refuses a tag that differs), then open the
    pull request `stage` → `main`.
-4. After it merges, tag `vX.Y.Z` on `main` and push the tag; `publish.yml` uploads to PyPI (trusted publishing) and
-   creates the GitHub release from the `# X.Y.Z` section of WHATS_NEW.
+4. After it merges, tag `vX.Y.Z` on `main` and push the tag. Before building or publishing, `publish.yml` checks that
+   the tag matches `pyproject.toml` and that WHATS_NEW has a nonempty `# X.Y.Z` section. It uploads to PyPI (trusted
+   publishing), then creates the GitHub release using those validated notes and the same built artifacts.
 
 ### Bumping the engine
 

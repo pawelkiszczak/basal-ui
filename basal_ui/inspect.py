@@ -141,37 +141,30 @@ class Inspector:
                 if gen == self.gen:
                     self.state_name, self.error = "error", str(exc)
             raise
-        with self.lock:
-            if gen != self.gen or job.cancel.is_set():
-                stale = True
-            else:
-                stale = False
-                ex.name = ex.info["model"] = variant.id  # a cache snapshot directory would show its commit hash
-                self.ex = ex
 
-                async def run_worker():
-                    await ex.srv.worker()
+        async def start_worker():
+            with self.lock:
+                if gen != self.gen or job.cancel.is_set():
+                    return False
+                ex.name = ex.info["model"] = variant.id  # a cache snapshot directory would show its commit hash
 
                 def finished(task):
-                    if on_exit is not None:
-                        on_exit()
-                    self.worker_done.set()
-
-                task = {}
-                scheduled = threading.Event()
-
-                def create_worker():
-                    worker = self.loop.create_task(run_worker())
-                    worker.add_done_callback(finished)
-                    task["worker"] = worker
-                    scheduled.set()
+                    try:
+                        if on_exit is not None:
+                            on_exit()
+                    finally:
+                        self.worker_done.set()
 
                 self.worker_done.clear()
-                self.loop.call_soon_threadsafe(create_worker)
-                scheduled.wait()
-                self.worker = task["worker"]
+                self.worker = self.loop.create_task(ex.srv.worker())
+                self.worker.add_done_callback(finished)
+                self.ex = ex
                 self.state_name = "ready"
-        if stale:
+                return True
+
+        # Do not hold the inspector lock while waiting for the event loop: stop() must be able to invalidate a load
+        # whose worker has not been scheduled yet. Publication and the generation check run together on that loop.
+        if not asyncio.run_coroutine_threadsafe(start_worker(), self.loop).result():
             del ex
             gc.collect()
             self._free_engine_memory()

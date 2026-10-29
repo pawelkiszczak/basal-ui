@@ -148,3 +148,25 @@ def test_reset_discards_another_instances_unflushed_counts(tmp_path):
     finally:
         a.close()
         b.close()
+
+
+@pytest.mark.parametrize("model_id", [None, "m"])
+def test_records_after_another_instances_reset_do_not_share_the_old_delta(tmp_path, model_id):
+    a, b = Stats(tmp_path / "shared.json"), Stats(tmp_path / "shared.json")
+    try:
+        b.record("m", {"answers": {"q": {"type": "choice", "confidence": 0.2}}, "usage": {"input_tokens": 7}}, 10)
+        b.record("n", {"answers": {}}, 3)
+        a.reset(model_id)
+        b.record("m", {"answers": {"q": {"type": "choice", "confidence": 0.8}}, "usage": {"input_tokens": 11}}, 20)
+        current = b.snapshot()["models"]
+        assert current["m"]["requests"] == 1
+        assert current["m"]["questions"] == 1
+        assert current["m"]["input_tokens"] == 11
+        assert current["m"]["avg_latency_ms"] == 20
+        assert current["m"]["avg_best_prob"] == 0.8
+        assert ("n" in current) == (model_id == "m")
+        b.flush()
+        assert a.snapshot()["models"] == current
+    finally:
+        a.close()
+        b.close()

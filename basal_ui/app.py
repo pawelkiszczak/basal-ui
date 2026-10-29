@@ -194,8 +194,9 @@ def create_app(
         while not gateway.stop():
             fleet.event("error", "API server shutdown is still draining; waiting before tearing down shared state")
             await asyncio.sleep(1)
-        inspector.stop()
-        fleet.shutdown()
+        # Inspection's worker and pending load callbacks need this event loop to finish while shutdown waits.
+        await asyncio.to_thread(inspector.stop)
+        await asyncio.to_thread(fleet.shutdown)
         stats.close()
         settings_mod.remove_keys_file()
 

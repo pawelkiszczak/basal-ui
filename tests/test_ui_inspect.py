@@ -11,6 +11,7 @@ from basal_ui.catalog import Variant
 from basal_ui.fleet import Fleet
 from basal_ui.hardware import Hardware
 from basal_ui.history import History
+from basal_ui.jobs import Cancelled, Job, LogBuffer
 from basal_ui.stats import Stats
 
 HW = Hardware("cpu", "cpu", 1024**4, None, None, frozenset())
@@ -162,3 +163,90 @@ def test_stopping_during_explainer_construction_never_publishes_ready(client, mo
     assert client.get("/api/inspect").json()["state"] == "idle"
     assert client.fleet.reserved == {}
     assert created
+
+
+def test_stopping_before_the_inspector_worker_is_scheduled_does_not_block_or_publish_ready(monkeypatch):
+    monkeypatch.setattr(inspect, "Explainer", StubExplainer)
+    monkeypatch.setattr(inspect.Inspector, "_free_engine_memory", staticmethod(lambda: None))
+
+    async def scenario():
+        inspector = inspect.Inspector()
+        loop = asyncio.get_running_loop()
+        inspector.bind(loop)
+        queued = threading.Event()
+        pending = []
+        errors = []
+        schedule = loop.call_soon_threadsafe
+
+        def defer_loader_callback(callback, *args, **kwargs):
+            if threading.current_thread().name == "inspection-loader":
+                pending.append((callback, args, kwargs))
+                queued.set()
+                return None
+            return schedule(callback, *args, **kwargs)
+
+        monkeypatch.setattr(loop, "call_soon_threadsafe", defer_loader_callback)
+        job = Job("inspect", BF16.id, BF16.id, LogBuffer())
+
+        def load():
+            try:
+                inspector.start(job, BF16, "/unused", HW)
+            except Cancelled:
+                errors.append("cancelled")
+
+        loader = threading.Thread(target=load, name="inspection-loader", daemon=True)
+        loader.start()
+        stopper = None
+        try:
+            assert await asyncio.to_thread(queued.wait, 2)
+            stopper = loop.run_in_executor(None, inspector.stop)
+            await asyncio.wait_for(asyncio.shield(stopper), 1)
+            assert inspector.state()["state"] == "idle"
+        finally:
+            for callback, args, kwargs in pending:
+                schedule(callback, *args, **kwargs)
+            await asyncio.to_thread(loader.join, 2)
+            if stopper is not None:
+                await asyncio.wait_for(stopper, 2)
+            await asyncio.to_thread(inspector.stop)
+        assert not loader.is_alive()
+        assert errors == ["cancelled"]
+        assert inspector.state()["state"] == "idle"
+
+    asyncio.run(scenario())
+
+
+def test_app_shutdown_finishes_the_inspector_worker_before_closing_statistics(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(inspect.Inspector, "_free_engine_memory", staticmethod(lambda: None))
+    running, stopped = threading.Event(), threading.Event()
+
+    class Explainer(StubExplainer):
+        def __init__(self, args):
+            super().__init__(args)
+
+            async def worker():
+                running.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stopped.set()
+
+            self.srv.worker = worker
+
+    monkeypatch.setattr(inspect, "Explainer", Explainer)
+    stats = Stats(tmp_path / "stats.json")
+    close = stats.close
+
+    def close_stats():
+        try:
+            assert stopped.is_set(), "inspection must finish before persistence is closed"
+        finally:
+            close()
+
+    monkeypatch.setattr(stats, "close", close_stats)
+    app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: HW, stats=stats)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/inspect", json={"id": BF16.id}).status_code == 202
+        assert running.wait(3)

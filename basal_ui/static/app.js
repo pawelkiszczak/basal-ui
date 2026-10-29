@@ -1205,7 +1205,7 @@ $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
-let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map();
+let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
 let logSource='basal-ui', logAfter=0, logGeneration=null, logTimer=null, shownHash=null;
 const readyModels=()=>(statusCache?.models||[]).filter(m=>m.state==='ready');
@@ -1418,7 +1418,7 @@ $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInp
 document.querySelectorAll('#calibrationBlock input[type=checkbox]').forEach(i=>{i.setAttribute('role','switch');setChecked(i,i.checked);});
 document.body.append($('#reportDialog'));  // a modal inside a hidden view would block the page without showing
 $('#reportClose').onclick=()=>$('#reportDialog').close();
-let calibrationRunning=false, calibrationSignature='', calibrationReportSeen=null;
+let calibrationRunning=false, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0;
 function renderCalibrationModels() {
   const select=$('#calibrationModel'), current=select.value||localStorage.getItem('basal-ui.calibrationModel')||'', rows=modelData.filter(m=>m.downloaded);
   const signature=JSON.stringify(rows.map(m=>m.id));
@@ -1444,7 +1444,9 @@ $('#runCalibration').onclick=()=>act(async()=>{
   toast(t('Calibration started')); await refreshStatus();
 });
 $('#importCalibration').onclick=()=>act(async()=>{
-  const id=$('#calibrationModel').value, d=await api('/api/calibrations/import',{method:'POST',body:JSON.stringify({id,path:$('#calibrationImportPath').value.trim()})});
+  const id=$('#calibrationModel').value, sequence=++calibrationSequence;
+  const d=await api('/api/calibrations/import',{method:'POST',body:JSON.stringify({id,path:$('#calibrationImportPath').value.trim()})});
+  if(!calibrationCurrent(id,sequence))return;
   renderCalibrationFiles(id,d); $('#calibrationImportPath').value='';
   const f=d.files.find(x=>x.file===d.file); toast(f?.warning?`${t('Imported')} — ${f.warning}`:t('Calibration imported'));
 });
@@ -1463,11 +1465,23 @@ function renderCalibrationState(job) {
   calibrationRunning=running;
 }
 async function loadCalibrations() {
-  const id=$('#calibrationModel').value;
-  if(!id){$('#calibrationFiles').innerHTML='';return;}
-  try{renderCalibrationFiles(id,await api(`/api/calibrations?id=${encodeURIComponent(id)}`));}
-  catch(e){$('#calibrationFiles').innerHTML=`<div class="error-box">${esc(e.message)}</div>`;}
+  const id=$('#calibrationModel').value, sequence=++calibrationSequence, files=$('#calibrationFiles');
+  files.innerHTML='';
+  files.setAttribute('aria-busy','true');
+  $('#importCalibration').disabled=true;
+  if(!id){files.removeAttribute('aria-busy');return;}
+  try{
+    const data=await api(`/api/calibrations?id=${encodeURIComponent(id)}`);
+    if(!calibrationCurrent(id,sequence))return;
+    renderCalibrationFiles(id,data);
+  }catch(e){
+    if(!calibrationCurrent(id,sequence))return;
+    files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
+  }finally{
+    if(calibrationCurrent(id,sequence)){files.removeAttribute('aria-busy');$('#importCalibration').disabled=false;}
+  }
 }
+function calibrationCurrent(id,sequence){return sequence===calibrationSequence&&id===$('#calibrationModel').value;}
 function thresholdCell(thresholds) {
   const types=[...new Set(Object.values(thresholds||{}).flatMap(Object.keys))];
   return types.map(t=>`<span class="chip">${esc(t)} ${['0.01','0.05'].map(k=>`${(Number(k)*100).toFixed(0)}%: ${thresholds?.[k]?.[t]==null?'—':Number(thresholds[k][t]).toFixed(3)}`).join(' · ')}</span>`).join(' ')||`<span class="muted">${t('none certified')}</span>`;
@@ -1491,15 +1505,22 @@ function renderCalibrationFiles(id, d) {
     radio.closest('tr').lastElementChild.append(' ',button);
   }
   $('#calibrationFiles').querySelectorAll('[data-refit]').forEach(b=>b.onclick=()=>act(async()=>{
+    if(id!==$('#calibrationModel').value)return;
     await api('/api/calibrate',{method:'POST',body:JSON.stringify({id,input:b.dataset.refit,from_rows:true})});
+    if(id!==$('#calibrationModel').value)return;
     toast(t('Calibration refit started'));await refreshStatus();
   }));
   $('#calibrationFiles').querySelectorAll('input[name=calibrationUse]').forEach(r=>r.onchange=()=>act(async()=>{
-    renderCalibrationFiles(id,await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})}));
+    if(id!==$('#calibrationModel').value)return;
+    const sequence=++calibrationSequence, data=await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})});
+    if(!calibrationCurrent(id,sequence))return;
+    renderCalibrationFiles(id,data);
     toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus();
   }));
   $('#calibrationFiles').querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>act(async()=>{
-    const r=await api(`/api/calibrations/report?id=${encodeURIComponent(id)}&file=${encodeURIComponent(b.dataset.report)}`);
+    if(id!==$('#calibrationModel').value)return;
+    const sequence=++calibrationSequence, r=await api(`/api/calibrations/report?id=${encodeURIComponent(id)}&file=${encodeURIComponent(b.dataset.report)}`);
+    if(!calibrationCurrent(id,sequence))return;
     $('#reportText').textContent=r.report; $('#reportDialog').showModal();
   }));
 }
@@ -1710,20 +1731,23 @@ async function loadHistory(mode='reset') {
     }while(sequence===historySequence);
     if(sequence!==historySequence)return;  // the filter changed meanwhile: that query's own fetch renders
     syncHistoryModels(d.models||[]);
-    if(mode==='reset'){historyRows=new Map();historyOpen.clear();}
+    if(mode==='reset'){historyRows=new Map();historyOpen.clear();historyBrowsingOlder=false;}
+    if(mode==='more')historyBrowsingOlder=true;
     items.forEach(x=>historyRows.set(x.id,x));
     if(mode!=='poll')$('#historyMore').hidden=items.length<100;
     let sorted=[...historyRows.values()].sort((a,b)=>b.ts-a.ts);
     if(mode==='reset'){historyAfter=items[0]?.id||null;historyBefore=items.at(-1)?.id||null;}
     else if(mode==='more'&&items.length)historyBefore=items.at(-1).id;
     else if(mode==='poll'){historyAfter=pollCursor||historyAfter;if(!historyBefore)historyBefore=items[0]?.id||null;}
-    if(mode==='poll'&&sorted.length>HISTORY_LIVE_MAX){  // a view left open keeps the newest rows; More reloads older
+    let trimmed=false;
+    if(mode==='poll'&&!historyBrowsingOlder&&sorted.length>HISTORY_LIVE_MAX){
       sorted=sorted.slice(0,HISTORY_LIVE_MAX);
       historyRows=new Map(sorted.map(x=>[x.id,x]));
       [...historyOpen.keys()].forEach(id=>{if(!historyRows.has(id))historyOpen.delete(id);});
       historyBefore=sorted.at(-1).id; $('#historyMore').hidden=false;
+      trimmed=true;
     }
-    if(mode!=='poll'||items.length)renderHistory(sorted);
+    if(mode!=='poll'||items.length||trimmed||!$('#historyTable table'))renderHistory(sorted);
   }catch(e){if(sequence!==historySequence)return;$('#historyTable').innerHTML=`<div class="error-box">${esc(e.message)}</div>`;}
   if(!$('#history').hidden&&sequence===historySequence)historyTimer=setTimeout(()=>loadHistory('poll'),5000);
 }
@@ -1765,7 +1789,7 @@ function replayRequest(x) {
   setRequest(x.replay_request);
   showView('playground',true);
 }
-function resetHistory(){historyAfter=null;historyBefore=null;loadHistory('reset');}
+function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
 $('#historyModel').onchange=resetHistory;
 $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.toggle('active',b.dataset.source===historySource));
@@ -1856,7 +1880,7 @@ $('#downloadBatch').onclick=()=>{const a=document.createElement('a');a.href='/ap
 $('#copyBatchPath').onclick=()=>copyText(batchResult?.output||'',t('Output path copied'));
 // Inspect: basal-viz embedded at /viz/ for a downloaded bf16 model (basal_ui/inspect.py decides: inspect_reason)
 const inspectableModel=m=>!m.inspect_reason;
-let inspectSignature='', inspectReady=false;
+let inspectSignature='', inspectReady=false, inspectCalibrationSequence=0;
 function renderInspectModels() {
   const select=$('#inspectModel'), current=select.value||localStorage.getItem('basal-ui.inspectModel')||'', rows=modelData.filter(m=>m.downloaded);
   const signature=JSON.stringify(rows.map(m=>m.id));
@@ -1868,10 +1892,17 @@ function renderInspectModels() {
   loadInspectCalibrations();
 }
 async function loadInspectCalibrations() {
-  const id=$('#inspectModel').value, sel=$('#inspectCalibration');
+  const id=$('#inspectModel').value, sel=$('#inspectCalibration'), sequence=++inspectCalibrationSequence;
   sel.innerHTML=`<option value="">${t('shipped calibration')}</option>`;
+  sel.disabled=!id;
   if(!id)return;
-  try{const d=await api(`/api/calibrations?id=${encodeURIComponent(id)}`);sel.insertAdjacentHTML('beforeend',d.files.map(f=>{const count=f.fitted_on?.decisions;return `<option value="${esc(f.file)}"${f.file===d.selected?' selected':''}>${esc(new Date(f.when*1000).toLocaleString())} · ${count==null?'?':tp(count,'{n} decisions','{n} decisions')}</option>`;}).join(''));}catch{}
+  try{
+    const d=await api(`/api/calibrations?id=${encodeURIComponent(id)}`);
+    if(sequence!==inspectCalibrationSequence||id!==$('#inspectModel').value)return;
+    sel.insertAdjacentHTML('beforeend',d.files.map(f=>{const count=f.fitted_on?.decisions;return `<option value="${esc(f.file)}"${f.file===d.selected?' selected':''}>${esc(new Date(f.when*1000).toLocaleString())} · ${count==null?'?':tp(count,'{n} decisions','{n} decisions')}</option>`;}).join(''));
+  }catch{}finally{
+    if(sequence===inspectCalibrationSequence&&id===$('#inspectModel').value)sel.disabled=false;
+  }
 }
 $('#inspectModel').onchange=()=>{localStorage.setItem('basal-ui.inspectModel',$('#inspectModel').value);loadInspectCalibrations();};
 $('#startInspect').onclick=()=>act(async()=>{const orders=$('#inspectOrders').value;await api('/api/inspect',{method:'POST',body:JSON.stringify({id:$('#inspectModel').value,calibration:$('#inspectCalibration').value||null,orders:orders?Number(orders):null})});toast(t('Inspector loading'));await refreshStatus();});
