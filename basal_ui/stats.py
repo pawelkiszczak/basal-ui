@@ -112,30 +112,43 @@ class Stats:
         self._flusher.start()
 
     def record(self, model_id: str, response_json, latency_ms: float, ok: bool = True) -> None:
-        with self.lock:  # the time is taken under the lock, so a record racing a reset is stamped after it
-            now = time.time()
-            entry = self.delta.setdefault(model_id, _empty())
-            entry["first_used"] = entry["first_used"] or now
-            entry["last_used"] = now
-            entry["requests"] += 1
-            entry["latency_ms_sum"] += latency_ms
-            entry["latency_samples"] = [*entry["latency_samples"], round(latency_ms, 2)][-SAMPLES:]
-            if not ok or not isinstance(response_json, dict):
-                entry["errors"] += 1
-                return
-            usage = response_json.get("usage")
-            if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int):
-                entry["input_tokens"] += usage["input_tokens"]
-            for _name, answer in answer_items(response_json.get("answers")):
-                kind = answer.get("type") if isinstance(answer.get("type"), str) else "other"
-                by_type = entry["by_type"].setdefault(kind, {"questions": 0, "best_prob_sum": 0.0, "best_prob_n": 0})
-                entry["questions"] += 1
-                by_type["questions"] += 1
-                p = best_probability(answer)
-                if p is not None:
-                    for target in (entry, by_type):
-                        target["best_prob_sum"] += p
-                        target["best_prob_n"] += 1
+        from . import settings
+
+        @settings._locked
+        def record():
+            # Observe resets and stamp this Decision under the same inter-process lock as reset(). A pending delta
+            # from before a reset must be discarded before adding a later Decision, not together with it at flush.
+            reset_at = _read(self.path)["reset_at"]
+            with self.lock:
+                now = time.time()
+                entry = self.delta.get(model_id)
+                if entry is None or _cleared(reset_at, model_id, entry):
+                    entry = self.delta[model_id] = _empty()
+                entry["first_used"] = entry["first_used"] or now
+                entry["last_used"] = now
+                entry["requests"] += 1
+                entry["latency_ms_sum"] += latency_ms
+                entry["latency_samples"] = [*entry["latency_samples"], round(latency_ms, 2)][-SAMPLES:]
+                if not ok or not isinstance(response_json, dict):
+                    entry["errors"] += 1
+                    return
+                usage = response_json.get("usage")
+                if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int):
+                    entry["input_tokens"] += usage["input_tokens"]
+                for _name, answer in answer_items(response_json.get("answers")):
+                    kind = answer.get("type") if isinstance(answer.get("type"), str) else "other"
+                    by_type = entry["by_type"].setdefault(
+                        kind, {"questions": 0, "best_prob_sum": 0.0, "best_prob_n": 0}
+                    )
+                    entry["questions"] += 1
+                    by_type["questions"] += 1
+                    p = best_probability(answer)
+                    if p is not None:
+                        for target in (entry, by_type):
+                            target["best_prob_sum"] += p
+                            target["best_prob_n"] += 1
+
+        record()
 
     def _update_file(self, change) -> None:
         """Under the settings lock: read the file, merge this process's delta, apply change(data), write, mirror."""

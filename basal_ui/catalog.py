@@ -142,6 +142,7 @@ class Variant:
     base_revision: str | None = None  # the card's base_model_revision: the base snapshot is pinned to it
     weights_only: bool = False  # a GGUF repository without tokenizer and calibration: they come from base_repo
     recurrent: bool = False  # RECURRENT_MODELS
+    cache_revision: str | None = None  # the complete snapshot selected by the offline catalog
 
     @property
     def community(self) -> bool:
@@ -223,6 +224,7 @@ def _variants(
     author: str = "Remek",
     base_repo: str | None = None,
     base_revision: str | None = None,
+    cache_revision: str | None = None,
 ) -> list[Variant]:
     """The variants of one repository from its file names and sizes."""
     family, tier, port = parse_repo(repo)
@@ -246,6 +248,7 @@ def _variants(
             base_revision,
             weights_only,
             (family, tier) in RECURRENT_MODELS,
+            cache_revision,
         )
 
     if port == "GGUF":
@@ -312,24 +315,38 @@ def _cache_variants(cache_dir: Path) -> list[Variant]:
         author = repo.repo_id.split("/", 1)[0]
         if repo.repo_type != "model" or author not in AUTHORS or not parse_repo(repo.repo_id) or not repo.revisions:
             continue
-        # one snapshot: the one refs/main names, else the newest (other revisions may hold other shards)
-        main = next((r for r in repo.revisions if "main" in r.refs), None) or max(
-            repo.revisions, key=lambda r: r.last_modified
-        )
-        files = {f.file_name: f.size_on_disk for f in main.files}
+        revisions = sorted(repo.revisions, key=lambda r: r.last_modified, reverse=True)
+        main = next((r for r in repo.revisions if "main" in r.refs), None)
+        if main:
+            revisions.remove(main)
+            revisions.insert(0, main)
+        selected = None
+        for rev in revisions:
+            files = {f.file_name: f.size_on_disk for f in rev.files}
+            weights = _cached_weight_paths(rev.snapshot_path, parse_repo(repo.repo_id)[2])
+            if weights is not None:
+                selected = rev, files, weights
+                break
+        if selected is None:
+            continue
+        revision, files, weights = selected
+        if parse_repo(repo.repo_id)[2] != "GGUF":
+            weight_names = {p.relative_to(revision.snapshot_path).as_posix() for p in weights}
+            files = {
+                name: size for name, size in files.items() if not name.endswith(".safetensors") or name in weight_names
+            }
         base_repo = base_revision = None
         if parse_repo(repo.repo_id)[2] == "GGUF" and not any(
             name in files for name in ("tokenizer.json", "CALIBRATION.json")
         ):
-            for rev in repo.revisions:
-                readme = next((f.file_path for f in rev.files if f.file_name == "README.md"), None)
-                if readme and readme.is_file():
-                    text = readme.read_text(encoding="utf-8", errors="replace")
-                    base_repo = _front_matter(text, "base_model")
-                    if base_repo:
-                        base_revision = _front_matter(text, "base_model_revision")
-                        break
-        out += _variants(repo.repo_id, files, author, base_repo, base_revision)
+            readme = next((f.file_path for f in revision.files if f.file_name == "README.md"), None)
+            if readme and readme.is_file():
+                text = readme.read_text(encoding="utf-8", errors="replace")
+                base_repo = _front_matter(text, "base_model")
+                if base_repo:
+                    base_revision = _front_matter(text, "base_model_revision")
+
+        out += _variants(repo.repo_id, files, author, base_repo, base_revision, revision.commit_hash)
     return out
 
 
@@ -571,6 +588,7 @@ def _optional(name: str) -> bool:
 def download_kwargs(v: Variant, revision: str | None = None) -> dict:
     """snapshot_download filters for one variant and optional pinned revision."""
     kwargs = {"allow_patterns": [v.gguf_file, *_BASE_FILES]} if v.port == "GGUF" else {"ignore_patterns": ["think/*"]}
+    revision = revision if revision is not None else v.cache_revision
     if revision is not None:
         kwargs["revision"] = revision
     return kwargs
@@ -611,21 +629,25 @@ def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> P
         )
     except Exception:  # noqa: BLE001 — an absent or partial snapshot is not downloaded
         return None
-    if v.gguf_file:
-        weights = [path / v.gguf_file]
-    elif (path / "model.safetensors.index.json").exists():  # sharded: every shard the index names
+    weights = _cached_weight_paths(path, v.port, v.gguf_file)
+    return path if weights and (not v.base_repo or base_dir(v, cache_dir) is not None) else None
+
+
+def _cached_weight_paths(path: Path, port: str, gguf_file: str | None = None) -> list[Path] | None:
+    """The complete weight files in one HF snapshot, or None when its index or files are incomplete."""
+    if gguf_file:
+        paths = [path / gguf_file]
+    elif port == "GGUF":
+        paths = list(path.glob("*.gguf"))
+    elif (path / "model.safetensors.index.json").exists():
         try:
             index = json.loads((path / "model.safetensors.index.json").read_text(encoding="utf-8"))
-            weights = [path / name for name in set(index["weight_map"].values())]
+            paths = [path / name for name in set(index["weight_map"].values())]
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
     else:
-        weights = list(path.glob("*.safetensors"))
-    return (
-        path
-        if weights and all(w.exists() for w in weights) and (not v.base_repo or base_dir(v, cache_dir) is not None)
-        else None
-    )
+        paths = [p for p in path.glob("*.safetensors") if not _optional(p.name)]
+    return paths if paths and all(p.is_file() for p in paths) else None
 
 
 def download(v: Variant, cache_dir: Path, tqdm_class=None, revision: str | None = None) -> str:

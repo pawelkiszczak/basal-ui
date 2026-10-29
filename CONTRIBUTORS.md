@@ -8,6 +8,7 @@ are missing or listed wrongly, open a pull request against `dev` that fixes this
 | Who | GitHub | Contribution |
 |---|---|---|
 | Paweł Kiszczak | [@pawelkiszczak](https://github.com/pawelkiszczak) | author and maintainer: the browser app, the API server, the fleet of `basal-serve` children, the tests, the docs |
+| Greg Brzezinka | [@agentGreg](https://github.com/agentGreg) | History `data`-field redaction report and proposed fix ([#4](https://github.com/pawelkiszczak/basal-ui/pull/4)); older-family e2e regression fix ([#5](https://github.com/pawelkiszczak/basal-ui/pull/5)) |
 
 ## The basal engine
 

@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from basal_ui import backends, catalog, settings
+from basal_ui.catalog import is_downloaded
 from basal_ui.fleet import Runner
 from tests.test_ui_app import HW, MINI, SMALL, make_fleet, wait_for
 
@@ -97,31 +98,60 @@ def test_inventory_generated_reasons_have_matching_message_codes(manager, monkey
         assert torch["reason"] == backends.BACKEND_TEMPLATES[code].format(**torch["reason_params"])
 
 
-def test_inventory_uses_saved_revision_for_downloaded_model_lookup(manager, monkeypatch):
-    calls = []
-    monkeypatch.setattr(settings, "load_options", lambda model_id: {"revision": "pinned-revision"})
-    monkeypatch.setattr(
-        catalog,
-        "is_downloaded",
-        lambda variant, cache, revision=None: calls.append((variant.id, revision)) or "/cached",
-    )
-    manager.inventory()
-    assert calls and all(revision == "pinned-revision" for _, revision in calls)
+@pytest.mark.parametrize("active", [True, False])
+def test_inventory_and_start_pin_the_selected_cache_commit(manager, monkeypatch, tmp_path, active):
+    cache = tmp_path / "models"
+    repo = cache / "models--Remek--basal-2.0-mini"
+    snapshots = repo / "snapshots"
+    commit_a, commit_b = "a" * 40, "b" * 40
+    for commit, data in ((commit_a, b"A" * 13), (commit_b, b"B" * 29)):
+        snapshot = snapshots / commit
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.safetensors").write_bytes(data)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(commit_b)
+    monkeypatch.setattr(settings, "models_dir", lambda: cache)
+    monkeypatch.setattr(catalog, "is_downloaded", is_downloaded)
+    manager.variants = lambda: [MINI]
+    if active:
+        runner, _ = loaded(manager, MINI)
+        runner.loaded_path = str(snapshots / commit_a)
+    monkeypatch.setattr(settings, "load_options", lambda _: {"revision": commit_b if active else commit_a})
+    inventory = manager.inventory()
+    torch = next(item for item in inventory["backends"] if item["id"] == "torch")
+    model = next(item for item in torch["models"] if item["id"] == MINI.id)
+    assert model["downloaded"] and model["revision"] == commit_a
+    expected_a = backends.estimate(dataclasses.replace(MINI, weights_bytes=13), manager.hardware_fn(), "eager")
+    expected_b = backends.estimate(dataclasses.replace(MINI, weights_bytes=29), manager.hardware_fn(), "eager")
+    assert model["estimated_memory_bytes"] == expected_a.est_memory_bytes
+    assert model["estimated_memory_bytes"] != expected_b.est_memory_bytes
 
-
-def test_start_checks_the_files_at_the_revision_the_inventory_checked(manager, monkeypatch):
-    calls = []
-    real = catalog.is_downloaded
-    monkeypatch.setattr(settings, "load_options", lambda model_id: {"revision": "pinned-revision"})
-
-    def recording(variant, cache, revision=None):
-        calls.append(revision)
-        return real(variant, cache)
-
-    monkeypatch.setattr(catalog, "is_downloaded", recording)
     manager.start(request())
-    finish(manager)
-    assert calls and set(calls) == {"pinned-revision"}
+    job = finish(manager)
+    assert job.phase == "done"
+    record = manager.records()[0]
+    assert record["status"] == "passed"
+    assert record["result"]["revision"] == commit_a
+
+
+@pytest.mark.parametrize(
+    ("backend", "family", "port", "expected"),
+    [
+        ("strix", "basal-2.0", "bf16", True),
+        ("tpu", "basal-1.5", "bf16", True),
+        ("strix", "basal-omni-1.0", "bf16", False),
+        ("tpu", "basal-omni", "bf16", False),
+        ("strix", "basal-2.0", "FP8", False),
+        ("tpu", "basal-2.0", "GGUF", False),
+    ],
+)
+def test_matching_modes_excludes_unsupported_strix_and_tpu_models(manager, backend, family, port, expected):
+    hw = dataclasses.replace(
+        manager.hardware_fn(), engines=frozenset({"cuda", "rocm", "strix", "tpu"}), platform="cuda"
+    )
+    variant = dataclasses.replace(MINI, family=family, port=port, recurrent=family == "basal-omni")
+    modes = backends.matching_modes(backend, variant, hw)
+    assert bool(modes) is expected
 
 
 def test_private_test_does_not_change_settings_history_or_stats(manager, tmp_path):

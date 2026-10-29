@@ -259,12 +259,19 @@ class Manager:
                         allowed = matching_modes(key, v, hw)
                         if not allowed:
                             continue
+                        revision = self._lookup_revision(v.id)
+                        local = catalog.is_downloaded(v, self.settings.models_dir(), revision=revision)
+                        resolved_revision = Path(local).name if local and len(Path(local).name) == 40 else revision
+                        sized = v
+                        if local:
+                            weights = catalog._cached_weight_paths(Path(local), v.port, v.gguf_file)
+                            if weights:
+                                sized = dataclasses.replace(v, weights_bytes=sum(p.stat().st_size for p in weights))
                         try:
-                            assessment = estimate(v, hw, allowed[0])
+                            assessment = estimate(sized, hw, allowed[0])
                             needed = assessment.est_memory_bytes
                         except ValueError:
                             needed = None
-                        revision = self._lookup_revision(v.id)
                         models.append(
                             {
                                 "id": v.id,
@@ -272,12 +279,10 @@ class Manager:
                                 "tier": v.tier,
                                 "format": v.label,
                                 "modes": allowed,
-                                "revision": v.base_revision,
-                                "downloaded": bool(
-                                    catalog.is_downloaded(v, self.settings.models_dir(), revision=revision)
-                                ),
+                                "revision": resolved_revision,
+                                "downloaded": local is not None,
                                 "estimated_memory_bytes": needed,
-                                "mode_estimates": {mode: estimate(v, hw, mode).est_memory_bytes for mode in allowed}
+                                "mode_estimates": {mode: estimate(sized, hw, mode).est_memory_bytes for mode in allowed}
                                 if needed
                                 else {},
                             }
@@ -344,10 +349,14 @@ class Manager:
         ]
 
     def _lookup_revision(self, model_id):
-        """The revision the inventory checks a model's files at: the running child's, else the saved load option."""
+        """The pinned cache commit of an active runner, else the saved load revision."""
         with self.fleet.lock:
             runner = self.fleet.runners.get(model_id)
         if runner is not None and runner.status()["state"] == "ready":
+            loaded_path = getattr(runner, "loaded_path", None)
+            cached_revision = Path(loaded_path).name if loaded_path else ""
+            if len(cached_revision) == 40 and all(c in "0123456789abcdef" for c in cached_revision):
+                return cached_revision
             return runner.options.get("revision")
         return self.settings.load_options(model_id).get("revision")
 
@@ -365,12 +374,16 @@ class Manager:
             raise ValueError("Select a compatible downloaded model and mode")
         variants = {v.id: v for v in self.variants()}
         variant, hw = variants[model_id], self.current_hardware()
-        assessment = estimate(variant, hw, mode)
-        local = catalog.is_downloaded(variant, self.settings.models_dir(), revision=self._lookup_revision(model_id))
+        revision = match["revision"]
+        local = catalog.is_downloaded(variant, self.settings.models_dir(), revision=revision)
         if local is None:
             raise ValueError("Downloaded files are missing; no download will be attempted")
+        weights = catalog._cached_weight_paths(Path(local), variant.port, variant.gguf_file)
+        if weights:
+            variant = dataclasses.replace(variant, weights_bytes=sum(p.stat().st_size for p in weights))
+        assessment = estimate(variant, hw, mode)
         # Pin the selected cache snapshot so a later main-branch refresh cannot change the test.
-        revision = Path(local).name if len(Path(local).name) == 40 else variant.base_revision
+        revision = Path(local).name if len(Path(local).name) == 40 else revision
         chosen = {"mode": mode, **({"revision": revision} if revision else {})}
         selected = body.get("unload", [])
         if not isinstance(selected, list) or any(

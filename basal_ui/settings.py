@@ -452,9 +452,12 @@ def _alive(pid: int) -> bool:
 def _sync_key_files(data: dict) -> None:
     """Rewrite every live instance's key file with the current user keys; drop the files of dead processes."""
     settings_path = _settings_path()
-    for path in settings_path.parent.glob(f"{settings_path.stem}.keys-*.json"):
+    prefix = f"{settings_path.stem}.keys-"
+    for path in settings_path.parent.iterdir():
+        if not path.name.startswith(prefix) or not path.name.endswith(".json"):
+            continue
         try:
-            pid = int(path.stem.removeprefix(f"{settings_path.stem}.keys-"))
+            pid = int(path.name[len(prefix) : -len(".json")])
         except ValueError:
             continue
         if not _alive(pid):

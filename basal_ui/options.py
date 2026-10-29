@@ -318,8 +318,24 @@ def available_modes(v, hw, assessment) -> list[dict]:
             if v.port == "GGUF"
             else OPTION_TEMPLATES["mode_gguf_variant"]
         ),
-        "strix": None if "strix" in hw.engines else OPTION_TEMPLATES["mode_strix"],
-        "tpu": None if "tpu" in hw.engines else OPTION_TEMPLATES["mode_tpu"],
+        "strix": (
+            OPTION_TEMPLATES["mode_strix"]
+            if "strix" not in hw.engines
+            else OPTION_TEMPLATES["mode_strix_format"]
+            if v.port != "bf16"
+            else OPTION_TEMPLATES["mode_architecture"]
+            if v.family.startswith("basal-omni")
+            else None
+        ),
+        "tpu": (
+            OPTION_TEMPLATES["mode_tpu"]
+            if "tpu" not in hw.engines
+            else OPTION_TEMPLATES["mode_tpu_format"]
+            if v.port != "bf16"
+            else OPTION_TEMPLATES["mode_architecture"]
+            if v.family.startswith("basal-omni")
+            else None
+        ),
         "ollama": None,
         "llamacpp": None,  # external services: their URL fields are required then
     }
@@ -399,6 +415,9 @@ OPTION_TEMPLATES = {
     "mode_gguf_variant": "needs a GGUF variant",
     "mode_strix": "needs AMD Strix Halo with ROCm PyTorch (docs/benchmarks/STRIX_HALO.md)",
     "mode_tpu": "needs a TPU VM with basal[tpu]",
+    "mode_strix_format": "Strix supports bf16 weights only",
+    "mode_tpu_format": "TPU supports bf16 weights only",
+    "mode_architecture": "Strix and TPU require a Llama-architecture model",
     "mode_mlx_q8": "{port} weights are quantised already (mlx-q8 quantises at load)",
     "mode_fp8_hardware": "FP8 matrix multiplies need compute capability 8.9+ (Ada, Hopper, Blackwell); use fast (bf16) on this GPU",
     "mode_vllm_media": "vLLM media serving needs an NVIDIA GPU with basal[vllm] (docs/OMNI.md)",

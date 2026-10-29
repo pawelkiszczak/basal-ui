@@ -221,19 +221,67 @@ def test_playground_request_names_media_and_history_replay_are_lossless_until_se
     assert not decide_calls
 
 
+def test_history_preserves_data_fields_through_recording_and_browser_replay(page, ui, text_model):
+    """PR #4: recording and Replay must not rewrite ordinary fields named data."""
+    request = {
+        "state": {"data": "The customer reports a privacy leak.", "ticket": "e2e-data-field"},
+        "questions": {
+            "q": {
+                "type": "choice",
+                "instructions": "Choose the kind of problem.",
+                "criteria": {"data": "A data or privacy problem", "other": "Other"},
+            }
+        },
+    }
+    view(page, "playground")
+    page.evaluate("request => setRequest(request)", request)
+    with page.expect_response(lambda response: "/api/decide" in response.url, timeout=WAIT) as sent:
+        page.click("#sendButton")
+    assert sent.value.status == 200
+    assert sent.value.json()["answers"]["q"]["choice"] in request["questions"]["q"]["criteria"]
+
+    def latest_record():
+        items = ui.get(
+            "/api/history", params={"model": text_model["id"], "source": "playground", "q": "e2e-data-field"}
+        )["items"]
+        return ui.get(f"/api/history/{items[0]['id']}")
+
+    recorded = latest_record()
+    assert recorded["request"]["state"] == request["state"]
+    assert recorded["request"]["questions"] == request["questions"]
+    assert recorded["replay_error"] is None
+    assert recorded["replay_request"]["questions"] == request["questions"]
+
+    view(page, "history")
+    row = page.locator(f'tr[data-history="{recorded["id"]}"]')
+    row.locator(".history-open").click()
+    page.locator(f'tr[data-history="{recorded["id"]}"] + .history-detail .replay-request').click()
+    sync_api.expect(page.locator('section.view[data-page="playground"]')).to_be_visible()
+    replay = page.evaluate("() => $('#editJsonToggle').checked ? JSON.parse($('#requestJson').value) : buildRequest()")
+    assert replay["state"] == request["state"]
+    assert replay["questions"] == request["questions"]
+    with page.expect_response(lambda response: "/api/decide" in response.url, timeout=WAIT) as resent:
+        page.click("#sendButton")
+    assert resent.value.status == 200
+    assert latest_record()["request"]["questions"] == request["questions"]
+
+
 def test_server_messages_translate_in_polish_and_remain_english(page):
     page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
     page.reload()
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     fixture = page.evaluate("""async () => {
       const data = await fetch('/api/models').then(r => r.json());
-      if (!data.models.some(m => !m.runnable && m.reason_code)) {
-        const source = data.models.find(m => m.runnable);
-        data.models.push({...source, id: `${source.id}:e2e-unavailable`, runnable: false,
-          reason: 'needs an NVIDIA GPU (the CUDA graph engine)', reason_code: 'cuda_graph_gpu',
-          reason_params: {}});
-      }
       const source = data.models.find(m => m.runnable);
+      let unavailable = data.models.find(m => !m.runnable && m.reason_code &&
+        ['basal-1.0', 'basal-1.5'].includes(m.family));
+      if (!unavailable) {
+        unavailable = {...source, id: '__e2e_older_unavailable__', family: 'basal-1.5', port: 'GGUF',
+          label: 'GGUF Q8_0', runnable: false,
+          reason: 'this GGUF conversion ships no tokenizer or calibration and its model card names no base model',
+          reason_code: 'gguf_base', reason_params: {}};
+        data.models.push(unavailable);
+      }
       const packed = {...source, id: '__e2e_packed__', family: 'basal-2.0', tier: 'mini',
         label: 'MLX 8-bit', runnable: true};
       const multimodal = {...source, id: '__e2e_multimodal__', family: 'basal-omni-1.0',
@@ -248,17 +296,18 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
         {slot: 'multimodal', id: multimodal.id, why: multimodalText,
           why_code: 'suggest_multimodal', why_params: multimodalParams});
       renderModels(data);
-      return {data, unavailable: data.models.find(m => !m.runnable && m.reason_code),
+      return {data, unavailable,
               suggestion: data.suggestions.find(s => s.why_code),
               packed: data.suggestions.find(s => s.id === packed.id),
               multimodal: data.suggestions.find(s => s.id === multimodal.id)};
     }""")
     unavailable, suggestion = fixture["unavailable"], fixture["suggestion"]
     assert unavailable and suggestion
+    assert unavailable["family"] in {"basal-1.0", "basal-1.5"}
     page.click('.side-nav [data-view="models"]')
     page.click("#allModelsTab")
     page.check("#notRunnableToggle")
-    page.check("#olderToggle")  # the unavailable model may be of an older family (basal-1.5 GGUF)
+    page.check("#olderToggle")
     translated_reason = page.evaluate("m => ts(m.reason, m.reason_code, m.reason_params)", unavailable)
     assert translated_reason != unavailable["reason"]
     reason = page.locator("#modelsTable .reason").filter(has_text=translated_reason)
@@ -306,7 +355,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.click('.side-nav [data-view="models"]')
     page.click("#allModelsTab")
     page.check("#notRunnableToggle")
-    page.check("#olderToggle")  # the unavailable model may be of an older family (basal-1.5 GGUF)
+    page.check("#olderToggle")
     sync_api.expect(page.locator("#modelsTable .reason").filter(has_text=unavailable["reason"]).first).to_be_visible()
     page.click("#suggestedTab")
     sync_api.expect(page.locator("#suggested .why").filter(has_text=suggestion["why"]).first).to_be_visible()

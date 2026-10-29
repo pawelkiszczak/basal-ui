@@ -52,7 +52,9 @@ when new models appeared in the Hugging Face catalog (the offline catalog of the
 - **All models.** Every `Remek/basal-*` repository and each `.gguf` file of a `-GGUF` repository, with weight size,
   estimated memory (weights × 1.2 + 1 GB), fit against the budget and *fit now* against the available memory (*fits*
   up to 85%, *tight* up to 100%), and the `basal-serve` mode it would run in, or why it cannot run here and which
-  extra fixes that. Offline, the list is what is in the models directory.
+  extra fixes that. Offline, the list uses one complete cached snapshot per repository: `main` when complete,
+  otherwise the newest complete snapshot. Partial shards are never combined across revisions; repositories with no
+  complete snapshot are omitted.
 - **Suggested**: cards for the models that fit both the budget and the memory available now, a comfortable fit before
   a tight one. *Recommended*: the basal-2.0 family in the format of the machine (after
   [HARDWARE.md](https://github.com/rkinas/basal/blob/main/docs/HARDWARE.md#recommendation): FP8 on NVIDIA GPUs with compute capability 8.9+ other than data-centre
@@ -116,8 +118,9 @@ model in collapsible sections (Engine and any section holding a non-default valu
 stays that way for the next dialog in the session; a collapsed section still saves its values):
 the **engine mode** (every `basal-serve --mode`, the ones this machine or variant cannot use greyed out with
 the reason — CUDA graph modes need an NVIDIA GPU, vLLM / SGLang their extra, MLX Apple Silicon, TPU a TPU VM, Strix
-an AMD Strix Halo; a ROCm GPU, although PyTorch reports CUDA, is offered none of the NVIDIA-only modes — FP8, NVFP4,
-vLLM and SGLang; Ollama and llama-server take the URL of the running service), quantisation, attention kernels,
+an AMD Strix Halo; Strix and TPU require bf16 Llama-architecture weights, not basal-omni's Gemma or recurrent models.
+A ROCm GPU, although PyTorch reports CUDA, is offered none of the NVIDIA-only modes — FP8, NVFP4, vLLM and SGLang;
+Ollama and llama-server take the URL of the running service), quantisation, attention kernels,
 dtype, the vLLM preset, GPU share and KV-sharing fast prefill, the Gemma 4 eager forward, attention and per-layer
 embedding offload (`--eager-forward`, `--eager-attn`, `--ple-offload`), the exit heads directory, determinism, option
 orders and the `auto` band, batching, the state and prefix caches, the scheduler and long-request lane, the **prompt
@@ -217,7 +220,8 @@ only partly as resident memory; the estimate is what the budget check uses.
 questions, errors, average best-answer probability (the answer's `confidence`; `set_confidence` for `multi`; the
 largest probability for `tool`), mean and p95 latency (over the last 1000 requests), input tokens and last use, with
 one line per question type. They are kept in `<settings stem>.stats.json` next to the settings file, survive restarts
-and can be reset per model or all at once.
+and can be reset per model or all at once. A reset also discards older, unflushed counts from other instances sharing
+the settings file; Decisions recorded after the reset remain counted.
 
 **Benchmark** measures one loaded model at a time: 5 warm-up requests, 30 sequential requests (p50 / p95 / mean
 latency) and 120 at concurrency 8 (decisions, questions and input tokens per second, errors). Every item with a `gold`
@@ -268,9 +272,10 @@ status. Filter by model and source, search the state, open a row for the full re
 button, so rows open from the keyboard and keep focus across refreshes), copy the request
 or **Replay in Playground** (a converted request in the Playground with its model selected; replay only fills the form).
 Media bytes are removed from history, so a request whose replay needs an original attachment is blocked with an
-explanation. The last 2000 decisions are kept
-in `<settings stem>.history.jsonl` (owner-only) next to the settings file, with media bytes replaced by their size;
-a History view left open polls and keeps the newest 500 rows (**More** loads older ones);
+explanation. Ordinary structured context, including fields named `data`, is preserved. The last 2000 decisions are kept
+in `<settings stem>.history.jsonl` (owner-only) next to the settings file, with media bytes replaced by their size.
+A live-only History view keeps the newest 500 rows. **More** enters older-page browsing: explicitly loaded pages and
+their cursor are kept across polls until the view or filters are reset.
 **Clear history** empties it. `GET /api/history?order=asc` returns oldest first for incremental consumers;
 `order=desc` remains the default, and `after` cursors outside the retained window return retained records only.
 

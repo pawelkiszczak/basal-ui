@@ -73,6 +73,104 @@ def test_a_failed_write_leaves_memory_unchanged(tmp_path):
     assert history.list() == before
 
 
+def test_clear_write_failure_preserves_memory_and_disk(tmp_path, monkeypatch):
+    from basal_ui import settings
+
+    path = tmp_path / "h.jsonl"
+    history = History(path)
+    history.append(record(state="kept"))
+    before = path.read_text()
+    memory = history.list()
+    monkeypatch.setattr(settings, "_write_private", lambda *_args: (_ for _ in ()).throw(OSError("read-only")))
+
+    with pytest.raises(OSError, match="read-only"):
+        history.clear()
+
+    assert history.list() == memory
+    assert history.get(memory[0]["id"]) is not None
+    assert path.read_text() == before
+    assert History(path).list() == memory
+
+
+def test_media_redaction_preserves_structured_data_and_redacts_media_contexts():
+    ordinary = "data: ordinary text " + "x" * 80
+    native = {
+        "state": {"data": ordinary, "image_url": ordinary},
+        "questions": {"q": {"criteria": {"data": ordinary, "image_url": ordinary}}},
+    }
+    native_record = make_record("m", "playground", native, 200, {}, 1.0)
+    assert native_record["request"] == native
+    assert replay_fields(native_record["request"]) == {"replay_request": native, "replay_error": None}
+
+    media_data = "A" * 80
+    data_url = "data:audio/wav;base64," + media_data
+    actual = {
+        "state": {"data": "state text"},
+        "media": [{"type": "image", "data": media_data}],
+        "images": [data_url],
+        "audio": [data_url],
+    }
+    redacted = make_record("m", "playground", actual, 200, {}, 1.0)["request"]
+    assert redacted["state"] == actual["state"]
+    assert redacted["media"][0]["data"] == f"<{len(media_data)} bytes>"
+    assert redacted["images"] == [f"<{len(data_url)} bytes>"]
+    assert redacted["audio"] == [f"<{len(data_url)} bytes>"]
+    assert "original media attachments" in replay_fields(redacted)["replay_error"]
+
+    decisions = {
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_image", "image_url": "data:image/png;base64," + media_data},
+                    {
+                        "type": "input_audio",
+                        "audio_url": data_url,
+                        "data": media_data,
+                        "content": media_data,
+                    },
+                    {"type": "input_text", "text": ordinary},
+                ],
+            }
+        ]
+    }
+    decision_record = make_record("m", "api", decisions, 200, {}, 1.0)["request"]
+    parts = decision_record["input"][0]["content"]
+    assert parts[0]["image_url"] == f"<{len('data:image/png;base64,' + media_data)} bytes>"
+    assert parts[1]["audio_url"] == f"<{len(data_url)} bytes>"
+    assert parts[1]["data"] == f"<{len(media_data)} bytes>"
+    assert parts[1]["content"] == f"<{len(media_data)} bytes>"
+    assert parts[2]["text"] == ordinary
+    assert "original media attachments" in replay_fields(decision_record)["replay_error"]
+
+
+@pytest.mark.parametrize(
+    ("part", "payload_key", "expected"),
+    [
+        (
+            {"type": "input_audio", "input_audio": {"data": "QUJD", "format": "wav"}},
+            "input_audio",
+            {"data": "<4 bytes>", "format": "wav"},
+        ),
+        (
+            {"type": "input_image", "image_url": {"url": "data:image/png;base64,QUJD", "detail": "high"}},
+            "image_url",
+            {"url": "<26 bytes>", "detail": "high"},
+        ),
+    ],
+)
+def test_nested_decisions_media_payloads_are_redacted_and_cannot_be_replayed(part, payload_key, expected):
+    body = {
+        "input": [{"role": "user", "content": [part]}],
+        "questions": [{"type": "predicate", "instructions": "Is this private?"}],
+    }
+    recorded = make_record("m", "api", body, 200, {}, 1)["request"]
+    assert recorded["input"][0]["content"][0][payload_key] == expected
+    replay = replay_fields(recorded)
+    assert replay["replay_request"] is None
+    assert "original media attachments" in replay["replay_error"]
+
+
 def test_media_bytes_are_replaced_by_their_size_and_states_are_previewed():
     body = {
         "state": {"text": "x" * 300},
@@ -87,24 +185,6 @@ def test_media_bytes_are_replaced_by_their_size_and_states_are_previewed():
     assert body["images"][0]["data"] == "QUJD"  # the caller's body is untouched
     assert len(r["state_preview"]) == 160 and r["state_preview"].startswith('{"text": "xxx')
     assert (r["status"], r["answers"], r["response"]) == (422, {}, {"error": "bad"})
-
-
-def test_a_field_named_data_outside_media_is_kept_and_replays():
-    body = {
-        "state": "A user reports a leak.",
-        "questions": {"q": {"type": "choice", "criteria": {"data": "A data or privacy problem", "other": "Other"}}},
-        "media": [{"type": "image", "data": "QUJD"}],
-    }
-    r = make_record("m", "playground", body, 200, {}, 1.0)
-    assert r["request"]["questions"] == body["questions"]
-    assert r["request"]["media"] == [{"type": "image", "data": "<4 bytes>"}]
-    audio = {"type": "input_audio", "input_audio": {"data": "QUJD", "format": "wav"}}
-    recorded = make_record("m", "api", {"input": [audio]}, 200, {}, 1.0)["request"]
-    assert recorded["input"][0]["input_audio"]["data"] == "<4 bytes>"
-    del body["media"]
-    fields = replay_fields(make_record("m", "playground", body, 200, {}, 1.0)["request"])
-    assert fields["replay_error"] is None
-    assert fields["replay_request"]["questions"]["q"]["criteria"]["data"] == "A data or privacy problem"
 
 
 def test_decisions_api_history_has_a_playground_replay_without_changing_recorded_request():
