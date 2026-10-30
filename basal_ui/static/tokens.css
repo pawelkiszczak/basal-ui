@@ -1,0 +1,253 @@
+/* basal-ui design tokens: fonts, colour, type and shape, light and dark (no build step, ADR 0001).
+ *
+ * Load order: vendor/basecoat → tokens.css → components.css → views.css. The rules live in the cascade layers named
+ * below, declared after Basecoat's own (theme, base, components, utilities), so they win over Basecoat by layer and
+ * views win over components without specificity games. The tokens themselves are unlayered on purpose: Basecoat sets
+ * its variables (--primary, --ring, --radius, ...) unlayered, and only an unlayered rule can override those.
+ *
+ * Basecoat (Tailwind) reads many variables of its own (--text-sm, --radius-lg, --shadow-*, ...): new tokens use
+ * names it does not (--fs-*, --corner-*). --accent and --muted are older names Basecoat also uses for backgrounds;
+ * basal-ui's button and badge rules override the Basecoat styles that read them.
+ *
+ * Brand: green is the interface primary (--accent, --primary). The logo mark and the wordmark's dot keep basal's own
+ * red-orange (--brand) in both themes; it is the logo only, never a status colour (errors use --danger).
+ *
+ * Colour pairs are checked for WCAG AA (4.5:1 for text) in both themes: text tokens against --paper and --white, each
+ * semantic -fg against its -bg. --muted is the quietest text colour; nothing meaningful is set below 12px.
+ */
+@layer basal.base, basal.components, basal.views;
+
+@font-face {
+  font-family: Manrope;
+  src: url("/static/fonts/manrope.ttf") format("truetype");
+  font-weight: 400 800;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/static/fonts/ibm-plex-mono.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light;
+  /* type */
+  --sans: Manrope, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", monospace;
+  --fs-xs: 12px;  /* the smallest meaningful text: badges, metadata, captions */
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-base: 16px;
+  /* shape */
+  --corner-sm: 4px;
+  --corner-md: 6px;
+  --corner-lg: 10px;
+
+  /* surfaces and text */
+  --paper: #f6f7f4;          /* the page */
+  --white: #fff;             /* cards, inputs, dialogs (the raised surface) */
+  --surface-2: #efeee8;      /* inset groups: tab bars */
+  --surface-3: #f0f0ec;      /* neutral chips, skeletons */
+  --hover-bg: #f0f0e9;
+  --ink: #26372e;
+  --muted: #5d665e;          /* >= 4.5:1 on --paper, --white and --surface-2 */
+  --line: #d9dfd9;
+  --line-strong: #c9cbc2;
+  --control-border: #7f887e;  /* edges of fields and switches: >= 3:1 on --white, --paper, --surface-2 (1.4.11) */
+  --code-bg: #f0efe9;
+  --terminal-bg: #232824;    /* the dark code panes of History, in both themes */
+  --terminal-fg: #f8f7f4;
+  --backdrop: #23282480;
+  --backdrop-strong: #232824cc;
+  --shadow: 0 2px 8px #26372e0a;
+  --shadow-sm: 0 1px 3px #263d2310;
+  --shadow-md: 0 6px 22px #23282418;
+  --shadow-lg: 0 18px 60px #23282430;
+
+  /* brand */
+  --accent: #326450;
+  --accent-light: #e9f1e9;
+  --on-accent: #fff;
+  --dirty-ring: #32645020;  /* the halo of a button with unsaved changes (not a focus indicator) */
+  --brand: #b94329;  /* the basal logo's own colour, both themes */
+  --eyebrow: var(--accent);
+  --eyebrow-quiet: #4d6754;
+  --omni: #655487;
+  --omni-light: #efebf5;
+  --omni-border: #dcd3e9;
+  --omni-quiet: #6f5d84;
+  --suggest-bg: #f3f7f1;
+  --suggest-border: #d9e4d7;
+  --suggest-meta-bg: #eceee6;
+  --suggest-meta-fg: #4b5840;
+
+  /* semantic: a solid colour (dots, fills, borders) and a background / text / border set for messages and badges */
+  --success: #2f7a52;
+  --success-bg: #e6f1e9;
+  --success-fg: #24573c;
+  --success-border: #b8d4c1;
+  --warning: #b86b1f;
+  --warning-bg: #fdf3e2;
+  --warning-fg: #84460e;
+  --warning-border: #eac795;
+  --danger: #b3361f;
+  --on-danger: #fff;
+  --danger-bg: #fbebe7;
+  --danger-fg: #9a2c18;
+  --danger-border: #ebbcb0;
+  --info: #2f6690;
+  --info-bg: #e7f0f7;
+  --info-fg: #24557a;
+  --info-border: #b4cde1;
+
+  /* data marks */
+  --bar-track: var(--line);
+  --bar-muted: #c9cabc;
+  --dot-idle: #85897f;
+  --mark-evidence-bg: var(--accent-light);
+  --mark-evidence-fg: inherit;
+  --mark-kept-line: #b9cdb6;
+  --best-bg: #f2eee3;
+  --best-border: #e2dbc8;
+  --best-fg: #765b31;
+  --skeleton-a: #f0f0ec;
+  --skeleton-b: #faf9f6;
+
+  /* chart series: colour-blind-safe (blue, orange, purple, grey differ in hue and lightness), >= 3:1 on --white */
+  --chart-1: #2a6f97;
+  --chart-2: #b45f12;
+  --chart-3: #6b5a9c;
+  --chart-4: #6d746c;
+  --chart-grid: #e3e5df;
+
+  /* Basecoat's variables, onto the palette above */
+  --primary: var(--accent);
+  --primary-foreground: var(--on-accent);
+  --ring: var(--accent);
+  --radius: .65rem;
+}
+
+/* Dark: the system preference unless the user chose light, or an explicit choice (core.js sets data-theme). CSS cannot
+ * join a media query and a selector in one rule, and light-dark() can carry neither --shadow nor browsers before 2024,
+ * so the palette is written twice: keep the two blocks identical (tests/test_ui_design.py checks). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) {
+    color-scheme: dark;
+    --paper: #171a18;
+    --white: #222724;
+    --surface-2: #34352e;
+    --surface-3: #34352e;
+    --hover-bg: #343a35;
+    --ink: #edf0e9;
+    --muted: #aab2a5;
+    --line: #3b433d;
+    --line-strong: #4d564f;
+    --control-border: #7d877f;
+    --code-bg: #1c211e;
+    --shadow: 0 4px 12px #0005;
+    --accent: #a3d3b5;
+    --accent-light: #233429;
+    --on-accent: #14291c;
+    --dirty-ring: #a3d3b533;
+    --eyebrow-quiet: #9fc3ab;
+    --omni: #c3b1e6;
+    --omni-light: #332d40;
+    --omni-border: #4a4160;
+    --omni-quiet: #c3b1e6;
+    --suggest-bg: var(--white);
+    --suggest-border: var(--line);
+    --suggest-meta-bg: #343a30;
+    --suggest-meta-fg: #d8e2ce;
+    --success: #7cc79a;
+    --success-bg: #1f3428;
+    --success-fg: #a3d3b5;
+    --success-border: #3b5e48;
+    --warning: #e3a25f;
+    --warning-bg: #3a2e20;
+    --warning-fg: #f0c08e;
+    --warning-border: #6b5233;
+    --danger: #e0725c;
+    --on-danger: #1e0f0b;
+    --danger-bg: #3d2420;
+    --danger-fg: #f4ab9b;
+    --danger-border: #74392e;
+    --info: #79b2e0;
+    --info-bg: #1d2d3a;
+    --info-fg: #a6cdee;
+    --info-border: #35526b;
+    --bar-muted: #5b645d;
+    --mark-evidence-bg: #624035;
+    --mark-evidence-fg: #fff;
+    --mark-kept-line: #3b5e48;
+    --best-bg: #34352e;
+    --best-border: var(--line);
+    --best-fg: var(--ink);
+    --skeleton-a: #262b28;
+    --skeleton-b: #2e342f;
+    --chart-1: #79b2e0;
+    --chart-2: #e3a25f;
+    --chart-3: #c3b1e6;
+    --chart-4: #9aa295;
+    --chart-grid: #333a35;
+  }
+}
+:root[data-theme=dark] {
+  color-scheme: dark;
+  --paper: #171a18;
+  --white: #222724;
+  --surface-2: #34352e;
+  --surface-3: #34352e;
+  --hover-bg: #343a35;
+  --ink: #edf0e9;
+  --muted: #aab2a5;
+  --line: #3b433d;
+  --line-strong: #4d564f;
+  --control-border: #7d877f;
+  --code-bg: #1c211e;
+  --shadow: 0 4px 12px #0005;
+  --accent: #a3d3b5;
+  --accent-light: #233429;
+  --on-accent: #14291c;
+  --dirty-ring: #a3d3b533;
+  --eyebrow-quiet: #9fc3ab;
+  --omni: #c3b1e6;
+  --omni-light: #332d40;
+  --omni-border: #4a4160;
+  --omni-quiet: #c3b1e6;
+  --suggest-bg: var(--white);
+  --suggest-border: var(--line);
+  --suggest-meta-bg: #343a30;
+  --suggest-meta-fg: #d8e2ce;
+  --success: #7cc79a;
+  --success-bg: #1f3428;
+  --success-fg: #a3d3b5;
+  --success-border: #3b5e48;
+  --warning: #e3a25f;
+  --warning-bg: #3a2e20;
+  --warning-fg: #f0c08e;
+  --warning-border: #6b5233;
+  --danger: #e0725c;
+  --on-danger: #1e0f0b;
+  --danger-bg: #3d2420;
+  --danger-fg: #f4ab9b;
+  --danger-border: #74392e;
+  --info: #79b2e0;
+  --info-bg: #1d2d3a;
+  --info-fg: #a6cdee;
+  --info-border: #35526b;
+  --bar-muted: #5b645d;
+  --mark-evidence-bg: #624035;
+  --mark-evidence-fg: #fff;
+  --mark-kept-line: #3b5e48;
+  --best-bg: #34352e;
+  --best-border: var(--line);
+  --best-fg: var(--ink);
+  --skeleton-a: #262b28;
+  --skeleton-b: #2e342f;
+  --chart-1: #79b2e0;
+  --chart-2: #e3a25f;
+  --chart-3: #c3b1e6;
+  --chart-4: #9aa295;
+  --chart-grid: #333a35;
+}

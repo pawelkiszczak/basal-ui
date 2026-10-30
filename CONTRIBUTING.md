@@ -28,6 +28,15 @@ release it installs. `make engine REF=…` switches to another release-tag archi
 - Frontend: plain JavaScript and CSS in `basal_ui/static/` (no build step). Every UI string is English in the code and
   passed through `t()` / `tp()`; its Polish translation goes into `basal_ui/static/i18n.js`.
   `tests/test_ui_i18n.py` fails on a string without one.
+- Frontend layout: `index.html` loads classic scripts in order (no modules, no bundler): `js/core.js` (helpers,
+  `api`, `toast`, `html\`\`` escaping), one file per view, `js/boot.js` last with the first loads; a later file's
+  functions are not defined yet while an earlier one runs, so start-up calls go into `boot.js`. CSS is
+  `tokens.css` (every colour, both themes, AA-checked), `components.css` and `views.css` in `@layer`s; use tokens,
+  not hex values.
+- UI work without models: `uv run --no-sync python scripts/ui_fixture_server.py [--preload | --empty]` serves the app
+  on port 7861 with fake hardware, catalog and `basal-serve` answers and a throwaway config. It runs the real `Fleet`
+  and `Runner`; its hooks into basal-ui's internals are in one adapter at the end of the script, checked by
+  `tests/test_ui_fixture_server.py`: when a refactor breaks that test, update the adapter.
 - Server errors stay English; translatable explanations carry a message code alongside the English text.
 
 ## Tests
@@ -62,7 +71,9 @@ every tested engine release) runs on every push to `dev`, `stage` and `main` and
 either direction: `dev` → `stage`, `stage` → `dev`, `stage` → `main`. Its last job, `ci-ok`, passes only when every
 matrix job passed; it is the one check branch protection requires (the matrix job names change with the engine
 releases). CD is `publish.yml`: a `v<version>` tag on `main` builds the package, waits for approval in the `pypi`
-environment, publishes to PyPI and creates the GitHub release (see [Releasing](#releasing)).
+environment, publishes to PyPI and creates the GitHub release (see [Releasing](#releasing)). The `a11y` job in
+`ci.yml` (axe-core over every view in Chromium, on the fixture server; `docs/E2E.md`) runs beside the matrix but is
+not part of `ci-ok`: its failure shows on the pull request without blocking it.
 
 Branch protection on GitHub enforces this:
 

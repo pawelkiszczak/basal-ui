@@ -10,7 +10,7 @@ run, load it, ask typed questions with calibrated confidence, and serve it to yo
 [![Engine](https://img.shields.io/badge/engine-basal%20%3E%3D2.4.1%2C%3C2.5-6b5b95)](https://github.com/rkinas/basal)
 [![License](https://img.shields.io/github/license/pawelkiszczak/basal-ui)](LICENSE)
 
-![basal-ui tour: load basal-2.0-mini in Model manager, then ask it a question in the Playground](https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/tour.gif)
+![basal-ui tour: the Get started checklist, Download & load in Discover, a decision with its confidence gauge in the Playground, then Copy as code](https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/tour.gif)
 
 In the style of LM Studio: basal-ui detects your hardware, lists every basal model on Hugging Face with what this
 machine can run, downloads the one you choose and starts a private `basal-serve` for each loaded model.
@@ -22,10 +22,11 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/overview.png" width="900" alt="Overview: hardware, loaded models and the API server">
 
-- **Models**: every basal model on Hugging Face, with what this machine can run and a suggestion per use; download and
-  load with one click.
+- **Discover**: every basal model on Hugging Face, with what this machine can run and a suggestion per use; download
+  and load with one click. **Library** lists the models on disk and loaded, with their statistics, benchmarks and
+  calibration.
 
-  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/models.png" width="900" alt="Models: suggested and all basal variants with what this machine can run">
+  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/models.png" width="900" alt="Discover: suggested and all basal variants with what this machine can run">
 
 - a **Playground** for decisions, with a builder for every question type, evidence and calibrated confidence; images
   and voice clips for basal-omni, with numbered elements marked on a screenshot.
@@ -33,9 +34,9 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground: a choice question answered with calibrated confidence">
 
 - **calibration** on your own labelled requests, benchmark sets, load tests, determinism checks and engine-mode
-  comparisons, in the **Model manager** next to the loaded models and the models on disk.
+  comparisons, in the **Library** next to the loaded models and the models on disk.
 
-  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/model-manager.png" width="900" alt="Model manager: loaded models, statistics, benchmarks and calibration">
+  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/model-manager.png" width="900" alt="Library: models on disk and loaded, statistics, benchmarks and calibration">
 
 - **batch** inference over a JSONL file;
 - **Inspect**, which embeds `basal-viz` to show how a decision is made, layer by layer;

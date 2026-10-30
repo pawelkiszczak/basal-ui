@@ -29,7 +29,7 @@ def page(browser, ui, text_model):
 
 
 def test_all_views_fit_responsive_widths_and_question_controls_stay_named(page, tmp_path):
-    views = ("overview", "models", "manager", "playground", "batch", "inspect", "api", "history", "logs")
+    views = ("overview", "models", "manager", "playground", "batch", "inspect", "api", "history", "logs", "settings")
     page.wait_for_function("document.querySelector('#apiSummary').textContent !== 'Loading…'")
     page.screenshot(path=str(tmp_path / "basal-1440-overview.png"), full_page=True, animations="disabled")
     page.locator('.side-nav [data-view="playground"]').click()
@@ -39,7 +39,7 @@ def test_all_views_fit_responsive_widths_and_question_controls_stay_named(page, 
     for width in (1440, 1280, 1024, 768, 390):
         page.set_viewport_size({"width": width, "height": 1000})
         for theme in ("light", "dark"):
-            page.locator(f'[data-theme-choice="{theme}"]').click()
+            page.evaluate("theme => applyTheme(theme)", theme)
             for name in views:
                 page.locator(f'.side-nav [data-view="{name}"]').click()
                 overflow = page.evaluate("""() => ({inner:innerWidth,document:document.documentElement.scrollWidth,client:document.documentElement.clientWidth,body:document.body.scrollWidth, elements:[...document.querySelectorAll('body *')]
@@ -70,5 +70,5 @@ def test_all_views_fit_responsive_widths_and_question_controls_stay_named(page, 
       input.getAttribute('aria-label') ||
       (input.id && document.querySelector(`label[for=\\\"${input.id}\\\"]`)) ||
       input.closest('label'))""")
-    page.locator('[data-theme-choice="light"]').click()
+    page.evaluate("applyTheme('light')")
     page.screenshot(path=str(tmp_path / "basal-390-playground.png"), full_page=True, animations="disabled")

@@ -13,14 +13,15 @@ sync_api = pytest.importorskip("playwright.sync_api", reason="install basal[e2e]
 VIEWS = {
     "backends": "Backends",
     "overview": "Overview",
-    "models": "Models",
-    "manager": "Model manager",
+    "models": "Discover",
+    "manager": "Library",
     "playground": "Playground",
     "batch": "Batch",
     "inspect": "Inspect",
     "api": "API server",
     "history": "History",
     "logs": "Logs",
+    "settings": "Settings",
 }
 WAIT = 120_000  # ms: a decision of a large model, a model start
 
@@ -414,7 +415,7 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
     sync_api.expect(page.locator("#modelCardDialog")).to_be_visible()
     left["model card"] = page.evaluate(UNTRANSLATED)
     assert not {k: v for k, v in left.items() if v}, left
-    assert page.locator(".side-nav [data-view='manager']").inner_text().strip() == "Menedżer modeli"
+    assert page.locator(".side-nav [data-view='manager']").inner_text().strip() == "Biblioteka"
 
 
 def test_model_manager_disk_rows_stack_without_overflow_at_mobile_width(page, text_model):
@@ -623,13 +624,14 @@ def test_the_load_options_dialog_lists_the_modes(page, text_model):
     sync_api.expect(dialog).to_be_hidden()
 
 
-def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, text_model):
-    view(page, "manager")  # the fixture loaded the model: its row on disk offers Unload
+def test_discover_sets_up_without_loading_and_the_library_rows_carry_the_lifecycle(page, ui, text_model):
+    view(page, "manager")  # the fixture loaded the model: its Library row offers Use, Copy endpoint and Unload
     row = page.locator("#diskModels .disk-row", has=page.locator(f'[data-id="{text_model["id"]}"]'))
-    sync_api.expect(row.locator(".unload-model")).to_be_visible()
+    for action in (".use-model", ".copy-endpoint", ".unload-model"):
+        sync_api.expect(row.locator(action)).to_be_visible()
     view(page, "models")
-    page.click("#allModelsTab")
-    assert page.locator("#models .load-model").count() == 0  # Models downloads, sets up and deletes
+    page.click("#allModelsTab")  # a loaded model is not loaded again from Discover
+    assert page.locator(f'#view-models .load-model[data-id="{text_model["id"]}"]').count() == 0
     loads = []
     page.route("**/api/load", lambda route: (loads.append(1), route.fulfill(status=500, body="loaded")))
     page.click(f'#modelsTable .options-model[data-action="save"][data-id="{text_model["id"]}"]')
@@ -649,11 +651,11 @@ def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, tex
 
 def test_models_tabs_and_manager_loaded_section(page, text_model):
     view(page, "manager")
-    positions = page.evaluate("""() => ['statsTable','benchmarks','calibrationBlock','diskModels','modelsDir']
+    positions = page.evaluate("""() => ['diskModels','statsTable','benchmarks','calibrationBlock']
       .map(id => document.getElementById(id).getBoundingClientRect().top)""")
     assert positions == sorted(positions)
     view(page, "models")
-    assert page.locator('#models [role="tab"]').all_text_contents() == ["Suggested", "All models"]
+    assert page.locator('#view-models [role="tab"]').all_text_contents() == ["Suggested", "All models"]
     sync_api.expect(page.locator("#suggestedTab")).to_have_attribute("aria-selected", "true")
     page.evaluate("localStorage.setItem('basal-ui.tab', 'loaded')")
     page.reload()
@@ -931,6 +933,7 @@ def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_mod
 
 
 def test_theme_toggle_persists_and_sets_the_document_theme(page):
+    view(page, "settings")
     page.click('[data-theme-choice="dark"]')
     assert page.evaluate("() => [document.documentElement.dataset.theme, localStorage.getItem('basal-ui.theme')]") == [
         "dark",
@@ -960,14 +963,28 @@ def test_question_mark_opens_shortcut_help(page):
     sync_api.expect(page.locator("#shortcutsDialog")).to_contain_text("Ctrl/⌘ + Enter")
 
 
+def test_copy_as_code_emits_valid_python_and_the_engine_mcp_tool(page):
+    """true / false / null become Python literals; MCP calls decide_many with only the arguments it takes."""
+    page.evaluate("""() => { setChecked($('#editJsonToggle'), true); $('#requestJson').value = JSON.stringify({
+      state: {ticket: 'card lost'}, lang: 'en', questions: {c: {type: 'classify', instructions: 'Topic?',
+      labels: ['a', 'b'], multi_label: true, threshold: null, none: false}, n: {type: 'noul', instructions: 'ok?'}}}); }""")
+    for kind in ("python", "openai-python"):
+        snippet = page.evaluate("k => codeSnippet(k)", kind)
+        compile(snippet, kind, "exec")
+    assert "# skipped: c" in page.evaluate("() => codeSnippet('openai-python')")
+    call = json.loads(page.evaluate("() => codeSnippet('mcp')"))["params"]
+    assert call["name"] == "decide_many" and set(call["arguments"]) == {"state", "questions", "lang"}
+    page.evaluate("() => setChecked($('#editJsonToggle'), false)")
+
+
 def test_alt_digit_opens_the_nth_page_by_key_code(page):
     page.locator("body").click(position={"x": 5, "y": 5})
-    page.keyboard.press("Alt+2")
-    sync_api.expect(page.locator("#pageTitle")).to_have_text("Models")
+    page.keyboard.press("Alt+2")  # menu order: Overview, Playground, Batch, Discover, Library, Backends, ...
+    sync_api.expect(page.locator("#pageTitle")).to_have_text("Playground")
     # macOS Option+3 types "£" / "#": the key changes with the layout, the code does not
     page.evaluate("""() => document.body.dispatchEvent(new KeyboardEvent('keydown',
       {key: '£', code: 'Digit3', altKey: true, bubbles: true}))""")
-    sync_api.expect(page.locator("#pageTitle")).to_have_text("Model manager")
+    sync_api.expect(page.locator("#pageTitle")).to_have_text("Batch")
 
 
 CENTRED = """sel => {  // where an open modal dialog sits in the viewport
@@ -1024,7 +1041,7 @@ def test_options_dialog_keeps_its_header_and_actions_while_the_options_scroll(pa
     )  # all expanded
     page.wait_for_timeout(500)  # Basecoat animates a <details> opening
     layout = page.evaluate(
-        DIALOG_LAYOUT, ["#loadOptions", "#optionsForm", "#loadOptions > h3", "#loadOptions .dialog-actions"]
+        DIALOG_LAYOUT, ["#loadOptions", "#optionsForm", "#loadOptions > h2", "#loadOptions .dialog-actions"]
     )
     assert layout == {
         "inViewport": True,
@@ -1144,7 +1161,7 @@ ANSWERING = """([model, batch]) => {  // the status of this basal-ui with reques
 
 def test_overview_shows_the_inference_in_flight_and_idle_otherwise(page, text_model):
     view(page, "overview")
-    order = page.evaluate("""() => ['#hardware', '#inference', '#status', '#overview > .dashboard-grid']
+    order = page.evaluate("""() => ['#hardware', '#inference', '#status', '#view-overview > .dashboard-grid']
       .map(s => document.querySelector(s).getBoundingClientRect().top)""")
     assert order == sorted(order) and len(set(order)) == 4  # Hardware, then Inference, Loaded models, the summaries
     rows = page.locator("#inferenceNow .inference-row")
@@ -1189,7 +1206,7 @@ def test_overview_inference_after_a_decision_and_in_polish(page, ui, text_model)
     ui.decide(text_model["id"], CHOICE)
     view(page, "overview")
     sync_api.expect(page.locator("#inferenceNow")).to_contain_text("last decision")  # the idle line says when
-    assert page.evaluate("() => !$('#overview').hidden")
+    assert page.evaluate("() => !$('#view-overview').hidden")
     page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
     page.reload()
     page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache?.models?.length > 0")
@@ -1198,7 +1215,7 @@ def test_overview_inference_after_a_decision_and_in_polish(page, ui, text_model)
     sync_api.expect(rows.nth(0)).to_contain_text(
         "2 w toku · 1 w kolejce · Playground 1 · Serwer API 1 · najdłuższe 2.4 s"
     )
-    sync_api.expect(page.locator("#inference .section-index")).to_have_text("WNIOSKOWANIE")
+    sync_api.expect(page.locator("#inference h2")).to_have_text("Wnioskowanie")
 
 
 def test_a_running_batch_shows_on_the_overview(page, ui, text_model, tmp_path):

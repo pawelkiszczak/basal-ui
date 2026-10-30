@@ -75,7 +75,8 @@ After `make engine`, running `make install` restores the pinned Engine.
 - `basal_ui/gateway.py`, `basal_ui/compat.py`: external API and request-shape translation.
 - `basal_ui/engine.py`: Engine version gate and pins.
 - `basal_ui/settings.py`: config path, locking, atomic writes.
-- `basal_ui/static/{index.html,app.js,i18n.js}`: SPA shell, fetch/error helpers, translations.
+- `basal_ui/static/index.html`, `static/js/*.js` (classic scripts in order: `core.js` helpers first, one file per view, `boot.js` last), `static/i18n.js`: SPA shell, fetch/error helpers, translations. Styles: `tokens.css` (colour tokens, both themes) → `components.css` → `views.css`, in `@layer`s.
+- `scripts/ui_fixture_server.py`: the app on fake hardware, catalog and `basal-serve` answers for UI work (port 7861).
 - `pyproject.toml`: deps, extras (`mcp`, `e2e`), `dev` group, pytest/ruff/uv config (CPU-only torch index on Linux).
 - `.github/workflows/ci.yml`: the merge gate, on pushes to and pull requests into `dev`, `stage` and `main` (either direction); its `ci-ok` job aggregates the matrix and is the required status check. `nightly.yml` checks upstream `main` and is non-gating. `publish.yml` releases `v*` tags (cut on `main`) to PyPI and GitHub Releases. Actions are pinned by commit SHA (Node 24 releases); Dependabot bumps them.
 - Branches: `dev` (integration; feature PRs target it) → `stage` (release candidate; e2e gate) → `main` (released). Fixes made on `stage` go back with `stage` → `dev`. Branch protection requires a PR with `ci-ok` green on all three, up to date on `stage`/`main`, enforced for admins on `stage`/`main` (`CONTRIBUTING.md`, "Branches and CI"). `CONTRIBUTORS.md` lists contributors.

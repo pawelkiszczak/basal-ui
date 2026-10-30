@@ -1,10 +1,11 @@
 import json
+import os
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from basal_ui import settings
+from basal_ui import paths, settings
 from basal_ui.app import create_app
 from basal_ui.fleet import Fleet, Runner
 from basal_ui.hardware import Hardware
@@ -113,3 +114,154 @@ def test_batch_refuses_bad_input(client, tmp_path, body, status, message):
     body = {**body, "input": {"GOOD": str(good), "BAD": str(bad)}.get(body["input"], body["input"])}
     response = client.post("/api/batch", json=body)
     assert response.status_code == status and message in response.json()["detail"]
+
+
+def test_path_check_describes_a_jsonl_input_by_its_first_row(client, tmp_path):
+    """The live hint under the Batch and Calibration path fields: lines, format, gold and a short preview."""
+    source = tmp_path / "items.jsonl"
+    rows = [{"id": n, "state": "s" * 500, "question": "q?", "options": ["a", "b"], "gold": 0} for n in range(3)]
+    source.write_text("\n".join(json.dumps(r) for r in rows) + "\n\n")
+    d = client.post("/api/paths/check", json={"path": str(source), "kind": "jsonl"}).json()
+    assert (d["ok"], d["code"], d["exists"], d["is_file"], d["lines"]) == (True, None, True, True, 3)
+    first = d["first"]
+    assert first["format"] == "simple" and first["labelled"] and first["fields"] == list(rows[0])
+    assert len(first["preview"]) <= 301 and first["preview"].endswith("…")  # never more than a short preview
+    request = tmp_path / "requests.jsonl"
+    request.write_text(json.dumps({"state": "s", "questions": {"a": {"type": "noul", "gold": "yes"}, "b": {}}}) + "\n")
+    first = client.post("/api/paths/check", json={"path": str(request), "kind": "jsonl"}).json()["first"]
+    assert (first["format"], first["questions"], first["labelled"], first["types"]) == (
+        "request",
+        2,
+        True,
+        ["?", "noul"],
+    )
+
+
+def test_path_check_names_the_problem_and_never_shows_a_non_json_file(client, tmp_path):
+    def code(path, kind="jsonl"):
+        return client.post("/api/paths/check", json={"path": str(path), "kind": kind}).json()
+
+    assert code(tmp_path / "missing.jsonl")["code"] == "missing"
+    assert code(tmp_path)["code"] == "is_dir"
+    secret = tmp_path / "notes.txt"
+    secret.write_text("password = hunter2\n")
+    d = code(secret)
+    assert d["code"] == "not_json" and "first" not in d and "hunter2" not in json.dumps(d)
+    (tmp_path / "empty.jsonl").write_text("\n")
+    assert code(tmp_path / "empty.jsonl")["code"] == "empty"
+    (tmp_path / "other.jsonl").write_text('{"auths": {"r": {"auth": "c2VjcmV0"}}}\n')
+    d = code(tmp_path / "other.jsonl")
+    assert d["code"] == "unknown_format" and "first" not in d and "c2VjcmV0" not in json.dumps(d)
+    (tmp_path / "row.jsonl").write_text(
+        json.dumps({"state": "s", "question": "q?", "options": [], "token": "t0k"}) + "\n"
+    )
+    first = code(tmp_path / "row.jsonl")["first"]
+    assert "t0k" not in first["preview"] and "token" in first["fields"]  # the preview keeps a request's own fields
+    (tmp_path / "cal.json").write_text(json.dumps({"temperature_per_prim": {}, "certified": {}}))
+    d = code(tmp_path / "cal.json", "json")
+    assert d["ok"] and d["fields"] == ["temperature_per_prim", "certified"]
+    assert code(secret, "json")["code"] == "not_json"
+    assert client.post("/api/paths/check", json={"path": "", "kind": "jsonl"}).status_code == 400
+    assert client.post("/api/paths/check", json={"path": "x", "kind": "exe"}).status_code == 400
+
+
+def test_path_check_of_an_output_says_whether_it_can_be_written(client, tmp_path):
+    def check(path):
+        return client.post("/api/paths/check", json={"path": str(path), "kind": "output"}).json()
+
+    d = check(tmp_path / "out.jsonl")
+    assert d["ok"] and d["writable"] and not d["exists"]
+    assert check(tmp_path / "no" / "out.jsonl")["code"] == "dir_missing"
+    assert check(tmp_path)["code"] == "is_dir"
+    existing = tmp_path / "log.jsonl"
+    existing.write_text("{}\n")
+    d = client.post("/api/paths/check", json={"path": str(existing), "kind": "append"}).json()
+    assert d["ok"] and d["exists"] and d["kind"] == "append"
+    d = check("~/basal-ui-path-check.jsonl")
+    assert not d["path"].startswith("~")  # expanded to the server's home
+
+
+def test_path_check_reports_caps_text_and_paths_it_cannot_reach(client, tmp_path, monkeypatch):
+    def check(path, kind="jsonl"):
+        response = client.post("/api/paths/check", json={"path": str(path), "kind": kind})
+        assert response.status_code == 200
+        return response.json()
+
+    monkeypatch.setattr(paths, "LINE_CAP", 2)
+    monkeypatch.setattr(paths, "JSON_CAP", 10)
+    many = tmp_path / "many.jsonl"
+    many.write_text("\n".join(json.dumps({"state": "s", "options": ["a"]}) for _ in range(5)))
+    d = check(many)
+    assert d["ok"] and d["lines"] == 2 and d["lines_capped"]
+    (tmp_path / "big.json").write_text(json.dumps({"certified": "x" * 20}))
+    assert check(tmp_path / "big.json", "json")["code"] == "too_large"
+    (tmp_path / "bin.jsonl").write_bytes(b"\xff\xfe\x00{")
+    assert check(tmp_path / "bin.jsonl")["code"] == "not_text"
+    (tmp_path / "bin.json").write_bytes(b"\xff\xfe{}")
+    assert check(tmp_path / "bin.json", "json")["code"] == "not_text"  # the same answer for a JSON file
+    long = tmp_path / ("a" * 300)
+    assert check(long)["code"] == "invalid" and not check(long)["ok"]  # ENAMETOOLONG on every Python, not a 500
+    assert check(long / "x.jsonl", "output")["code"] == "invalid"
+
+    def denied(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(paths.Path, "exists", denied)  # a directory on the way basal-ui cannot search
+    assert check(tmp_path / "x.jsonl")["code"] == "unreadable"
+    assert check(tmp_path / "x.jsonl", "append")["code"] == "not_writable"
+
+
+def test_path_check_of_a_directory_says_whether_it_exists_or_will_be_created(client, tmp_path):
+    def check(path):
+        return client.post("/api/paths/check", json={"path": str(path), "kind": "dir"}).json()
+
+    d = check(tmp_path)
+    assert d["ok"] and d["exists"] and d["writable"]
+    d = check(tmp_path / "new" / "models")
+    assert d["ok"] and not d["exists"]  # settings.set_models_dir creates it
+    (tmp_path / "file").write_text("x")
+    assert check(tmp_path / "file")["code"] == "not_dir"
+    assert check(tmp_path / "file" / "below")["code"] == "not_writable"
+
+
+def test_path_check_reads_a_bounded_amount_and_never_fails_on_a_malformed_row(client, tmp_path, monkeypatch):
+    def check(path, kind="jsonl"):
+        response = client.post("/api/paths/check", json={"path": str(path), "kind": kind})
+        assert response.status_code == 200
+        return response.json()
+
+    odd = tmp_path / "odd.jsonl"
+    odd.write_text(
+        json.dumps({"state": "s", "questions": {"a": {"type": ["x"]}, "b": {"type": 1}, "c": {"type": "y"}}})
+    )
+    assert check(odd)["first"]["types"] == ["y"]  # a type that is not a string is left out, not a 500
+    odd.write_text(json.dumps({"state": "s", "options": ["a", "b"], "type": {"x": 1}}) + "\n")
+    assert check(odd)["first"]["types"] == []
+    odd.write_text("[" * 100_000 + "\n")
+    assert check(odd)["code"] == "not_json"  # nested deeper than the parser goes
+    (tmp_path / "deep.json").write_text("[" * 100_000)
+    assert check(tmp_path / "deep.json", "json")["code"] == "not_json"
+
+    monkeypatch.setattr(paths, "FIRST_LINE_CAP", 64)
+    monkeypatch.setattr(paths, "CHUNK", 16)
+    row = json.dumps({"state": "s", "options": ["a"]})
+    long = tmp_path / "long.jsonl"
+    long.write_text(json.dumps({"state": "é" * 100, "options": ["a"]}) + "\n\n" + row + "\n" + row)
+    d = check(long)
+    assert d["code"] == "line_too_long" and d["lines"] == 3 and "first" not in d  # cut inside a character: still text
+    (tmp_path / "late.jsonl").write_bytes((row + "\n").encode() * 3 + b"\xff\n")
+    assert check(tmp_path / "late.jsonl")["code"] == "not_text"  # a later line that is not UTF-8 is still caught
+    monkeypatch.setattr(paths, "COUNT_CAP", 70)  # two rows and the start of the third
+    d = check(tmp_path / "late.jsonl")  # the bytes past the cap are neither counted nor read
+    assert d["ok"] and d["lines"] == 3 and d["lines_capped"]
+
+
+def test_path_check_never_opens_a_fifo(client, tmp_path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs on this platform")
+    fifo = tmp_path / "pipe.jsonl"
+    os.mkfifo(fifo)
+    for kind in ("jsonl", "json"):  # opening a FIFO for reading would block until a writer comes
+        assert client.post("/api/paths/check", json={"path": str(fifo), "kind": kind}).json()["code"] == "not_file"
+    with pytest.raises(IsADirectoryError):  # swapped for one after the is_file() check: refused without blocking
+        paths._open(fifo)

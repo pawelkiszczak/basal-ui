@@ -1,8 +1,8 @@
 """Refresh the README's screenshots and tour GIF (docs/images/) from a real basal-ui with a real model.
 
 Starts basal-ui on a fresh settings directory, loads Remek/basal-2.0-mini (it must be on disk: HF_HUB_OFFLINE=1),
-captures five views in Chromium (1280x800 at 2x, the default light theme), then records a tour (Models, load the model
-in Model manager, ask a question in the Playground) and converts it to a GIF with ffmpeg. `make screenshots`; needs
+captures five views in Chromium (1280x800 at 2x, the default light theme), then records a tour (Discover, load the model
+in the Library, ask a question in the Playground) and converts it to a GIF with ffmpeg. `make screenshots`; needs
 the e2e extra, `playwright install chromium` and ffmpeg on PATH. Exits non-zero on any failure.
 """
 

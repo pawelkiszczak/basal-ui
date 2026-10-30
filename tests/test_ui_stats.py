@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from basal_ui.stats import Stats
+from basal_ui.stats import RECENT, Stats
 
 
 @pytest.fixture
@@ -49,6 +49,9 @@ def test_errors_and_latency_percentiles(stats):
     m = stats.snapshot()["models"]["m"]
     assert (m["requests"], m["errors"], m["avg_best_prob"]) == (101, 1, None)
     assert (m["p50_ms"], m["p95_ms"]) == (50.0, 95.0)
+    assert "latency_recent_ms" not in m  # the API server's /v1/stats: totals only
+    recent = stats.snapshot(recent=True)["models"]["m"]["latency_recent_ms"]  # the browser app's histograms
+    assert len(recent) == RECENT and recent[-2:] == [100.0, 1.0]  # the newest RECENT, newest last
 
 
 def test_persistence_round_trip_and_reset_of_one_model(tmp_path, stats):
@@ -170,3 +173,14 @@ def test_records_after_another_instances_reset_do_not_share_the_old_delta(tmp_pa
     finally:
         a.close()
         b.close()
+
+
+def test_the_api_servers_stats_leave_out_the_latency_samples(stats):
+    from starlette.testclient import TestClient
+
+    from basal_ui.gateway import build_app
+
+    stats.record("m", {"answers": {}}, 5.0)
+    with TestClient(build_app(object(), stats), base_url="http://127.0.0.1") as client:
+        m = client.get("/v1/stats").json()["models"]["m"]
+    assert m["requests"] == 1 and "latency_recent_ms" not in m  # only the browser app's /api/stats carries them

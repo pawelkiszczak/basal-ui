@@ -76,6 +76,76 @@ No promotion to `stage`/`main` or PyPI publication was performed for that snapsh
   [The older-family e2e fix (#5)](https://github.com/pawelkiszczak/basal-ui/pull/5) enables **Older families** in both
   language passes and always exercises an older unavailable model, independently of the machine's model cache.
 
+- **Design foundation:** the stylesheet is split into `tokens.css`, `components.css` and `views.css` (cascade layers,
+  readable source); semantic colours (`--danger`, `--warning`, `--success`, `--info`) make errors, deferrals and
+  warnings look like what they are and pass WCAG AA in both themes; muted text is darker, nothing meaningful is set
+  below 12 px; the logo keeps basal's red-orange. `app.js` is split into per-view scripts under `static/js/`.
+  `scripts/ui_fixture_server.py` runs the app on fake hardware and models for UI work.
+- **Accessibility baseline (WCAG 2.2 AA):** a skip link, `<aside>`/`<nav>`/`<main>` landmarks and one `h1` per view
+  (cards `h2`, sections `h3`); switching views sets the window title, moves the focus to the view title and announces
+  it, and the view hashes no longer scroll the page. Tabs take the arrow, Home and End keys; error toasts are alerts that
+  stay until closed, other toasts pause while hovered or focused. Downloads, batch, benchmark, calibration and the
+  memory bar are progress bars (or a meter) with values, and jobs announce when they start, finish or fail. The Batch
+  fields and the calibration paths have visible labels; Alt/Option+digit no longer fires while typing; the element
+  marker lists each box's position and size. `tests/e2e/test_a11y.py` runs axe-core over every view, light and dark,
+  at 1440 and 390 px on the fixture server and fails on serious or critical violations. [E2E](E2E.md#accessibility)
+- **Clearer navigation and first steps:** the menu is grouped (Run, Models, Serve, Evaluate, System); Models and Model
+  manager become **Discover** and **Library** (`#discover`, `#library`; `#models` and `#manager` still work), and a new
+  **Settings** view holds the theme, language, models directory, auto-load, memory budget, update checks and presets.
+  Discover offers **Download & load** in one step and **Load** for a model on disk, shows the fit as a meter (est.
+  memory of the memory available now, with the arithmetic), and opens model cards from a **Details** button; Library
+  rows carry Load → Use in Playground / Copy endpoint / Unload. Overview has a dismissible **Get started** checklist,
+  the API server a Running / Stopped / Restart needed banner and an *Unsaved changes* mark, the Load options dialog a
+  **Recommended / Custom** choice with what changed from the defaults and the Active load settings, and **Unload all**
+  always asks first. Ctrl/⌘+K opens a command palette (views, models, actions). [USAGE.md](USAGE.md)
+- **Charts and comparison:** a small inline-SVG chart helper (`static/js/charts.js`: meter, bars, histogram,
+  sparkline, reliability diagram, threshold strip; colour-blind-safe `--chart-*` tokens in both themes, each chart
+  named for assistive technology with its numbers in a hidden table). Overview shows the memory budget split by model
+  and stat tiles per loaded model (requests, average confidence, p50 / p95 latency with a histogram of the last 100;
+  `latency_recent_ms` in the browser app's `/api/stats` only, not the API server's `/v1/stats`); Library draws statistics per question type, the newest
+  benchmark (accuracy per file, latency) with trends over runs, and the calibration in use (certified thresholds,
+  automation on CERT, leave-one-family-out ECE); Batch draws a reliability diagram for labelled answers. The Playground
+  **Compares** one request on two loaded models with a per-option probability difference and **Copies as code**
+  (cURL / Python for System One and OpenAI Decisions, MCP). The API server compares its three endpoints in a matrix
+  and gives MCP client configs for Claude Desktop, Claude Code, Cursor, VS Code and Open WebUI. Path fields check the
+  path live. Cards, headings, badges and metadata use one type scale; mono stays for code and data. [USAGE.md](USAGE.md)
+- **Review fixes to the redesign:** Copy as code writes valid Python (`True` / `False` / `None`), keeps option and level
+  descriptions in OpenAI Decisions and notes the questions and media it cannot carry (the OpenAI items are off when
+  none translates); the MCP tool call is `decide_many` with the engine's arguments, and no MCP config passes
+  `basal-mcp` flags it does not take (`--api-key`, `--model`). Error text is red (warnings amber), never the accent
+  green. Switches and buttons show a 2px focus outline; Send, Compare and the dialog openers keep or report focus
+  while they wait. The sidebar scrolls on short screens and the phone nav sticks to the top and shows the current
+  view; disclosures show a chevron; the confidence gauge labels its 5% / 1% marks. `#benchmarks` and `#calibration`
+  (and the command palette) open those Library blocks. The decision-log path check says an existing log is appended
+  to; the path check returns a preview only for rows Batch or Calibration can read. Deferred: Shipped vs Selected
+  calibration in Compare, a file picker (browsers do not reveal paths), ES-module views and the remaining `innerHTML`
+  templates' move to the `html` helper.
+- **Second review round:** a path that is too long or under an unreadable directory is reported in the hint (*not
+  valid here*, *cannot read*) instead of an HTTP 500; the models directory has a live check and is read-only, with the
+  reason, while a model is loaded. The Overview's loaded-model rows no longer re-render (and drop keyboard focus) on
+  every status poll, and Load, Unload and Download keep the focus on the same row. Form fields and switches draw a
+  `--control-border` of at least 3:1; Load options names its execution-mode radio group, Calibration its error-rate
+  targets (checkboxes, not switches), and the confirm dialog its consequence. On phones the header is one row above
+  the menu strip, Tab and anchors stay clear of it and of error toasts, History rows become cards, the endpoint matrix
+  scrolls sideways, and Send or Compare scrolls to the answer; Library rows stack by their own width at 200% zoom;
+  Compare takes the full width; short laptop screens fit the whole sidebar. **?** can be turned off in Settings.
+  Discover's setup of the next load is now **⚙ Set up next load**, a loaded model offers **⚙ Restart options**
+  everywhere, and Overview labels its tile *Avg best-answer prob.* as the Library does. The first-run steps count a
+  Decision only once answered and a connection only while the API server runs. The stylesheets are larger than the
+  old `app.css` (readable, commented source in three files rather than minimal size), and the views stay classic
+  `defer` scripts sharing globals; both are deliberate for now.
+- **Playground option editor and confidence:** options, labels, claims, levels and yes / no descriptions are edited
+  as rows (key and description) instead of `key: description` lines — Enter adds a row, Alt+↑ / Alt+↓ moves it,
+  Backspace in an empty row removes it, and a hint says when the rows would be sent with hidden keys. Each certified
+  answer draws its confidence against the 5% and 1% marks (labels on two rows when the marks are close, so they never
+  overlap in a narrow column) and **Why?** explains the verdict and the calibration in use (Shipped or Selected).
+  The fixture server's stand-in answers depend on the model, so Compare shows two models apart.
+  [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
+- **Docs media:** the README screenshots and tour are refreshed for the new UI (from `scripts/ui_fixture_server.py`,
+  1280×800 at 2×, light), with short recordings in `docs/images/ux/`: the first-run tour, the Playground (dark), the
+  command palette, a 390 px phone and a keyboard-only pass. `POST /api/paths/check` is documented in
+  [API](API.md#browser-app-path-check).
+
 # Before 0.1.0 (in the fork)
 
 - **Basal UI message codes:** model availability, recommendation, backend setup and job-phase explanations retain their English API fields and include additive translation codes for Polish rendering. Server errors remain English.

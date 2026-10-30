@@ -51,12 +51,12 @@ def test_local_backend_inference_and_browser(ui):
         page.locator(f'[data-backend-models="{backend["id"]}"]').click()
         playwright.expect(page.locator("#backendModelFilterNotice")).to_be_visible()
         page.locator("#clearBackendModelFilter").click()
-        page.keyboard.press("Alt+0")
+        page.keyboard.press("Alt+6")  # Overview, Playground, Batch, Discover, Library, Backends
         playwright.expect(page.locator("#pageTitle")).to_have_text("Backends")
         page.locator(f'[data-backend-test="{backend["id"]}"]').click()
         playwright.expect(page.locator("#backendTestDialog")).to_be_visible()
         page.keyboard.press("Escape")
-        page.keyboard.press("Alt+4")
+        page.keyboard.press("Alt+2")
         playwright.expect(page.locator("#pageTitle")).to_have_text("Playground")
         assert not errors, errors
         browser.close()

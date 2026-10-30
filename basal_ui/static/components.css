@@ -1,0 +1,1068 @@
+/* basal-ui base element styles and reusable components. Colours come from tokens.css only; view-specific layout is
+ * in views.css. New UI should compose these primitives (callout, status-banner, meter, stat, empty-state, data-table,
+ * dialog) rather than hand-roll per view. */
+
+@layer basal.base {
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    font: 400 var(--fs-base)/1.7 var(--sans);
+    background: var(--paper);
+    color: var(--ink);
+  }
+  a {
+    color: var(--accent);
+  }
+  h1,
+  h2,
+  h3,
+  p {
+    margin: 0;
+  }
+  [hidden] {
+    display: none !important;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  mark {
+    border-radius: 3px;
+    padding: 0 2px;
+    color: inherit;
+  }
+
+  /* form controls */
+  button,
+  select,
+  input,
+  textarea {
+    font: inherit;
+  }
+  button {
+    cursor: pointer;
+    color: var(--ink);
+    background: var(--white);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 8px 12px;
+  }
+  button:hover {
+    background: var(--hover-bg);
+  }
+  input,
+  select,
+  textarea {
+    color: var(--ink);
+    background: var(--white);
+    border: 1px solid var(--control-border);  /* >= 3:1 against the card (1.4.11); --line is for dividers */
+    border-radius: 5px;
+    padding: 8px;
+  }
+  /* fields, selects, switches and radios keep the 2px accent outline of :focus-visible above (>= 3:1 on every surface,
+   * WCAG 1.4.11 / 2.4.13) and the border turns accent; Basecoat's own ring (accent at 50%, about 2:1) is dropped so
+   * it does not blur the outline */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    border-color: var(--accent);
+    box-shadow: none;
+  }
+  select {
+    min-height: 40px;
+    padding-right: 32px;
+    appearance: none;
+    /* the chevron as two gradients, so it follows --muted in both themes (a data: SVG cannot read a token) */
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-size: 5px 5px, 5px 5px;
+    background-position: right 15px center, right 10px center;
+    background-repeat: no-repeat;
+  }
+  input[type=checkbox] {
+    appearance: none;
+    width: 34px;
+    height: 20px;
+    flex: none;
+    border: 1px solid var(--control-border);
+    border-radius: 99px;
+    background: var(--surface-2);
+    position: relative;
+    vertical-align: middle;
+    cursor: pointer;
+    transition: .15s;
+  }
+  input[type=checkbox]:after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px #0002;
+    transition: .15s;
+  }
+  input[type=checkbox]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  input[type=checkbox]:checked:after {
+    left: 16px;
+  }
+  label:has(input[type=checkbox]) {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+  /* .check: a checkbox of a multi-select (several may be on), drawn as a box rather than a switch */
+  input[type=checkbox].check {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+  }
+  input[type=checkbox].check:after {
+    display: none;
+  }
+  input[type=checkbox].check:checked:after {
+    display: block;
+    left: 5px;
+    top: 1px;
+    width: 5px;
+    height: 10px;
+    border: solid var(--on-accent);
+    border-width: 0 2px 2px 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    transform: rotate(45deg);
+  }
+  fieldset.target-group {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  fieldset.target-group legend {
+    float: left;
+    padding: 0;
+    font-size: var(--fs-sm);
+    color: var(--muted);
+  }
+
+  /* tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th,
+  td {
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+    padding: 8px;
+  }
+
+  dialog:modal {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+  }
+  dialog::backdrop {
+    background: var(--backdrop);
+  }
+
+  @media (max-width: 900px) {
+    main {
+      padding: 20px 16px 48px;
+    }
+    table:not(.mini-table, .compat-table, .history-table) {  /* wide data tables scroll; small ones wrap */
+      min-width: 800px;
+    }
+    .mini-table {
+      width: 100%;
+    }
+    .mini-table td,
+    .mini-table th {
+      overflow-wrap: break-word;  /* at spaces; inside a word only when the word alone is too wide */
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      animation-duration: .01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .01ms !important;
+    }
+  }
+  /* screen-reader-only text, and the skip link that shows once it has focus */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .skip-link {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 50;
+    padding: 8px 14px;
+    border-radius: 6px;
+    background: var(--ink);
+    color: var(--paper);
+    font-weight: 700;
+    transform: translateY(-200%);
+  }
+  .skip-link:focus {
+    transform: none;
+  }
+  #pageTitle:focus {
+    outline: none;  /* focused by script on navigation (tabindex=-1, not a tab stop) for screen readers */
+  }
+}
+
+@layer basal.components {
+  /* text helpers */
+  .muted,
+  small {
+    color: var(--muted);
+  }
+  .mono {
+    font-family: var(--mono);
+    overflow-wrap: anywhere;
+  }
+  .eyebrow,
+  .section-index {
+    font: 400 var(--fs-xs)/1.5 var(--mono);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+  }
+  .eyebrow {
+    color: var(--eyebrow);
+  }
+
+  /* layout rows */
+  .section-head,
+  .controls,
+  .playground-head {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .field {
+    margin: 10px 0;
+  }
+  @media (max-width: 900px) {
+    .section-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+  }
+
+  /* card */
+  .card {
+    background: var(--white);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: var(--corner-lg);
+    padding: 18px;
+    box-shadow: var(--shadow);
+    gap: 12px;  /* Basecoat's 24px column gap doubles the margins of the rows inside */
+  }
+
+  /* buttons */
+  .primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--paper);
+  }
+  .primary:hover {
+    background: var(--accent);  /* not the base button:hover */
+    filter: brightness(.94);
+  }
+  /* Basecoat's .btn ring (--ring at 50%) is about 2.2:1 in the light theme: the app's 2px accent outline instead */
+  .btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  /* a link styled as a secondary button: the link colour must not meet Basecoat's filled .btn */
+  a.btn:not(.primary) {
+    color: var(--ink);
+    background: var(--white);
+    border: 1px solid var(--line);
+  }
+  a.btn:not(.primary):hover {
+    background: var(--hover-bg);
+  }
+  .ghost {
+    border-color: transparent;
+    background: transparent;
+  }
+  .destructive {
+    color: var(--danger-fg);
+    border-color: var(--danger-border);
+  }
+  .destructive:hover {
+    color: var(--on-danger);
+    background: var(--danger);
+    border-color: var(--danger);
+  }
+  .outline-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: 1px solid var(--line);
+    background: var(--white);
+    color: var(--ink);
+  }
+  .outline-action svg,
+  .button-icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .button-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .button-icon svg {
+    width: 15px;
+    height: 15px;
+  }
+  .icon-button {
+    position: relative;
+  }
+  .icon-button:before {
+    content: attr(data-tooltip);
+    position: absolute;
+    z-index: 8;
+    left: 50%;
+    bottom: calc(100% + 7px);
+    transform: translateX(-50%);
+    padding: 4px 7px;
+    background: var(--ink);
+    color: var(--paper);
+    border-radius: var(--corner-sm);
+    font: var(--fs-xs) var(--sans);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .icon-button:hover:before,
+  .icon-button:focus-visible:before {
+    opacity: 1;
+  }
+  .switch[role=switch] {
+    display: inline-flex;
+  }
+
+  .field-label {
+    display: block;
+  }
+  /* WCAG 2.5.8: small links and icon buttons next to buttons keep a 24 px target */
+  .dashboard-link,
+  .model-card-open,
+  .tabs button,
+  button.chip,
+  summary {
+    min-height: 24px;
+    min-width: 24px;
+  }
+  .dashboard-link {
+    display: inline-flex;
+    align-items: center;
+  }
+  /* every disclosure shows a chevron: Basecoat's inline-flex summary has no browser marker */
+  details > summary {
+    cursor: pointer;
+    list-style: none;
+    width: fit-content;
+  }
+  details > summary::-webkit-details-marker {
+    display: none;
+  }
+  details > summary::before {
+    content: "▸";
+    content: "▸" / "";  /* decoration, not part of the summary's name (the line above for older browsers) */
+    display: inline-block;
+    width: 1.2em;
+    flex: none;
+    color: var(--muted);
+  }
+  details[open] > summary::before {
+    content: "▾";
+    content: "▾" / "";
+  }
+  details > summary:hover {
+    color: var(--accent);
+  }
+
+  /* chips and badges: mono labels; the fit-* / tone classes carry meaning by colour and text */
+  .chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .chips.safety {
+    margin: 6px 0;
+  }
+  .chip,
+  .badge {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: var(--corner-sm);
+    padding: 2px 8px;
+    font: var(--fs-xs)/1.5 var(--mono);
+  }
+  .badge {  /* badges are words (fit, status), chips are data (modes, options, keys) */
+    font: 600 var(--fs-xs)/1.5 var(--sans);
+  }
+  .chip.muted {
+    color: var(--muted);
+  }
+  .chip.media,
+  .badge.omni,
+  .badge.experimental {
+    background: var(--omni-light);
+    border-color: var(--omni-border);
+    color: var(--omni);
+  }
+  .badge.fit-fits {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: var(--success-fg);
+  }
+  .badge.fit-tight {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+    color: var(--warning-fg);
+  }
+  .badge.fit-too_large {
+    background: var(--danger-bg);
+    border-color: var(--danger-border);
+    color: var(--danger-fg);
+  }
+  .badge.fit-unknown {
+    background: var(--surface-3);
+    color: var(--muted);
+  }
+  .badge.rec {
+    background: var(--accent-light);
+    border-color: var(--success-border);
+    color: var(--accent);
+  }
+  .badge.best {
+    background: var(--best-bg);
+    border-color: var(--best-border);
+    color: var(--best-fg);
+  }
+  .state-pill {
+    font: 650 var(--fs-xs) var(--sans);
+    text-transform: capitalize;
+  }
+
+  /* callouts: a message inside a view. .error-box is the danger callout the views already use */
+  .callout,
+  .error-box {
+    padding: 9px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--corner-md);
+    background: var(--surface-3);
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .callout.info {
+    background: var(--info-bg);
+    border-color: var(--info-border);
+    color: var(--info-fg);
+  }
+  .callout.success {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: var(--success-fg);
+  }
+  .callout.warning {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+    color: var(--warning-fg);
+  }
+  .callout.danger,
+  .error-box {
+    background: var(--danger-bg);
+    border-color: var(--danger-border);
+    color: var(--danger-fg);
+  }
+  .callout > strong:first-child {
+    display: block;
+  }
+
+  /* status banner: the state of a whole view or service, with a dot, text and optional actions */
+  .status-banner {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--dot-idle);
+    border-radius: var(--corner-md);
+    background: var(--white);
+  }
+  .status-banner > .status-banner-text {
+    flex: 1 1 240px;
+    min-width: 0;
+  }
+  .status-banner.success {
+    border-left-color: var(--success);
+  }
+  .status-banner.warning {
+    border-left-color: var(--warning);
+    background: var(--warning-bg);
+  }
+  .status-banner.danger {
+    border-left-color: var(--danger);
+    background: var(--danger-bg);
+  }
+  .status-banner.info {
+    border-left-color: var(--info);
+  }
+
+  .status-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    background: var(--dot-idle);
+    border-radius: 50%;
+    flex: none;
+  }
+  .status-dot.ready {
+    background: var(--success);
+  }
+  .status-dot.error {
+    background: var(--danger);
+  }
+  .status-dot.active {
+    background: var(--success);
+    animation: status-pulse 1.4s ease-out infinite;
+  }
+  @keyframes status-pulse {
+    0% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 70%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 7px transparent;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .status-dot.active {
+      animation: none;
+    }
+  }
+
+  /* progress and meter: a track with a fill; .meter adds threshold marks (style="left:…%") and a value */
+  .bar,
+  .progress,
+  .meter {
+    background: var(--bar-track);
+  }
+  .bar span,
+  .progress span {
+    display: block;
+    background: var(--accent);
+    height: 8px;
+  }
+  .progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .progress {
+    height: 8px;
+    border-radius: 3px;
+    overflow: hidden;
+    flex: 1;
+  }
+  .progress > span {
+    height: 100%;
+  }
+  .meter {
+    position: relative;
+    height: 8px;
+    border-radius: 4px;
+  }
+  .meter > .meter-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+  }
+  .meter > .meter-mark {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 2px;
+    background: var(--ink);
+  }
+  /* the confidence gauge: the certified marks' labels under the track */
+  .gauge {
+    margin: 8px 0 4px;
+    padding-bottom: 18px;
+  }
+  .meter > .gauge-label {
+    position: absolute;
+    top: 12px;
+    transform: translateX(-50%);
+    font: var(--fs-xs)/1 var(--mono);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .meter > .gauge-label.before {
+    transform: translateX(calc(-100% - 3px));
+  }
+  .meter > .gauge-label.after {
+    transform: translateX(3px);
+  }
+  .gauge.stacked {
+    padding-bottom: 32px;
+  }
+  .meter > .gauge-label.low {
+    top: 26px;
+  }
+  .meter.warning > .meter-fill {
+    background: var(--warning);
+  }
+  .meter.danger > .meter-fill {
+    background: var(--danger);
+  }
+
+  /* stat tile: a label, a value and optional metadata */
+  .stat {
+    display: grid;
+    align-content: start;
+    gap: 2px;
+    min-width: 0;
+  }
+  .stat > .stat-label {
+    color: var(--muted);
+    font-size: var(--fs-xs);
+  }
+  .stat > .stat-value {
+    font-size: 20px;
+    font-weight: 650;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat > .stat-meta {
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+  }
+
+  /* empty states: .empty is the one-line form; .empty-state adds a title, text and actions */
+  .empty {
+    color: var(--muted);
+    padding: 18px 4px;
+    text-align: center;
+  }
+  .empty-state {
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .empty-state > strong {
+    color: var(--ink);
+    font-size: var(--fs-base);
+  }
+  .empty-state > .controls {
+    justify-content: center;
+    margin-top: 6px;
+  }
+
+  /* tables: .table-wrap scrolls wide tables; .data-table keeps its header visible while it scrolls */
+  .table-wrap {
+    position: relative;  /* the containing block of .sr-only cells, which would otherwise overflow the page */
+  }
+  @media (max-width: 900px) {
+    .table-wrap {
+      overflow: auto;
+    }
+  }
+  .viz {
+    position: relative;
+  }
+  .mini-table {
+    margin: 8px 0;
+  }
+  .mini-table td,
+  .mini-table th {
+    padding: 6px 8px;
+  }
+  .mini-table tr.chosen td {
+    font-weight: 700;
+  }
+  .data-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--white);
+    color: var(--muted);
+    font-size: var(--fs-sm);
+    font-weight: 650;
+  }
+  .data-table td {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* tabs: a segmented control (role=tablist or a group of buttons) */
+  .tabs {
+    display: inline-flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    align-self: flex-start;
+    max-width: 100%;
+    gap: 3px;
+    padding: 3px;
+    margin: 4px 0 18px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .tabs button {
+    flex: 0 1 auto;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    min-height: 36px;
+    padding: 4px 14px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--ink);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+  }
+  .tabs button:hover {
+    background: var(--white);
+    border-color: transparent;
+    transform: none;
+  }
+  .tabs button.active,
+  .tabs button[aria-pressed=true] {
+    background: var(--white);
+    border-color: var(--line-strong);
+    box-shadow: var(--shadow-sm);
+    color: var(--ink);
+  }
+
+  /* dialogs: <dialog class="confirm-dialog"> (or .dialog) with .dialog-actions */
+  .confirm-dialog,
+  .dialog {
+    width: min(440px, calc(100vw - 32px));
+    border: 1px solid var(--line);
+    border-radius: var(--corner-lg);
+    padding: 22px;
+    background: var(--white);
+    color: var(--ink);
+    box-shadow: var(--shadow-lg);
+  }
+  .confirm-dialog > h2 {
+    margin-bottom: 8px;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  .confirm-dialog::backdrop,
+  .dialog::backdrop {
+    background: var(--backdrop);
+  }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+  .dialog-actions label {
+    margin-right: auto;
+    font-size: var(--fs-sm);
+  }
+
+  /* toasts */
+  .toast-stack {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 20;
+    display: grid;
+    gap: 8px;
+    width: min(360px, calc(100vw - 40px));
+  }
+  .toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--white);
+    box-shadow: var(--shadow-md);
+    font-size: var(--fs-sm);
+  }
+  .toast.error {
+    border-color: var(--danger-border);
+    border-left: 3px solid var(--danger);
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+  }
+  .toast.success {
+    border-left: 3px solid var(--success);
+  }
+  .toast.info {
+    border-left: 3px solid var(--info);
+  }
+  .toast-text {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .toast-close {
+    flex: none;
+    min-width: 24px;
+    min-height: 24px;
+    margin: -3px -6px -3px 0;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .skeleton {
+    height: 52px;
+    margin: 8px 0;
+    border-radius: 5px;
+    background: linear-gradient(90deg, var(--skeleton-a), var(--skeleton-b), var(--skeleton-a));
+    background-size: 200% 100%;
+    animation: skeleton 1.2s infinite;
+  }
+  @keyframes skeleton {
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  /* stat tiles in a row: .stats holds .stat tiles that wrap */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+    gap: 10px 18px;
+  }
+  .stats > .stat {
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--corner-md);
+    background: var(--white);
+  }
+  .stat > .viz {
+    margin-top: 4px;
+  }
+
+  /* charts (js/charts.js): inline SVG drawn with the --chart-* tokens */
+  .viz {
+    margin: 0;
+    min-width: 0;
+  }
+  .viz svg {
+    display: block;
+    width: 100%;
+    overflow: visible;
+  }
+  .viz text {
+    fill: var(--muted);
+    font: 4px var(--sans);
+  }
+  .viz-track {
+    fill: var(--bar-track);
+  }
+  .viz-axis,
+  .viz-diagonal {
+    stroke: var(--line-strong);
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+  }
+  .viz-diagonal {
+    stroke-dasharray: 3 3;
+  }
+  .viz-grid {
+    stroke: var(--chart-grid);
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+  }
+  .viz-gap {
+    stroke: var(--chart-2);
+    stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke;
+  }
+  .viz-meter-track {
+    position: relative;
+    display: flex;
+    height: 10px;
+    border-radius: 5px;
+    background: var(--bar-track);
+    overflow: visible;
+  }
+  .viz-meter-fill {
+    display: block;
+    height: 100%;
+  }
+  .viz-meter-fill:first-child {
+    border-radius: 5px 0 0 5px;
+  }
+  .viz-meter-fill + .viz-meter-fill {
+    box-shadow: inset 2px 0 0 var(--white);
+  }
+  .viz-meter-mark {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--ink);
+  }
+  .viz-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin: 6px 0 0;
+    padding: 0;
+    list-style: none;
+    color: var(--muted);
+    font-size: var(--fs-xs);
+  }
+  .viz-legend > * {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .viz-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .viz-bars,
+  .viz-thresholds > div {
+    display: grid;
+    gap: 6px;
+  }
+  /* one grid for every row: the labels take what they need (at most 14rem), the values one column, so all tracks
+   * start and end together */
+  .viz-bars > div {
+    display: grid;
+    grid-template-columns: fit-content(14rem) minmax(60px, 1fr) max-content;
+    align-items: center;
+    gap: 6px 10px;
+    font-size: var(--fs-sm);
+  }
+  .viz-bar-row {
+    display: contents;
+  }
+  .viz-bar-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .viz-bar-track {
+    height: 10px;
+    border-radius: 3px;
+  }
+  .viz-bar-value {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .viz-histogram svg {
+    height: 64px;
+  }
+  .viz-axis-labels > span {
+    white-space: nowrap;
+  }
+  .viz-axis-labels {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+  }
+  .viz-sparkline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .viz-sparkline svg {
+    flex: 1;
+    height: 24px;
+    min-width: 48px;
+  }
+  .viz-spark-value {
+    font-size: var(--fs-xs);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .viz-reliability {
+    max-width: 320px;
+  }
+  .viz-reliability figcaption {
+    margin-top: 6px;
+    font-size: var(--fs-xs);
+  }
+  .viz-threshold-track {
+    position: relative;
+    height: 10px;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--bar-track), var(--accent-light));
+  }
+  .viz-threshold {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    margin: -6px 0 0 -6px;
+    border-radius: 50%;
+    border: 2px solid var(--chart-1);
+    background: var(--chart-1);
+  }
+  .viz-threshold.five {
+    border-color: var(--chart-2);
+    background: var(--white);
+  }
+  .viz-legend .viz-threshold {
+    position: static;
+    margin: 0;
+  }
+}
