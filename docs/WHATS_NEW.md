@@ -1,9 +1,14 @@
-# 0.1.0
+# 0.1.0rc1
 
-Unreleased. The review fixes and contributor PRs [#4](https://github.com/pawelkiszczak/basal-ui/pull/4),
-[#5](https://github.com/pawelkiszczak/basal-ui/pull/5) and [#6](https://github.com/pawelkiszczak/basal-ui/pull/6) are merged
+Unreleased release candidate (planned tag `v0.1.0rc1`). The review fixes and contributor PRs
+[#4](https://github.com/pawelkiszczak/basal-ui/pull/4), [#5](https://github.com/pawelkiszczak/basal-ui/pull/5)
+and [#6](https://github.com/pawelkiszczak/basal-ui/pull/6) are merged
 on `dev`; [verification and remaining hardware limits](E2E.md#verified-dev-gate-2026-10-29) are recorded separately.
 No promotion to `stage`/`main` or PyPI publication was performed for that snapshot.
+
+- Prepare package version `0.1.0rc1` and PyPI trusted publishing. The GitHub `pypi` environment permits only `v*`
+  tags and requires maintainer approval without an administrator bypass. Release tags must come from `main`;
+  release candidates become GitHub prereleases and are not marked Latest. [Release process](../CONTRIBUTING.md#releasing)
 
 - basal-ui is its own repository and package: import `basal_ui`, the `basal-ui` command, and `pip install basal-ui`
   after the first PyPI release. Until then, use the [source install](../README.md#install).

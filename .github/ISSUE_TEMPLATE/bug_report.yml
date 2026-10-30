@@ -35,7 +35,7 @@ body:
     attributes:
       label: basal-ui version
       description: '`pip show basal-ui` (or `uv tool list` for a uv tool install).'
-      placeholder: "0.1.0"
+      placeholder: "0.1.0rc1"
     validations:
       required: true
   - type: input

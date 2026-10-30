@@ -52,7 +52,7 @@ it is not release acceptance on `stage` or validation of other hardware.
 |---|---|---|
 | `dev` | integration: every feature and fix lands here first | a pull request from a topic branch |
 | `stage` | release candidate: what the next release will ship, where the e2e gate runs | a pull request `dev` → `stage` |
-| `main` | released code; `vX.Y.Z` tags are cut from it | a pull request `stage` → `main` |
+| `main` | released code; `v<version>` tags (including release candidates) are cut from it | a pull request `stage` → `main` |
 
 A fix made on `stage` (found while testing a release candidate) goes back with a pull request `stage` → `dev`, so
 `dev` never loses it.
@@ -61,8 +61,8 @@ CI (`.github/workflows/ci.yml`: Ruff check and format, the unit tests, Ubuntu an
 every tested engine release) runs on every push to `dev`, `stage` and `main` and on every pull request into them, in
 either direction: `dev` → `stage`, `stage` → `dev`, `stage` → `main`. Its last job, `ci-ok`, passes only when every
 matrix job passed; it is the one check branch protection requires (the matrix job names change with the engine
-releases). CD is `publish.yml`: a `vX.Y.Z` tag on `main` publishes to PyPI and creates the GitHub release (see
-Releasing).
+releases). CD is `publish.yml`: a `v<version>` tag on `main` builds the package, waits for approval in the `pypi`
+environment, publishes to PyPI and creates the GitHub release (see [Releasing](#releasing)).
 
 Branch protection on GitHub enforces this:
 
@@ -115,19 +115,49 @@ UI never blocks on a proposal. The pipeline:
 
 ## Releasing
 
-1. If the Engine moves, bump it ("Bumping the engine" below). Add or finalize the version's `docs/WHATS_NEW.md`
-   section and remove its **Unreleased** label before tagging. These changes land on `dev` like any change.
+The current candidate is package version `0.1.0rc1`, with planned tag `v0.1.0rc1`. It has not been published.
+Preparing the publisher or merging changes into `dev` does not publish a package.
+
+1. If the Engine moves, bump it ("Bumping the engine" below). Set `version` in `pyproject.toml` (for example,
+   `0.1.0rc1` for a candidate or `0.1.0` for the stable release), run `uv lock`, and finalize the matching
+   `docs/WHATS_NEW.md` section. Remove its **Unreleased** label before tagging. These changes land on `dev`.
 2. Open the pull request `dev` → `stage`. On `stage`, run the e2e gate on real hardware (`make e2e`, `docs/E2E.md`)
    and record the run (models, hardware, results) in that pull request; fixes go to `stage` and back to `dev`
    (`stage` → `dev`).
-3. Bump `version` in `pyproject.toml` to X.Y.Z on `stage` (`publish.yml` refuses a tag that differs), then open the
-   pull request `stage` → `main`.
-4. After it merges, tag `vX.Y.Z` on `main` and push the tag. Before building or publishing, `publish.yml` checks that
-   the tag matches `pyproject.toml` and that WHATS_NEW has a nonempty `# X.Y.Z` section. It uploads to PyPI (trusted
-   publishing), then creates the GitHub release using those validated notes and the same built artifacts.
+3. Open the pull request `stage` → `main` and wait for the required checks before merging.
+4. After it merges, tag `v<version>` on `main` and push the tag. Before building or publishing, `publish.yml`
+   checks that the tagged commit is on `main`, the tag matches `pyproject.toml`, and WHATS_NEW has a nonempty
+   `# <version>` section (for this candidate, `# 0.1.0rc1`).
+5. Review the build and approve the waiting `pypi` deployment in GitHub Actions. It uploads to PyPI using trusted
+   publishing, then creates the GitHub release with the validated notes and the same built artifacts.
 
-For the first PyPI publication, update the README and SECURITY pre-release/source-install status once the package is available.
-Keep the exact `# X.Y.Z` changelog heading: the release workflow extracts its notes by that heading.
+PEP 440 prereleases (including `rc`, alpha, beta and development releases) are marked as GitHub prereleases and
+explicitly excluded from Latest. Stable releases retain GitHub's automatic Latest selection. The GitHub release
+command requires the remote tag to exist; it will not silently create one.
+
+After the first PyPI publication, update README and SECURITY to reflect availability. Keep candidate install
+commands pinned to the prerelease version; do not describe an RC as a stable release.
+
+### One-time trusted publisher setup
+
+On PyPI's [pending publishers page](https://pypi.org/manage/account/publishing/), add a GitHub publisher with:
+
+| Field | Value |
+|---|---|
+| PyPI project name | `basal-ui` |
+| Owner | `pawelkiszczak` |
+| Repository | `basal-ui` |
+| Workflow filename | `publish.yml` |
+| Environment | `pypi` |
+
+The version is not part of the project name. A pending publisher does not upload a package or reserve the name;
+the first successful upload creates the project. No PyPI API token or GitHub secret is needed.
+
+GitHub's [`pypi` environment](https://github.com/pawelkiszczak/basal-ui/settings/environments) allows only **tags**
+matching `v*`, not branches. Its required reviewer is [@pawelkiszczak](https://github.com/pawelkiszczak), and
+administrator bypass is disabled. Self-approval is allowed because there is one maintainer; this is a deliberate
+manual release gate, not a two-person review. The workflow independently enforces that the tagged commit is on
+`main`. Keep the PyPI publisher's environment name and the workflow's `environment: pypi` in sync.
 
 ### Bumping the engine
 
