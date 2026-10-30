@@ -4,7 +4,7 @@
 const inspectableModel=m=>!m.inspect_reason;
 let inspectSignature='', inspectReady=false, inspectCalibrationSequence=0;
 function renderInspectModels() {
-  const select=$('#inspectModel'), current=select.value||localStorage.getItem('basal-ui.inspectModel')||'', rows=modelData.filter(m=>m.downloaded);
+  const select=$('#inspectModel'), current=select.value||stored('basal-ui.inspectModel')||'', rows=modelData.filter(m=>m.downloaded);
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
@@ -26,7 +26,7 @@ async function loadInspectCalibrations() {
     if(sequence===inspectCalibrationSequence&&id===$('#inspectModel').value)sel.disabled=false;
   }
 }
-$('#inspectModel').onchange=()=>{localStorage.setItem('basal-ui.inspectModel',$('#inspectModel').value);loadInspectCalibrations();};
+$('#inspectModel').onchange=()=>{store('basal-ui.inspectModel',$('#inspectModel').value);loadInspectCalibrations();};
 $('#startInspect').onclick=()=>act(async()=>{const orders=$('#inspectOrders').value;await api('/api/inspect',{method:'POST',body:JSON.stringify({id:$('#inspectModel').value,calibration:$('#inspectCalibration').value||null,orders:orders?Number(orders):null})});toast(t('Inspector loading'));await refreshStatus();});
 $('#stopInspect').onclick=()=>act(async()=>{await api('/api/inspect',{method:'DELETE'});await refreshStatus();});
 function renderInspectState(state, job) {

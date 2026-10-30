@@ -225,8 +225,10 @@ answers carry `correct` (items with `gold`), a reliability diagram of confidence
 ECE, is drawn from the first 1000 rows. Under each path field a live check says whether the file exists (or can be
 written; the API server's decision log is appended to, not replaced), how many lines it has and the shape of its first
 row, with that row's request fields under **First row**. The check is `POST /api/paths/check` with `{"path", "kind"}`
-(`jsonl`, `json`, `output`, `append` or `dir`; [API](API.md#browser-app-path-check)); it reads only the first line of a JSONL file (and returns content only when
-that line is a simple item or a request) or the top-level keys of a JSON file. It is part of the browser app's own API
+(`jsonl`, `json`, `output`, `append` or `dir`; [API](API.md#browser-app-path-check)); it counts the lines of a JSONL file (up to 100 000 lines or
+64 MiB) and returns content only from its first line, when that line is a simple item or a request; it parses a JSON
+file up to 32 MiB and returns only its top-level keys. Anything but a regular file (a pipe, a device) is refused
+unread. It is part of the browser app's own API
 on basal-ui's port, not the API server. Browsers do not reveal a picked or dropped file's path, so there is no file
 picker: the fields name files on the machine basal-ui runs on.
 

@@ -38,7 +38,10 @@
 </main></div>
 <script src="/static/i18n.js" defer></script>
 <script src="/static/elements.js" defer></script>
-<!-- classic scripts sharing one global scope, run in order; boot.js runs the first loads -->
+<!-- Load order is a contract (tests/test_ui_frontend_contract.py): classic deferred scripts share one global scope and
+run in this order, so a file's top-level code may use only what an earlier file defines. i18n.js (t, tp) and elements.js
+first, then js/core.js (shared helpers), the view scripts, backends.js and js/boot.js last: it runs the first render and
+loads once every script has defined its functions and registered its listeners. -->
 <script src="/static/js/core.js" defer></script>
 <script src="/static/js/charts.js" defer></script>
 <script src="/static/js/models.js" defer></script>
@@ -59,6 +62,6 @@
 <script src="/static/js/shell.js" defer></script>
 <script src="/static/js/settings.js" defer></script>
 <script src="/static/js/palette.js" defer></script>
-<script src="/static/js/boot.js" defer></script>
 <script src="/static/backends.js" defer></script>
+<script src="/static/js/boot.js" defer></script>
 </body></html>

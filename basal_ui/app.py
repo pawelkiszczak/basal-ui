@@ -337,7 +337,14 @@ def create_app(
         try:
             settings_mod.update_memory(body)
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            # the UI marks the wrong field and explains it from code + field, not from the English text; every
+            # message of settings.update_memory names its field first ("budget_bytes must be ...")
+            field = str(exc).split(" ", 1)[0]
+            code = {"budget_bytes": "budget_invalid", "reserve_bytes": "reserve_invalid"}.get(field)
+            return JSONResponse(
+                {"detail": str(exc), "code": code or "unknown_setting", "field": field if code else None},
+                status_code=400,
+            )
         return get_memory()
 
     @app.post("/api/restart", status_code=202)
@@ -804,7 +811,7 @@ def create_app(
 
     @app.get("/api/stats")
     def get_stats():
-        return stats.snapshot()
+        return stats.snapshot(recent=True)  # the latency histograms; the API server's /v1/stats leaves them out
 
     @app.delete("/api/stats")
     def reset_stats():

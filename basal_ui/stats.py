@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 SAMPLES = 1000  # latencies kept per model for the percentiles
-RECENT = 200  # of them in the snapshot
+RECENT = 100  # of them in the browser app's snapshot (its latency histograms); never in the API server's /v1/stats
 BENCHMARKS = 20  # results kept per model (benchmarks, load tests, determinism checks, mode comparisons)
 FLUSH_S = 5
 
@@ -183,7 +183,9 @@ class Stats:
 
         self._update_file(change)
 
-    def snapshot(self) -> dict:
+    def snapshot(self, recent: bool = False) -> dict:
+        """Totals per model and the benchmarks; recent adds latency_recent_ms (the newest RECENT latencies, oldest
+        first) for the browser app's histograms, kept out of the API server's /v1/stats."""
         from . import settings
 
         def read():
@@ -203,18 +205,19 @@ class Stats:
 
         models = {}
         for model_id, e in merged["models"].items():
-            models[model_id] = {
+            model = models[model_id] = {
                 **{k: e[k] for k in ("requests", "questions", "errors", "input_tokens", "first_used", "last_used")},
                 "avg_latency_ms": avg(e["latency_ms_sum"], e["requests"]),
                 "p50_ms": _percentile(e["latency_samples"], 0.5),
                 "p95_ms": _percentile(e["latency_samples"], 0.95),
-                "latency_recent_ms": e["latency_samples"][-RECENT:],  # the newest, oldest first: the UI's histogram
                 "avg_best_prob": avg(e["best_prob_sum"], e["best_prob_n"]),
                 "by_type": {
                     kind: {"questions": t["questions"], "avg_best_prob": avg(t["best_prob_sum"], t["best_prob_n"])}
                     for kind, t in e["by_type"].items()
                 },
             }
+            if recent:
+                model["latency_recent_ms"] = e["latency_samples"][-RECENT:]
         return {"models": models, "benchmarks": merged["benchmarks"]}
 
     def reset(self, model_id: str | None = None) -> None:

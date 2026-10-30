@@ -1,7 +1,7 @@
 // Shared status: loaded models, memory, inference activity; the status poll feeds every view.
 'use strict';
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
-let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
+let selectedModel=stored('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
@@ -9,13 +9,14 @@ let logSource='basal-ui', logAfter=0, logGeneration=null, logTimer=null, shownHa
 const readyModels=()=>(statusCache?.models||[]).filter(m=>m.state==='ready');
 function renderStatus(s) {
   statusCache=s;
+  dismissToast('status');  // the server answers again: the poll's error toast goes
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   rowsSignature=signature;
   if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
-  if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
+  if(selectedModel)store('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
   $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
@@ -49,7 +50,7 @@ function renderMemoryBar(memory, models) {
 function modelStatTiles(stats) {
   if(!stats?.requests)return '';
   const ms=v=>`${num(v,0)} ms`;
-  return `<div class="stats loaded-stats"><div class="stat"><span class="stat-label">${t('Requests')}</span><span class="stat-value">${esc(stats.requests)}</span><span class="stat-meta">${stats.errors?tp(stats.errors,'{n} errors','{n} errors'):tp(stats.questions,'{n} question','{n} questions')}</span></div><div class="stat"><span class="stat-label">${t('Avg best-answer prob.')}</span><span class="stat-value">${pct(stats.avg_best_prob)}</span>${stats.avg_best_prob==null?'':chartMeter({label:t('Average probability of the best answer'),max:1,segments:[{label:t('Avg best-answer prob.'),value:stats.avg_best_prob}],valueText:pct(stats.avg_best_prob),format:pct})}</div><div class="stat"><span class="stat-label">${t('Latency p50 / p95')}</span><span class="stat-value">${num(stats.p50_ms,0)} / ${ms(stats.p95_ms)}</span>${chartHistogram({label:t('Latency of the recent requests, in ms'),values:stats.latency_recent_ms||[],bins:10,format:ms})}</div></div>`;
+  return `<div class="stats loaded-stats"><div class="stat"><span class="stat-label">${t('Requests')}</span><span class="stat-value">${esc(stats.requests)}</span><span class="stat-meta">${stats.errors?tp(stats.errors,'{n} error','{n} errors'):tp(stats.questions,'{n} question','{n} questions')}</span></div><div class="stat"><span class="stat-label">${t('Avg best-answer prob.')}</span><span class="stat-value">${pct(stats.avg_best_prob)}</span>${stats.avg_best_prob==null?'':chartMeter({label:t('Average probability of the best answer'),max:1,segments:[{label:t('Avg best-answer prob.'),value:stats.avg_best_prob}],valueText:pct(stats.avg_best_prob),format:pct})}</div><div class="stat"><span class="stat-label">${t('Latency p50 / p95')}</span><span class="stat-value">${num(stats.p50_ms,0)} / ${ms(stats.p95_ms)}</span>${chartHistogram({label:t('Latency of the recent requests, in ms'),values:stats.latency_recent_ms||[],bins:10,format:ms})}</div></div>`;
 }
 // a loaded model answering now: requests basal-ui waits on (inflight) or its basal-serve's running / queued counters
 const answering=m=>m.state==='ready'&&((m.inflight||[]).length>0||m.health?.running>0||m.health?.queued>0);
@@ -123,7 +124,7 @@ function setPlaygroundMedia(kinds) {
   loadedMedia=kinds; clearSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
 }
-$('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
+$('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;store('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
 async function restartOne(id){await api('/api/restart',{method:'POST',body:JSON.stringify({id})});toast(`${t('Restarting {model}',{model:shortName(id)})}`);await refreshStatus();}
 async function unloadAll() {

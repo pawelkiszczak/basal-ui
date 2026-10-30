@@ -168,15 +168,15 @@ def test_menu_groups_settings_and_the_old_hashes():
 
 
 def test_switches_radios_and_buttons_show_a_visible_focus_outline():
-    """input:focus drops the outline for text fields; switches and radios (and Basecoat's .btn, whose own ring is
-    about 2.2:1) get the 2px accent outline back (WCAG 2.4.7, 1.4.11)."""
+    """Every control keeps the base 2px accent :focus-visible outline: fields only turn their border accent and drop
+    Basecoat's faint ring, and Basecoat's .btn (whose own ring is about 2.2:1) gets the outline back
+    (WCAG 2.4.7, 1.4.11). tests/test_ui_design.py checks no :focus rule hides the outline."""
     css = re.sub(r"/\*.*?\*/", "", (STATIC / "components.css").read_text(), flags=re.DOTALL)
-    for selector in (r"input\[type=checkbox\]:focus-visible", r"\.btn:focus-visible"):
-        rule = re.search(selector + r"[^{]*\{([^}]*)\}", css)
+    for selector in (r"(?<![\w\])-]):focus-visible", r"\.btn:focus-visible"):
+        rule = re.search(selector + r"\s*\{([^}]*)\}", css)
         assert rule and "outline: 2px solid var(--accent)" in rule.group(1), selector
-    assert css.index("input[type=checkbox]:focus-visible") > css.index("input:focus,"), (
-        "must follow the outline: 0 rule"
-    )
+    fields = re.search(r"input:focus-visible,\s*textarea:focus-visible,\s*select:focus-visible\s*\{([^}]*)\}", css)
+    assert fields and "border-color: var(--accent)" in fields.group(1) and "outline" not in fields.group(1)
 
 
 def test_the_command_palette_is_a_combobox_with_a_listbox():

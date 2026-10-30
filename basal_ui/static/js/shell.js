@@ -58,10 +58,10 @@ const route=()=>{if(location.hash!==shownHash)showView(location.hash,false,true)
 $('.skip-link').onclick=e=>{e.preventDefault();$('#pageTitle').focus();};
 document.querySelectorAll('.side-nav [data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 window.addEventListener('hashchange',route); window.addEventListener('popstate',route);
-function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
+function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}store('basal-ui.tab',tab);}
 $('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
 document.querySelectorAll('[role=tablist]').forEach(tablist);
-selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
+selectModelsTab(stored('basal-ui.tab')==='all'?'all':'suggested');
 async function loadMemorySettings(){
   try{
     const d=await api('/api/memory'), budget=$('input#memoryBudget');
@@ -72,7 +72,9 @@ async function loadMemorySettings(){
     }
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;}
 }
-// a wrong value is named by its field: one inline alert (no toast), the field aria-invalid and described by it
+// a wrong value is named by its field: one inline alert (no toast), the field aria-invalid and described by it.
+// PUT /api/memory answers 400 with a message code and the field ({"detail", "code", "field"}): mapped here, not parsed
+const MEMORY_ERRORS={budget_invalid:t('Budget: leave it empty or enter at least 1 GiB.'),reserve_invalid:t('Keep free: enter 0 GiB or more.')};
 function memoryError(message, field) {
   const box=$('#memoryError'), fields=[$('input#memoryBudget'),$('#memoryReserve')];
   box.textContent=message||''; box.hidden=!message;
@@ -90,5 +92,5 @@ $('#saveMemory').onclick=async()=>{
   try{
     await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:b,reserve_bytes:r})});
     memoryError(''); toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
-  }catch(e){memoryError(e.message,e.message.includes('reserve_bytes')?reserve:e.message.includes('budget_bytes')?budget:null);}
+  }catch(e){memoryError(MEMORY_ERRORS[e.code]||e.message,{budget_bytes:budget,reserve_bytes:reserve}[e.field]||null);}
 };

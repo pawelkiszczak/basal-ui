@@ -25,11 +25,13 @@ function chartBars({label, items, max=null, format=v=>v, series=0}) {
 // histogram of values in `bins` equal-width bins between their min and max; the caption names the range
 function chartHistogram({label, values, bins=12, format=v=>v}) {
   const xs=values.filter(finite).map(Number); if(!xs.length)return '';
-  const lo=Math.min(...xs), hi=Math.max(...xs), step=(hi-lo)/bins||1, counts=Array(bins).fill(0);
-  xs.forEach(v=>{counts[Math.min(bins-1,Math.floor((v-lo)/step))]++;});
+  const lo=Math.min(...xs), hi=Math.max(...xs);
+  if(hi===lo)bins=1;  // every value equal: one bin [lo, hi] holds them all (no made-up range)
+  const step=(hi-lo)/bins, counts=Array(bins).fill(0);
+  xs.forEach(v=>{counts[step?Math.min(bins-1,Math.floor((v-lo)/step)):0]++;});
   const top=Math.max(...counts), w=100/bins;
   const bars=counts.map((n,i)=>`<rect x="${(i*w+w*0.1).toFixed(2)}" y="${(40-n/top*38).toFixed(2)}" width="${(w*0.8).toFixed(2)}" height="${(n/top*38).toFixed(2)}" fill="var(--chart-1)"/>`).join('');
-  const edge=i=>format(lo+i*step);
+  const edge=i=>format(i===bins?hi:lo+i*step);  // the last edge is the maximum itself, not lo + bins × step
   return html`<figure class="viz viz-histogram" role="img" aria-label="${label}"><svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true" focusable="false"><line x1="0" y1="40" x2="100" y2="40" class="viz-axis"/>${raw(bars)}</svg><figcaption class="viz-axis-labels" aria-hidden="true"><span>${edge(0)}</span><span>${tp(xs.length,'{n} sample','{n} samples')}</span><span>${format(hi)}</span></figcaption></figure>${chartTable(label,[t('From'),t('To'),t('Count')],counts.map((n,i)=>[edge(i),edge(i+1),n]))}`.text;
 }
 // sparkline: points [{x: label, y}] in order; the last value is printed beside the line

@@ -84,7 +84,7 @@ function historyDetailRow(x) {
 function replayRequest(x) {
   if(x.replay_error||!x.replay_request){toast(x.replay_error||t('This request cannot be replayed.'),'error');return;}
   if(!readyModels().some(m=>m.id===x.model)){toast(t('Model {model} is not loaded',{model:x.model}),'error');return;}
-  selectedModel=x.model; localStorage.setItem('basal-ui.model',selectedModel);
+  selectedModel=x.model; store('basal-ui.model',selectedModel);
   $('#playgroundModel').value=selectedModel; setPlaygroundMedia(readyModels().find(m=>m.id===selectedModel)?.media||[]);
   $('#results').innerHTML='';$('#rawDetails').hidden=true;$('#decideError').hidden=true;$('#playgroundForm').classList.remove('comparing');
   setRequest(x.replay_request);

@@ -2,7 +2,7 @@
 // t('English text', {name: value}) and tp(n, '{n} model', '{n} models') translate what js/*.js and backends.js build;
 // the static markup of index.html is translated in place when this script runs (text nodes and title / placeholder /
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
-const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
+const LANG = (() => { try { return localStorage.getItem('basal-ui.lang'); } catch { return null; } })() === 'pl' ? 'pl' : 'en';  // storage may be blocked
 const PL = {
   " Options": " Opcje",
   "request per line; one answer per line in the same order (format:": "na wiersz; po jednej odpowiedzi na wiersz w tej samej kolejności (format:",
@@ -341,6 +341,7 @@ const PL = {
   "Language": "Język",
   "Language: auto": "Język: automatycznie",
   "last used": "ostatnio użyto",
+  "Last at {time}": "Ostatnio o {time}",
   "Last used": "Ostatnio użyto",
   "lat1 ms": "opóźnienie 1 ms",
   "lat2 ms": "opóźnienie 2 ms",
@@ -1138,7 +1139,9 @@ const PL = {
   "reference": "odniesienie",
   "{error} wrong": "{error} błędnych",
   "{target} error target": "docelowy błąd {target}",
-  "Describe yes before no: a single line describes yes.": "Opisz tak przed nie: pojedynczy wiersz opisuje tak.",
+  "Yes (true)": "Tak (true)",
+  "No (false)": "Nie (false)",
+  "Duplicate key {key}: every key must be unique.": "Powtórzony klucz {key}: każdy klucz musi być unikalny.",
   "Description {number}": "Opis {number}",
   "Enter adds a row · Alt + ↑ / ↓ moves it": "Enter dodaje wiersz · Alt + ↑ / ↓ go przesuwa",
   "Key {number}": "Klucz {number}",
@@ -1164,6 +1167,7 @@ const PL = {
   "basal-ui cannot read this file.": "basal-ui nie może odczytać tego pliku.",
   "The file is empty.": "Plik jest pusty.",
   "The first line is not a JSON object.": "Pierwszy wiersz nie jest obiektem JSON.",
+  "The first line is too long to check.": "Pierwszy wiersz jest za długi, by go sprawdzić.",
   "The first row is neither a simple item nor a request with questions.": "Pierwszy wiersz nie jest ani prostym elementem, ani żądaniem z pytaniami.",
   "The file is not UTF-8 text.": "Plik nie jest tekstem UTF-8.",
   "The file is too large to check.": "Plik jest zbyt duży, by go sprawdzić.",
@@ -1197,7 +1201,9 @@ const PL = {
   "Load a model to decide in the Playground and serve it on the API.": "Załaduj model, aby podejmować decyzje w Playground i udostępniać go przez API.",
   "Batch answers": "Odpowiedzi wsadu",
   "Send a decision, or compare two loaded models, to see the answers here.": "Wyślij decyzję albo porównaj dwa załadowane modele, aby zobaczyć tutaj odpowiedzi.",
-  "Code copied. Over MCP the gateway picks the model and media is not sent.": "Skopiowano kod. Przez MCP model wybiera brama API, a media nie są wysyłane.",
+  "MCP (streamable HTTP, JSON-RPC 2.0) at {url}: any MCP client can send this tools/call; the gateway picks the model and media is not sent.": "MCP (streamable HTTP, JSON-RPC 2.0) pod {url}: każdy klient MCP może wysłać to wywołanie tools/call; model wybiera brama API, a media nie są wysyłane.",
+  "media: put the base64 of each file (base64 -i FILE) in place of its BASE64_OF_ placeholder; for large media save the JSON as request.json and send it with -d @request.json": "media: wstaw base64 każdego pliku (base64 -i PLIK) w miejsce jego symbolu BASE64_OF_; przy dużych mediach zapisz JSON jako request.json i wyślij go przez -d @request.json",
+  "the file as base64, as the request carries it": "plik jako base64, tak jak niesie go żądanie",
   "None of these question types can be sent to OpenAI Decisions (predicate, choice and score only).": "Żadnego z tych typów pytań nie można wysłać do OpenAI Decisions (tylko predicate, choice i score).",
   "media is not included; send images as input_image parts": "media nie są dołączone; wyślij obrazy jako części input_image",
   "skipped: {names} (types OpenAI Decisions does not carry)": "pominięto: {names} (typy, których OpenAI Decisions nie obsługuje)",
@@ -1262,7 +1268,9 @@ const PL_PLURAL = {
   "{n} API keys": ["{n} klucz API", "{n} klucze API", "{n} kluczy API"],
   "{n} decisions": ["{n} decyzja", "{n} decyzje", "{n} decyzji"],
   "{n} decisions deleted": ["{n} decyzja usunięta", "{n} decyzje usunięte", "{n} decyzji usuniętych"],
+  "{n} error": ["{n} błąd", "{n} błędy", "{n} błędów"],
   "{n} errors": ["{n} błąd", "{n} błędy", "{n} błędów"],
+  "{n} item": ["{n} element", "{n} elementy", "{n} elementów"],
   "{n} items": ["{n} element", "{n} elementy", "{n} elementów"],
   "{n} model": ["{n} model", "{n} modele", "{n} modeli"],
   "{n} new model": ["{n} nowy model", "{n} nowe modele", "{n} nowych modeli"],
@@ -1326,6 +1334,6 @@ document.addEventListener('click', e => {
   const b = e.target.closest('[data-lang-choice]');
   if (!b || b.dataset.langChoice === LANG) return;
   window.preparePlaygroundLanguageSwitch?.();
-  localStorage.setItem('basal-ui.lang', b.dataset.langChoice);
+  try { localStorage.setItem('basal-ui.lang', b.dataset.langChoice); } catch { return; }  // blocked: the reload would not switch
   location.reload();  // every view is rendered again in the new language
 });

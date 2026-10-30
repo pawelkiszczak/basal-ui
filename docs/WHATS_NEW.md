@@ -101,8 +101,8 @@ No promotion to `stage`/`main` or PyPI publication was performed for that snapsh
 - **Charts and comparison:** a small inline-SVG chart helper (`static/js/charts.js`: meter, bars, histogram,
   sparkline, reliability diagram, threshold strip; colour-blind-safe `--chart-*` tokens in both themes, each chart
   named for assistive technology with its numbers in a hidden table). Overview shows the memory budget split by model
-  and stat tiles per loaded model (requests, average confidence, p50 / p95 latency with a histogram of the last 200;
-  `latency_recent_ms` in `/api/stats` and `/v1/stats`); Library draws statistics per question type, the newest
+  and stat tiles per loaded model (requests, average confidence, p50 / p95 latency with a histogram of the last 100;
+  `latency_recent_ms` in the browser app's `/api/stats` only, not the API server's `/v1/stats`); Library draws statistics per question type, the newest
   benchmark (accuracy per file, latency) with trends over runs, and the calibration in use (certified thresholds,
   automation on CERT, leave-one-family-out ECE); Batch draws a reliability diagram for labelled answers. The Playground
   **Compares** one request on two loaded models with a per-option probability difference and **Copies as code**

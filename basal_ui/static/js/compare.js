@@ -13,35 +13,71 @@ function renderCompareModels(ready) {
   select.innerHTML=others.map(m=>html`<option value="${m.id}">${shortName(m.id)}</option>`.text).join('');
   if(others.some(m=>m.id===current))select.value=current;
 }
-// an answer's option probabilities as {key: p}; a yes/no answer as {yes, no}
+// an answer's per-option numbers as {key: p}: probabilities, classify's scores, a yes/no answer's P(yes) and P(no)
 function optionProbabilities(a) {
-  if(a?.probabilities&&typeof a.probabilities==='object'&&!Array.isArray(a.probabilities))return a.probabilities;
-  if(typeof a?.noul==='number')return {yes:a.noul,no:1-a.noul};
+  const own=v=>v&&typeof v==='object'&&!Array.isArray(v)?v:null;
+  if(own(a?.probabilities))return a.probabilities;
+  if(own(a?.scores))return a.scores;
+  if(typeof a?.noul==='number')return {true:a.noul,false:1-a.noul};
   return null;
+}
+// what an answer decided, per question type, as a comparable text (null: no answer): a choice's key, the yes/no side,
+// a score's nearest level, an act's chosen action (by expected cost, not the most probable outcome), the selected set
+// of multi, multi-label classify and multi tool, a tool, a label, each claim's verdict, the kept units, the data
+const setText=v=>Array.isArray(v)?[...v].map(String).sort().join(', '):null;
+function answerOf(a, q={}) {
+  if(!a||typeof a!=='object')return null;
+  const type=a.type||q.type, probs=optionProbabilities(a);
+  const top=probs?Object.entries(probs).sort((x,y)=>Number(y[1])-Number(x[1]))[0]?.[0]??null:null;
+  switch(type){
+    case 'choice':return a.choice??a.answer??top;
+    case 'noul':{const p=Number(a.noul??a.probabilities?.true);return Number.isFinite(p)?(p>=0.5?t('yes'):t('no')):null;}
+    case 'score':{const s=Number(a.score??a.expected_score);if(!Number.isFinite(s))return top;const level=String(Math.round(s));return a.legend?.[level]!=null?`${level} · ${a.legend[level]}`:level;}
+    case 'act':return a.action??null;
+    case 'multi':return setText(a.selected);
+    case 'tool':return a.multi?setText(a.tools):a.tool??null;
+    case 'classify':return Array.isArray(a.labels)?setText(a.labels):a.label??null;
+    case 'verify':return a.claims?Object.entries(a.claims).map(([k,c])=>`${k}: ${t(c?.verdict??'—')}`).join(', '):null;
+    case 'compress':return setText(a.kept);
+    case 'extract':return a.data!==undefined?JSON.stringify(a.data):null;
+    default:return top;
+  }
+}
+// one model's answer as the single-model result shows it (decision.js), without the safety strip
+function answerBody(name, a, q) {
+  const view=RESULT_VIEWS[a.type||q.type];
+  if(view)return view(a,q);
+  return optionProbabilities(a)?decisionView(name,a,q):`<pre>${esc(JSON.stringify(a,null,2))}</pre>`;
 }
 function compareColumn(id, result, request) {
   if(result.status==='rejected')return html`<section><h3>${shortName(id)}</h3><div class="error-box" role="alert">${result.reason?.message||String(result.reason)}</div></section>`;
   const data=result.value, answers=data?.answers||{}, u=data?.usage||{};
   const items=Object.entries(answers).map(([name,a])=>{
-    const q=request.questions?.[name]||{}, probs=optionProbabilities(a), head=a&&typeof a==='object'?resultHeadline(name,a,q):null;
-    return html`<article class="answer"><h4><span>${name}</span> <span class="chip">${a?.type||q.type||'?'}</span></h4>${head?html`<div class="headline">${head}</div>`:''}${a?.confidence!=null?html`<div class="answer-meta">${t('Confidence')}: ${pct(a.confidence)}</div>`:''}${probs?raw(probBars(probs,q)):html`<pre>${JSON.stringify(a,null,2)}</pre>`}</article>`;
+    const q=request.questions?.[name]||{}, ok=a&&typeof a==='object';
+    return html`<article class="answer"><h4><span>${name}</span> <span class="chip">${(ok&&a.type)||q.type||'?'}</span></h4>${ok?raw(answerBody(name,a,q)):html`<pre>${JSON.stringify(a,null,2)}</pre>`}</article>`;
   });
   return html`<section aria-label="${shortName(id)}"><h3 title="${id}">${shortName(id)}</h3><div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'}</div>${items}</section>`;
 }
-// per question: every option's probability on A and B and B − A; the chosen answers same or different
+// per question: the answers same or different (each type's own answer field), and every option's probability on A
+// and B with B − A where the type has them
 function compareDiff(ids, results, request) {
   const [a,b]=results.map(r=>r.status==='fulfilled'?r.value?.answers||{}:null);
   if(!a||!b)return '';
-  const top=p=>p?Object.entries(p).sort((x,y)=>y[1]-x[1])[0]?.[0]:null;
   const tables=Object.keys(request.questions||a).map(name=>{
-    const pa=optionProbabilities(a[name]), pb=optionProbabilities(b[name]);
-    if(!pa||!pb)return '';
-    const keys=[...new Set([...Object.keys(pa),...Object.keys(pb)])], same=top(pa)===top(pb);
-    const rows=keys.map(k=>{
-      const d=(Number(pb[k])||0)-(Number(pa[k])||0), sign=Math.abs(d)<0.0005?'':d>0?'up':'down';
-      return html`<tr><th scope="row">${k}</th><td>${pct(pa[k])}</td><td>${pct(pb[k])}</td><td class="${sign}">${d>0?'+':d<0?'−':'±'}${(Math.abs(d)*100).toFixed(1)} pp</td></tr>`;
-    });
-    return html`<div class="compare-diff"><div class="section-head"><h4>${name}</h4><span class="badge ${same?'fit-fits':'fit-tight'}">${same?t('Same answer'):t('Different answers')}</span></div><div class="table-wrap" tabindex="0" role="region" aria-label="${t('Option probabilities of {question} on both models',{question:name})}"><table class="mini-table"><caption class="sr-only">${t('Option probabilities of {question} on both models',{question:name})}</caption><thead><tr><th scope="col">${t('Option')}</th><th scope="col">${shortName(ids[0])}</th><th scope="col">${shortName(ids[1])}</th><th scope="col">${t('Difference')}</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    const q=request.questions?.[name]||{}, ansA=answerOf(a[name],q), ansB=answerOf(b[name],q);
+    if(ansA==null&&ansB==null)return '';
+    const same=ansA===ansB, pa=optionProbabilities(a[name]), pb=optionProbabilities(b[name]);
+    const answersLine=html`<div class="answer-meta">${shortName(ids[0])}: <strong>${ansA??'—'}</strong> · ${shortName(ids[1])}: <strong>${ansB??'—'}</strong></div>`;
+    let table='';
+    if(pa&&pb){
+      const keys=[...new Set([...Object.keys(pa),...Object.keys(pb)])];
+      const rows=keys.map(k=>{
+        const d=(Number(pb[k])||0)-(Number(pa[k])||0), sign=Math.abs(d)<0.0005?'':d>0?'up':'down';
+        return html`<tr><th scope="row">${k}</th><td>${pct(pa[k])}</td><td>${pct(pb[k])}</td><td class="${sign}">${d>0?'+':d<0?'−':'±'}${(Math.abs(d)*100).toFixed(1)} pp</td></tr>`;
+      });
+      table=html`<div class="table-wrap" tabindex="0" role="region" aria-label="${t('Option probabilities of {question} on both models',{question:name})}"><table class="mini-table"><caption class="sr-only">${t('Option probabilities of {question} on both models',{question:name})}</caption><thead><tr><th scope="col">${t('Option')}</th><th scope="col">${shortName(ids[0])}</th><th scope="col">${shortName(ids[1])}</th><th scope="col">${t('Difference')}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+    return html`<div class="compare-diff"><div class="section-head"><h4>${name}</h4><span class="badge ${same?'fit-fits':'fit-tight'}">${same?t('Same answer'):t('Different answers')}</span></div>${answersLine}${table}</div>`;
   });
   return html`<h3 class="compare-diff-title">${t('Probability difference ({b} − {a})',{a:shortName(ids[0]),b:shortName(ids[1])})}</h3>${tables}`;
 }

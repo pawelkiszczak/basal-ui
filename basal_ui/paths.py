@@ -3,14 +3,21 @@ paths of picked or dropped files, so the Batch, Calibration and decision-log fie
 Only a JSON file's shape is shown: its first row's field names and, for a row batch or calibration can read, a short
 preview of that row's request fields. Nothing of any other file's content is returned."""
 
+import codecs
+import contextlib
+import errno
 import json
 import os
+import stat
 from pathlib import Path
 
 KINDS = ("jsonl", "json", "output", "append", "dir")  # a JSONL input, a JSON file (a calibration to import), a file
 # to write (replaced) or to append to (the decision log), a directory to keep files in (created if missing: models)
 LINE_CAP = 100_000  # lines counted at most; a bigger file reports lines_capped
+COUNT_CAP = 64 * 1024 * 1024  # bytes of a JSONL file read to count its lines at most; then lines_capped too
+FIRST_LINE_CAP = 4 * 1024 * 1024  # a longer first row is not parsed: line_too_long
 JSON_CAP = 32 * 1024 * 1024  # a JSON file larger than this is not parsed
+CHUNK = 1024 * 1024
 PREVIEW_CHARS = 300
 FIELD_CAP = 30
 PREVIEW_FIELDS = ("id", "state", "question", "type", "options", "questions", "gold", "expected")  # a request's own
@@ -21,11 +28,13 @@ def _row_shape(item):
     None for any other object."""
     questions = item.get("questions")
     if isinstance(questions, dict):
-        types = sorted({q.get("type", "?") for q in questions.values() if isinstance(q, dict)})
+        types = [q.get("type", "?") for q in questions.values() if isinstance(q, dict)]
+        types = sorted({t for t in types if isinstance(t, str)})  # a malformed type is left out, never an error
         labelled = any(isinstance(q, dict) and "gold" in q for q in questions.values())
         shape = {"format": "request", "questions": len(questions), "types": types[:FIELD_CAP]}
     elif "options" in item:
-        shape = {"format": "simple", "questions": 1, "types": [item.get("type", "choice")]}
+        kind = item.get("type", "choice")
+        shape = {"format": "simple", "questions": 1, "types": [kind] if isinstance(kind, str) else []}
         labelled = "gold" in item
     else:
         return None
@@ -38,26 +47,73 @@ def _row_shape(item):
     }
 
 
-def _read_jsonl(path, out):
-    lines, first = 0, None
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            if first is None:
-                first = line
-            lines += 1
-            if lines >= LINE_CAP:
-                out["lines_capped"] = True
-                break
-    out["lines"] = lines
-    if first is None:
-        return "empty"
+def _open(p):
+    """A binary file object of p, refused (not_file) unless it is a regular file: a FIFO or a device is never read and
+    opening one does not block (O_NONBLOCK), even if p was swapped for one after the is_file() check."""
+    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     try:
-        item = json.loads(first)
-    except ValueError:
-        return "not_json"
-    if not isinstance(item, dict):
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise IsADirectoryError(errno.EISDIR, "not a regular file", str(p))
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _count(f, lines, pending, budget, utf8):
+    """lines plus the non-blank lines left in f (pending: the line read so far is non-blank and not yet counted), read
+    in binary chunks; (lines, capped) where capped means more than LINE_CAP lines or COUNT_CAP bytes. The bytes read
+    must be UTF-8, checked by the incremental decoder utf8 (else UnicodeDecodeError: not_text)."""
+    while lines < LINE_CAP:
+        if budget <= 0:
+            return lines + pending, bool(f.read(1))
+        chunk = f.read(min(CHUNK, budget))
+        if not chunk:
+            utf8.decode(b"", final=True)
+            return min(lines + pending, LINE_CAP), lines + pending > LINE_CAP
+        budget -= len(chunk)
+        utf8.decode(chunk)
+        *done, rest = chunk.split(b"\n")
+        for part in done:
+            lines += pending or bool(part.strip())
+            pending = False
+        pending = pending or bool(rest.strip())
+    return LINE_CAP, True
+
+
+def _parse(data):
+    """A JSON object from UTF-8 bytes (UnicodeDecodeError: not_text, to the caller), or None."""
+    text = data.decode("utf-8")
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):  # RecursionError: nesting deeper than the parser goes
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _read_jsonl(f, out):
+    first, budget = None, COUNT_CAP
+    while budget > 0:
+        line = f.readline(min(FIRST_LINE_CAP + 1, budget))
+        if not line:
+            break
+        budget -= len(line)
+        if line.strip():
+            first = line
+            break
+    if first is None:
+        out["lines"] = 0
+        return "empty"
+    utf8 = codecs.getincrementaldecoder("utf-8")()
+    utf8.decode(first)  # incremental: a first line cut by the cap may end inside a character
+    whole = first.endswith(b"\n")  # else the rest of the first line is still to come, and counted with it
+    out["lines"], capped = _count(f, int(whole), not whole, budget, utf8)
+    if capped:
+        out["lines_capped"] = True
+    if len(first) > FIRST_LINE_CAP:
+        return "line_too_long"
+    item = _parse(first)
+    if item is None:
         return "not_json"
     shape = _row_shape(item)  # None: not a row batch or calibration reads, and nothing of it is returned
     if shape is None:
@@ -66,16 +122,14 @@ def _read_jsonl(path, out):
     return None
 
 
-def _read_json(path, out):
-    if out["size"] > JSON_CAP:
+def _read_json(f, out):
+    data = f.read(JSON_CAP + 1)  # bounded whatever st_size says (0 for a procfs or sysfs file)
+    if len(data) > JSON_CAP:
         return "too_large"
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except ValueError:
+    item = _parse(data)
+    if item is None:
         return "not_json"
-    if not isinstance(data, dict):
-        return "not_json"
-    out["fields"] = list(data)[:FIELD_CAP]
+    out["fields"] = list(item)[:FIELD_CAP]
     return None
 
 
@@ -105,11 +159,14 @@ def _problem(p, kind, out):
     elif not os.access(p, os.R_OK):
         code = "unreadable"
     else:
-        out["size"] = p.stat().st_size
         try:
-            code = _read_jsonl(p, out) if kind == "jsonl" else _read_json(p, out)
+            with _open(p) as f:
+                out["size"] = os.fstat(f.fileno()).st_size
+                code = _read_jsonl(f, out) if kind == "jsonl" else _read_json(f, out)
         except UnicodeDecodeError:
             code = "not_text"
+        except IsADirectoryError:
+            code = "not_file"
         except OSError:
             code = "unreadable"
     return code
@@ -125,6 +182,8 @@ def check(path, kind):
     unknown = {"path": path.strip(), "kind": kind, "exists": False, "is_file": False, "is_dir": False}
     try:
         p = Path(path.strip()).expanduser().resolve()
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError):  # pathlib's exists() swallows
+            os.stat(p)  # ENAMETOOLONG and ELOOP from Python 3.14: ask the OS, which raises them (invalid)
         out = {"path": str(p), "kind": kind, "exists": p.exists(), "is_file": p.is_file(), "is_dir": p.is_dir()}
         code = _problem(p, kind, out)
     except PermissionError:  # a directory on the way that basal-ui cannot search

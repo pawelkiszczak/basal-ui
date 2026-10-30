@@ -14,12 +14,18 @@ HERE = Path(__file__).resolve().parent
 ENABLED = os.environ.get("BASAL_E2E") == "1"
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "fixture_server: runs on scripts/ui_fixture_server.py, no real model: not gated by BASAL_E2E"
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     skip = pytest.mark.skip(reason="end-to-end tests load real models: set BASAL_E2E=1 (docs/E2E.md)")
     for item in items:
         if HERE in Path(item.path).parents:
             item.add_marker(pytest.mark.e2e)
-            if not ENABLED and getattr(item.module, "REAL_MODELS", True):  # test_a11y.py runs on the fixture server
+            if not ENABLED and item.get_closest_marker("fixture_server") is None:
                 item.add_marker(skip)
 
 

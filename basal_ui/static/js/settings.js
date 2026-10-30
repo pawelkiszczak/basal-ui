@@ -1,8 +1,6 @@
 // Settings (auto-load; theme, language, memory, models directory, updates and presets keep their handlers in core.js,
 // i18n.js, shell.js, models.js and playground.js) and the Overview's first-run checklist.
 'use strict';
-const stored=key=>{try{return localStorage.getItem(key);}catch{return null;}};
-const store=(key,value)=>{try{localStorage.setItem(key,value);}catch{}};
 $('#autoLoad').addEventListener('change',()=>act(async()=>{
   const value=$('#autoLoad').checked;
   try{await api('/api/serve',{method:'PUT',body:JSON.stringify({auto_load:value})});}
@@ -21,7 +19,6 @@ function renderModelsDirLock() {
 }
 // first run: hardware detected → a recommended model downloaded and loaded → an example in the Playground → an app
 // connected; hidden once every step is done (remembered) or dismissed, in this browser
-let firstRunSignature='';
 const CHECK='<svg viewBox="0 0 16 16" width="14" height="14"><path d="m3 8.5 3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function firstRunSteps() {
   const ready=readyModels(), suggested=(catalogData?.suggestions||[]).map(s=>modelData.find(m=>m.id===s.id)).find(m=>m?.runnable);
@@ -45,12 +42,8 @@ function renderFirstRun() {
   if(steps.every(s=>s.done)){store('basal-ui.firstrun','done');card.hidden=true;return;}
   const markup=steps.map((s,i)=>html`<li class="first-run-step${s.done?' done':''}"><span class="step-mark" aria-hidden="true">${s.done?raw(CHECK):i+1}</span><div class="step-body"><strong>${s.title}</strong> <span class="sr-only">${s.done?t('done'):t('to do')}</span><span class="muted">${s.text}</span></div>${s.done||!s.action?'':html`<div class="controls">${s.action}</div>`}</li>`.text).join('');
   card.hidden=false;
-  if(markup===firstRunSignature)return;  // unchanged: keep the focus on its buttons across status polls
-  // a re-render (the button became a "downloading" chip) keeps keyboard focus in the same step
-  const list=$('#firstRunSteps'), focused=list.contains(document.activeElement)?[...list.children].findIndex(li=>li.contains(document.activeElement)):-1;
-  firstRunSignature=markup; list.innerHTML=markup;
-  const step=list.children[focused];
-  if(step){const control=step.querySelector('button,a[href]');if(control)control.focus();else{step.tabIndex=-1;step.focus();}}
+  // unchanged across status polls: kept as is; a re-render (the button became a "downloading" chip) keeps the focus
+  renderKeepingFocus($('#firstRunSteps'),markup);
 }
 $('#firstRunDismiss').onclick=()=>{store('basal-ui.firstrun','dismissed');$('#firstRun').hidden=true;$('#pageTitle').focus();};
 $('#firstRunSteps').addEventListener('click',e=>{

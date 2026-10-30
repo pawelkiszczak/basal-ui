@@ -1,4 +1,5 @@
-// Runs last: the first render and the initial loads, once every script has defined its functions.
+// Runs last (index.html's order, tested): the first render and the initial loads, once every script has defined its
+// functions and registered its listeners (showView dispatches backends:view, which backends.js listens for).
 'use strict';
 addQuestion();
 showView(location.hash);

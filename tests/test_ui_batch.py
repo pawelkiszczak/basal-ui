@@ -1,10 +1,11 @@
 import json
+import os
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from basal_ui import settings
+from basal_ui import paths, settings
 from basal_ui.app import create_app
 from basal_ui.fleet import Fleet, Runner
 from basal_ui.hardware import Hardware
@@ -181,8 +182,6 @@ def test_path_check_of_an_output_says_whether_it_can_be_written(client, tmp_path
 
 
 def test_path_check_reports_caps_text_and_paths_it_cannot_reach(client, tmp_path, monkeypatch):
-    from basal_ui import paths
-
     def check(path, kind="jsonl"):
         response = client.post("/api/paths/check", json={"path": str(path), "kind": kind})
         assert response.status_code == 200
@@ -198,8 +197,10 @@ def test_path_check_reports_caps_text_and_paths_it_cannot_reach(client, tmp_path
     assert check(tmp_path / "big.json", "json")["code"] == "too_large"
     (tmp_path / "bin.jsonl").write_bytes(b"\xff\xfe\x00{")
     assert check(tmp_path / "bin.jsonl")["code"] == "not_text"
+    (tmp_path / "bin.json").write_bytes(b"\xff\xfe{}")
+    assert check(tmp_path / "bin.json", "json")["code"] == "not_text"  # the same answer for a JSON file
     long = tmp_path / ("a" * 300)
-    assert check(long)["code"] == "invalid" and not check(long)["ok"]  # ENAMETOOLONG, not an HTTP 500
+    assert check(long)["code"] == "invalid" and not check(long)["ok"]  # ENAMETOOLONG on every Python, not a 500
     assert check(long / "x.jsonl", "output")["code"] == "invalid"
 
     def denied(self, *args, **kwargs):
@@ -221,3 +222,46 @@ def test_path_check_of_a_directory_says_whether_it_exists_or_will_be_created(cli
     (tmp_path / "file").write_text("x")
     assert check(tmp_path / "file")["code"] == "not_dir"
     assert check(tmp_path / "file" / "below")["code"] == "not_writable"
+
+
+def test_path_check_reads_a_bounded_amount_and_never_fails_on_a_malformed_row(client, tmp_path, monkeypatch):
+    def check(path, kind="jsonl"):
+        response = client.post("/api/paths/check", json={"path": str(path), "kind": kind})
+        assert response.status_code == 200
+        return response.json()
+
+    odd = tmp_path / "odd.jsonl"
+    odd.write_text(
+        json.dumps({"state": "s", "questions": {"a": {"type": ["x"]}, "b": {"type": 1}, "c": {"type": "y"}}})
+    )
+    assert check(odd)["first"]["types"] == ["y"]  # a type that is not a string is left out, not a 500
+    odd.write_text(json.dumps({"state": "s", "options": ["a", "b"], "type": {"x": 1}}) + "\n")
+    assert check(odd)["first"]["types"] == []
+    odd.write_text("[" * 100_000 + "\n")
+    assert check(odd)["code"] == "not_json"  # nested deeper than the parser goes
+    (tmp_path / "deep.json").write_text("[" * 100_000)
+    assert check(tmp_path / "deep.json", "json")["code"] == "not_json"
+
+    monkeypatch.setattr(paths, "FIRST_LINE_CAP", 64)
+    monkeypatch.setattr(paths, "CHUNK", 16)
+    row = json.dumps({"state": "s", "options": ["a"]})
+    long = tmp_path / "long.jsonl"
+    long.write_text(json.dumps({"state": "é" * 100, "options": ["a"]}) + "\n\n" + row + "\n" + row)
+    d = check(long)
+    assert d["code"] == "line_too_long" and d["lines"] == 3 and "first" not in d  # cut inside a character: still text
+    (tmp_path / "late.jsonl").write_bytes((row + "\n").encode() * 3 + b"\xff\n")
+    assert check(tmp_path / "late.jsonl")["code"] == "not_text"  # a later line that is not UTF-8 is still caught
+    monkeypatch.setattr(paths, "COUNT_CAP", 70)  # two rows and the start of the third
+    d = check(tmp_path / "late.jsonl")  # the bytes past the cap are neither counted nor read
+    assert d["ok"] and d["lines"] == 3 and d["lines_capped"]
+
+
+def test_path_check_never_opens_a_fifo(client, tmp_path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs on this platform")
+    fifo = tmp_path / "pipe.jsonl"
+    os.mkfifo(fifo)
+    for kind in ("jsonl", "json"):  # opening a FIFO for reading would block until a writer comes
+        assert client.post("/api/paths/check", json={"path": str(fifo), "kind": kind}).json()["code"] == "not_file"
+    with pytest.raises(IsADirectoryError):  # swapped for one after the is_file() check: refused without blocking
+        paths._open(fifo)

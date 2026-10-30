@@ -179,7 +179,7 @@ $('#restartServe').onclick=async()=>{try{await api('/api/serve/restart',{method:
 $('#bannerRestart').onclick=()=>$('#restartServe').click();
 // the API endpoint, from any view (Library rows, the command palette); a copy while the server runs completes "Connect
 // your app" (an endpoint copied while it is off connects nothing)
-const markConnected=()=>{if(statusCache?.serving?.running)try{localStorage.setItem('basal-ui.connected','1');}catch{}};
+const markConnected=()=>{if(statusCache?.serving?.running)store('basal-ui.connected','1')};
 async function copyEndpoint() {
   if(!serveData)await loadServe();
   if(!serveData)return;

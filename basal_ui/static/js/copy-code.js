@@ -33,22 +33,47 @@ function pyLiteral(v, pad='') {
   const e=Object.entries(v).filter(([,x])=>x!==undefined);
   return e.length?`{\n${e.map(([k,x])=>`${inner}${JSON.stringify(k)}: ${pyLiteral(x,inner)}`).join(',\n')},\n${pad}}`:'{}';
 }
+// media in a snippet: never the base64 itself (megabytes in one shell argument or source line); each item's data is a
+// marker that the snippet replaces with a file reference (Python) or a placeholder to fill in (cURL)
+const mediaMarker=i=>`__basal_media_${i}__`;
+function mediaFiles(request) {
+  return (Array.isArray(request.media)?request.media:[]).map((m,i)=>{
+    const name=selectedMedia[i]?.file?.name||`media-${i+1}.${m?.type==='audio'?'wav':'png'}`;
+    return {name,type:m?.type||'media'};
+  });
+}
+function withMediaMarkers(request) {
+  if(!Array.isArray(request.media)||!request.media.length)return request;
+  return {...request,media:request.media.map((m,i)=>({...m,data:mediaMarker(i)}))};
+}
 function codeSnippet(kind) {
   const request=playgroundRequest(), endpoint=serveData?connectionEndpoint():'http://127.0.0.1:8000';
   const key=(statusCache?.serving?.require_key??serveData?.settings?.require_key)?'<your key>':null;
+  const shell=text=>`'${text.replaceAll("'","'\\''")}'`, auth=key?` -H 'Authorization: Bearer ${key}'`:'';
   if(kind==='mcp'){  // decide_many takes the request's state, questions, lang and facts; the gateway picks the model
     const args={state:request.state,questions:request.questions};
     for(const k of ['lang','facts'])if(request[k])args[k]=request[k];
-    return JSON.stringify({method:'tools/call',params:{name:'decide_many',arguments:args}},null,2);
+    const message={jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'decide_many',arguments:args}};
+    return `# ${t('MCP (streamable HTTP, JSON-RPC 2.0) at {url}: any MCP client can send this tools/call; the gateway picks the model and media is not sent.',{url:`${endpoint}/mcp`})}\n`
+      +`curl ${endpoint}/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'${auth} \\\n  -d ${shell(JSON.stringify(message,null,2))}`;
   }
-  const openai=kind.startsWith('openai'), translated=openai?decisionsRequest(request):null, body=openai?translated.body:request;
-  const notes=openai?[
+  const openai=kind.startsWith('openai'), translated=openai?decisionsRequest(request):null;
+  const files=openai?[]:mediaFiles(request), body=openai?translated.body:withMediaMarkers(request);
+  const notes=(openai?[
     ...(translated.skipped.length?[t('skipped: {names} (types OpenAI Decisions does not carry)',{names:translated.skipped.join(', ')})]:[]),
     ...(translated.media?[t('media is not included; send images as input_image parts')]:[]),
-  ].map(n=>`# ${n}\n`).join(''):'';
-  const shell=text=>`'${text.replaceAll("'","'\\''")}'`;
-  if(kind==='curl'||kind==='openai-curl')return `${notes}curl ${endpoint}${kind==='curl'?'/v1/systemone':'/v1/decisions'} -H 'Content-Type: application/json'${key?` -H 'Authorization: Bearer ${key}'`:''} \\\n  -d ${shell(JSON.stringify(body))}`;
-  if(kind==='python')return `import httpx\n\nresponse = httpx.post(\n    "${endpoint}/v1/systemone",\n    json=${pyLiteral(body,'    ')},${key?`\n    headers={"Authorization": "Bearer ${key}"},`:''}\n    timeout=60,\n)\nprint(response.json())`;
+  ]:files.length&&kind==='curl'?[t('media: put the base64 of each file (base64 -i FILE) in place of its BASE64_OF_ placeholder; for large media save the JSON as request.json and send it with -d @request.json')]:[]).map(n=>`# ${n}\n`).join('');
+  if(kind==='curl'||kind==='openai-curl'){
+    let json=JSON.stringify(body);
+    files.forEach((f,i)=>{json=json.replace(JSON.stringify(mediaMarker(i)),JSON.stringify(`BASE64_OF_${f.name}`));});
+    return `${notes}curl ${endpoint}${kind==='curl'?'/v1/systemone':'/v1/decisions'} -H 'Content-Type: application/json'${auth} \\\n  -d ${shell(json)}`;
+  }
+  if(kind==='python'){
+    let literal=pyLiteral(body,'    ');
+    files.forEach((f,i)=>{literal=literal.replace(JSON.stringify(mediaMarker(i)),`media(${JSON.stringify(f.name)})`);});
+    const reader=files.length?`\ndef media(path):  # ${t('the file as base64, as the request carries it')}\n    with open(path, "rb") as f:\n        return base64.b64encode(f.read()).decode()\n\n\n`:'';
+    return `${files.length?'import base64\n':''}import httpx\n\n${reader}response = httpx.post(\n    "${endpoint}/v1/systemone",\n    json=${literal},${key?`\n    headers={"Authorization": "Bearer ${key}"},`:''}\n    timeout=60,\n)\nprint(response.json())`;
+  }
   return `${notes}from openai import OpenAI\n\nclient = OpenAI(base_url="${endpoint}/v1", api_key="${key||'local'}")\ndecision = client.decisions.create(**${pyLiteral(body)})\nprint(decision)`;
 }
 (()=>{
@@ -77,7 +102,7 @@ function codeSnippet(kind) {
     try{
       if(!serveData)await loadServe();
       const kind=item.dataset.snippet;
-      copyText(codeSnippet(kind),kind==='mcp'?t('Code copied. Over MCP the gateway picks the model and media is not sent.'):t('Code copied'));
+      copyText(codeSnippet(kind),t('Code copied'));
     }catch(error){toast(error.message,'error');}
   });
   document.addEventListener('click',e=>{if(!menu.hidden&&!e.target.closest('.copy-menu'))close(false);});

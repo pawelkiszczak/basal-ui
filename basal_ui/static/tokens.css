@@ -1,4 +1,4 @@
-/* basal-ui design tokens: fonts, colour, type and spacing, light and dark (no build step, ADR 0001).
+/* basal-ui design tokens: fonts, colour, type and shape, light and dark (no build step, ADR 0001).
  *
  * Load order: vendor/basecoat → tokens.css → components.css → views.css. The rules live in the cascade layers named
  * below, declared after Basecoat's own (theme, base, components, utilities), so they win over Basecoat by layer and
@@ -39,12 +39,7 @@
   --fs-sm: 13px;
   --fs-md: 14px;
   --fs-base: 16px;
-  /* space and shape */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
+  /* shape */
   --corner-sm: 4px;
   --corner-md: 6px;
   --corner-lg: 10px;
@@ -74,7 +69,7 @@
   --accent: #326450;
   --accent-light: #e9f1e9;
   --on-accent: #fff;
-  --focus-ring: #32645020;
+  --dirty-ring: #32645020;  /* the halo of a button with unsaved changes (not a focus indicator) */
   --brand: #b94329;  /* the basal logo's own colour, both themes */
   --eyebrow: var(--accent);
   --eyebrow-quiet: #4d6754;
@@ -113,7 +108,6 @@
   --mark-evidence-bg: var(--accent-light);
   --mark-evidence-fg: inherit;
   --mark-kept-line: #b9cdb6;
-  --mark-field-line: #cfc3e2;
   --best-bg: #f2eee3;
   --best-border: #e2dbc8;
   --best-fg: #765b31;
@@ -127,12 +121,6 @@
   --chart-4: #6d746c;
   --chart-grid: #e3e5df;
 
-  /* compatibility names kept for existing rules */
-  --green: var(--accent);
-  --green-light: var(--accent-light);
-  --amber: var(--warning-fg);
-  --amber-light: var(--warning-bg);
-
   /* Basecoat's variables, onto the palette above */
   --primary: var(--accent);
   --primary-foreground: var(--on-accent);
@@ -140,7 +128,9 @@
   --radius: .65rem;
 }
 
-/* Dark: the system preference unless the user chose light, or an explicit choice (app.js sets data-theme). */
+/* Dark: the system preference unless the user chose light, or an explicit choice (core.js sets data-theme). CSS cannot
+ * join a media query and a selector in one rule, and light-dark() can carry neither --shadow nor browsers before 2024,
+ * so the palette is written twice: keep the two blocks identical (tests/test_ui_design.py checks). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme=light]) {
     color-scheme: dark;
@@ -159,7 +149,7 @@
     --accent: #a3d3b5;
     --accent-light: #233429;
     --on-accent: #14291c;
-    --focus-ring: #a3d3b533;
+    --dirty-ring: #a3d3b533;
     --eyebrow-quiet: #9fc3ab;
     --omni: #c3b1e6;
     --omni-light: #332d40;
@@ -190,7 +180,6 @@
     --mark-evidence-bg: #624035;
     --mark-evidence-fg: #fff;
     --mark-kept-line: #3b5e48;
-    --mark-field-line: #5a4d73;
     --best-bg: #34352e;
     --best-border: var(--line);
     --best-fg: var(--ink);
@@ -220,7 +209,7 @@
   --accent: #a3d3b5;
   --accent-light: #233429;
   --on-accent: #14291c;
-  --focus-ring: #a3d3b533;
+  --dirty-ring: #a3d3b533;
   --eyebrow-quiet: #9fc3ab;
   --omni: #c3b1e6;
   --omni-light: #332d40;
@@ -251,7 +240,6 @@
   --mark-evidence-bg: #624035;
   --mark-evidence-fg: #fff;
   --mark-kept-line: #3b5e48;
-  --mark-field-line: #5a4d73;
   --best-bg: #34352e;
   --best-border: var(--line);
   --best-fg: var(--ink);

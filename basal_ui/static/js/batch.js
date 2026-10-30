@@ -9,8 +9,8 @@ function answerBest(a) {
   return a.type||null;
 }
 let batchRowsLoaded=0, batchRunning=false, batchResult=null;
-$('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
-$('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
+$('#batchInput').value=stored('basal-ui.batchInput')||'';
+$('#batchInput').oninput=()=>store('basal-ui.batchInput',$('#batchInput').value);
 function renderBatchState(job, ready) {
   const select=$('#batchModel'), current=select.value, ids=ready.map(m=>m.id);
   if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
@@ -26,7 +26,7 @@ function renderBatchState(job, ready) {
 }
 function showBatchResult(r) {
   batchResult=r;
-  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
+  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${tp(r.items,'{n} item','{n} items')}</span><span class="chip">${tp(r.errors,'{n} error','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
   $('#downloadBatch').hidden=$('#copyBatchPath').hidden=false;
   batchRowsLoaded=0; $('#batchRows').innerHTML=''; loadBatchRows(); batchReliability(r).catch(()=>{});
 }

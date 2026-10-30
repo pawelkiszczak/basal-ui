@@ -148,34 +148,13 @@ const OWNED={choice:['criteria','levels','option_keys'],noul:['criteria','option
   multi:['criteria','option_keys',...SET_KEYS],act:['criteria','base','costs','defer_action','option_keys'],
   tool:['tools','extra','rank','multi','description_chars',...SET_KEYS],classify:['labels','criteria','multi_label','none','threshold','min','max','objective'],
   verify:['claims','binary'],compress:['unit','threshold','keep_ratio','min_keep'],extract:['schema']};
-const KEYED=/^([^\s:]{1,40}):\s*(\S.*)$/;  // "key: description"; a plain option text may contain colons too
 const textOf=v=>typeof v==='string'?v:JSON.stringify(v);
-const splitLines=text=>String(text||'').split('\n').map(x=>x.trim()).filter(Boolean);
-function parseOptions(text, type) {
-  const lines=splitLines(text);
-  if(type==='noul') { const c={}; if(lines[0]) c.true=lines[0]; if(lines[1]) c.false=lines[1]; return Object.keys(c).length?{criteria:c}:{}; }
-  if(type==='score') return {criteria:lines};
-  const hasDescriptions=lines.length>0&&lines.every(x=>KEYED.test(x));
-  const criteria={};
-  lines.forEach((line,i)=>{const m=line.match(KEYED); if(hasDescriptions) criteria[m[1]]=m[2]; else criteria[String(i)]=line;});
-  return {criteria,option_keys:hasDescriptions?'show':'hide'};
-}
-// lines -> {key: description} when every line is "key: description", else the plain lines (a list)
-function parseKeyedList(text) {
-  const lines=splitLines(text);
-  if(lines.length&&lines.every(x=>KEYED.test(x)))return Object.fromEntries(lines.map(x=>{const m=x.match(KEYED);return [m[1],m[2]];}));
-  return lines;
-}
-function keyedText(value, hideKeys=false) {
-  if(Array.isArray(value))return value.map(textOf).join('\n');
-  if(value&&typeof value==='object')return hideKeys?Object.values(value).map(textOf).join('\n'):Object.entries(value).map(([k,v])=>v==null?String(k):`${k}: ${textOf(v)}`).join('\n');
-  return '';
-}
 const isYesNo=q=>q.base==='noul'||Boolean(q.criteria&&!Array.isArray(q.criteria)&&typeof q.criteria==='object'&&Object.keys(q.criteria).length&&Object.keys(q.criteria).every(k=>k==='true'||k==='false'));
-function criteriaText(q, type) {
+// a question's criteria as option rows (option-rows.js): yes / no, levels or keyed (no keys shown under option_keys "hide")
+function criteriaRows(q, type) {
   const criteria=q.criteria ?? q.levels ?? {};
-  if(type==='noul'||(type==='act'&&isYesNo(q)))return Array.isArray(criteria)?'':[criteria.true,criteria.false].filter(x=>x!=null).map(textOf).join('\n');
-  return keyedText(criteria, q.option_keys==='hide'&&!Array.isArray(criteria));
+  if(type==='noul'||(type==='act'&&isYesNo(q)))return optionRowsOf(Array.isArray(criteria)?{}:criteria,'yesno');
+  return optionRowsOf(criteria,type==='score'?'levels':'keyed',q.option_keys==='hide'&&!Array.isArray(criteria));
 }
 function parseStructuredText(text) { const trimmed=text.trim(); if(trimmed.startsWith('{')||trimmed.startsWith('[')) { try{return JSON.parse(trimmed);}catch{}} return text; }
 let questionFieldId=0;
@@ -199,17 +178,17 @@ function costRowsOf(costs) {
 function actFields(card, q) {
   const simple=q.costs&&!costRowsOf(q.costs)?q.costs:{wrong:10,defer:1};
   card._costMode=costRowsOf(q.costs)?'matrix':'simple'; card._costRows=costRowsOf(q.costs)||[]; card._costOutcomes=null;
-  return qSwitch('yesno',isYesNo(q),'Yes / no outcomes')+optionField('criteria',criteriaText(q,'act'),t('Outcomes'),t('With keys, the cost matrix names its outcomes by them.'),t('Add outcome'))
+  return qSwitch('yesno',isYesNo(q),'Yes / no outcomes')+optionField('criteria',criteriaRows(q,'act'),t('Outcomes'),t('With keys, the cost matrix names its outcomes by them.'),t('Add outcome'),'hidden')
     +`<div class="qf"><span class="qf-label">${t('Costs')}</span><div class="tabs cost-mode"><button type="button" data-cost-mode="simple">${t('Simple')}</button><button type="button" data-cost-mode="matrix">${t('Matrix')}</button></div>`
     +`<div class="qf-row cost-simple">${qField('Wrong action',qNum('cost_wrong',simple.wrong,'step="any"'))}${qField('Defer to a person',qNum('cost_defer',simple.defer,'step="any" placeholder="none"'))}</div>`
     +`<div class="cost-matrix"><div class="table-wrap"><table class="cost-table"></table></div><button type="button" class="add-action">${t('Add action')}</button>${qField('Defer action',qText('defer_action',q.defer_action,'defer or human'),'The action max_error falls back to.')}</div></div>`;
 }
 function renderTypeFields(card, type, q) {
   let html='';
-  if(type==='choice')html=optionField('criteria',criteriaText(q,type),t('Options'),t('Fill every key to send explicit keys; leave all keys empty to use hidden keys 0…n.'));
-  else if(type==='noul')html=optionField('criteria',criteriaText(q,type),t('Yes / no descriptions'),t('Optional: what yes and no mean for this question.'));
-  else if(type==='score')html=optionField('criteria',criteriaText(q,type),t('Score levels'),t('Ordered from lowest to highest score.'),t('Add level'));
-  else if(type==='multi')html=optionField('criteria',keyedText(q.criteria),t('Labels'),t('Each label is its own yes/no decision; the selected set follows the objective.'),t('Add label'))+setFields(q);
+  if(type==='choice')html=optionField('criteria',criteriaRows(q,type),t('Options'),t('Fill every key to send explicit keys; leave all keys empty to use hidden keys 0…n.'),t('Add option'),'hidden');
+  else if(type==='noul')html=optionField('criteria',criteriaRows(q,type),t('Yes / no descriptions'),t('Optional: what yes and no mean for this question.'));
+  else if(type==='score')html=optionField('criteria',criteriaRows(q,type),t('Score levels'),t('Ordered from lowest to highest score.'),t('Add level'));
+  else if(type==='multi')html=optionField('criteria',optionRowsOf(q.criteria,'keyed'),t('Labels'),t('Each label is its own yes/no decision; the selected set follows the objective.'),t('Add label'))+setFields(q);
   else if(type==='act')html=actFields(card,q);
   else if(type==='tool'){
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
@@ -218,8 +197,8 @@ function renderTypeFields(card, type, q) {
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
   }
-  else if(type==='classify')html=optionField('labels',labelsText(q.labels??q.criteria),t('Labels'),t('Fill every key to send explicit keys; leave all keys empty to send the labels as a list.'),t('Add label'))+qSwitch('multi_label',q.multi_label,'Several labels (multi-label)')+' '+qSwitch('none',q.none,'Add a "none" label','single-only')+`<div class="multi-only">${setFields(q,false)}</div>`;
-  else if(type==='verify')html=optionField('claims',keyedText(q.claims),t('Claims'),t('Fill every key to name the claims; leave all keys empty to number them 0…n.'),t('Add claim'))+qSwitch('binary',q.binary,'Binary (supported / not supported)');
+  else if(type==='classify')html=optionField('labels',optionRowsOf(q.labels??q.criteria,'keyed'),t('Labels'),t('Fill every key to send explicit keys; leave all keys empty to send the labels as a list.'),t('Add label'),labelObjectList(q.labels??q.criteria)?'labels':'list')+qSwitch('multi_label',q.multi_label,'Several labels (multi-label)')+' '+qSwitch('none',q.none,'Add a "none" label','single-only')+`<div class="multi-only">${setFields(q,false)}</div>`;
+  else if(type==='verify')html=optionField('claims',optionRowsOf(q.claims,'keyed'),t('Claims'),t('Fill every key to name the claims; leave all keys empty to number them 0…n.'),t('Add claim'))+qSwitch('binary',q.binary,'Binary (supported / not supported)');
   else if(type==='compress')html=`<div class="qf-row">${qField('Unit',qSelect('unit',[['sentence','sentence'],['line','line'],['paragraph','paragraph']],q.unit||'sentence'))}${qField('Threshold',qNum('threshold',q.threshold,'min="0" max="1" step="0.05" placeholder="0.5"'))}${qField('Keep ratio',qNum('keep_ratio',q.keep_ratio,'min="0" max="1" step="0.05" placeholder="off"'),'share of the characters kept (overrides threshold)')}${qField('Min keep',qNum('min_keep',q.min_keep,'min="0" step="1" placeholder="1"'))}</div>`;
   else if(type==='extract')html=qField('Schema (JSON)',qArea('schema',q.schema?JSON.stringify(q.schema,null,2):'','{"type": "object", "properties": {"total": {"type": "number"}}}','json'),'string, number, integer, boolean, enum and arrays of enums; nested objects as dotted paths.');
   const me=q.max_error, preset=me==null||Array.isArray(me)?'':[0.01,0.05].includes(Number(me))?String(Number(me)):'custom', maxErrorId=`question-field-${++questionFieldId}`;
@@ -232,7 +211,8 @@ function renderTypeFields(card, type, q) {
 }
 function actOutcomes(card) {
   if($('[data-f="yesno"]',card)?.checked)return ['true','false'];
-  return Object.keys(parseOptions($('[data-f="criteria"]',card)?.value||'','choice').criteria);
+  const options=cardOptionRows(card,'criteria'); if(!options)return [];
+  return Object.keys(optionRowsValue(options.rows,'keyed','hidden').value);
 }
 function readCostRows(card) {
   return [...card.querySelectorAll('.cost-table tbody tr')].map(tr=>({action:$('.cost-action',tr).value,costs:Object.fromEntries([...tr.querySelectorAll('.cost-cell')].map(i=>[i.dataset.outcome,i.value]))}));
@@ -285,16 +265,6 @@ function rememberOriginal(card, type, q) {
     lines:{criteria:value('criteria'),labels:value('labels'),claims:value('claims'),yesno:$('[data-f="yesno"]',card)?.checked,
            instructions:$('.q-instructions-input',card).value}};
 }
-const labelObjects=v=>Array.isArray(v)&&v.length>0&&v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)&&'name' in x);
-function labelsText(v) {  // classify labels: {key: rubric}, [keys] or [{"name", "rubric" | "description"}]
-  if(!labelObjects(v))return keyedText(v);
-  return v.map(x=>{const d=x.rubric??x.description;return d==null?String(x.name):`${x.name}: ${textOf(d)}`;}).join('\n');
-}
-function parseLabels(text, original) {
-  if(!labelObjects(original))return parseKeyedList(text);
-  const key=original.some(x=>'rubric' in x)||!original.some(x=>'description' in x)?'rubric':'description';
-  return splitLines(text).map(line=>{const m=line.match(KEYED);return m?{name:m[1],[key]:m[2]}:{name:line};});
-}
 function parseQuestionCard(card, type=$('.q-type',card).value) {
   const name=$('.q-name',card).value.trim() || 'question';
   const orig=card._orig&&card._orig.type===type?card._orig:null, box=$('.q-error',card);
@@ -303,11 +273,14 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     return [name,structuredClone(orig.q)];
   }
   const el=f=>$(`[data-f="${f}"]`,card), str=f=>(el(f)?.value??'').trim(), num=f=>str(f)===''?undefined:Number(str(f)), on=f=>Boolean(el(f)?.checked);
-  const q={type}, errors=[], set=(k,v)=>{if(v!==undefined&&v!==''&&!(Array.isArray(v)&&!v.length))q[k]=v;};
+  const q={type}, errors=[], inline=[], set=(k,v)=>{if(v!==undefined&&v!==''&&!(Array.isArray(v)&&!v.length))q[k]=v;};
   const json=(f,check,message)=>{const text=str(f);if(!text){errors.push(t(message));return undefined;}try{const v=JSON.parse(text);if(check(v))return v;}catch{}errors.push(t(message));return undefined;};
   // a field whose text the user did not edit keeps the original's keys and values (none of them when it had none)
   const unedited=f=>orig!=null&&el(f)!=null&&el(f).value===orig.lines[f]&&(f!=='criteria'||type!=='act'||on('yesno')===orig.lines.yesno);
   const keep=(...keys)=>{keys.forEach(k=>{if(k in orig.q)q[k]=structuredClone(orig.q[k]);});};
+  // an option field's rows as the request value (option-rows.js); a duplicate key stops the request
+  const rows=(f,rubricKey='rubric')=>{const o=cardOptionRows(card,f);const r=o?optionRowsValue(o.rows,o.mode,o.kind,rubricKey):{value:null};if(r.error){errors.push(r.error);inline.push(r.error);}return r;};  // the rows show their own error
+  const options=()=>{const r=rows('criteria');return {criteria:r.value,option_keys:r.keyed?'show':'hide'};};
   if(orig&&$('.q-instructions-input',card).value===orig.lines.instructions)keep('instructions');
   else{
     const instructions=parseStructuredText($('.q-instructions-input',card).value);
@@ -321,12 +294,12 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     set('fallback',str('fallback')); set('fallback_threshold',num('fallback_threshold'));
     set('exclusive',str('exclusive').split(',').map(x=>x.trim()).filter(Boolean));
   };
-  if(['choice','noul','score'].includes(type)){if(unedited('criteria'))keep('criteria','levels','option_keys');else Object.assign(q,parseOptions(str('criteria'),type));}
-  else if(type==='multi'){if(unedited('criteria'))keep('criteria','option_keys');else set('criteria',parseKeyedList(str('criteria'))); setOptions();}
+  if(['choice','noul','score'].includes(type)){if(unedited('criteria'))keep('criteria','levels','option_keys');else if(type==='choice')Object.assign(q,options());else{const v=rows('criteria').value;if(v)q.criteria=v;}}
+  else if(type==='multi'){if(unedited('criteria'))keep('criteria','option_keys');else set('criteria',rows('criteria').value); setOptions();}
   else if(type==='act'){
     if(unedited('criteria'))keep('criteria','base','option_keys');
-    else if(on('yesno')){const c=parseOptions(str('criteria'),'noul').criteria;if(c)q.criteria=c;else q.base='noul';}
-    else Object.assign(q,parseOptions(str('criteria'),'choice'));
+    else if(on('yesno')){const c=rows('criteria').value;if(c)q.criteria=c;else q.base='noul';}
+    else Object.assign(q,options());
     if(card._costMode==='matrix'){
       const rows=readCostRows(card).filter(r=>r.action.trim());
       const missing=rows.some(r=>Object.values(r.costs).some(v=>v===''));
@@ -344,10 +317,10 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     set('rank',num('rank')); if(num('description_chars')!==undefined&&num('description_chars')!==300)q.description_chars=num('description_chars');
   }
   else if(type==='classify'){
-    if(unedited('labels'))keep('labels','criteria','option_keys'); else set('labels',parseLabels(str('labels'),orig?.q.labels));
+    if(unedited('labels'))keep('labels','criteria','option_keys'); else{const o=orig?.q.labels;set('labels',rows('labels',labelObjectList(o)&&o.some(x=>'description' in x)&&!o.some(x=>'rubric' in x)?'description':'rubric').value);}
     if(on('multi_label')){q.multi_label=true;setOptions(false);} else if(on('none'))q.none=true;
   }
-  else if(type==='verify'){if(unedited('claims'))keep('claims');else set('claims',parseKeyedList(str('claims'))); if(on('binary'))q.binary=true;}
+  else if(type==='verify'){if(unedited('claims'))keep('claims');else set('claims',rows('claims').value); if(on('binary'))q.binary=true;}
   else if(type==='compress'){
     if(str('unit')&&str('unit')!=='sentence')q.unit=str('unit');
     if(num('threshold')!==undefined&&num('threshold')!==0.5)q.threshold=num('threshold');
@@ -357,8 +330,9 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
   const multiTool=type==='tool'&&q.multi;
   if(EVIDENCE_TYPES.includes(type)&&!multiTool&&on('evidence'))q.evidence=true;
   if(MAX_ERROR_TYPES.includes(type)&&!multiTool){const me=str('max_error');if(me==='custom')set('max_error',num('max_error_custom'));else if(me)q.max_error=Number(me);}
-  card._error=errors.join('\n')||null;
-  if(box){box.textContent=card._error||'';box.hidden=!card._error;}
+  card._error=errors.join('\n')||null;  // any error stops the request; the box repeats none the option rows already show
+  const shown=errors.filter(e=>!inline.includes(e)).join('\n');
+  if(box){box.textContent=shown;box.hidden=!shown;}
   return [name,{...card._extra,...q}];
 }
 function extraOf(q, type) {
@@ -490,7 +464,7 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
   selectedMedia=restored;renderSelectedMedia();
   $('#editJsonToggle').checked=false;$('#editJsonArea').hidden=true;$('#builder').hidden=false;showMediaError();
   if(req.model&&[...$('#playgroundModel').options].some(o=>o.value===req.model)){
-    selectedModel=req.model;localStorage.setItem('basal-ui.model',selectedModel);$('#playgroundModel').value=selectedModel;
+    selectedModel=req.model;store('basal-ui.model',selectedModel);$('#playgroundModel').value=selectedModel;
     const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);
   }
   const stateInput=$('#stateInput');

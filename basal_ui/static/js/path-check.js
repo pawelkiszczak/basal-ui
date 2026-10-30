@@ -2,11 +2,24 @@
 // lines and the shape of its first row. Browsers do not reveal a picked file's path, so these fields name files on the
 // machine basal-ui runs on.
 'use strict';
-const PATH_PROBLEMS={missing:'No file at this path.',is_dir:'This is a directory, not a file.',not_file:'This is not a regular file.',
-  unreadable:'basal-ui cannot read this file.',empty:'The file is empty.',not_json:'The first line is not a JSON object.',
-  unknown_format:'The first row is neither a simple item nor a request with questions.',not_text:'The file is not UTF-8 text.',
-  too_large:'The file is too large to check.',dir_missing:'The directory does not exist.',not_writable:'basal-ui cannot write here.',
-  invalid:'This path is not valid here (too long, or a link loop).',not_dir:'This is a file, not a directory.'};
+// every problem code basal_ui/paths.py returns, translated here (literal t() calls: the i18n test sees each key, and
+// tests/test_ui_frontend_contract.py checks this map against paths.py)
+const PATH_PROBLEMS={
+  missing:t('No file at this path.'),
+  is_dir:t('This is a directory, not a file.'),
+  not_file:t('This is not a regular file.'),
+  unreadable:t('basal-ui cannot read this file.'),
+  empty:t('The file is empty.'),
+  not_json:t('The first line is not a JSON object.'),
+  line_too_long:t('The first line is too long to check.'),
+  unknown_format:t('The first row is neither a simple item nor a request with questions.'),
+  not_text:t('The file is not UTF-8 text.'),
+  too_large:t('The file is too large to check.'),
+  dir_missing:t('The directory does not exist.'),
+  not_writable:t('basal-ui cannot write here.'),
+  invalid:t('This path is not valid here (too long, or a link loop).'),
+  not_dir:t('This is a file, not a directory.'),
+};
 function pathSummary(r) {
   if(r.kind==='output')return r.exists?t('Exists: it will be replaced.'):t('A new file will be written.');
   if(r.kind==='append')return r.exists?t('Exists: new decisions are appended.'):t('A new file will be written.');
@@ -29,19 +42,21 @@ function attachPathCheck(input, kind) {
     if(!path){hint.textContent='';hint.className='path-hint';preview.hidden=true;return;}
     try{
       const r=await api('/api/paths/check',{method:'POST',body:JSON.stringify({path,kind})});
-      if(current!==sequence)return;
+      if(current!==sequence||input.value.trim()!==path)return;  // a newer check, or the field changed since
       hint.className=`path-hint ${r.ok?'ok':'problem'}`;
-      hint.textContent=r.ok?`✓ ${pathSummary(r)}`:t(PATH_PROBLEMS[r.code]||'This path cannot be used.');
+      hint.textContent=r.ok?`✓ ${pathSummary(r)}`:PATH_PROBLEMS[r.code]||t('This path cannot be used.');
       hint.title=r.path;
       preview.hidden=!r.first?.preview; preview.querySelector('pre').textContent=r.first?.preview||'';
-    }catch(e){if(current===sequence){hint.className='path-hint problem';hint.textContent=e.message;preview.hidden=true;}}
+    }catch(e){if(current===sequence&&input.value.trim()===path){hint.className='path-hint problem';hint.textContent=e.message;preview.hidden=true;}}
   };
-  input.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(run,400);});
+  // typing invalidates a check still in flight: its answer is for a path no longer in the field
+  input.addEventListener('input',()=>{sequence++;clearTimeout(timer);timer=setTimeout(run,400);});
   // code that sets the value (a loaded setting, a cleared field) dispatches 'pathcheck' to refresh the hint now
   input.addEventListener('pathcheck',()=>{clearTimeout(timer);run();});
   if(input.value.trim())run();
 }
-// after every view script has built its fields (Calibration's are rendered by manager.js)
+// DOMContentLoaded: after every deferred script ran, so every view script has built its fields (Calibration's are
+// rendered by manager.js, after this file)
 document.addEventListener('DOMContentLoaded',()=>{
   attachPathCheck($('#batchInput'),'jsonl'); attachPathCheck($('#batchOutput'),'output');
   attachPathCheck($('#calibrationInput'),'jsonl'); attachPathCheck($('#calibrationImportPath'),'json');

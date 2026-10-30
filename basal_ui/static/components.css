@@ -61,18 +61,14 @@
     border-radius: 5px;
     padding: 8px;
   }
-  input:focus,
-  textarea:focus,
-  select:focus {
-    outline: 0;
+  /* fields, selects, switches and radios keep the 2px accent outline of :focus-visible above (>= 3:1 on every surface,
+   * WCAG 1.4.11 / 2.4.13) and the border turns accent; Basecoat's own ring (accent at 50%, about 2:1) is dropped so
+   * it does not blur the outline */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--focus-ring);
-  }
-  /* switches and radios keep the 2px accent outline: their border and the faint ring alone are not visible enough */
-  input[type=checkbox]:focus-visible,
-  input[type=radio]:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    box-shadow: none;
   }
   select {
     min-height: 40px;

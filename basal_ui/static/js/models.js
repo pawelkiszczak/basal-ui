@@ -61,7 +61,7 @@ document.addEventListener('click',e=>{
   else loadModel(id,b.dataset.media==='true');
 });
 function useInPlayground(id) {
-  selectedModel=id; try{localStorage.setItem('basal-ui.model',id);}catch{}
+  selectedModel=id; store('basal-ui.model',id);
   renderPlaygroundModels(readyModels()); $('#playgroundModel').dispatchEvent(new Event('change'));
   showView('playground',true);
 }
@@ -223,9 +223,10 @@ async function loadModel(id, media=false) {
   statusSequence++;
   clearSelectedMedia();
   try { await api('/api/load', {method:'POST', body:JSON.stringify({id,...(media?{media:true}:{})})}); toast(t('Model load started')); await refreshStatus(); }
-  catch (e) { showStatusError(e.message); toast(e.message,'error'); }
+  catch (e) { toast(e.message,'error'); }
 }
-function showStatusError(text) { if(text)toast(text,'error'); }
+// the status poll's one error toast (key 'status'): replaced while the server stays down, dismissed once it answers
+function showStatusError(text) { if(text)toast(text,'error',{key:'status'}); }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
 $('#downloadedToggle').addEventListener('change',rerenderFilters);
 $('#saveModelsDir').addEventListener('click',()=>saveModelsDir($('#modelsDir').value));

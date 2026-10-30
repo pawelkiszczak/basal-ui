@@ -16,19 +16,25 @@ BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what 
 ```
 
 For layout, screenshot and accessibility checks without models, `scripts/ui_fixture_server.py` serves basal-ui on
-fake hardware with stand-in `basal-serve` answers (`--preload`, `--empty`; see its docstring). The README screenshots
-and the recordings in `docs/images/ux/` were captured on it with Playwright.
+fake hardware with stand-in `basal-serve` answers (`--preload`, `--empty`; see its docstring). A load runs basal-ui's
+real `Runner`, which starts the script's own `--child` process in place of `basal-serve`; the few hooks into basal-ui's
+internals sit in one adapter that `tests/test_ui_fixture_server.py` checks against the real catalog and `Runner`. The
+README screenshots and the recordings in `docs/images/ux/` were captured on it with Playwright.
 
 ## Accessibility
 
-`tests/e2e/test_a11y.py` starts the fixture server itself and needs no model, so it runs without `BASAL_E2E=1`:
+`tests/e2e/test_a11y.py` starts the fixture server itself and needs no model, so it is marked `fixture_server` and runs
+without `BASAL_E2E=1`:
 
 ```bash
 uv run --no-sync pytest tests/e2e/test_a11y.py -v
 ```
 
 It opens every view in light and dark at 1440 and 390 px, injects axe-core (vendored in `tests/e2e/assets/`, never
-served by basal-ui) and fails on any serious or critical violation; it skips when Playwright or Chromium is missing.
+served by basal-ui) once the view has settled (no request in flight, no visible "Loading…" or `aria-busy` region) and
+fails on any serious or critical violation. It skips when Playwright or Chromium is missing, unless `BASAL_E2E=1` is
+set: then a missing Chromium fails. CI's `a11y` job runs it that way on Ubuntu; it is not part of `ci-ok`, so a
+violation shows on the pull request without blocking the merge.
 `tests/test_ui_a11y.py` (unit tests, no browser) checks the landmarks, heading order, labels and tab markup of
 `index.html`. Before a release, also walk *load a model → send a decision → copy the endpoint* with the keyboard only,
 and smoke-test that path with VoiceOver (macOS) and NVDA (Windows); note the result in the release PR.

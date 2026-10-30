@@ -75,6 +75,6 @@ $('#paletteList').addEventListener('mousemove',e=>{const o=e.target.closest('[ro
 $('#commandPalette').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.close();});  // the backdrop
 document.addEventListener('keydown',e=>{
   if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey||e.key.toLowerCase()!=='k')return;
-  if(PALETTE_MAC&&!e.metaKey&&e.target.matches('input,textarea,[contenteditable],[contenteditable] *'))return;  // Ctrl+K: kill line
+  if(PALETTE_MAC&&!e.metaKey&&e.target instanceof Element&&e.target.matches('input,textarea,[contenteditable],[contenteditable] *'))return;  // Ctrl+K: kill line
   e.preventDefault(); openPalette();
 });

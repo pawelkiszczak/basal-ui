@@ -15,20 +15,6 @@
     overflow-y: auto;  /* on a short laptop screen the status and tools scroll inside the pinned sidebar */
     overscroll-behavior: contain;
   }
-  @media (min-width: 901px) and (max-height: 860px) {
-    .sidebar {
-      padding-block: 18px;
-    }
-    .sidebar .brand {
-      padding-bottom: 16px;
-    }
-    .side-nav {
-      gap: 2px;
-    }
-    .side-nav button {
-      padding-block: 6px;
-    }
-  }
   .app-shell {
     display: grid;
     grid-template-columns: 248px minmax(0,1fr);
@@ -46,7 +32,7 @@
     align-items: center;
     justify-content: flex-start;
     text-align: left;
-    transition: none !important;
+    transition: none;
     gap: 12px;
     width: 100%;
     border-color: transparent;
@@ -125,13 +111,6 @@
     background: var(--white);
     color: var(--ink);
     font: inherit;
-  }
-  .main-content input[type=number]:focus,
-  .main-content input[type=search]:focus,
-  .main-content input[type=url]:focus {
-    outline: 0;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--focus-ring);
   }
   .page-header {
     justify-content: flex-end;
@@ -247,7 +226,47 @@
     white-space: normal;
     overflow-wrap: anywhere;
   }
+  /* short laptop screens, in two steps: a tighter sidebar, then menu groups divided by lines instead of their labels,
+   * so the whole sidebar fits */
+  @media (min-width: 901px) and (max-height: 860px) {
+    .sidebar {
+      padding-block: 18px;
+    }
+    .sidebar .brand {
+      padding-bottom: 16px;
+    }
+    .side-nav {
+      gap: 2px;
+    }
+    .side-nav button {
+      padding-block: 6px;
+    }
+  }
+  @media (min-width: 901px) and (max-height: 820px) {
+    .nav-group-label {
+      display: none;
+    }
+    .nav-group {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid var(--line);
+    }
+    .sidebar-status {
+      padding-top: 10px;
+    }
+    .footer-model {
+      margin: 4px 0;
+    }
+    .sidebar-tools {
+      margin: 6px 0;
+    }
+  }
+  /* compact layout (tablet, phone): one header row (brand, status, tools) above the menu strip, which scrolls
+   * sideways; focus and anchors keep clear of the header (--header-h is measured in shell.js) */
   @media (max-width: 900px) {
+    html {
+      scroll-padding-top: calc(var(--header-h, 110px) + 8px);
+    }
     .status {
       top: 0;
     }
@@ -258,21 +277,35 @@
       position: sticky;  /* the compact top bar stays reachable on long pages */
       top: 0;
       z-index: 30;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      grid-template-areas: "brand status" "nav nav";
+      align-items: center;
+      gap: 8px 12px;
       overflow: visible;
       width: 100%;
       height: auto;
       padding: 12px 16px;
       border-right: 0;
       border-bottom: 1px solid var(--line);
-      gap: 10px;
     }
     .sidebar-top {
-      display: flex;
-      align-items: center;
-      gap: 18px;
+      display: contents;  /* the brand and the menu take their places in the sidebar's grid */
     }
     .sidebar .brand {
+      grid-area: brand;
       padding: 0;
+    }
+    .side-nav {
+      grid-area: nav;
+      display: flex;
+      gap: 3px;
+      width: 100%;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+      /* an edge fade says the strip scrolls */
+      mask-image: linear-gradient(to right, transparent 0, black 14px, black calc(100% - 24px), transparent 100%);
     }
     .side-nav button {
       width: auto;
@@ -282,48 +315,36 @@
     .side-nav button svg {
       display: none;
     }
+    .nav-group {
+      display: contents;
+    }
+    .nav-group-label {
+      display: none;
+    }
+    .sidebar-status {
+      grid-area: status;
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      min-width: 0;
+      padding: 0;
+      border-top: 0;
+    }
+    .footer-status {
+      flex: none;
+    }
     .footer-model {
-      flex: 1;
+      flex: 0 1 auto;
       min-width: 0;
       margin: 0;
     }
     .footer-url {
       display: none;
     }
-    .main-content {
-      padding: 20px 16px 48px;
-    }
-    .sidebar-top {
-      width: 100%;
-      min-width: 0;
-    }
-    .side-nav {
-      display: flex;
-      gap: 3px;
-      flex: 1;
-      min-width: 0;
-      overflow-x: auto;
-      scrollbar-width: none;
-      /* an edge fade says the strip scrolls */
-      mask-image: linear-gradient(to right, transparent 0, black 14px, black calc(100% - 24px), transparent 100%);
-    }
-    .sidebar-status {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      border-top: 1px solid var(--line);
-      padding: 8px 0 0;
-      flex-wrap: wrap;
-      min-width: 0;
-    }
     .sidebar-status .outline-action {
       width: auto;
-    }
-    .nav-group {
-      display: contents;
-    }
-    .nav-group-label {
-      display: none;
     }
     .sidebar-tools {
       margin: 0;
@@ -332,29 +353,52 @@
     .palette-trigger kbd {
       display: none;
     }
+    .main-content {
+      padding: 20px 16px 48px;
+    }
   }
   @media (max-width: 520px) {
-    .sidebar-top {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 8px;
+    .side-nav {
+      overscroll-behavior-x: contain;
     }
     .side-nav button {
       font-size: 12px;
       padding: 7px 8px;
     }
+    .footer-model {
+      display: none;  /* the Overview lists the loaded models; the header keeps the count */
+    }
     .main-content {
       padding: 16px 12px 40px;
     }
-    .sidebar-top,
-    .side-nav {
-      width: 100%;
-      min-width: 0;
+  }
+  @media (max-width: 420px) {
+    .sidebar .brand > span:not(#engineBadge) {  /* the mark stays; the wordmark gives its room to the status */
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
     }
-    .side-nav {
-      overflow-x: auto;
-      overscroll-behavior-x: contain;
-    }
+  }
+  /* the toasts (--toast-h is measured in shell.js): the last controls of a page can still scroll out from under one */
+  html {
+    scroll-padding-bottom: calc(var(--toast-h, 0px) + 8px);
+  }
+  body {
+    padding-bottom: var(--toast-h, 0px);
+  }
+  /* one card-title size across the views; buttons placed straight in a card keep their width */
+  .card > h2,
+  .card > .section-head h2,
+  .card > .dashboard-heading h2 {
+    font-size: 17px;
+    font-weight: 600;
+  }
+  .card > button,
+  .card > .btn {
+    align-self: flex-start;
   }
 
   /* --- Overview --- */
@@ -517,7 +561,7 @@
   }
   .memory-progress > span {
     flex: none;
-    background: var(--green);
+    background: var(--accent);
   }
   .memory-progress.over > span {
     background: var(--accent);
@@ -548,10 +592,17 @@
   #status > .dashboard-heading {
     margin-bottom: 4px;
   }
+  /* stat tiles: one rule in Overview and Library (tiles of a row share its height); a lone histogram tile on a phone
+   * takes the whole row */
   .loaded-stats {
     margin: 4px 0 2px;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    align-items: start;  /* a tile without a chart keeps its own height */
+    align-items: stretch;
+  }
+  @media (max-width: 520px) {
+    .stats > .stat:has(.viz-histogram):last-child:nth-child(odd) {
+      grid-column: 1 / -1;
+    }
   }
   .loaded-stats .stat-value {
     font-size: 17px;
@@ -700,7 +751,7 @@
   }
   .suggestion-downloaded {
     font: 600 var(--fs-xs)/1.6 var(--sans);
-    color: var(--green);
+    color: var(--accent);
   }
   .suggestion-card button.primary {
     align-self: flex-start;
@@ -980,18 +1031,6 @@
   .disk-group-heading > span {
     font: 12px var(--mono);
   }
-  .disk-group .disk-info {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  .disk-group .disk-actions {
-    display: flex;
-    flex: none;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 6px;
-  }
   @media (max-width: 520px) {
     .disk-row {
       align-items: stretch;
@@ -1001,6 +1040,72 @@
       width: 100%;
       min-width: 100px;
     }
+  }
+  /* the Library's model rows stack by the width of their card, not the viewport's (200% zoom, a narrow window) */
+  .disk-group {
+    container-type: inline-size;
+  }
+  .disk-group .disk-info {
+    flex: 1 1 12rem;
+    min-width: 8rem;
+    overflow-wrap: anywhere;
+  }
+  .disk-group .disk-actions {
+    display: flex;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
+  }
+  @container (max-width: 760px) {
+    .disk-group .disk-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .disk-group .disk-info {
+      flex: none;  /* in a column the 12rem basis would be a height */
+    }
+    .disk-group .disk-actions {
+      justify-content: flex-start;
+    }
+  }
+  /* statistics, benchmark and calibration charts */
+  .stats-models,
+  .bench-model + .bench-model {
+    display: grid;
+    gap: 14px;
+  }
+  .stats-model,
+  .bench-model,
+  .calibration-charts {
+    display: grid;
+    gap: 10px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+  }
+  .stats-model h4,
+  .bench-model h4 {
+    margin: 0;
+    font-size: 15px;
+  }
+  .viz-title {
+    margin: 0 0 6px;
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-weight: 650;
+  }
+  .bench-charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+    gap: 14px 28px;
+  }
+  .bench-trend {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  }
+  #benchmarkResults > .table-wrap {
+    margin-top: 10px;
   }
 
   /* --- API server --- */
@@ -1020,7 +1125,7 @@
     color: var(--warning-fg);
   }
   #saveServe.dirty {
-    box-shadow: 0 0 0 3px var(--focus-ring);
+    box-shadow: 0 0 0 3px var(--dirty-ring);
   }
   #serveSaveHint {
     align-self: center;
@@ -1119,13 +1224,46 @@
   .serve-status label {
     margin-left: auto;
   }
+  /* the compatibility matrix scrolls sideways in its .table-wrap rather than crushing its columns */
+  .compat-table {
+    min-width: 34rem;
+  }
+  .compat-table th[scope=row] {
+    min-width: 9rem;
+    white-space: normal;
+  }
+  .compat-table td,
+  .compat-table th {
+    vertical-align: top;
+    font-size: var(--fs-sm);
+  }
+  .compat-table .yes {
+    color: var(--success-fg);
+    font-weight: 650;
+  }
+  .compat-table .no {
+    color: var(--muted);
+  }
+  .connect-panel > p {
+    margin: 6px 0 0;
+    font-size: var(--fs-sm);
+  }
+  #apiServer > h2,
+  #apiServer > .section-head h2 {
+    margin-top: 10px;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  .compat-title {
+    font-size: var(--fs-sm);
+    font-weight: 650;
+    color: var(--muted);
+  }
+  #copyServeConnect {
+    align-self: flex-start;
+  }
 
   /* --- Load options dialog --- */
-  .q-fields,
-  .option-grid {
-    display: grid;
-    gap: 8px;
-  }
   .options-dialog {
     position: fixed;
     inset: 0;
@@ -1246,18 +1384,16 @@
     margin-bottom: 8px;
   }
   .option-mode {
-    display: flex !important;
+    display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    min-width: 0;
     font-size: 13px;
+    overflow-wrap: anywhere;
     border: 1px solid var(--line);
     border-radius: 5px;
     padding: 6px 8px;
-  }
-  .option-mode {
-    min-width: 0;
-    overflow-wrap: anywhere;
   }
   .option-mode small {
     flex-basis: 100%;
@@ -1295,6 +1431,42 @@
   .option-note {
     font-size: 12px;
     margin-top: 8px;
+  }
+  /* Recommended / Custom */
+  .options-choice {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 18px 2px;
+  }
+  .options-dialog > #optionsRecommendedNote {
+    margin: 8px 18px 4px;
+    font-size: var(--fs-sm);
+  }
+  .options-dialog > #optionsDiff {
+    padding: 0 18px;
+  }
+  .options-choice label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    font-size: 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--corner-md);
+    cursor: pointer;
+  }
+  .options-choice label:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+  .options-diff p {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0;
+    font-size: var(--fs-sm);
   }
 
   /* --- Model card dialog --- */
@@ -1601,6 +1773,9 @@
   .playground-head select {
     max-width: 400px;
   }
+  #playgroundHint {
+    margin-bottom: 12px;
+  }
   .q-head {
     display: grid;
     grid-template-columns: minmax(120px,1fr) 145px auto;
@@ -1647,9 +1822,8 @@
   .q-head > div {
     min-width: 0;
   }
-  .qf-row input:not([type=checkbox]),
-  .qf input[type=text] {
-    width: 100%;
+  .q-head label {  /* the question editor's labels sit above their fields */
+    display: block;
   }
   .qf-switch {
     font-size: 13px;
@@ -1858,7 +2032,7 @@
     color: var(--mark-evidence-fg);
   }
   mark.kept {
-    background: var(--green-light);
+    background: var(--accent-light);
     box-shadow: inset 0 -2px 0 var(--mark-kept-line);
   }
   mark.dropped {
@@ -1927,6 +2101,106 @@
     line-height: 1.6;
   }
 
+  /* --- Playground: Copy as code, Compare --- */
+  .send-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+  }
+  .copy-menu {
+    position: relative;
+  }
+  .copy-code-menu {
+    position: absolute;
+    z-index: 20;
+    left: 0;
+    bottom: calc(100% + 6px);
+    display: grid;
+    min-width: 230px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--corner-md);
+    background: var(--white);
+    box-shadow: var(--shadow-md);
+  }
+  .copy-code-menu button {
+    border: 0;
+    text-align: left;
+    background: transparent;
+    font-size: var(--fs-sm);
+  }
+  .copy-code-menu button:hover,
+  .copy-code-menu button:focus-visible {
+    background: var(--hover-bg);
+  }
+  .copy-code-menu button[aria-disabled="true"] {
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  .compare-pick {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .compare-pick #compareHint {
+    font-size: var(--fs-xs);
+  }
+  #compareButton[aria-disabled="true"] {
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  /* while comparing, the columns and the difference table take the whole width, under the request */
+  .playground-workspace.comparing {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .playground-workspace.comparing .response-panel {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+  .compare-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .compare-grid > section {
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--corner-md);
+  }
+  .compare-grid h3 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    overflow-wrap: anywhere;
+  }
+  .compare-diff {
+    margin-top: 12px;
+  }
+  .compare-diff-title {
+    margin-top: 18px;
+  }
+  .compare-diff td.up {
+    color: var(--chart-1);
+  }
+  .compare-diff td.down {
+    color: var(--chart-2);
+  }
+  .compare-diff td {
+    font-variant-numeric: tabular-nums;
+  }
+  .compare-diff .mini-table thead th:first-child,
+  .compare-diff .mini-table thead th:last-child {
+    white-space: nowrap;
+  }
+  @media (max-width: 760px) {
+    .compare-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
   /* --- History and Logs --- */
   .log-view {
     max-height: calc(100vh - 260px);
@@ -1982,6 +2256,53 @@
   .elements-canvas-wrap canvas:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+  /* History on a phone: each decision is a card (time, model, source; the state; answers; latency and status) */
+  @media (max-width: 600px) {
+    .history-table thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+    .history-table,
+    .history-table tbody {
+      display: block;
+    }
+    .history-table tr.history-row {
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr);
+      align-items: center;
+      gap: 4px 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .history-table tr.history-row > td {
+      border: 0;
+      padding: 0;
+    }
+    .history-table .history-state,
+    .history-table .history-answers {
+      grid-column: 1 / -1;
+      max-width: none;
+    }
+    .history-table .history-latency {
+      grid-column: 1 / 3;
+      font-size: var(--fs-xs);
+    }
+    .history-table .history-status {
+      justify-self: end;
+    }
+    .history-table tr.history-detail {
+      display: block;
+    }
+    .history-table tr.history-detail > td {
+      display: block;
+    }
+    .history-panes {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   /* --- Inspect --- */
@@ -2076,6 +2397,12 @@
   }
   .backend-card > .muted {
     margin-top: 12px;
+  }
+  .backend-card details a {  /* WCAG 2.5.8: the link under Copy setup command keeps a 24 px target and a gap */
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    margin-top: 6px;
   }
 
   /* --- Element marker (elements.js) --- */
@@ -2257,155 +2584,23 @@
     font-size: var(--fs-xs);
   }
 
-  /* --- Load options: Recommended / Custom --- */
-  .options-choice {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin: 8px 18px 2px;
-  }
-  .options-dialog > #optionsRecommendedNote {
-    margin: 8px 18px 4px;
-    font-size: var(--fs-sm);
-  }
-  .options-dialog > #optionsDiff {
-    padding: 0 18px;
-  }
-  .options-choice label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 12px;
-    font-size: 14px;
-    border: 1px solid var(--line);
-    border-radius: var(--corner-md);
-    cursor: pointer;
-  }
-  .options-choice label:has(input:checked) {
-    border-color: var(--accent);
-    background: var(--accent-light);
-  }
-  .options-diff p {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    margin: 6px 0;
-    font-size: var(--fs-sm);
-  }
-
-  /* --- Library: statistics, benchmark and calibration charts --- */
-  .stats-models,
-  .bench-model + .bench-model {
+  /* --- Keyboard shortcuts dialog: a two-column list --- */
+  .shortcut-list {
     display: grid;
-    gap: 14px;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 8px 14px;
+    align-items: baseline;
+    margin: 0 0 12px;
   }
-  .stats-model,
-  .bench-model,
-  .calibration-charts {
-    display: grid;
-    gap: 10px;
-    padding: 14px 0;
-    border-top: 1px solid var(--line);
+  .shortcut-list dt {
+    white-space: nowrap;
   }
-  .stats-model h4,
-  .bench-model h4 {
+  .shortcut-list dd {
     margin: 0;
-    font-size: 15px;
   }
-  .viz-title {
-    margin: 0 0 6px;
-    color: var(--muted);
-    font-size: var(--fs-xs);
-    font-weight: 650;
-  }
-  .bench-charts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-    gap: 14px 28px;
-  }
-  .bench-trend {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
-  }
-  #benchmarkResults > .table-wrap {
-    margin-top: 10px;
-  }
-
-  /* --- Playground: Copy as code, Compare --- */
-  .send-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 10px;
-  }
-  .copy-menu {
-    position: relative;
-  }
-  .copy-code-menu {
-    position: absolute;
-    z-index: 20;
-    left: 0;
-    bottom: calc(100% + 6px);
-    display: grid;
-    min-width: 230px;
-    padding: 4px;
-    border: 1px solid var(--line);
-    border-radius: var(--corner-md);
-    background: var(--white);
-    box-shadow: var(--shadow-md);
-  }
-  .copy-code-menu button {
-    border: 0;
-    text-align: left;
-    background: transparent;
+  .shortcut-list + .muted,
+  .shortcut-list + .muted + .muted {
     font-size: var(--fs-sm);
-  }
-  .copy-code-menu button:hover,
-  .copy-code-menu button:focus-visible {
-    background: var(--hover-bg);
-  }
-  .copy-code-menu button[aria-disabled="true"] {
-    color: var(--muted);
-    cursor: not-allowed;
-  }
-  .compare-pick {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-  }
-  .compare-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
-  }
-  .compare-grid > section {
-    min-width: 0;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: var(--corner-md);
-  }
-  .compare-grid h3 {
-    margin: 0 0 4px;
-    font-size: 15px;
-    overflow-wrap: anywhere;
-  }
-  .compare-diff {
-    margin-top: 12px;
-  }
-  .compare-diff td.up {
-    color: var(--chart-1);
-  }
-  .compare-diff td.down {
-    color: var(--chart-2);
-  }
-  .compare-diff td {
-    font-variant-numeric: tabular-nums;
-  }
-  @media (max-width: 760px) {
-    .compare-grid {
-      grid-template-columns: minmax(0, 1fr);
-    }
   }
 
   /* --- path fields: the live check under them --- */
@@ -2431,274 +2626,5 @@
     overflow: auto;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-  }
-
-  /* --- API server: compatibility matrix and client configs --- */
-  .compat-table th[scope=row] {
-    white-space: nowrap;
-  }
-  .compat-table td,
-  .compat-table th {
-    vertical-align: top;
-    font-size: var(--fs-sm);
-  }
-  .compat-table .yes {
-    color: var(--success-fg);
-    font-weight: 650;
-  }
-  .compat-table .no {
-    color: var(--muted);
-  }
-  .connect-panel > p {
-    margin: 6px 0 0;
-    font-size: var(--fs-sm);
-  }
-  #apiServer > h2,
-  #apiServer > .section-head h2 {
-    margin-top: 10px;
-    font-size: 17px;
-    font-weight: 600;
-  }
-  .compat-title {
-    font-size: var(--fs-sm);
-    font-weight: 650;
-    color: var(--muted);
-  }
-  #copyServeConnect {
-    align-self: flex-start;
-  }
-  /* one card-title size across the views; buttons placed straight in a card keep their width */
-  .card > h2,
-  .card > .section-head h2,
-  .card > .dashboard-heading h2 {
-    font-size: 17px;
-    font-weight: 600;
-  }
-  .card > button,
-  .card > .btn {
-    align-self: flex-start;
-  }
-  /* --- Review fixes: reflow, sticky header clearance, small tables, dialogs --- */
-  /* the Library's model rows stack by the width of their card, not the viewport's (200% zoom, a narrow window) */
-  .disk-group {
-    container-type: inline-size;
-  }
-  .disk-group .disk-info {
-    flex: 1 1 12rem;
-    min-width: 8rem;
-  }
-  .disk-group .disk-actions {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-  @container (max-width: 760px) {
-    .disk-group .disk-row {
-      flex-direction: column;
-      align-items: stretch;
-    }
-    .disk-group .disk-info {
-      flex: none;  /* in a column the 12rem basis would be a height */
-    }
-    .disk-group .disk-actions {
-      justify-content: flex-start;
-    }
-  }
-  /* WCAG 2.5.8: the documentation link under Copy setup command keeps a 24 px target and a gap */
-  .backend-card details a {
-    display: inline-flex;
-    align-items: center;
-    min-height: 24px;
-    margin-top: 6px;
-  }
-  /* the endpoint matrix scrolls sideways in its .table-wrap rather than crushing its columns */
-  .compat-table {
-    min-width: 34rem;
-  }
-  .compat-table th[scope=row] {
-    white-space: normal;
-    min-width: 9rem;
-  }
-  .compare-diff .mini-table thead th:first-child,
-  .compare-diff .mini-table thead th:last-child {
-    white-space: nowrap;
-  }
-  /* dialogs: the keyboard shortcuts as a two-column list */
-  .shortcut-list {
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
-    gap: 8px 14px;
-    align-items: baseline;
-    margin: 0 0 12px;
-  }
-  .shortcut-list dt {
-    white-space: nowrap;
-  }
-  .shortcut-list dd {
-    margin: 0;
-  }
-  .shortcut-list + .muted,
-  .shortcut-list + .muted + .muted {
-    font-size: var(--fs-sm);
-  }
-  /* Playground: the question editor's labels sit above their fields */
-  .q-head label {
-    display: block;
-  }
-  /* Compare: the columns and the difference table take the whole width, under the request */
-  .playground-workspace.comparing {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .playground-workspace.comparing .response-panel {
-    position: static;
-    max-height: none;
-    overflow: visible;
-  }
-  .compare-diff-title {
-    margin-top: 18px;
-  }
-  .compare-pick #compareHint {
-    font-size: var(--fs-xs);
-  }
-  #compareButton[aria-disabled="true"] {
-    color: var(--muted);
-    cursor: not-allowed;
-  }
-  #playgroundHint {
-    margin-bottom: 12px;
-  }
-  /* stat tiles: one rule in Overview and Library (tiles of a row share its height); a lone histogram tile on a phone
-   * takes the whole row */
-  .loaded-stats {
-    align-items: stretch;
-  }
-  @media (max-width: 520px) {
-    .stats > .stat:has(.viz-histogram):last-child:nth-child(odd) {
-      grid-column: 1 / -1;
-    }
-  }
-  /* History on a phone: each decision is a card (time, model, source; the state; answers; latency and status) */
-  @media (max-width: 600px) {
-    .history-table thead {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      overflow: hidden;
-      clip: rect(0 0 0 0);
-    }
-    .history-table,
-    .history-table tbody {
-      display: block;
-    }
-    .history-table tr.history-row {
-      display: grid;
-      grid-template-columns: auto auto minmax(0, 1fr);
-      align-items: center;
-      gap: 4px 10px;
-      padding: 10px 0;
-      border-bottom: 1px solid var(--line);
-    }
-    .history-table tr.history-row > td {
-      border: 0;
-      padding: 0;
-    }
-    .history-table .history-state,
-    .history-table .history-answers {
-      grid-column: 1 / -1;
-      max-width: none;
-    }
-    .history-table .history-latency {
-      grid-column: 1 / 3;
-      font-size: var(--fs-xs);
-    }
-    .history-table .history-status {
-      justify-self: end;
-    }
-    .history-table tr.history-detail {
-      display: block;
-    }
-    .history-table tr.history-detail > td {
-      display: block;
-    }
-    .history-panes {
-      grid-template-columns: minmax(0, 1fr);
-    }
-  }
-  /* short laptop screens: the menu groups are divided by lines instead of their labels, so the whole sidebar fits */
-  @media (min-width: 901px) and (max-height: 820px) {
-    .nav-group-label {
-      display: none;
-    }
-    .nav-group {
-      margin-top: 6px;
-      padding-top: 6px;
-      border-top: 1px solid var(--line);
-    }
-    .sidebar-status {
-      padding-top: 10px;
-    }
-    .footer-model {
-      margin: 4px 0;
-    }
-    .sidebar-tools {
-      margin: 6px 0;
-    }
-  }
-  /* compact layout: one header row (brand, status, tools) above the menu strip; focus and anchors keep clear of it and
-   * of the toasts (--header-h and --toast-h are measured in shell.js) */
-  @media (max-width: 900px) {
-    html {
-      scroll-padding-top: calc(var(--header-h, 110px) + 8px);
-    }
-    .sidebar {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
-      grid-template-areas: "brand status" "nav nav";
-      align-items: center;
-      gap: 8px 12px;
-    }
-    .sidebar-top {
-      display: contents;
-    }
-    .sidebar .brand {
-      grid-area: brand;
-    }
-    .sidebar .side-nav {
-      grid-area: nav;
-      width: 100%;
-    }
-    .sidebar-status {
-      grid-area: status;
-      flex-wrap: nowrap;
-      justify-content: flex-end;
-      border-top: 0;
-      padding: 0;
-    }
-    .sidebar-status .footer-status {
-      flex: none;
-    }
-    .sidebar-status .footer-model {
-      flex: 0 1 auto;
-    }
-  }
-  @media (max-width: 520px) {
-    .sidebar-status .footer-model {
-      display: none;  /* the Overview lists the loaded models; the header keeps the count */
-    }
-  }
-  @media (max-width: 420px) {
-    .sidebar .brand > span:not(#engineBadge) {  /* the mark stays; the wordmark gives its room to the status */
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      overflow: hidden;
-      clip: rect(0 0 0 0);
-      white-space: nowrap;
-    }
-  }
-  html {
-    scroll-padding-bottom: calc(var(--toast-h, 0px) + 8px);
-  }
-  body {
-    padding-bottom: var(--toast-h, 0px);  /* the last controls of a page can still scroll out from under a toast */
   }
 }

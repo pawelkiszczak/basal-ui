@@ -12,6 +12,10 @@ const pct=v=>v==null?'—':`${(Number(v)*100).toFixed(1)}%`;
 const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
+// browser storage that is blocked (some private or embedded contexts) or full reads as unset and drops the write:
+// it never throws into the code that renders
+const stored=key=>{try{return localStorage.getItem(key);}catch{return null;}};
+const store=(key,value)=>{try{localStorage.setItem(key,value);}catch{}};
 async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
 // a trigger whose dialog waits for a fetch: busy (and announced) until it opens or fails
 async function busyWhile(button, fn){
@@ -31,7 +35,9 @@ async function api(path, options={}) {
     const detail = typeof data?.detail === 'string' ? data.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
     const message=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    // status, and a basal-ui route's message code and field ({"detail", "code", "field"}): what the UI maps on
+    throw Object.assign(new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`),
+      {status:response.status,code:typeof data?.code==='string'?data.code:null,field:typeof data?.field==='string'?data.field:null});
   }
   return data;
 }
@@ -47,20 +53,59 @@ function announce(message) {
   };
   if(!announceTimer)announceTimer=setTimeout(next,Math.max(0,announcedAt+1500-Date.now()));
 }
-// errors are alerts that stay until dismissed; other toasts leave after 6 s, but not while hovered or focused
-function toast(message, type='success') {
-  const node=document.createElement('div'), error=type==='error'; node.className=`toast ${type}`;
+// errors are alerts that stay until dismissed; other toasts leave after 6 s, but not while hovered or focused.
+// An error equal to one still shown (the same text, its request ID aside) is not stacked again: that toast counts the
+// repeat (×n, not announced again). key: one toast per key, a new message replaces the old one's text in place, and
+// dismissToast(key) removes it (the status poll's error, once the server answers again). At most TOAST_ERRORS errors
+// stay; the oldest gives way.
+const TOAST_ERRORS=3, toastIdentity=text=>String(text??'').replace(/\s*\[request [^\]]*\]$/,'');
+let toastReturn=null;  // the control that had the focus before Tab reached the toasts
+$('#toastStack').addEventListener('focusin',e=>{if(e.relatedTarget&&!$('#toastStack').contains(e.relatedTarget))toastReturn=e.relatedTarget;});
+// a toast removed under keyboard focus hands it to the next toast's (or the previous one's) close button, else back to
+// where it came from while that is still shown, else to the view's title
+function removeToast(node) {
+  if(!node?.isConnected)return;
+  const hadFocus=node.contains(document.activeElement), toasts=[...$('#toastStack').children], i=toasts.indexOf(node);
+  const neighbour=toasts[i+1]||toasts[i-1];
+  node.remove();
+  if(!hadFocus)return;
+  const back=toastReturn?.isConnected&&toastReturn.getClientRects().length?toastReturn:null;
+  ((neighbour&&$('.toast-close',neighbour))||back||$('#pageTitle')).focus();
+}
+const dismissToast=key=>removeToast([...$('#toastStack').children].find(n=>n.dataset.key===key));
+function toast(message, type='success', {key=''}={}) {
+  const stack=$('#toastStack'), error=type==='error', identity=toastIdentity(message);
+  const same=[...stack.children].find(n=>(key&&n.dataset.key===key)||(error&&n.classList.contains('error')&&n.dataset.identity===identity));
+  if(same&&same.className===`toast ${type}`){
+    if(key)same.dataset.key=key;
+    if(same.dataset.identity===identity){  // a repeat: counted, not announced again
+      const count=$('.toast-count',same); same.dataset.count=String(Number(same.dataset.count||1)+1);
+      count.textContent=`×${same.dataset.count}`; count.title=t('Last at {time}',{time:new Date().toLocaleTimeString([],{hour12:false})}); count.hidden=false;
+    }else{  // the same subject, new text: replaced in place (an alert announces the change)
+      same.dataset.identity=identity; same.dataset.count='1'; $('.toast-count',same).hidden=true; $('.toast-text',same).textContent=message;
+      if(!error)announce(message);
+    }
+    return same;
+  }
+  if(same)removeToast(same);  // a key that changed type (an info that became an error)
+  const node=document.createElement('div'); node.className=`toast ${type}`; node.dataset.identity=identity;
+  if(key)node.dataset.key=key;
   if(error)node.setAttribute('role','alert'); else announce(message);
-  node.innerHTML=html`<span class="toast-text">${message}</span><button type="button" class="toast-close" aria-label="${t('Close')}">×</button>`.text;
-  $('.toast-close',node).onclick=()=>node.remove();
-  $('#toastStack').append(node);
-  if(error)return;
+  node.innerHTML=html`<span class="toast-text">${message}</span><span class="toast-count" aria-hidden="true" hidden></span><button type="button" class="toast-close" aria-label="${t('Close')}">×</button>`.text;
+  $('.toast-close',node).onclick=()=>removeToast(node);
+  stack.append(node);
+  if(error){
+    const errors=[...stack.querySelectorAll('.toast.error')];
+    errors.slice(0,Math.max(0,errors.length-TOAST_ERRORS)).forEach(removeToast);
+    return node;
+  }
   let timer=null, held=0;
-  const start=()=>{clearTimeout(timer);if(!held)timer=setTimeout(()=>node.remove(),6000);};
+  const start=()=>{clearTimeout(timer);if(!held)timer=setTimeout(()=>removeToast(node),6000);};
   const hold=()=>{held++;clearTimeout(timer);}, release=()=>{held=Math.max(0,held-1);start();};
   node.addEventListener('mouseenter',hold); node.addEventListener('mouseleave',release);
   node.addEventListener('focusin',hold); node.addEventListener('focusout',release);
   start();
+  return node;
 }
 // role=progressbar markup: share of done/total, or indeterminate without a total; label names it, text says it
 function progressBar(done, total, label, text='', cls='progress') {
@@ -99,7 +144,7 @@ function applyTheme(theme) {
   const value=['light','dark','system'].includes(theme)?theme:'system';
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
   document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
-  try{localStorage.setItem('basal-ui.theme',value);}catch{}
+  store('basal-ui.theme',value);
   document.querySelectorAll('[data-theme-choice]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeChoice===value)));
   const toggle=$('#themeToggle'), label=document.documentElement.dataset.theme==='dark'?t('Switch to light theme'):t('Switch to dark theme');
   if(toggle){toggle.setAttribute('aria-label',label);toggle.title=label;}
@@ -108,16 +153,19 @@ function applyTheme(theme) {
 const toggleTheme=()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark');
 document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>applyTheme(b.dataset.themeChoice));
 $('#themeToggle').onclick=toggleTheme;
-applyTheme(localStorage.getItem('basal-ui.theme')||'system');
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
+applyTheme(stored('basal-ui.theme')||'system');
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((stored('basal-ui.theme')||'system')==='system')applyTheme('system');});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 // "?" is a single-character shortcut (WCAG 2.1.4): Settings turns it off (remembered in this browser)
-const singleKeyShortcuts=()=>{try{return localStorage.getItem('basal-ui.single-keys')!=='off';}catch{return true;}};
+const singleKeyShortcuts=()=>stored('basal-ui.single-keys')!=='off';
 const openShortcuts=()=>{const d=$('#shortcutsDialog');if(!d.open)d.showModal();};
+// a modal <dialog> (the palette, a confirm, an options dialog) owns the keyboard: no page shortcut fires under it, so
+// Enter in the palette does not also send the Playground request and Alt+digit does not switch the view behind a confirm
 document.addEventListener('keydown',e=>{
-  const typing=e.target.matches('input,textarea,select,[contenteditable],[contenteditable] *');
+  if(document.querySelector('dialog[open]'))return;
+  const typing=e.target instanceof Element&&e.target.matches('input,textarea,select,[contenteditable],[contenteditable] *');
   if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#view-playground').hidden){e.preventDefault();$('#sendButton').click();}
-  else if(!typing&&e.key==='?'&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&singleKeyShortcuts()&&!document.querySelector('dialog[open]')){e.preventDefault();openShortcuts();}
+  else if(!typing&&e.key==='?'&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&singleKeyShortcuts()){e.preventDefault();openShortcuts();}
   else if(!typing&&e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
 document.addEventListener('change',event=>{
@@ -138,17 +186,25 @@ function holdFocus(button) {
 }
 // a list re-rendered under keyboard focus: keepFocus(container) before, the returned function after the new markup gives
 // the focus to the same control (tag, class, data-*, label), else the row's Details / information button, else another
-// control of the same model (data-id); a re-render that moved the focus elsewhere is left alone
+// control of the same model (data-id), else the first control of the row (the container's child) at the same place, or
+// that row itself (a step whose button became a chip); a re-render that moved the focus elsewhere is left alone
 const FOCUSABLE='button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),[tabindex="0"]';
 function keepFocus(container) {
   const active=document.activeElement;
   if(!container||!active||!container.contains(active))return ()=>{};
   const key=el=>[el.tagName,el.className,JSON.stringify(el.dataset),el.getAttribute('aria-label')||el.textContent.trim()].join('|');
   const was=key(active), id=active.dataset.id||active.dataset.restart||active.dataset.unload||active.closest('[data-id]')?.dataset.id;
+  const place=[...container.children].findIndex(child=>child.contains(active));
   return ()=>{
     if(document.activeElement&&document.activeElement!==document.body)return;
     const all=[...container.querySelectorAll(FOCUSABLE)], byId=id?all.filter(el=>[el.dataset.id,el.dataset.restart,el.dataset.unload].includes(id)):[];
-    (all.find(el=>key(el)===was)||byId.find(el=>el.classList.contains('model-card-open'))||byId[0])?.focus();
+    const same=all.find(el=>key(el)===was)||byId.find(el=>el.classList.contains('model-card-open'))||byId[0];
+    if(same)return same.focus();
+    const row=container.children[place];
+    if(!row)return;
+    const control=row.matches(FOCUSABLE)?row:row.querySelector(FOCUSABLE);
+    if(control)return control.focus();
+    row.tabIndex=-1; row.focus();
   };
 }
 // container.innerHTML=markup unless it is unchanged (a poll that changed nothing keeps every node and the focus)

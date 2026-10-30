@@ -1,14 +1,18 @@
-"""basal-ui on fake hardware, a fixed catalog and an in-process stand-in for basal-serve: for UI work, screenshots and
+"""basal-ui on fake hardware, a fixed catalog and a stand-in for basal-serve: for UI work, screenshots and
 accessibility checks without models, a GPU or the Hub.
 
     uv run --no-sync python scripts/ui_fixture_server.py [--port 7861] [--preload | --empty]
 
 The machine is an Apple Silicon Mac with 96 GiB; basal-2.0 mini and basal-omni-1.0 mini are on disk (none with
 --empty), and --preload loads mini at start and sends a few Decisions so Overview, statistics and History have data.
-A load reaches ready at once (a model not on disk "downloads" for about two seconds first). Decisions get plausible,
-deterministic answers for every question type: probabilities, confidence, evidence spans, calibration. Settings,
-history and stats live in a temporary directory; the user's real config is never read or written. Benchmarks,
-calibration, inspection and backend tests run real Engine tools and are not faked.
+A load runs basal-ui's real Runner: it starts a child process (this script with --child) in place of basal-serve and
+reaches ready as soon as the child answers /health (a model not on disk "downloads" for about two seconds first).
+Decisions get plausible, deterministic answers for every question type: probabilities, confidence, evidence spans,
+calibration. Settings, history and stats live in a temporary directory; the user's real config is never read or
+written. Benchmarks, calibration, inspection and backend tests run real Engine tools and are not faked.
+
+Everything that reaches into basal-ui's internals is in one place, the adapter at the end (FakeDisk, child_command,
+install, fixture_variants); tests/test_ui_a11y.py checks it against the real catalog and Runner.
 """
 
 import argparse
@@ -25,88 +29,15 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-TMP = Path(tempfile.mkdtemp(prefix="basal-ui-fixture-"))
-atexit.register(shutil.rmtree, TMP, ignore_errors=True)
-os.environ["BASAL_UI_CONFIG"] = str(TMP / "settings.json")  # before basal_ui reads the config path
-os.environ.setdefault("BASAL_UI_ENGINE_UNCHECKED", "1")
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from basal_ui import catalog, settings  # noqa: E402
-from basal_ui.app import create_app  # noqa: E402
-from basal_ui.fleet import Fleet, Runner  # noqa: E402
-from basal_ui.hardware import Hardware  # noqa: E402
-from basal_ui.history import History  # noqa: E402
-from basal_ui.stats import Stats  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:  # run as a script: basal_ui is imported from the checkout (only by the server, lazily)
+    sys.path.insert(0, str(ROOT))
 
 GB = 1_000_000_000
-HW = Hardware("apple", "Apple M3 Max", 96 * 1024**3, 96 * 1024**3, None, frozenset({"mlx", "media", "gguf"}), 71 * GB)
-VARIANTS = [
-    *catalog._variants("Remek/basal-2.0-mini", {"model.safetensors": int(3.2 * GB)}),
-    *catalog._variants(
-        "Remek/basal-2.0-4.5B", {"model-00001-of-00002.safetensors": 5 * GB, "model-00002-of-00002.safetensors": 4 * GB}
-    ),
-    *catalog._variants("Remek/basal-2.0-4.5B-MLX", {"model.safetensors": int(4.8 * GB)}),
-    *catalog._variants("Remek/basal-omni-1.0-mini", {"model.safetensors": int(10.2 * GB)}),
-    *catalog._variants(
-        "Remek/basal-2.0-mini-GGUF",
-        {
-            "basal-2.0-mini-Q4_K_M.gguf": int(1.1 * GB),
-            "basal-2.0-mini-Q8_0.gguf": int(1.9 * GB),
-            "tokenizer.json": 1,
-            "CALIBRATION.json": 1,
-        },
-    ),
-]
 MINI, OMNI = "Remek/basal-2.0-mini", "Remek/basal-omni-1.0-mini"
-ON_DISK: dict[str, Path] = {}  # variant id -> its fake snapshot directory
 
 
-def snapshot(v):
-    """A fake snapshot directory with a model card and weights of the variant's size (sparse)."""
-    path = TMP / "models" / v.id.replace("/", "--").replace(":", "--")
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "README.md").write_text(
-        f"---\nlicense: apache-2.0\nbase_model: {v.repo}\n---\n# {v.repo}\n\nFixture model."
-    )
-    (path / "config.json").write_text(json.dumps({"model_type": "fixture"}))
-    with open(path / (v.gguf_file or "model.safetensors"), "wb") as f:
-        f.truncate(v.weights_bytes or 1)
-    ON_DISK[v.id] = path
-    return path
-
-
-def is_downloaded(v, cache_dir=None, revision=None):
-    return ON_DISK.get(v.id)
-
-
-def downloaded_bytes(v, cache_dir=None):
-    return v.weights_bytes if v.id in ON_DISK else None
-
-
-def delete(v, cache_dir=None):
-    ON_DISK.pop(v.id, None)
-    return v.weights_bytes or 0
-
-
-def download(v, cache_dir, tqdm_class=None, revision=None, **_):
-    """About two seconds of progress, then the variant is on disk."""
-    total = v.weights_bytes or GB
-    for step in range(1, 21):
-        time.sleep(0.1)
-        if tqdm_class is not None:
-            tqdm_class.done = total * step // 20
-    return snapshot(v)
-
-
-catalog.is_downloaded, catalog.downloaded_bytes, catalog.delete, catalog.download = (
-    is_downloaded,
-    downloaded_bytes,
-    delete,
-    download,
-)
-
-
-# --- the stand-in basal-serve child -------------------------------------------------------------------------------
+# --- the stand-in basal-serve: its answers ---------------------------------------------------------------------------
 
 CERTIFIED = {
     "0.01": {"choice": 0.9412, "noul": 0.9561, "score": 0.9105},
@@ -114,13 +45,13 @@ CERTIFIED = {
 }
 
 
-def entry(name, media=()):
+def entry(name, media=(), mode="mlx"):
     """GET /v1/models: basal-serve's models_payload, plus the certified thresholds basal-ui adds."""
     out = {
         "name": name,
         "release_date": "2026-10-22",
         "description": "basal typed-decision model (fixture)",
-        "mode": "mlx",
+        "mode": mode,
         "early_exit": [],
         "orders": 2,
         "certified": CERTIFIED,
@@ -139,7 +70,7 @@ class Rng:
 
     def random(self):
         self.i += 1
-        return int.from_bytes(hashlib.sha256(self.seed + bytes([self.i % 256, self.i // 256])).digest()[:4]) / 2**32
+        return int.from_bytes(hashlib.sha256(self.seed + self.i.to_bytes(8, "big")).digest()[:4], "big") / 2**32
 
     def probabilities(self, keys, peak=None):
         keys = [str(k) for k in keys] or ["0", "1"]
@@ -310,12 +241,12 @@ def decide(body, model):
 
 
 class Child(ThreadingHTTPServer):
-    """One loopback stand-in for a loaded model's basal-serve (tests/conftest.py `child`, answering every route)."""
+    """A loaded model's stand-in basal-serve on loopback (tests/conftest.py `child`, answering every route)."""
 
     daemon_threads = True
 
-    def __init__(self, name, media=()):
-        self.entry = entry(name, media)
+    def __init__(self, name, media=(), mode="mlx", port=0):
+        self.entry = entry(name, media, mode)
 
         class Handler(BaseHTTPRequestHandler):
             def reply(self, data, status=200):
@@ -341,52 +272,38 @@ class Child(ThreadingHTTPServer):
                 pass
 
         server = self
-        super().__init__(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.serve_forever, daemon=True).start()
+        super().__init__(("127.0.0.1", port), Handler)
         self.url = f"http://127.0.0.1:{self.server_address[1]}"
 
 
-def start(self, assessment, gen, media=False, cache_dir=None, serve=None):
-    """Runner._start without a process: download if needed, then a Child answers for the model."""
-    v = assessment.variant
-    serve = serve or self.settings_mod.serve_settings()
-    try:
-        if ON_DISK.get(v.id) is None and self._download(v, gen, cache_dir) is None:
-            return
-        child = Child(v.id, v.media if media else ())
-        with self.lock:
-            if gen != self.gen:
-                return child.shutdown()
-            self.state, self.progress, self.base_url = "starting", None, child.url
-            self.command = ["basal-serve", "--model", v.repo, "--mode", assessment.mode or "mlx", "(fixture)"]
-            self.loaded_path, self.serve_snapshot = str(ON_DISK[v.id]), {**serve, "calibration": None}
-            self.serve_snapshot = {k: self.serve_snapshot[k] for k in ("log_decisions", "max_len", "calibration")}
-        time.sleep(0.3)
-        with self.lock:
-            if gen != self.gen:
-                return child.shutdown()
-            self.state, self.media = "ready", list(v.media) if media else []
-            self.models_entry, self.ready_at = child.entry, time.time()
-            if not self.temporary and self.remember:
-                self.settings_mod.remember_loaded(v.id, media, self.options)
-        self.event("info", f"{v.id}: ready (fixture)")
-    except Exception as exc:  # noqa: BLE001 — shown in the UI like a failed load
-        with self.lock:
-            if gen == self.gen:
-                self.gen += 1
-                self.state, self.error = "error", str(exc)
-        self.event("error", f"{v.id}: {exc}")
+def child_main(argv):
+    """The stand-in basal-serve process a fixture load starts (the command child_command builds)."""
+    parser = argparse.ArgumentParser(prog="ui_fixture_server.py --child")
+    parser.add_argument("--name", required=True)
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--mode", default="mlx")
+    parser.add_argument("--media", default="", help="comma-separated media kinds (a load with --media on)")
+    parser.add_argument("--parent", type=int, help="exit when this process (the fixture server) is gone")
+    a = parser.parse_args(argv)
+    server = Child(a.name, [k for k in a.media.split(",") if k], a.mode, a.port)
+    if a.parent:  # Runner starts the child in its own session: it must not outlive a killed fixture server
 
+        def watch():
+            while os.getppid() == a.parent:
+                time.sleep(1)
+            os._exit(0)
 
-Runner._start = start
+        threading.Thread(target=watch, daemon=True).start()
+    print(f"basal-serve (fixture) {a.name}: listening on {server.url}", flush=True)
+    server.serve_forever()
 
 
 def seed(fleet):
     """A few Decisions for statistics and History once mini is ready."""
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline and not any(m.get("state") == "ready" for m in fleet.status()["models"]):
         time.sleep(0.1)
-    examples = Path(__file__).resolve().parents[1] / "basal_ui/examples/advanced.jsonl"
+    examples = ROOT / "basal_ui/examples/advanced.jsonl"
     for i, line in enumerate(examples.read_text(encoding="utf-8").splitlines()[:6]):
         request = {k: v for k, v in json.loads(line).items() if k != "id"}
         try:
@@ -395,42 +312,177 @@ def seed(fleet):
             print(f"fixture: seeding decision failed: {exc}", file=sys.stderr)
 
 
-def main():
+# --- the adapter: the only code here that depends on basal-ui's internals -------------------------------------------
+# tests/test_ui_a11y.py compares each hook with what it replaces and loads a model through the real Fleet and Runner, so
+# a catalog or Runner refactor that the fixture no longer matches fails there, not silently in screenshots or a11y runs.
+
+CATALOG_HOOKS = ("is_downloaded", "downloaded_bytes", "delete", "download")  # catalog functions FakeDisk replaces
+
+
+class FakeDisk:
+    """The models directory as the catalog sees it: the variants "on disk" have a fake snapshot (a model card and
+    sparse weights of the variant's size) under root, and a download takes about two seconds."""
+
+    def __init__(self, root):
+        self.root, self.on_disk = Path(root), {}  # variant id -> its snapshot directory
+
+    def snapshot(self, v):
+        path = self.root / v.id.replace("/", "--").replace(":", "--")
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "README.md").write_text(
+            f"---\nlicense: apache-2.0\nbase_model: {v.repo}\n---\n# {v.repo}\n\nFixture model."
+        )
+        (path / "config.json").write_text(json.dumps({"model_type": "fixture"}))
+        with open(path / (v.gguf_file or "model.safetensors"), "wb") as f:
+            f.truncate(v.weights_bytes or 1)
+        self.on_disk[v.id] = path
+        return path
+
+    def is_downloaded(self, v, cache_dir, revision=None):
+        return self.on_disk.get(v.id)
+
+    def downloaded_bytes(self, v, cache_dir):
+        return v.weights_bytes if v.id in self.on_disk else None
+
+    def delete(self, v, cache_dir):
+        self.on_disk.pop(v.id, None)
+        return v.weights_bytes or 0
+
+    def download(self, v, cache_dir, tqdm_class=None, revision=None):
+        total = v.weights_bytes or GB
+        for step in range(1, 21):
+            time.sleep(0.1)
+            if tqdm_class is not None:
+                tqdm_class.done = total * step // 20
+        return str(self.snapshot(v))
+
+
+def child_command(runner, v, path, assessment, media, port, serve):
+    """Runner._build_command for the fixture: the real Runner._start (states, generation checks, health polling, the
+    /v1/models read, the remembered load, termination) runs on this script's --child process instead of basal-serve."""
+    media_kinds = ["--media", ",".join(v.media)] if media and v.media else []
+    return [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--child",
+        "--name",
+        v.id,
+        "--port",
+        str(port),
+        "--mode",
+        assessment.mode or "mlx",
+        "--parent",
+        str(os.getpid()),
+        *media_kinds,
+    ]
+
+
+def install(disk):
+    """Point the catalog's disk functions at disk and Runner's child command at child_command; -> a function that
+    restores the originals."""
+    from basal_ui import catalog
+    from basal_ui.fleet import Runner
+
+    saved = [(catalog, name, getattr(catalog, name)) for name in CATALOG_HOOKS]
+    saved.append((Runner, "_build_command", Runner.__dict__["_build_command"]))
+    for name in CATALOG_HOOKS:
+        setattr(catalog, name, getattr(disk, name))
+    Runner._build_command = child_command
+
+    def restore():
+        for owner, name, value in saved:
+            setattr(owner, name, value)
+
+    return restore
+
+
+def fixture_variants():
+    """The fixed catalog, built as the Hub listing builds it (catalog._variants: repository, file names and sizes)."""
+    from basal_ui import catalog
+
+    two_shards = {"model-00001-of-00002.safetensors": 5 * GB, "model-00002-of-00002.safetensors": 4 * GB}
+    gguf = {
+        "basal-2.0-mini-Q4_K_M.gguf": int(1.1 * GB),
+        "basal-2.0-mini-Q8_0.gguf": int(1.9 * GB),
+        "tokenizer.json": 1,
+        "CALIBRATION.json": 1,
+    }
+    return [
+        *catalog._variants(MINI, {"model.safetensors": int(3.2 * GB)}),
+        *catalog._variants("Remek/basal-2.0-4.5B", two_shards),
+        *catalog._variants("Remek/basal-2.0-4.5B-MLX", {"model.safetensors": int(4.8 * GB)}),
+        *catalog._variants(OMNI, {"model.safetensors": int(10.2 * GB)}),
+        *catalog._variants("Remek/basal-2.0-mini-GGUF", gguf),
+    ]
+
+
+def fixture_hardware():
+    from basal_ui.hardware import Hardware
+
+    return Hardware(
+        "apple", "Apple M3 Max", 96 * 1024**3, 96 * 1024**3, None, frozenset({"mlx", "media", "gguf"}), 71 * GB
+    )
+
+
+def make_fleet(tmp, hw):
+    """basal-ui's Fleet on the fake machine, with its statistics and history in tmp."""
+    from basal_ui import settings
+    from basal_ui.fleet import Fleet
+    from basal_ui.history import History
+    from basal_ui.stats import Stats
+
+    return Fleet(
+        models_dir_fn=settings.models_dir,
+        platform_fn=lambda: hw.platform,
+        settings_mod=settings,
+        hardware_fn=lambda: hw,
+        stats=Stats(Path(tmp) / "stats.json"),
+        history=History(Path(tmp) / "history.jsonl"),
+    )
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--child"]:
+        return child_main(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=7861)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--preload", action="store_true", help="load basal-2.0 mini at start and send a few Decisions")
     group.add_argument("--empty", action="store_true", help="a first run: no model on disk or loaded")
-    a = parser.parse_args()
-    (TMP / "models").mkdir()
-    settings.set_models_dir(str(TMP / "models"))
+    a = parser.parse_args(argv)
+    tmp = Path(tempfile.mkdtemp(prefix="basal-ui-fixture-"))
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
+    os.environ["BASAL_UI_CONFIG"] = str(tmp / "settings.json")  # before basal_ui reads the config path
+    os.environ.setdefault("BASAL_UI_ENGINE_UNCHECKED", "1")
+
+    import uvicorn
+
+    from basal_ui import settings
+    from basal_ui.app import create_app
+
+    disk, variants, hw = FakeDisk(tmp / "models"), fixture_variants(), fixture_hardware()
+    install(disk)
+    disk.root.mkdir()
+    settings.set_models_dir(str(disk.root))
     if not a.empty:
-        for v in VARIANTS:
+        for v in variants:
             if v.id in (MINI, OMNI):
-                snapshot(v)
+                disk.snapshot(v)
     if a.preload:
         settings.set_auto_load(True)
         settings.remember_loaded(MINI, False)
-    fleet = Fleet(
-        models_dir_fn=settings.models_dir,
-        platform_fn=lambda: HW.platform,
-        settings_mod=settings,
-        hardware_fn=lambda: HW,
-        stats=Stats(TMP / "stats.json"),
-        history=History(TMP / "history.jsonl"),
-    )
+    fleet = make_fleet(tmp, hw)
     app = create_app(
-        catalog_fn=lambda **_: (VARIANTS, "hub"),
-        hardware_fn=lambda: HW,
+        catalog_fn=lambda **_: (variants, "hub"),
+        hardware_fn=lambda: hw,
         fleet=fleet,
         stats=fleet.stats,
         history=fleet.history,
     )
     if a.preload:
         threading.Thread(target=seed, args=(fleet,), daemon=True).start()
-    import uvicorn
-
-    print(f"basal-ui fixture: http://127.0.0.1:{a.port} (config {TMP})", flush=True)
+    print(f"basal-ui fixture: http://127.0.0.1:{a.port} (config {tmp})", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=a.port, log_level="warning")
 
 
