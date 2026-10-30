@@ -37,9 +37,11 @@ would use and why, fit, the revisions in the cache, `basal.json`, the shipped ca
 with its certified thresholds, resolved for the active model's revision, mode, quantisation, vLLM preset, prompt
 layout and adapter (or the saved load options when unloaded), the `GET /v1/models` entry of a loaded model (mode, option orders, prompt format, vLLM
 preset, context) and the README (of the `revision` load option when one is set); `basal.json`, the loaded entry and the
-README start collapsed. The menu's footer switches the theme
-(light, dark, or the system's) and the language (**EN** / **PL**, kept in the browser; coded UI-owned model, option,
-backend and job messages are translated in Polish; uncoded server errors stay English). Keyboard: Ctrl/⌘+Enter sends
+README start collapsed. The menu's footer switches the skin (**Green**, the default, or the original warm
+**Orange**), the theme (light, dark, or the system's) and the language (**EN** / **PL**). The three are independent
+and kept in the browser; skin and theme apply before the page is drawn, without a reload. On a narrow window they
+wrap under the top bar's status line. Coded UI-owned model, option, backend and job messages are translated in
+Polish; uncoded server errors stay English. Keyboard: Ctrl/⌘+Enter sends
 the Playground decision, Alt+1…9 (Option+1…9 on macOS, any keyboard layout) opens the views in menu order and Alt+0
 (Option+0) the Backends view, `?` lists the shortcuts. Overview says when a newer basal release
 is out (GitHub's latest release of rkinas/basal, checked at most every 6 hours, 10 minutes after a failed check) and

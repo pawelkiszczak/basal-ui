@@ -161,4 +161,86 @@
   <circle cx="12" cy="12" r="10" />
   <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
   <path d="M12 17h.01" />
+</symbol><symbol id="plus" viewBox="0 0 24 24">
+  <path d="M5 12h14" />
+  <path d="M12 5v14" />
+</symbol><symbol id="chevron-right" viewBox="0 0 24 24">
+  <path d="m9 18 6-6-6-6" />
+</symbol><symbol id="square" viewBox="0 0 24 24">
+  <rect width="18" height="18" x="3" y="3" rx="2" />
+</symbol><symbol id="rotate-ccw" viewBox="0 0 24 24">
+  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+  <path d="M3 3v5h5" />
+</symbol><symbol id="power" viewBox="0 0 24 24">
+  <path d="M12 2v10" />
+  <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
+</symbol><symbol id="zap" viewBox="0 0 24 24">
+  <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" />
+</symbol><symbol id="gauge" viewBox="0 0 24 24">
+  <path d="m12 14 4-4" />
+  <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+</symbol><symbol id="flame" viewBox="0 0 24 24">
+  <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+</symbol><symbol id="apple" viewBox="0 0 24 24">
+  <path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z" />
+  <path d="M10 2c1 .5 2 2 2 5" />
+</symbol><symbol id="network" viewBox="0 0 24 24">
+  <rect x="16" y="16" width="6" height="6" rx="1" />
+  <rect x="2" y="16" width="6" height="6" rx="1" />
+  <rect x="9" y="2" width="6" height="6" rx="1" />
+  <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
+  <path d="M12 12V8" />
+</symbol><symbol id="memory-stick" viewBox="0 0 24 24">
+  <path d="M6 19v-3" />
+  <path d="M10 19v-3" />
+  <path d="M14 19v-3" />
+  <path d="M18 19v-3" />
+  <path d="M8 11V9" />
+  <path d="M16 11V9" />
+  <path d="M12 11V9" />
+  <path d="M2 15h20" />
+  <path d="M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v1.1a2 2 0 0 0 0 3.837V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5.1a2 2 0 0 0 0-3.837Z" />
+</symbol><symbol id="chart-column" viewBox="0 0 24 24">
+  <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+  <path d="M18 17V9" />
+  <path d="M13 17V5" />
+  <path d="M8 17v-3" />
+</symbol><symbol id="target" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="10" />
+  <circle cx="12" cy="12" r="6" />
+  <circle cx="12" cy="12" r="2" />
+</symbol><symbol id="folder-open" viewBox="0 0 24 24">
+  <path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
+</symbol><symbol id="file-text" viewBox="0 0 24 24">
+  <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+  <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+  <path d="M10 9H8" />
+  <path d="M16 13H8" />
+  <path d="M16 17H8" />
+</symbol><symbol id="laptop" viewBox="0 0 24 24">
+  <path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16" />
+</symbol><symbol id="globe" viewBox="0 0 24 24">
+  <circle cx="12" cy="12" r="10" />
+  <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+  <path d="M2 12h20" />
+</symbol><symbol id="shield-check" viewBox="0 0 24 24">
+  <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+  <path d="m9 12 2 2 4-4" />
+</symbol><symbol id="plug" viewBox="0 0 24 24">
+  <path d="M12 22v-5" />
+  <path d="M9 8V2" />
+  <path d="M15 8V2" />
+  <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+</symbol><symbol id="list-filter" viewBox="0 0 24 24">
+  <path d="M3 6h18" />
+  <path d="M7 12h10" />
+  <path d="M10 18h4" />
+</symbol><symbol id="book-open" viewBox="0 0 24 24">
+  <path d="M12 7v14" />
+  <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
+</symbol><symbol id="wrench" viewBox="0 0 24 24">
+  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+</symbol><symbol id="inbox" viewBox="0 0 24 24">
+  <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+  <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
 </symbol></svg>

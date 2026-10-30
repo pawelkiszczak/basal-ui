@@ -3,6 +3,12 @@
 - Unify every view around shared light/dark tokens, spacing, Lucide icons and actionable empty states.
   Remove numbered page eyebrows, align Playground controls, structure Batch fields and model-manager help,
   and add an optional interactive [Design System catalogue](design-system.md).
+- Add a **Green** skin (now the default) beside the original warm **Orange** one, chosen at the bottom of the menu
+  independently of theme and language and applied before the first paint. Rework the view compositions: a compact
+  machine strip and status summaries on Overview, one suggestion card everywhere, a sectioned Model manager with
+  labelled benchmark and calibration forms, state-coloured Backends with engine icons, a side-by-side Batch run and
+  results, a two-column API server page, a History empty state that keeps its columns and offers Clear filters, and
+  a Logs toolbar without a blank output area. The catalogue now renders the live skins, controls and compositions.
 
 Unreleased release candidate (planned tag `v0.1.0rc1`). The review fixes and contributor PRs
 [#4](https://github.com/pawelkiszczak/basal-ui/pull/4), [#5](https://github.com/pawelkiszczak/basal-ui/pull/5)

@@ -28,23 +28,14 @@ function confirmDialog({title,description,confirmLabel=t('Confirm'),destructive=
   return new Promise(resolve=>{
     const dialog=$('#confirmDialog'), accept=$('#confirmAccept'), cancel=$('#confirmCancel');
     $('#confirmTitle').textContent=title; $('#confirmDescription').textContent=description;
-    accept.textContent=confirmLabel; accept.classList.toggle('destructive',destructive);
+    accept.textContent=confirmLabel; accept.classList.toggle('destructive',destructive); accept.classList.toggle('primary',!destructive);
     dialog.showModal();
     const finish=value=>{dialog.close();accept.removeEventListener('click',yes);cancel.removeEventListener('click',no);dialog.removeEventListener('close',closed);resolve(value);};
     const yes=()=>finish(true),no=()=>finish(false),closed=()=>finish(false);
     accept.addEventListener('click',yes);cancel.addEventListener('click',no);dialog.addEventListener('close',closed);
   });
 }
-function applyTheme(theme) {
-  const value=['light','dark','system'].includes(theme)?theme:'system';
-  document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
-  document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
-  document.querySelectorAll('[data-theme-choice]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeChoice===value)));
-  localStorage.setItem('basal-ui.theme',value);
-}
-document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>applyTheme(b.dataset.themeChoice));
-applyTheme(localStorage.getItem('basal-ui.theme')||'system');
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
+// Theme and skin: appearance.js (loaded in <head>, before the first paint).
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
@@ -110,7 +101,7 @@ function renderModels(data) {
       const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
       const downloadButton=downloadControl(m,downloadStatus);
       // Models: download, set up and delete; loading is the Model manager's (renderDiskModels)
-      const actions=`${!m.downloaded?downloadButton:''}${m.runnable?optionsButton(m.id,false,'save'):''}${loaded?`<span class="chip">${t('loaded')}</span>`:m.downloaded?deleteButton(m.id):''}`;
+      const actions=`${!m.downloaded?downloadButton:''}${m.runnable?optionsButton(m.id,false,'save'):''}${loaded?uiBadge('success',t('loaded')):m.downloaded?deleteButton(m.id):''}`;
       html += `<tr class="${m.runnable?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
@@ -141,12 +132,15 @@ function familyMark(family) {
 }
 const ARROW = uiIcon('arrow-right');
 function downloadControl(m, progress) {
-  if(progress&&!progress.error)return `<button class="download-model primary" data-id="${esc(m.id)}" disabled>${t('Downloading…')}</button><small class="muted download-progress">${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}</small>`;
+  if(progress&&!progress.error)return `<button class="download-model primary" data-id="${esc(m.id)}" disabled>${uiIcon('download')}${t('Downloading…')}</button><small class="muted download-progress">${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}</small>`;
   return `<button class="download-model primary" data-id="${esc(m.id)}">${uiIcon('download')}${t('Download')}</button>${progress?.error?`<span class="reason">${esc(progress.error)}</span>`:''}`;
 }
+// One suggestion composition for Models, the Overview and the catalogue: identity and facts, then the reason and actions
 function renderSuggestionCard(s,m,action,informationControl) {
-  const why=esc(ts(s.why,s.why_code,s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g,'<code>$1</code>');
-  return `<article class="suggestion-card${s.slot==='recommended'?' recommended':''}"><div class="recommendation-label">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3>${informationControl}<div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(m.est_memory_bytes)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(m.fit_now || 'unknown')}">${esc(t(m.fit_now || 'unknown'))}</span></div><p class="why">${why}</p>${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
+  const why=esc(ts(s.why,s.why_code,s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g,'<code>$1</code>'), fit=m.fit_now||'unknown';
+  const chips=`${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}`;
+  const facts=`<dl class="suggestion-facts"><div><dt>${t('Size')}</dt><dd>${gb(m.weights_bytes)}</dd></div><div><dt>${t('Est. memory')}</dt><dd>${gb(m.est_memory_bytes)}</dd></div><div><dt>${t('Fit now')}</dt><dd><span class="badge fit-${esc(fit)}">${esc(t(fit))}</span></dd></div></dl>`;
+  return `<article class="suggestion-card${s.slot==='recommended'?' recommended':''}"><div class="suggestion-identity"><div class="suggestion-top"><span class="recommendation-label">${esc(t(s.slot.replace('_',' ')))}</span>${informationControl}</div><h3>${familyMark(m.family)}</h3><div class="suggestion-tier"><span>${esc(m.tier)} · ${esc(m.label)}</span>${chips}</div>${facts}</div><div class="suggestion-detail"><p class="why">${why}</p>${m.downloaded?`<div class="suggestion-downloaded">${uiIcon('circle-check')}${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}<div class="suggestion-foot">${action}</div></div></article>`;
 }
 function renderSuggestions(suggestions) {
   if (!suggestions.length) { $('#suggested').innerHTML = emptyState({icon:'cpu',title:'No model fits the available memory',description:'Free some memory or browse all models to compare requirements.'}); return; }
@@ -155,7 +149,7 @@ function renderSuggestions(suggestions) {
     const m = models.get(s.id);
     if (!m) return '';
     const download=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
-    const action=`<div class="controls">${loaded?`<span class="chip">${t('loaded')}</span>`:!m.downloaded?downloadControl(m,download):''}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>${m.downloaded&&!loaded?`<a class="dashboard-link" href="#manager">${t('Load in Model manager')}${ARROW}</a>`:''}`;
+    const action=`<div class="controls">${loaded?uiBadge('success',t('loaded')):!m.downloaded?downloadControl(m,download):''}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>${m.downloaded&&!loaded?`<a class="dashboard-link" href="#manager">${t('Load in Model manager')}${ARROW}</a>`:''}`;
     const informationControl=`<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button>`;
     return renderSuggestionCard(s,m,action,informationControl);
   }).join('')}</div>`;
@@ -186,17 +180,21 @@ function renderDiskModels() {
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
     return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
-  }).join(''):emptyState({icon:'hard-drive',title:'Your model library starts here',description:'Download a model to run decisions privately on this Mac.',action:'Browse models',href:'#models'});
-  $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
-  $('#diskSummary').innerHTML=rows.length?uiEscape(t('{models} on disk',{models:tp(rows.length,'{n} model','{n} models',{n:rows.length})})):emptyState({icon:'hard-drive',title:'No models on disk',description:'Downloaded models will be available here, even offline.',compact:true});
-  $('#diskSummaryMeta').textContent=rows.length?t('{size} total',{size:gb(total)}):'';
+  }).join(''):emptyState({icon:'hard-drive',title:'Your model library starts here',description:'Download a model that fits this machine. It stays available offline and runs privately here.',action:'Browse models',href:'#models'});
+  $('#managerLibrary .panel-head .dashboard-link').hidden=!rows.length;  // the empty state already owns Browse models
+  $('#diskTotal').textContent = rows.length?t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})}):'';
+  // Overview summary: a short state and the next useful destination, not a second empty-state panel
+  $('#diskSummary').textContent=rows.length?t('{models} on disk',{models:tp(rows.length,'{n} model','{n} models',{n:rows.length})}):t('No models yet');
+  $('#diskSummaryMeta').textContent=rows.length?t('{size} total',{size:gb(total)}):t('Download a model that fits this machine. It stays available offline.');
+  $('#diskSummaryLink').href=rows.length?'#manager':'#models';
+  $('#diskSummaryLink').innerHTML=esc(rows.length?t('Manage models'):t('Browse models'))+ARROW;
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
-  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model" data-id="${esc(m.id)}">${t('Unload')}</button>`;
+  if(loaded)return `${loaded.state==='ready'?uiBadge('success',t('loaded')):`<span class="state-pill">${esc(t(loaded.state))}</span>`}<button type="button" class="unload-model" data-id="${esc(m.id)}">${uiIcon('power')}${t('Unload')}</button>`;
   if(!m.runnable){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
-  const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
+  const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${uiIcon('play')}${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
   const noMedia=!m.media_mode&&(m.media||[]).length?`<small class="muted">${esc(noMediaText||'')}</small>`:'';
   return `<button type="button" class="load-model primary" data-id="${esc(m.id)}">${uiIcon('play')}${t('Load')}</button>${media}${optionsButton(m.id)}${noMedia}`;
@@ -212,18 +210,21 @@ async function loadSettings() {
 async function refreshUpdates() {
   try {
     const d=await api('/api/updates');
-    const parts=[];
-    if(d.newer)parts.push(`<div class="card"><button type="button" data-dismiss-update aria-label="${t('Dismiss')}">×</button><strong>${t('basal-ui {latest} is available — you have {installed}',{latest:esc(d.latest),installed:esc(d.installed)})}</strong> <a href="${esc(d.url)}" target="_blank" rel="noopener">${t('Release notes')}</a></div>`);
+    const parts=[], notice=(html,icon='info')=>`<div class="notice notice-info">${uiIcon(icon)}<span>${html}</span><button type="button" class="icon-only" data-dismiss-update aria-label="${t('Dismiss')}">${uiIcon('x')}</button></div>`;
+    const notes=url=>`<a href="${esc(url)}" target="_blank" rel="noopener">${t('Release notes')}</a>`;
+    if(d.newer)parts.push(notice(`<strong>${t('basal-ui {latest} is available — you have {installed}',{latest:esc(d.latest),installed:esc(d.installed)})}</strong> ${notes(d.url)}`,'download'));
     const engine=d.engine||{};
-    if(engine.newer)parts.push(`<div class="card"><button type="button" data-dismiss-update aria-label="${t('Dismiss')}">×</button><strong>${engine.latest_supported?t('basal engine {latest} is available — you have {installed}',{latest:esc(engine.latest),installed:esc(engine.version)}):t('basal engine {latest} is released; this basal-ui supports {supported}',{latest:esc(engine.latest),supported:esc(engine.supported)})}</strong> <a href="${esc(engine.url)}" target="_blank" rel="noopener">${t('Release notes')}</a></div>`);
+    if(engine.newer)parts.push(notice(`<strong>${engine.latest_supported?t('basal engine {latest} is available — you have {installed}',{latest:esc(engine.latest),installed:esc(engine.version)}):t('basal engine {latest} is released; this basal-ui supports {supported}',{latest:esc(engine.latest),supported:esc(engine.supported)})}</strong> ${notes(engine.url)}`,'download'));
     const badge=$('#engineBadge');
     badge.hidden=!engine.experimental;
     if(engine.experimental){badge.textContent=t('experimental engine {version}',{version:`${engine.version}${engine.commit?'@'+engine.commit.slice(0,7):''}`});badge.title=t('basal-ui supports engine {supported}',{supported:engine.supported});}
-    if(d.new_models?.length)parts.push(`<div class="card"><button type="button" data-dismiss-update aria-label="${t('Dismiss')}">×</button><strong>${tp(d.new_models.length,'{n} new model','{n} new models',{n:d.new_models.length})} ${t('in the catalog')}</strong> <button type="button" id="showNewModels">${t('View models')}</button></div>`);
+    if(d.new_models?.length)parts.push(notice(`<strong>${tp(d.new_models.length,'{n} new model','{n} new models',{n:d.new_models.length})} ${t('in the catalog')}</strong> <button type="button" id="showNewModels" class="sm">${t('View models')}</button>`,'layers'));
     $('#updatesBanner').innerHTML=parts.join('');
     const b=$('#showNewModels');if(b)b.onclick=()=>act(async()=>{await api('/api/updates/seen',{method:'POST'});await refreshUpdates();showView('models',true);selectModelsTab('all');});
   } catch {}
 }
+// Dismiss hides a notice for this page view; the next check shows it again while it still applies
+$('#updatesBanner').addEventListener('click',e=>{const b=e.target.closest('[data-dismiss-update]');if(b)b.closest('.notice').remove();});
 $('#checkUpdates').onchange=()=>act(async()=>{await api('/api/settings',{method:'PUT',body:JSON.stringify({check_updates:$('#checkUpdates').checked})});refreshUpdates();});
 async function saveModelsDir(value) {
   $('#modelsDirError').textContent = '';
@@ -234,7 +235,7 @@ async function saveModelsDir(value) {
 }
 async function loadModels(refresh=false) {
   $('#modelsTable').innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
-  $('#suggested').innerHTML = `<div class="empty">${t('Loading suggestions…')}</div>`;
+  $('#suggested').innerHTML = `<div class="suggestion-grid" role="status" aria-label="${t('Loading suggestions…')}"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>`;
   try { renderModels(await api(`/api/models${refresh?'?refresh=1':''}`)); }
   catch (e) { $('#modelsTable').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; $('#suggested').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; toast(e.message,'error'); }
 }
@@ -343,6 +344,7 @@ function renderRequestPresets() {
   const mediaSuffix=e=>{const kinds=[...new Set((e.request?.media||[]).map(m=>m.type))];return kinds.length?` · ${esc(mediaTitle(kinds))}`:'';};
   select.innerHTML=`<option value="">${t('Load an example…')}</option>`+examples.map((e,i)=>`<option value="${i}">${esc(e.file||e.id||t('Example {number}',{number:i+1}))}${e.file&&e.id?` / ${esc(e.id)}`:''}${mediaSuffix(e)}</option>`).join('')+`<optgroup label="${t('Saved requests')}">${saved.map(n=>`<option value="preset:${esc(n)}">${esc(n)}</option>`).join('')}</optgroup>`;
   if(current&&[...select.options].some(o=>o.value===current))select.value=current;
+  if($('#deleteRequestPreset'))$('#deleteRequestPreset').disabled=!select.value.startsWith('preset:');
 }
 function renderLoadPresets() {
   const select=$('#loadPresetSelect'); if(!select)return;
@@ -386,9 +388,11 @@ $('#importPresets').onchange=()=>act(async()=>{
   for(const kind of ['load','request'])for(const [name,value] of Object.entries(data[kind]||{})){await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value})});count++;}
   await loadPresets();toast(t('Imported {count} presets',{count}));$('#importPresets').value='';
 });
-$('#examples').insertAdjacentHTML('afterend',`<button type="button" id="saveRequestPreset">${t('Save request…')}</button><button type="button" id="deleteRequestPreset">${t('Delete request')}</button>`);
+$('#examples').closest('.toolbar-field').insertAdjacentHTML('afterend',`<button type="button" id="saveRequestPreset">${uiIcon('save')}${t('Save request…')}</button><button type="button" id="deleteRequestPreset" title="${t('Choose a saved request first')}" disabled>${uiIcon('trash-2')}${t('Delete request')}</button>`);
+const syncRequestPresetActions=()=>{$('#deleteRequestPreset').disabled=!$('#examples').value.startsWith('preset:');};
+$('#examples').addEventListener('change',syncRequestPresetActions);
 $('#saveRequestPreset').onclick=()=>promptPresetName('request');
-$('#deleteRequestPreset').onclick=()=>act(async()=>{const v=$('#examples').value;if(!v.startsWith('preset:'))return toast(t('Choose a saved request first'),'error');await deletePreset('request',v.slice(7));$('#examples').value='';});
+$('#deleteRequestPreset').onclick=()=>act(async()=>{const v=$('#examples').value;if(!v.startsWith('preset:'))return toast(t('Choose a saved request first'),'error');await deletePreset('request',v.slice(7));$('#examples').value='';syncRequestPresetActions();});
 const OWNED={choice:['criteria','levels','option_keys'],noul:['criteria','option_keys'],score:['criteria','levels','option_keys'],
   multi:['criteria','option_keys',...SET_KEYS],act:['criteria','base','costs','defer_action','option_keys'],
   tool:['tools','extra','rank','multi','description_chars',...SET_KEYS],classify:['labels','criteria','multi_label','none','threshold','min','max','objective'],
@@ -667,7 +671,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   const card=document.createElement('div'); card.className='question'; const fieldId=`question-card-${++questionFieldId}`;
   const type=QUESTION_TYPES.includes(q.type)?q.type:'choice';
   card._extra=extraOf(q,type); card._type=type;
-  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div>`;
+  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${uiIcon('trash-2')}${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div>`;
   $('.q-type',card).value=type;
   renderTypeFields(card,type,q); rememberOriginal(card,type,q);
   card.addEventListener('input',e=>{
@@ -989,7 +993,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : emptyState({icon:'circle-help',title:'No answers returned.',description:'Review the request and try again.',compact:true}));
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision" class="sm">${uiIcon('scan-search')}${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : emptyState({icon:'circle-help',title:'No answers returned.',description:'Review the request and try again.',compact:true}));
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1127,12 +1131,14 @@ function renderServeStatus(status) {
   const serving=status?.serving;
   const restart=serving?.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:'';
   const text=$('#serveStatus .serve-status-text');
+  const state=serving?.running?uiBadge('success',t('Serving')):serving?.error?uiBadge('error',t('Error')):uiBadge('neutral',t('Off'));
   text.innerHTML=serving
-    ?`${serving.url?`<span class="mono">${esc(serving.url)}</span>`:`<span>${t('Not running')}</span>`} <span class="chip">${tp(serving.models?.length??0,'{n} model','{n} models')}</span>${serving.require_key?` <span class="chip">${t('key required')}</span>`:''}${serving.mcp?` <span class="chip">${t('mcp')}</span>`:''}${serving.error?` <span class="reason">${esc(serving.error)}</span>`:''} ${restart}`
-    :`<span>${t('Only this app can reach the models')}</span>`;
+    ?`${state}${serving.url?`<span class="mono">${esc(serving.url)}</span>`:''} <span class="chip">${tp(serving.models?.length??0,'{n} model','{n} models')}</span>${serving.require_key?` <span class="chip">${uiIcon('shield-check')}${t('key required')}</span>`:''}${serving.mcp?` <span class="chip">${t('mcp')}</span>`:''}${serving.error?` <span class="reason">${esc(serving.error)}</span>`:''} ${restart}`
+    :`${state}<span>${t('Only this app can reach the models')}</span>`;
   $('#restartServe').disabled=!(serveData?.settings?.enabled||serving?.running);
-  $('#apiSummary').innerHTML=serving?.running?`<span class="badge success">${uiIcon('activity')}${t('Serving')}</span>`:serving?.error?`<span class="badge error">${t('Error')}</span>`:emptyState({icon:'server',title:'API is switched off',description:'Use models in this app, or enable the API to connect your own tools.',compact:true});
-  $('#apiSummaryMeta').textContent=serving?.running||serving?.error?`${serving?.url||serving?.error} · ${tp(serveData?.keys?.length ?? 0,'{n} API keys','{n} API keys')}`:'';
+  // Overview summary: the state in words, where it answers, and what switching it on would do
+  $('#apiSummary').innerHTML=serving?.running?`<span class="status-dot ready"></span>${esc(t('Serving'))}`:serving?.error?`<span class="status-dot error"></span>${esc(t('Error'))}`:`<span class="status-dot"></span>${esc(t('Off'))}`;
+  $('#apiSummaryMeta').textContent=serving?.running||serving?.error?`${serving?.url||serving?.error} · ${tp(serveData?.keys?.length ?? 0,'{n} API keys','{n} API keys')}`:t('Use models in this app, or enable the API to connect your own tools.');
   renderConnect();
 }
 async function loadServe(){
@@ -1147,7 +1153,7 @@ async function loadServe(){
     $('#serveLan').classList.toggle('active',serveHost==='0.0.0.0');
     $('#serveWarning').hidden=s.host!=='0.0.0.0'||s.require_key;
     renderServeStatus(statusCache);
-    $('#serveKeys').innerHTML=serveData.keys.map(k=>`<div class="disk-row"><span class="disk-info">${esc(k.name)} · ${esc(k.prefix)} · ${t('created')} ${esc(new Date(k.created*1000).toLocaleString())} · ${t('last used')} ${k.last_used?esc(new Date(k.last_used*1000).toLocaleString()):t('never')}</span><button type="button" data-revoke="${esc(k.name)}">${t('Revoke')}</button></div>`).join('')||emptyState({icon:'key-round',title:'No API keys created.',description:'Create a named key for each app that connects to this server.',compact:true});
+    $('#serveKeys').innerHTML=serveData.keys.length?`<div class="list">${serveData.keys.map(k=>`<div class="list-row"><div class="row-identity">${uiIcon('key-round')}<div><strong>${esc(k.name)}</strong><div class="row-meta"><span class="mono">${esc(k.prefix)}</span> · ${t('created')} ${esc(new Date(k.created*1000).toLocaleString())} · ${t('last used')} ${k.last_used?esc(new Date(k.last_used*1000).toLocaleString()):t('never')}</div></div></div><button type="button" class="destructive sm" data-revoke="${esc(k.name)}">${t('Revoke')}</button></div>`).join('')}</div>`:emptyState({icon:'key-round',title:'No API keys created.',description:'Create a named key for each app that connects to this server.',compact:true});
     $('#serveKeys').querySelectorAll('[data-revoke]').forEach(button=>button.addEventListener('click',async()=>{
       if(await confirmDialog({title:t('Revoke API key?'),description:t('{key} will no longer be able to access this server.',{key:button.dataset.revoke}),confirmLabel:t('Revoke'),destructive:true})){
         try{await api(`/api/serve/keys/${encodeURIComponent(button.dataset.revoke)}`,{method:'DELETE'});toast(t('API key revoked'));await loadServe();}
@@ -1178,7 +1184,7 @@ $('#saveServe').onclick=async()=>{
 $('#createKey').onclick=async()=>{
   try{
     const key=await api('/api/serve/keys',{method:'POST',body:JSON.stringify({name:$('#newKeyName').value})});
-    $('#newKeySecret').innerHTML=`<code>${esc(key.key)}</code><p>${t('Copy it now: it is not shown again.')}</p><button type="button" id="copyNewKey">${t('Copy')}</button>`;
+    $('#newKeySecret').innerHTML=`<code>${esc(key.key)}</code><p>${t('Copy it now: it is not shown again.')}</p><button type="button" id="copyNewKey" class="sm">${uiIcon('copy')}${t('Copy')}</button>`;
     $('#newKeySecret').hidden=false; $('#copyNewKey').onclick=()=>copyText(key.key,t('API key copied'));
     $('#newKeyName').value=''; await loadServe(); toast(t('API key created'));
   }catch(error){showServeError(error.message);toast(error.message,'error');}
@@ -1227,7 +1233,7 @@ function renderStatus(s) {
   $('#footerModel').textContent=models.map(m=>shortName(m.id)).join(', ')||t('No model loaded');
   $('#footerModel').title=models.map(m=>m.id).join(', ')||t('No model loaded');
   $('#footerUrl').textContent=s.serving?.url||''; $('#footerUrl').hidden=!s.serving?.url;
-  $('#footerUnload').hidden=!models.length; $('#footerUnload').textContent=models.length>1?t('Unload all'):t('Unload');
+  $('#footerUnload').hidden=!models.length; $('#footerUnload').innerHTML=uiIcon('power')+esc(models.length>1?t('Unload all'):t('Unload'));
   renderMemoryBar(s.memory||{},models);
   renderLoadedRows(models);
   renderInference(s);
@@ -1278,10 +1284,13 @@ function renderLoadedRows(models) {
     const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
     const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
-    const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
+    const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${uiIcon('rotate-ccw')}${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<button type="button" data-unload="${esc(m.id)}">${uiIcon('power')}${t('Unload')}</button><a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${uiIcon('terminal')}${t('Logs')}</a>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
-    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
-  }).join(''):emptyState({icon:'layers',title:'Ready for your first model',description:'Choose a model that fits your machine, then load it to start making decisions.',action:'Browse models',href:'#models',inline:true});
+    const state=m.state==='ready'?uiBadge('success',t(m.state)):m.state==='error'?uiBadge('error',t(m.state)):`<span class="state-pill">${esc(t(m.state))}</span>`;
+    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><strong>${esc(m.id)}</strong>${state}<span class="chip model-load">${esc(load)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button></div>${chips||optionChips?`<div class="chips">${chips}${optionChips}</div>`:''}<div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
+  }).join(''):modelData.some(m=>m.downloaded)
+    ?emptyState({icon:'play',title:'No model is loaded',description:'Load a downloaded model to start making decisions.',action:'Load a model',href:'#manager',inline:true})
+    :emptyState({icon:'layers',title:'Ready for your first model',description:'Choose a model that fits your machine, then load it to start making decisions.',action:'Browse models',href:'#models',inline:true});
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
 }
@@ -1323,7 +1332,7 @@ async function loadStats() {
 }
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
-  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:emptyState({icon:'activity',title:'See how your models perform',description:'Request counts, confidence and latency appear after your first decision.',action:'Open Playground',href:'#playground',inline:true})}`;
+  $('#statsTable').innerHTML=`<div class="panel-head"><div class="panel-heading"><h3 class="panel-title">${t('Statistics')}</h3><p class="panel-sub">${t('Requests, answer confidence and latency recorded for each model.')}</p></div>${entries.length?`<button type="button" id="resetAllStats" class="destructive sm">${uiIcon('rotate-ccw')}${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" class="sm" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:emptyState({icon:'activity',title:'See how your models perform',description:'Request counts, confidence and latency appear after your first decision.',action:'Open Playground',href:'#playground',inline:true})}`;
   $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
   const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
 }
@@ -1331,9 +1340,10 @@ const BENCH_HINTS={benchmark:t('5 warm-up, 30 sequential and 120 concurrent requ
   loadtest:t('basal-loadtest against the model: 10 warm-up, sequential requests for the latency, then the concurrent ones for the throughput. Synthetic states of about N tokens replace the set when given.'),
   determinism:t('basal-loadtest --determinism: N requests alone, then the same N mixed with N others at the concurrency; a model loaded with Deterministic must return identical probabilities.'),
   modes:t('basal-bench in basal-ui’s process: each mode is loaded, measured and freed in turn (the first is the reference of the agreement). Needs the model’s memory once more (twice for eager-fp32) while it runs.')};
-$('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3></div><div class="controls"><select id="benchmarkKind" aria-label="${t('Measurement')}"><option value="benchmark">${t('Benchmark (preset)')}</option><option value="loadtest">${t('Load test')}</option><option value="determinism">${t('Determinism check')}</option><option value="modes">${t('Compare engine modes')}</option></select><select id="benchmarkModel" aria-label="${t('Model to benchmark')}"></select><select id="benchmarkSet" aria-label="${t('Benchmark set')}"><option value="bundled">${tp(44,'Bundled examples ({n} item)','Bundled examples ({n} items)')}</option><option value="custom">${t('Custom path…')}</option></select><input id="benchmarkPath" type="text" aria-label="${t('Custom path…')}" placeholder="${t('/path/to/set.jsonl or a directory of .jsonl')}" hidden><button type="button" id="runBenchmark" class="primary">${uiIcon('play')}${t('Run')}</button><button type="button" id="cancelBenchmark" hidden>${t('Cancel')}</button><span id="benchmarkProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Abenchmark">${t('Logs')}</a></div>
+$('#benchmarks').innerHTML=`<div class="panel-head"><div class="panel-heading"><h3 class="panel-title">${t('Benchmarks')}</h3><p class="panel-sub">${t('Measure latency, throughput, determinism and accuracy on this machine.')}</p></div><a class="dashboard-link" href="#logs/job%3Abenchmark">${uiIcon('terminal')}${t('Logs')}</a></div><div class="bench-form"><div class="field"><label for="benchmarkKind">${t('Measurement')}</label><select id="benchmarkKind" aria-label="${t('Measurement')}"><option value="benchmark">${t('Benchmark (preset)')}</option><option value="loadtest">${t('Load test')}</option><option value="determinism">${t('Determinism check')}</option><option value="modes">${t('Compare engine modes')}</option></select></div><div class="field"><label for="benchmarkModel">${t('Model')}</label><select id="benchmarkModel" aria-label="${t('Model to benchmark')}"></select></div><div class="field"><label for="benchmarkSet">${t('Benchmark set')}</label><select id="benchmarkSet" aria-label="${t('Benchmark set')}"><option value="bundled">${tp(44,'Bundled examples ({n} item)','Bundled examples ({n} items)')}</option><option value="custom">${t('Custom path…')}</option></select></div><div class="field"><label for="benchmarkPath">${t('Custom path…')}</label><input id="benchmarkPath" type="text" aria-label="${t('Custom path…')}" placeholder="${t('/path/to/set.jsonl or a directory of .jsonl')}" hidden></div></div>
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
+<div class="job-actions"><button type="button" id="runBenchmark" class="primary">${uiIcon('play')}${t('Run')}</button><button type="button" id="cancelBenchmark" hidden>${uiIcon('square')}${t('Cancel')}</button><span id="benchmarkProgress" class="state-line"></span></div>
 <details class="technical-help"><summary>${t('Benchmark details')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
@@ -1406,8 +1416,8 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="controls"><select id="calibrationModel" aria-label="${t('Model to calibrate')}"></select><input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}" size="40"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label><button type="button" id="runCalibration">${uiIcon('activity')}${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div><div class="controls"><input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}" size="40" aria-label="${t('Calibration file to import')}"><button type="button" id="importCalibration">${t('Import')}</button></div><p class="form-hint">${t('Improve confidence estimates using your labelled examples.')}</p><details class="technical-help"><summary>${t('Calibration format and memory requirements')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
-$('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
+$('#calibrationBlock').innerHTML=`<div class="panel-head"><div class="panel-heading"><h3 class="panel-title">${t('Calibration')}</h3><p class="panel-sub">${t('Improve confidence estimates using your labelled examples.')}</p></div><a class="dashboard-link" href="#logs/job%3Acalibrate">${uiIcon('terminal')}${t('Logs')}</a></div><div class="calibration-form"><div class="field"><label for="calibrationModel">${t('Model')}</label><select id="calibrationModel" aria-label="${t('Model to calibrate')}"></select></div><div class="field"><label for="calibrationInput">${t('Labelled examples')}</label><div class="input-icon">${uiIcon('file-input')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></div></div><div class="field"><span class="field-label">${t('Certify at')}</span><div class="targets"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div></div><div class="job-actions"><button type="button" id="runCalibration" class="primary">${uiIcon('target')}${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${uiIcon('square')}${t('Cancel')}</button><span id="calibrationProgress" class="state-line"></span></div><details class="technical-help"><summary>${t('Calibration format and memory requirements')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div class="subsection"><h4>${t('Calibration files')}</h4><div id="calibrationFiles"></div><div class="import-row"><div class="input-icon">${uiIcon('upload')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}" aria-label="${t('Calibration file to import')}"></div><button type="button" id="importCalibration">${t('Import')}</button></div></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock .job-actions').insertAdjacentHTML('beforebegin',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
 $('#calCompare').onchange=()=>$('#calComparePath').hidden=$('#calCompare').value!=='path';
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
@@ -1489,7 +1499,7 @@ function renderCalibrationFiles(id, d) {
     const fitted=f?.fitted_on&&typeof f.fitted_on==='object'?f.fitted_on:null, gates=f?.gates||{};
     const automated=Object.entries(gates.automated_at||{}).map(([k,v])=>`${(Number(k)*100).toFixed(0)}%: ${pct(v)} at ${pct(gates.automated_error?.[k])} error`).join(' · ');
     const checked=(d.selected||'')===value;
-    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
+    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" class="sm" data-report="${esc(value)}">${uiIcon('file-text')}${t('Report')}</button>`:''}</td></tr>`;
   };
   const ctx=d.shipped?.context||{}, context=d.shipped?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
   const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
@@ -1498,7 +1508,7 @@ function renderCalibrationFiles(id, d) {
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
     if(!radio)continue;
-    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;
+    const button=document.createElement('button');button.type='button';button.className='sm';button.textContent=t('Refit');button.dataset.refit=f.rows;
     radio.closest('tr').lastElementChild.append(' ',button);
   }
   $('#calibrationFiles').querySelectorAll('[data-refit]').forEach(b=>b.onclick=()=>act(async()=>{
@@ -1751,7 +1761,13 @@ async function loadHistory(mode='reset') {
 function renderHistory(items) {
   const flags=x=>`${x.deferred?` <span class="badge fit-too_large">${t('deferred')}</span>`:''}${x.truncated?` <span class="badge fit-tight">${t('truncated')}</span>`:''}`;
   const focused=$('#historyTable').contains(document.activeElement)?document.activeElement.closest('[data-history]')?.dataset.history:null;
-  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:emptyState({icon:'history',title:$('#historySearch').value||$('#historyModel').value||historySource?'No matching decisions':'Your decisions, in one place',description:$('#historySearch').value||$('#historyModel').value||historySource?'Try another filter or search term.':'Run a request in the Playground. Its input, answer and timing will appear here.',action:'Open Playground',href:'#playground'});
+  const head=`<thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead>`;
+  const filtered=Boolean($('#historySearch').value||$('#historyModel').value||historySource);
+  // empty: the columns stay visible, so the state explains what a record holds; a filter offers its own way back
+  const empty=emptyState(filtered
+    ?{icon:'search',title:'No matching decisions',description:'Try another filter or search term.',action:'Clear filters',button:'clear-history-filters'}
+    :{icon:'history',title:'No decisions recorded yet',description:'Decisions from the Playground, the API server and MCP appear here with their request, answers and latency. Open one to copy it or replay it in the Playground.',action:'Open Playground',href:'#playground'});
+  $('#historyTable').innerHTML=!items.length?`<table>${head}<tbody><tr><td colspan="7">${empty}</td></tr></tbody></table>`:`<table>${head}<tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`;
   $('#historyTable').querySelectorAll('[data-history]').forEach(row=>{
     row.onclick=()=>act(()=>toggleHistory(row));  // pointer users click anywhere on the row
     const open=$('.history-open',row);
@@ -1768,7 +1784,7 @@ async function toggleHistory(row) {
 }
 function historyDetailRow(x) {
   const tr=document.createElement('tr'); tr.className='history-detail';
-  tr.innerHTML=`<td colspan="7"><div class="history-panes"><div><strong>${t('Recorded request')}</strong><pre class="history-request"></pre></div><div><strong>${t('Response')}</strong><pre class="history-response"></pre></div></div><div class="controls"><button type="button" class="copy-request">${t('Copy request')}</button><button type="button" class="replay-request">${t('Replay in Playground')}</button></div><div class="history-replay-error error-box" role="alert" hidden></div></td>`;
+  tr.innerHTML=`<td colspan="7"><div class="history-panes"><div><strong>${t('Recorded request')}</strong><pre class="history-request"></pre></div><div><strong>${t('Response')}</strong><pre class="history-response"></pre></div></div><div class="controls"><button type="button" class="copy-request sm">${uiIcon('copy')}${t('Copy request')}</button><button type="button" class="replay-request sm">${uiIcon('flask-conical')}${t('Replay in Playground')}</button></div><div class="history-replay-error error-box" role="alert" hidden></div></td>`;
   $('.history-request',tr).textContent=JSON.stringify(x.request,null,2);
   $('.history-response',tr).textContent=JSON.stringify(x.response,null,2);
   $('.copy-request',tr).onclick=()=>copyText(JSON.stringify(x.request,null,2),t('Request copied'));
@@ -1792,6 +1808,12 @@ $('#historyModel').onchange=resetHistory;
 $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.toggle('active',b.dataset.source===historySource));
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
+$('#historyTable').addEventListener('click',e=>{
+  if(!e.target.closest('[data-empty-action="clear-history-filters"]'))return;
+  $('#historySearch').value='';$('#historyModel').value='';historySource='';
+  $('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x.dataset.source===''));
+  resetHistory();
+});
 $('#clearHistory').onclick=()=>act(async()=>{
   if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded decision (playground, API and MCP) is deleted.'),confirmLabel:t('Clear history'),destructive:true}))return;
   const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
@@ -1811,7 +1833,7 @@ async function loadLogs() {
       out.append(document.createTextNode(d.lines.map(x=>source==='basal-ui'?`${clock(x.ts)} ${x.text}`:x.text).join('\n')+'\n'));
       logAfter=d.lines.at(-1).seq;
     }
-    $('#logEmpty').hidden=Boolean(out.textContent);
+    out.hidden=!out.textContent; $('#logEmpty').hidden=Boolean(out.textContent);
     if($('#logFollow').checked&&atBottom)out.scrollTop=out.scrollHeight;
   }catch(e){
     if(source!==logSource)return;
@@ -1821,7 +1843,7 @@ async function loadLogs() {
 }
 $('#logSources').onclick=e=>{const b=e.target.closest('[data-logsource]');if(b)showView(`logs/${encodeURIComponent(b.dataset.logsource)}`,true);};
 $('#copyLogs').onclick=()=>copyText($('#logOutput').textContent,t('Log copied'));
-$('#clearLogs').onclick=()=>{$('#logOutput').textContent='';$('#logEmpty').hidden=false;};
+$('#clearLogs').onclick=()=>{$('#logOutput').textContent='';$('#logOutput').hidden=true;$('#logEmpty').hidden=false;};
 $('#downloadLogs').onclick=()=>{
   const a=document.createElement('a'), url=URL.createObjectURL(new Blob([$('#logOutput').textContent],{type:'text/plain'}));
   a.href=url; a.download=`${shortName(logSource)}-${new Date().toISOString().slice(0,10)}.log`; a.click(); URL.revokeObjectURL(url);
@@ -1845,15 +1867,26 @@ function renderBatchState(job, ready) {
   if(JSON.stringify([...ee.options].map(o=>o.value))!==JSON.stringify(['',...levels]))ee.innerHTML=['',...levels].map(l=>`<option value="${esc(l)}">${l?`${t('early exit')} ${esc(l)}`:t('no early exit')}</option>`).join('');
   ee.hidden=!levels.length;
   select.disabled=!ids.length;
+  // a disabled choice explains its prerequisite next to the field
+  const hint=$('#batchModelHint'); hint.hidden=Boolean(ids.length);
+  if(!ids.length&&!hint.innerHTML)hint.innerHTML=`${esc(t('Batch runs on a loaded model.'))} <a href="#manager">${esc(t('Load a model'))}</a>`;
   const running=Boolean(job?.running);
   $('#runBatch').disabled=running||!ids.length; $('#cancelBatch').hidden=!running;
+  renderBatchEmpty(job);
   $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
   if(!running&&job?.phase==='done'&&(batchRunning||!batchResult))showBatchResult(job.result);
   batchRunning=running;
 }
+let batchEmptyShown=null;
+function renderBatchEmpty(job) {
+  const show=!job&&!batchResult;
+  if(show===batchEmptyShown)return;
+  batchEmptyShown=show;
+  $('#batchEmpty').innerHTML=show?emptyState({icon:'list-video',title:'No batch run yet',description:'Progress, timing and the answer to each line appear here. Answers are also written to the output file.'}):'';
+}
 function showBatchResult(r) {
-  batchResult=r;
-  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
+  batchResult=r; renderBatchEmpty(true);
+  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${tp(r.items,'{n} items','{n} items')}</span>${r.errors?uiBadge('error',tp(r.errors,'{n} errors','{n} errors')):`<span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span>`}<span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
   $('#downloadBatch').hidden=$('#copyBatchPath').hidden=false;
   batchRowsLoaded=0; $('#batchRows').innerHTML=''; loadBatchRows();
 }
@@ -1888,6 +1921,9 @@ function renderInspectModels() {
   select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz reads bf16 weights')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
+  const hint=$('#inspectHint'), reason=rows.find(m=>!inspectableModel(m))?.inspect_reason;
+  hint.hidden=Boolean(ok.length);
+  hint.textContent=ok.length?'':rows.length?`${t('No downloaded model can be inspected')}${reason?`: ${reason}`:''}`:t('Download a bf16 model first');
   loadInspectCalibrations();
 }
 async function loadInspectCalibrations() {
@@ -1913,7 +1949,15 @@ function renderInspectState(state, job) {
   if(ready&&!inspectReady){frame.dataset.loaded='';frame.onload=()=>{frame.dataset.loaded='1';};frame.src='/viz/';}
   if(!ready&&inspectReady){frame.src='about:blank';$('#inspectNotice').hidden=true;}
   frame.hidden=!ready; inspectReady=ready;
+  const empty=ready?'':loading?'loading':'idle';
+  if(empty!==inspectEmptyShown){
+    inspectEmptyShown=empty;
+    $('#inspectEmpty').innerHTML=!empty?'':loading
+      ?emptyState({icon:'scan-search',title:'Loading the inspector',description:'The inspector opens here when the model is ready. Follow its progress in Logs.'})
+      :emptyState({icon:'scan-search',title:'Explore a decision layer by layer',description:'Choose a downloaded bf16 model and start the inspector. It runs in this app and counts towards the memory budget.'});
+  }
 }
+let inspectEmptyShown=null;
 // What the inspector would explain of a Playground decision: the request it can explain and how that differs from
 // the served one, or why it cannot (another model, media, nothing but task questions).
 function inspectHandoff(request) {
@@ -1966,7 +2010,7 @@ function showView(hash, updateHash=false) {
   if(name==='history')loadHistory('reset');
   if(name==='logs'){
     let source=logSource; try{if(arg)source=decodeURIComponent(arg);}catch{}
-    if(source!==logSource){logSource=source;logAfter=0;logGeneration=null;$('#logOutput').textContent='';}
+    if(source!==logSource){logSource=source;logAfter=0;logGeneration=null;$('#logOutput').textContent='';$('#logOutput').hidden=true;$('#logEmpty').hidden=false;}
     loadLogs();
   }
 }
@@ -1994,8 +2038,9 @@ $('#saveMemory').onclick=async()=>{
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };
 $('#playgroundHint').innerHTML=uiIcon('info')+`<span>${t('Load a model to enable the playground.')}</span><a class="dashboard-link" href="#manager">${t('Load a model')}${uiIcon('arrow-right')}</a>`;
-$('#logEmpty').innerHTML=emptyState({icon:'terminal',title:'Waiting for activity',description:'Model startup, downloads and server events will appear here. Select a source to follow its output.'});
+$('#logEmpty').innerHTML=emptyState({icon:'terminal',title:'No output yet',description:'Model startup, downloads and server events appear here as they happen. Choose a source above to follow another process.'});
 $('#results').dataset.emptyLabel=t('Send a request to see the model’s decision.');
+renderBatchEmpty(null); renderInspectState(null,null);
 showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();

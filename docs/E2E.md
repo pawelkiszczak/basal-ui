@@ -146,19 +146,26 @@ Do not save settings, start inference or create credentials during this read-onl
 3. In Design System, switch its example tabs by click and arrow keys, open and close
    its example dialog with Escape, and use a sample action. Only catalogue feedback
    should change; `/api/status` must show no new downloads or loaded models.
-4. Check all views at 1093 px and 390 px, both light/dark themes and English/Polish.
-   The page must not overflow horizontally; tables and navigation may scroll locally.
-   Reset the temporary viewport and restore the initial theme/locale afterward.
-5. To verify catalogue removal, temporarily omit its script tag, reload and verify
+4. Check all views at 1093 px and 390 px, both light/dark themes, both Green/Orange skins and
+   English/Polish. The page must not overflow horizontally; tables and navigation may scroll locally.
+   Reset the temporary viewport and restore the initial theme/skin/locale afterward.
+5. Skins: with no `basal-ui.skin` entry the page loads green; choose Orange and reload with throttled
+   rendering to confirm no green frame appears first; set `localStorage['basal-ui.skin']='purple'` and
+   reload to confirm the green fallback. Changing skin or theme must not reload the page or reset a
+   Playground draft. At 390 px switch all three preferences from the top bar without page overflow.
+   Status labels, destructive buttons and the focus ring must look the same in both skins.
+6. To verify catalogue removal, temporarily omit its script tag, reload and verify
    that the other views work and `#design-system` falls back to Overview. Restore the
    tag for the requested delivery.
-6. Run `make lint`, `make test`, JavaScript syntax checks (`node --check` on changed
+7. Run `make lint`, `make test`, JavaScript syntax checks (`node --check` on changed
    scripts), and `git diff --check`. No frontend build is needed.
 
 This recipe checks interface behavior with no downloaded model. It does not replace
 real-model tests for loading, inference, calibration, Batch execution or inspection.
 
 ### Local interface evidence — 2026-10-30
+
+The following table records the first pass; the second-pass evidence follows it.
 
 Apple M5 / macOS, source based on `f37fe44d765f9e4ce6aab1b77fcea43e833e63c8`,
 local `ui/design-system-refresh` candidate, served at `127.0.0.1:7860`:
@@ -172,3 +179,26 @@ local `ui/design-system-refresh` candidate, served at `127.0.0.1:7860`:
 | Catalogue removal | Omit catalogue script, reload direct catalogue URL, navigate to Batch, restore script | Overview fallback, ten application destinations, no console errors; full catalogue restored |
 | Repository checks | `make lint`, `make test`, `node --check` on changed scripts, `git diff --check` | 314 passed, 3 skipped; lint/syntax/diff checks passed |
 | Real-model execution | Not run for this presentation change | No downloaded model; inference, Batch execution and inspection are not certified by these checks |
+
+### Second-pass integration evidence — 2026-10-30
+
+Based on `9f5cc7f` on `ui/design-system-refresh`, Apple M5 / macOS,
+local loopback app. Claude Opus 5.5 implemented the rework; the integrating agent
+performed the executable checks below and corrected short-window navigation,
+Batch field proportions and the duplicate empty-library action.
+
+| Criterion | Evidence | Result / limit |
+| --- | --- | --- |
+| Complete view coverage | 88 in-app browser cases: 11 views × 2 skins × 2 themes × 2 widths (390/1093 px) | No page overflow, blank visible selectors or console errors |
+| Polish reflow | All 11 views at 390 px in Polish | No page overflow; skin and theme controls stay accessible |
+| Short-window sidebar | 1280 × 720 browser geometry and visual check | Brand, all destinations and appearance footer visible; long navigation can scroll independently |
+| Preference behavior | Node VM: defaults, saved values, invalid values, independent updates, unavailable storage; browser skin switch and reload | Default/fallback green; orange persists; theme remains independent; in-progress catalogue text survives skin/theme changes |
+| Real setup flow | Models → Setup → Cancel | Model options opened with real local data; no settings saved |
+| Catalogue interactions and isolation | Tabs, arrow keys, native dialog/Escape, sample model action; subsequent real status read | Local feedback only; zero loaded models/downloads, API server off |
+| Catalogue removal | Omit its script, reload direct catalogue URL, restore | Falls back to Overview; ten core destinations, no console error |
+| Repository checks | Full unit suite, lint, syntax on all changed JS, final i18n and diff checks | 314 passed, 3 skipped; all targeted checks passed |
+| Real-model gate and contrast audit | Not run | No model is downloaded. No claim of inference certification or a complete WCAG audit |
+
+The obsolete E2E assertion for the removed inference eyebrow now checks that the
+live inference region remains visible. Its real-model execution is still deferred
+to the separate hardware gate.
