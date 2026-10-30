@@ -79,7 +79,7 @@ No promotion to `stage`/`main` or PyPI publication was performed for that snapsh
 - **Design foundation:** the stylesheet is split into `tokens.css`, `components.css` and `views.css` (cascade layers,
   readable source); semantic colours (`--danger`, `--warning`, `--success`, `--info`) make errors, deferrals and
   warnings look like what they are and pass WCAG AA in both themes; muted text is darker, nothing meaningful is set
-  below 12 px; the logo takes the green brand colour. `app.js` is split into per-view scripts under `static/js/`.
+  below 12 px; the logo keeps basal's red-orange. `app.js` is split into per-view scripts under `static/js/`.
   `scripts/ui_fixture_server.py` runs the app on fake hardware and models for UI work.
 - **Accessibility baseline (WCAG 2.2 AA):** a skip link, `<aside>`/`<nav>`/`<main>` landmarks and one `h1` per view
   (cards `h2`, sections `h3`); switching views sets the window title, moves the focus to the view title and announces

@@ -9,8 +9,8 @@
  * names it does not (--fs-*, --corner-*). --accent and --muted are older names Basecoat also uses for backgrounds;
  * basal-ui's button and badge rules override the Basecoat styles that read them.
  *
- * Brand: green is the one brand primary (--accent, --primary). The logo mark used to be red-orange, which competed
- * with the accent and read like an error colour; it now takes --brand, the accent. Red belongs to --danger only.
+ * Brand: green is the interface primary (--accent, --primary). The logo mark and the wordmark's dot keep basal's own
+ * red-orange (--brand) in both themes; it is the logo only, never a status colour (errors use --danger).
  *
  * Colour pairs are checked for WCAG AA (4.5:1 for text) in both themes: text tokens against --paper and --white, each
  * semantic -fg against its -bg. --muted is the quietest text colour; nothing meaningful is set below 12px.
@@ -75,7 +75,7 @@
   --accent-light: #e9f1e9;
   --on-accent: #fff;
   --focus-ring: #32645020;
-  --brand: var(--accent);
+  --brand: #b94329;  /* the basal logo's own colour, both themes */
   --eyebrow: var(--accent);
   --eyebrow-quiet: #4d6754;
   --omni: #655487;
