@@ -108,6 +108,7 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 | | |
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | the browser app end to end |
+| [docs/design-system.md](docs/design-system.md) | shared interface rules, components and the removable Design System tab |
 | [docs/API.md](docs/API.md) | basal-ui's API server: keys, CORS, errors, OpenAI Decisions, MCP, clients |
 | [docs/E2E.md](docs/E2E.md) | setup, coverage and the [verified development gate](docs/E2E.md#verified-dev-gate-2026-10-29) |
 | [docs/BACKENDS.md](docs/BACKENDS.md) | backend inventory, machine/model compatibility and isolated Inference tests |

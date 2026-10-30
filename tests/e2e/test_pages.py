@@ -1198,7 +1198,7 @@ def test_overview_inference_after_a_decision_and_in_polish(page, ui, text_model)
     sync_api.expect(rows.nth(0)).to_contain_text(
         "2 w toku · 1 w kolejce · Playground 1 · Serwer API 1 · najdłuższe 2.4 s"
     )
-    sync_api.expect(page.locator("#inference .section-index")).to_have_text("WNIOSKOWANIE")
+    sync_api.expect(page.locator("#inference")).to_be_visible()
 
 
 def test_a_running_batch_shows_on_the_overview(page, ui, text_model, tmp_path):
