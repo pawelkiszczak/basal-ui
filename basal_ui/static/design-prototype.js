@@ -7,7 +7,7 @@
     'Appearance & language': 'Wygląd i język',
     'Card support': 'Obsługa kart',
     'Design prototype': 'Prototyp wyglądu',
-    'Design prototype — read-only. Hardware and catalog are live; the sample Decision is illustrative.': 'Prototyp wyglądu — tylko do odczytu. Sprzęt i katalog są rzeczywiste; przykładowa Decyzja jest ilustracją.',
+    'Read-only design prototype. Hardware and catalog are live; Demo traffic and sample Decisions are illustrative.': 'Prototyp tylko do odczytu. Sprzęt i katalog są rzeczywiste; ruch Demo i przykładowe Decyzje są ilustracją.',
     'Focus': 'Skupienie',
     'Illustrative only — no inference has run.': 'Wyłącznie ilustracja — nie wykonano inferencji.',
     'Layout sample — no model loaded': 'Przykład układu — brak załadowanego modelu',
@@ -32,11 +32,13 @@
   const urlFor = key => {
     const url = new URL(location.href);
     url.searchParams.set('variant', key);
+    if (key === 'original' && url.hash === '#dashboard') url.hash = '#overview';
+    if (key !== 'original' && design === 'original' && url.hash === '#overview') url.hash = '#dashboard';
     return url.href;
   };
   const notice = document.createElement('div');
   notice.className = 'prototype-notice';
-  notice.textContent = t('Design prototype — read-only. Hardware and catalog are live; the sample Decision is illustrative.');
+  notice.textContent = t('Read-only design prototype. Hardware and catalog are live; Demo traffic and sample Decisions are illustrative.');
   document.body.prepend(notice);
 
   const switcher = document.createElement('nav');
@@ -122,7 +124,7 @@
   tools.className = 'prototype-tools';
   tools.innerHTML = `<summary>${t('Tools & settings')}</summary><div></div>`;
   for (const button of [...nav.children]) {
-    (['overview', 'models', 'playground', 'history'].includes(button.dataset.view) ? primary : tools.lastElementChild).append(button);
+    (['dashboard', 'models', 'playground', 'history'].includes(button.dataset.view) ? primary : tools.lastElementChild).append(button);
     if (button.classList.contains('active') && button.parentElement === tools.lastElementChild) tools.open = true;
   }
   nav.append(caption, primary, tools);

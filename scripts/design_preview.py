@@ -46,13 +46,17 @@ def main():
             shell = shell.replace("<title>basal</title>", "<title>basal · design prototype</title>")
             shell = shell.replace("<body>", f'<body data-design="{variant}">')
             shell = shell.replace("</head>", '<link rel="stylesheet" href="/static/design-prototype.css"></head>')
-            shell = shell.replace("</body>", '<script src="/static/design-prototype.js" defer></script></body>')
+            shell = shell.replace(
+                "</body>",
+                '<script src="/static/design-dashboard.js" defer></script>'
+                '<script src="/static/design-prototype.js" defer></script></body>',
+            )
             return HTMLResponse(shell)
 
         # Shadow only the page route; retain the app's Host, Origin, cache and framing middleware.
         app.router.routes.insert(0, APIRoute("/", prototype, methods=["GET", "HEAD"], include_in_schema=False))
 
-        print(f"Design preview: http://127.0.0.1:{args.port}/?variant=A#overview", flush=True)
+        print(f"Design preview: http://127.0.0.1:{args.port}/?variant=A#dashboard", flush=True)
         uvicorn.run(app, host="127.0.0.1", port=args.port)
 
 
