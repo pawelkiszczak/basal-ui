@@ -160,6 +160,7 @@
   function StudioTemplate() {
     // B: horizontal navigation, full-width canvas, paired dashboard and equal request/Decision panes.
     query('#overview').setAttribute('aria-label', t('Studio'));
+    query('.prototype-tools').open = false;
   }
   function FocusTemplate() {
     // C: a single reading column; diagnostics are secondary and request/Decision use separate tabs.

@@ -39,9 +39,9 @@ def main():
             return await call_next(request)
 
         def prototype(request: Request):
-            variant = request.query_params.get("variant", "A")
+            variant = request.query_params.get("variant", "B")
             if variant not in {"A", "B", "C", "original"}:
-                variant = "A"
+                variant = "B"
             shell = (STATIC / "index.html").read_text()
             shell = shell.replace("<title>basal</title>", "<title>basal · design prototype</title>")
             shell = shell.replace("<body>", f'<body data-design="{variant}">')
@@ -49,14 +49,15 @@ def main():
             shell = shell.replace(
                 "</body>",
                 '<script src="/static/design-dashboard.js" defer></script>'
-                '<script src="/static/design-prototype.js" defer></script></body>',
+                '<script src="/static/design-prototype.js" defer></script>'
+                '<script src="/static/design-model-manager.js" defer></script></body>',
             )
             return HTMLResponse(shell)
 
         # Shadow only the page route; retain the app's Host, Origin, cache and framing middleware.
         app.router.routes.insert(0, APIRoute("/", prototype, methods=["GET", "HEAD"], include_in_schema=False))
 
-        print(f"Design preview: http://127.0.0.1:{args.port}/?variant=A#dashboard", flush=True)
+        print(f"Studio preview: http://127.0.0.1:{args.port}/#dashboard", flush=True)
         uvicorn.run(app, host="127.0.0.1", port=args.port)
 
 

@@ -230,3 +230,73 @@ body:not([data-design="original"]) #dashboard .prototype-traffic-heading h2, bod
   .prototype-data-source button { padding: 8px 12px; font-size: 12px; }
   .prototype-traffic-toolbar > select { width: 100%; }
 }
+
+/* Selected Studio: model operations first, shared usage and tuning in separate panels. */
+body[data-design="B"] .prototype-tools:has([aria-current="page"]) > summary { background: var(--accent-light); color: var(--accent); }
+body[data-design="B"] #manager { gap: 26px; }
+.prototype-manager-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 24px 48px; padding: 0 0 24px; border-bottom: 1px solid var(--line); }
+.prototype-manager-summary > div { display: grid; gap: 4px; }
+.prototype-manager-summary > div > span { color: var(--muted); font-size: 12px; }
+.prototype-manager-summary strong { font-size: 26px; font-weight: 650; letter-spacing: -.7px; font-variant-numeric: tabular-nums; }
+.prototype-manager-live { margin-left: auto; align-self: flex-start; border-radius: 6px; padding: 5px 10px; background: var(--accent-light); color: var(--accent); font: 10px var(--mono); }
+.prototype-manager-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.prototype-manager-tabs > button { padding: 10px 18px; border: 0; background: transparent; color: var(--muted); }
+.prototype-manager-tabs > [aria-selected="true"] { background: var(--accent-light); color: var(--accent); }
+body[data-design="B"] #manager .prototype-manager-panel { display: block; overflow: visible; min-width: 0; }
+body[data-design="B"] #manager #prototype-manager-library { display: grid; grid-template-columns: minmax(0,1.8fr) minmax(300px,1fr); gap: 26px; align-items: start; }
+body[data-design="B"] #manager .prototype-manager-disk { margin: 0; min-width: 0; }
+body[data-design="B"] #manager .disk-group { margin: 24px 0 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+body[data-design="B"] #manager .disk-group + .disk-group { padding-top: 24px; border-top: 1px solid var(--line); }
+body[data-design="B"] #manager .disk-group-heading { padding: 0 0 12px; background: transparent; border: 0; gap: 16px; }
+body[data-design="B"] #manager .disk-group-heading h4 { font-size: 14px; font-weight: 650; }
+body[data-design="B"] #manager .disk-group-heading > span { font: 10px var(--mono); }
+body[data-design="B"] #manager .disk-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; padding: 18px 0; align-items: start; }
+body[data-design="B"] #manager .disk-info { display: flex; gap: 8px 12px; flex-wrap: wrap; min-width: 0; }
+body[data-design="B"] #manager .disk-info strong { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+body[data-design="B"] #manager .disk-info > .muted { font: 11px var(--mono); }
+body[data-design="B"] #manager .disk-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; max-width: 280px; gap: 8px; min-width: 0; }
+body[data-design="B"] #manager .disk-actions .reason, body[data-design="B"] #manager .disk-actions small { width: 100%; overflow-wrap: anywhere; font-size: 11px; line-height: 1.6; }
+body[data-design="B"] #manager .disk-total { padding-top: 18px; margin-top: 10px; font: 11px var(--mono); color: var(--muted); }
+body[data-design="B"] #manager .prototype-manager-loaded { min-width: 0; align-self: start; }
+body[data-design="B"] #manager .prototype-manager-loaded h2 { margin: 0 0 20px; font-size: 16px; font-weight: 650; letter-spacing: -.3px; }
+body[data-design="B"] #manager .memory-head { flex-direction: column; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 1.7; }
+body[data-design="B"] #manager .model-row-main { gap: 8px; }
+body[data-design="B"] #manager .model-row-main > strong { width: 100%; font-size: 13px; overflow-wrap: anywhere; }
+body[data-design="B"] #manager .model-row-meta { font-size: 11px; line-height: 1.7; }
+body[data-design="B"] #manager .prototype-manager-storage { grid-column: 1/-1; }
+.prototype-manager-storage > summary { cursor: pointer; font-size: 14px; font-weight: 650; }
+body[data-design="B"] #manager .prototype-manager-storage .field { margin-bottom: 0; }
+.prototype-manager-panel-heading { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; align-items: start; }
+body[data-design="B"] #manager .prototype-manager-panel-heading h2 { font-size: 20px; }
+.prototype-manager-panel-heading p, .prototype-manager-panel-heading a { font-size: 12px; line-height: 1.7; }
+.prototype-manager-panel-heading p { margin-top: 6px; color: var(--muted); }
+.prototype-manager-usage-note { font-size: 13px; line-height: 1.8; color: var(--muted); margin: 20px 0; max-width: 90ch; }
+.prototype-manager-reset-note { font-size: 12px; line-height: 1.8; padding: 16px 20px; margin-top: 24px; background: var(--amber-light); color: var(--amber); border-radius: 10px; }
+body[data-design="B"] #manager #statsTable > .section-head { justify-content: flex-end; margin: 0; }
+body[data-design="B"] #manager #statsTable > .section-head > h3 { display: none; }
+body[data-design="B"] #manager #benchmarks, body[data-design="B"] #manager #calibrationBlock { margin: 0; }
+body[data-design="B"] #manager #benchmarks > .controls, body[data-design="B"] #manager #calibrationBlock > .controls { display: flex; flex-wrap: wrap; gap: 20px; align-items: end; margin: 24px 0; }
+.prototype-manager-field { display: grid; gap: 8px; flex: 1 1 220px; min-width: 0; max-width: 420px; }
+.prototype-manager-field > label { font-size: 12px; font-weight: 650; }
+body[data-design="B"] #manager .prototype-manager-field > input, body[data-design="B"] #manager .prototype-manager-field > select { width: 100%; max-width: 100%; min-width: 0; }
+.prototype-manager-field:has(> [hidden]) { display: none; }
+.prototype-manager-help { margin: 20px 0; padding: 16px 20px; border-radius: 10px; background: var(--paper); }
+.prototype-manager-help > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.prototype-manager-help > p { margin: 16px 0 0; font-size: 12px; line-height: 1.9; }
+body[data-design="B"] #manager #calibrationAdvanced { padding-top: 18px; margin-top: 24px; border-top: 1px solid var(--line); }
+body[data-design="B"] #manager #calibrationAdvanced .controls { align-items: end; gap: 20px; }
+body[data-design="B"] #manager .directory-row > div { min-width: 0; }
+body[data-design="B"] #overview > #hardware { grid-area: 1/1/2/-1; }
+@media (max-width: 1100px) {
+  body[data-design="B"] #manager #prototype-manager-library { grid-template-columns: minmax(0,1fr); }
+  body[data-design="B"] #manager .prototype-manager-loaded { width: 100%; }
+}
+@media (max-width: 600px) {
+  .prototype-manager-summary { gap: 20px 28px; }
+  .prototype-manager-live { margin-left: 0; }
+  .prototype-manager-tabs { gap: 4px; }
+  .prototype-manager-tabs > button { padding: 10px; font-size: 12px; }
+  body[data-design="B"] #manager .disk-row { grid-template-columns: minmax(0,1fr); gap: 12px; }
+  body[data-design="B"] #manager .disk-actions { justify-content: flex-start; max-width: 100%; }
+  .prototype-manager-field { max-width: 100%; }
+}
