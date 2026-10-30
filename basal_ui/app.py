@@ -806,6 +806,12 @@ def create_app(
     def get_stats():
         return stats.snapshot()
 
+    @app.get("/api/traffic")
+    def get_traffic(minutes: int = 15):
+        if minutes not in (15, 60):
+            raise HTTPException(400, "minutes must be 15 or 60")
+        return stats.traffic_snapshot(minutes)
+
     @app.delete("/api/stats")
     def reset_stats():
         stats.reset()

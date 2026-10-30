@@ -8,6 +8,8 @@ import threading
 import time
 from pathlib import Path
 
+from .traffic import Traffic
+
 SAMPLES = 1000  # latencies kept per model for the percentiles
 BENCHMARKS = 20  # results kept per model (benchmarks, load tests, determinism checks, mode comparisons)
 FLUSH_S = 5
@@ -107,11 +109,14 @@ class Stats:
         self.write_lock = threading.Lock()
         self.data = _read(self.path)
         self.delta: dict = {}
+        self.traffic = Traffic()
         self._stop = threading.Event()
         self._flusher = threading.Thread(target=self._flush_loop, daemon=True)
         self._flusher.start()
 
-    def record(self, model_id: str, response_json, latency_ms: float, ok: bool = True) -> None:
+    def record(
+        self, model_id: str, response_json, latency_ms: float, ok: bool = True, endpoint=None, method="POST"
+    ) -> None:
         from . import settings
 
         @settings._locked
@@ -121,6 +126,10 @@ class Stats:
             reset_at = _read(self.path)["reset_at"]
             with self.lock:
                 now = time.time()
+                if endpoint is not None:
+                    self.traffic.record(
+                        model_id, endpoint, method, latency_ms, 200 if ok else 500, response_json, now=now
+                    )
                 entry = self.delta.get(model_id)
                 if entry is None or _cleared(reset_at, model_id, entry):
                     entry = self.delta[model_id] = _empty()
@@ -242,9 +251,13 @@ class Stats:
                         _merge(self.delta.setdefault(key, _empty()), entry)
                     raise
                 self.data = data
+                self.traffic.reset(model_id, now=time.time())
 
         with self.write_lock:
             settings._locked(go)()
+
+    def traffic_snapshot(self, minutes: int) -> dict:
+        return self.traffic.snapshot(minutes)
 
     def flush(self) -> None:
         with self.lock:

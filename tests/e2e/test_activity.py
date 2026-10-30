@@ -15,7 +15,7 @@ def page(browser, ui):
     context = browser.new_context(viewport={"width": 1440, "height": 1000})
     tab = context.new_page()
     tab.set_default_timeout(10_000)
-    tab.goto(ui.url + "/#overview")
+    tab.goto(ui.url + "/")
     tab.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache")
     yield tab
     context.close()
@@ -53,7 +53,7 @@ def test_history_poll_drains_more_than_one_oldest_first_page(page):
         route.fulfill(json={"items": rows, "models": ["test"]})
 
     page.route("**/api/history?**", history)
-    page.click('.side-nav [data-view="history"]')
+    test_pages.view(page, "history")
     page.wait_for_function("() => document.querySelectorAll('#historyTable tr.history-row').length === 100")
     page.evaluate("() => loadHistory('poll')")
     page.wait_for_function("() => document.querySelectorAll('#historyTable tr.history-row').length === 250")
@@ -78,7 +78,7 @@ def test_history_keeps_live_cap_and_preserves_paged_rows_across_empty_polls(page
         route.fulfill(json={"items": rows, "models": ["test"]})
 
     page.route("**/api/history?**", history)
-    page.click('.side-nav [data-view="history"]')
+    test_pages.view(page, "history")
     page.wait_for_function("() => historyRows.size === 100")
     page.evaluate("() => loadHistory('poll')")
     page.wait_for_function("() => historyRows.size === 500")
@@ -100,7 +100,8 @@ def test_history_keeps_live_cap_and_preserves_paged_rows_across_empty_polls(page
 
 
 def test_calibration_responses_and_selection_stay_with_the_displayed_model(page):
-    page.click('.side-nav [data-view="manager"]')
+    test_pages.manager_tab(page, "library")
+    page.locator('[data-manager-tab="calibration"]').click()
     pending_a = []
     selected = []
 
@@ -162,7 +163,7 @@ def test_logs_clear_old_lines_when_source_buffer_generation_changes(page):
         )
 
     page.route("**/api/logs?**", logs)
-    page.click('.side-nav [data-view="logs"]')
+    test_pages.view(page, "logs")
     page.wait_for_function("() => document.querySelector('#logOutput').textContent.includes('old buffer line')")
     page.evaluate("() => loadLogs()")
     page.wait_for_function("() => document.querySelector('#logOutput').textContent.includes('new buffer line')")

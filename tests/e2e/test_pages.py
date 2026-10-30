@@ -6,22 +6,24 @@ import re
 
 import pytest
 
-from tests.e2e.support import CHOICE, EXAMPLES, advanced_requests
+from tests.e2e.support import CHOICE, EXAMPLES, UI, advanced_requests
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="install basal[e2e] and run: playwright install chromium")
 
 VIEWS = {
-    "backends": "Backends",
-    "overview": "Overview",
+    "dashboard": "Dashboard",
+    "overview": "Hardware",
     "models": "Models",
     "manager": "Model manager",
     "playground": "Playground",
+    "history": "History",
+    "backends": "Backends",
     "batch": "Batch",
     "inspect": "Inspect",
     "api": "API server",
-    "history": "History",
     "logs": "Logs",
 }
+MANAGER_TABS = ("library", "usage", "benchmarks", "calibration")
 WAIT = 120_000  # ms: a decision of a large model, a model start
 
 
@@ -50,7 +52,7 @@ def page(browser, ui, text_model):
         ),
     )  # 4xx answers the page expects are not errors
     tab.set_default_timeout(WAIT)
-    tab.goto(ui.url + "/#overview")
+    tab.goto(ui.url + "/")
     tab.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
     yield tab
     context.close()
@@ -58,15 +60,248 @@ def page(browser, ui, text_model):
 
 
 def view(page, name):
-    page.click(f'.side-nav [data-view="{name}"]')
-    sync_api.expect(page.locator("#pageTitle")).to_have_text(VIEWS[name])
+    destination = page.locator(f'.side-nav [data-view="{name}"]')
+    if not destination.is_visible():
+        disclosure = page.locator(".nav-tools")
+        if not disclosure.locator("summary").evaluate("(el) => el.parentElement.open"):
+            disclosure.locator("summary").click()
+    destination.click()
+    sync_api.expect(page.locator(f'section.view[data-page="{name}"]').first).to_be_visible()
+    assert not page.locator(".nav-tools").evaluate("(el) => el.open")
+
+
+def open_request_settings(page):
+    disclosure = page.locator("details.request-settings")
+    if not disclosure.evaluate("(el) => el.open"):
+        disclosure.locator("summary").click()
+
+
+def open_appearance_controls(page):
+    disclosure = page.locator(".appearance-controls details")
+    if not disclosure.evaluate("(el) => el.open"):
+        disclosure.locator("summary").click()
+
+
+def manager_tab(page, name):
+    view(page, "manager")
+    tab = page.locator(f'[data-manager-tab="{name}"]')
+    tab.click()
+    sync_api.expect(tab).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator(f"#manager-{name}")).to_be_visible()
+    for other in MANAGER_TABS:
+        if other != name:
+            sync_api.expect(page.locator(f"#manager-{other}")).to_be_hidden()
+
+
+@pytest.fixture
+def isolated_ui(tmp_path):
+    app = UI(tmp_path).start()
+    yield app
+    left = app.stop()
+    assert not left, f"basal-serve children left running after Dashboard E2E: {left}"
+
+
+def test_dashboard_default_records_real_decisions_and_resets_model_traffic(browser, isolated_ui, text_model):
+    model_id = text_model["id"]
+    isolated_ui.load(model_id)
+    context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+        sync_api.expect(page.locator("#dashboard")).to_be_visible()
+        before = isolated_ui.get("/api/traffic", params={"minutes": 15})
+        assert before["requests"] == before["input_tokens"] == 0
+        assert isolated_ui.get("/api/stats")["models"].get(model_id) is None
+
+        view(page, "playground")
+        page.select_option("#playgroundModel", model_id)
+        page.evaluate("request => setRequest(request)", CHOICE)
+        with page.expect_response(lambda response: response.url.endswith("/api/decide"), timeout=WAIT) as decision:
+            page.click("#sendButton")
+        assert decision.value.status == 200, decision.value.text()
+        sync_api.expect(page.locator("#results article.answer")).to_be_visible()
+
+        view(page, "dashboard")
+        page.wait_for_function(
+            r"() => Number(document.querySelector('#traffic-requests-note').textContent.match(/\d+/)?.[0]) > 0",
+            timeout=WAIT,
+        )
+        traffic = isolated_ui.get("/api/traffic", params={"minutes": 15})
+        stats = isolated_ui.get("/api/stats")["models"][model_id]
+        assert traffic["requests"] == 1 and traffic["input_tokens"] > 0
+        assert traffic["requests_per_s"] > 0 and traffic["input_tokens_per_s"] > 0
+        assert len(traffic["endpoints"]) == 1
+        endpoint = traffic["endpoints"][0]
+        assert (endpoint["endpoint"], endpoint["method"], endpoint["requests"], endpoint["errors"]) == (
+            "/api/decide",
+            "POST",
+            1,
+            0,
+        )
+        assert re.search(r"[1-9]\d*(?:\.\d+)?|0\.\d*[1-9]", page.locator("#traffic-requests").inner_text())
+        assert re.search(r"[1-9]\d*(?:\.\d+)?|0\.\d*[1-9]", page.locator("#traffic-tokens").inner_text())
+        endpoint_row = page.locator("#trafficEndpoints tr").filter(has_text="/api/decide")
+        sync_api.expect(endpoint_row).to_be_visible()
+        sync_api.expect(endpoint_row).to_contain_text("POST")
+        sync_api.expect(endpoint_row).to_contain_text("1")
+
+        page.select_option("#trafficWindow", "60")
+        sync_api.expect(page.locator("#traffic-requests")).not_to_have_text("—", timeout=WAIT)
+        sync_api.expect(page.locator("#traffic-requests-note")).to_contain_text("1")
+        sync_api.expect(endpoint_row).to_be_visible()
+        page.locator('[data-traffic-metric="requests_per_s"]').click()
+        sync_api.expect(page.locator('[data-traffic-metric="requests_per_s"]')).to_have_attribute(
+            "aria-pressed", "true"
+        )
+
+        manager_tab(page, "usage")
+        reset_control = page.locator(f'#statsTable [data-reset="{model_id}"]')
+        sync_api.expect(reset_control).to_be_visible()
+        model_row = reset_control.locator("xpath=ancestor::tr")
+        for value in (stats["requests"], stats["input_tokens"]):
+            sync_api.expect(model_row).to_contain_text(str(value))
+        view(page, "dashboard")
+        dashboard_models = page.locator("#trafficModels")
+        sync_api.expect(dashboard_models).to_be_visible()
+        for value in (stats["requests"], stats["input_tokens"]):
+            sync_api.expect(dashboard_models).to_contain_text(str(value))
+
+        model_article = dashboard_models.locator(f'.traffic-model:has(strong[title="{model_id}"])')
+        sync_api.expect(model_article.locator(".traffic-model-requests")).to_have_text(str(stats["requests"]))
+        sync_api.expect(model_article.locator(".traffic-model-tokens")).to_have_text(str(stats["input_tokens"]))
+
+        isolated_ui.delete(f"/api/stats/{model_id}")
+        assert isolated_ui.get("/api/stats")["models"].get(model_id) is None
+        assert isolated_ui.get("/api/traffic", params={"minutes": 15})["requests"] == 0
+        page.wait_for_function(
+            r"() => Number(document.querySelector('#traffic-requests-note').textContent.match(/\d+/)?.[0]) === 0",
+            timeout=WAIT,
+        )
+        sync_api.expect(page.locator("#trafficEndpoints")).not_to_contain_text("/api/decide")
+        assert not errors, errors
+    finally:
+        context.close()
+
+
+def test_dashboard_unavailable_stats_and_status_recover(browser, isolated_ui, text_model):
+    model_id = text_model["id"]
+    isolated_ui.load(model_id)
+    context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    try:
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+        view(page, "playground")
+        page.select_option("#playgroundModel", model_id)
+        page.evaluate("request => setRequest(request)", CHOICE)
+        with page.expect_response(lambda response: response.url.endswith("/api/decide"), timeout=WAIT) as decision:
+            page.click("#sendButton")
+        assert decision.value.status == 200, decision.value.text()
+        stats = isolated_ui.get("/api/stats")["models"][model_id]
+        assert stats["requests"] > 0 and stats["input_tokens"] > 0
+
+        def unavailable_stats(route):
+            if route.request.method == "GET":
+                route.fulfill(status=503, content_type="application/json", body='{"detail":"temporarily unavailable"}')
+            else:
+                route.continue_()
+
+        view(page, "dashboard")
+        page.route("**/api/stats", unavailable_stats)
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/stats") and response.status == 503,
+            timeout=WAIT,
+        ):
+            page.reload()
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+        sync_api.expect(page.locator(".traffic-model-requests")).to_have_text("—")
+        sync_api.expect(page.locator(".traffic-model-tokens")).to_have_text("—")
+        sync_api.expect(page.locator("#traffic-requests")).not_to_have_text("—", timeout=WAIT)
+
+        page.unroute("**/api/stats", unavailable_stats)
+        page.reload()
+        page.wait_for_function(
+            """model => {
+              const requests = document.querySelector('.traffic-model-requests');
+              const tokens = document.querySelector('.traffic-model-tokens');
+              return requests && tokens && requests.textContent.trim() !== '—' &&
+                tokens.textContent.trim() !== '—' && document.querySelector('.traffic-model strong')?.title === model;
+            }""",
+            arg=model_id,
+        )
+        model_article = page.locator(f'.traffic-model:has(strong[title="{model_id}"])')
+        sync_api.expect(model_article.locator(".traffic-model-requests")).to_have_text(str(stats["requests"]))
+        sync_api.expect(model_article.locator(".traffic-model-tokens")).to_have_text(str(stats["input_tokens"]))
+
+        def unavailable_status(route):
+            if route.request.method == "GET":
+                route.fulfill(status=503, content_type="application/json", body='{"detail":"temporarily unavailable"}')
+            else:
+                route.continue_()
+
+        page.route("**/api/status", unavailable_status)
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/status") and response.status == 503,
+            timeout=WAIT,
+        ):
+            page.evaluate("() => refreshStatus()")
+        page.wait_for_function(
+            """() => document.querySelector('#trafficModels .traffic-model') === null &&
+              document.querySelector('#trafficActivityCounts').textContent.trim() === '' &&
+              ['#traffic-tokens','#traffic-requests','#traffic-latency','#traffic-errors']
+                .every(selector => document.querySelector(selector).textContent.trim() === '—')"""
+        )
+
+        page.unroute("**/api/status", unavailable_status)
+        page.evaluate("() => refreshStatus()")
+        page.wait_for_function(
+            """model => {
+              const article = [...document.querySelectorAll('#trafficModels .traffic-model')]
+                .find(el => el.querySelector('strong')?.title === model);
+              return article !== undefined;
+            }""",
+            arg=model_id,
+        )
+    finally:
+        context.close()
+
+
+def test_manager_tab_routes_follow_click_keyboard_reload_and_back(page):
+    manager_tab(page, "library")
+    benchmarks = page.locator('[data-manager-tab="benchmarks"]')
+    benchmarks.click()
+    sync_api.expect(page.locator("#manager-benchmarks")).to_be_visible()
+    sync_api.expect(page).to_have_url(re.compile(r"#manager/benchmarks$"))
+
+    benchmarks.focus()
+    page.keyboard.press("ArrowRight")
+    calibration = page.locator('[data-manager-tab="calibration"]')
+    sync_api.expect(calibration).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator("#manager-calibration")).to_be_visible()
+    sync_api.expect(page).to_have_url(re.compile(r"#manager/calibration$"))
+
+    page.reload()
+    sync_api.expect(page.locator('[data-manager-tab="calibration"]')).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator("#manager-calibration")).to_be_visible()
+
+    page.go_back()
+    sync_api.expect(page.locator('[data-manager-tab="benchmarks"]')).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator("#manager-benchmarks")).to_be_visible()
+    sync_api.expect(page).to_have_url(re.compile(r"#manager/benchmarks$"))
 
 
 def test_every_view_renders(page, text_model):
+    sync_api.expect(page.locator("#dashboard")).to_be_visible()
     for name in VIEWS:
         view(page, name)
-        sync_api.expect(page.locator(f'section.view[data-page="{name}"]').first).to_be_visible()
-    view(page, "overview")
+    for name in MANAGER_TABS:
+        manager_tab(page, name)
+    manager_tab(page, "library")
     sync_api.expect(page.locator("#loadedModels")).to_contain_text(text_model["id"])
     sync_api.expect(page.locator("#footerState")).to_contain_text("ready")
 
@@ -104,7 +339,11 @@ def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page):
         }""")
 
     for theme in ("light", "dark"):
-        page.evaluate("theme => applyTheme(theme)", theme)
+        appearance = page.locator(".appearance-controls")
+        choice = appearance.locator(f'[data-theme-choice="{theme}"]')
+        if not choice.is_visible():
+            appearance.locator("summary").click()
+        choice.click()
         page.wait_for_timeout(300)
         for name in VIEWS:
             view(page, name)
@@ -112,6 +351,9 @@ def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page):
             if name == "models":
                 page.click("#allModelsTab")
                 assert not low_contrast(), f"{theme} models/all: {low_contrast()}"
+        for name in MANAGER_TABS:
+            manager_tab(page, name)
+            assert not low_contrast(), f"{theme} manager/{name}: {low_contrast()}"
     page.evaluate("() => applyTheme('system')")
 
 
@@ -304,7 +546,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     unavailable, suggestion = fixture["unavailable"], fixture["suggestion"]
     assert unavailable and suggestion
     assert unavailable["family"] in {"basal-1.0", "basal-1.5"}
-    page.click('.side-nav [data-view="models"]')
+    view(page, "models")
     page.click("#allModelsTab")
     page.check("#notRunnableToggle")
     page.check("#olderToggle")
@@ -352,7 +594,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.reload()
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     page.evaluate("data => renderModels(data)", fixture["data"])
-    page.click('.side-nav [data-view="models"]')
+    view(page, "models")
     page.click("#allModelsTab")
     page.check("#notRunnableToggle")
     page.check("#olderToggle")
@@ -385,16 +627,18 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     assert page.evaluate("() => [document.documentElement.lang, LANG]") == ["pl", "pl"]
     left = {}
+    appearance = page.locator(".appearance-controls")
+    appearance.locator("summary").click()
+    left["appearance"] = page.evaluate(UNTRANSLATED)
+    appearance.locator("summary").click()
+    disclosure = page.locator(".nav-tools")
+    if not disclosure.evaluate("(el) => el.open"):
+        disclosure.locator("summary").click()
+    left["Tools navigation"] = page.evaluate(UNTRANSLATED)
+    disclosure.locator("summary").click()
     for name in VIEWS:
-        page.click(f'.side-nav [data-view="{name}"]')
-        sync_api.expect(page.locator(f'section.view[data-page="{name}"]').first).to_be_visible()
-        if name == "manager":
-            page.evaluate("""() => {
-              statsData.benchmarks = {stub: [{kind:'modes', model:'Remek/basal-2.0-mini',
-                set:'bundled', when:1, modes:[{mode:'eager',dec_s:2}]}]};
-              renderBenchmarkResults();
-            }""")
-        page.wait_for_timeout(300)  # views render their lists after their own requests
+        view(page, name)
+        page.wait_for_timeout(300)
         if name == "history":
             page.evaluate("""() => renderHistory(['mcp','api','playground'].map((source,i) => ({
               id:'stub'+i,ts:1,model:'Remek/basal-2.0-mini',source,state_preview:'test',
@@ -405,7 +649,18 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
             for tab in ("#suggestedTab", "#allModelsTab"):
                 page.click(tab)
                 left[f"models {tab}"] = page.evaluate(UNTRANSLATED)
-    page.click('.side-nav [data-view="models"]')
+    for tab in MANAGER_TABS:
+        manager_tab(page, tab)
+        page.wait_for_timeout(300)
+        if tab == "benchmarks":
+            page.evaluate("""() => {
+              statsData.benchmarks = {stub: [{kind:'modes', model:'Remek/basal-2.0-mini',
+                set:'bundled', when:1, modes:[{mode:'eager',dec_s:2}]}]};
+              renderBenchmarkResults();
+            }""")
+        left[f"manager {tab}"] = page.evaluate(UNTRANSLATED)
+    view(page, "models")
+    page.click("#allModelsTab")
     page.locator(f'#modelsTable .options-model[data-id="{text_model["id"]}"]').click()
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
     left["load options"] = page.evaluate(UNTRANSLATED)
@@ -413,8 +668,7 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
     page.evaluate("id => openModelCard(id)", text_model["id"])
     sync_api.expect(page.locator("#modelCardDialog")).to_be_visible()
     left["model card"] = page.evaluate(UNTRANSLATED)
-    assert not {k: v for k, v in left.items() if v}, left
-    assert page.locator(".side-nav [data-view='manager']").inner_text().strip() == "Menedżer modeli"
+    assert not {key: value for key, value in left.items() if value}, left
 
 
 def test_model_manager_disk_rows_stack_without_overflow_at_mobile_width(page, text_model):
@@ -446,6 +700,8 @@ def test_media_example_loads_with_a_notice_and_draws_element_probabilities(page,
     sync_api.expect(page.locator("#decideError")).to_contain_text("does not take images")  # refused before sending
     assert not decide_calls
     page.evaluate("() => { loadedMedia = ['image', 'audio']; }")  # as on a media model: evidence is what is refused
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.evaluate("""() => { const r = JSON.parse($('#requestJson').value); r.questions.click_target.evidence = true;
       $('#requestJson').value = JSON.stringify(r); }""")
@@ -541,6 +797,8 @@ def test_string_state_is_preserved_until_the_state_field_is_edited(page):
 
 def test_edit_json_rebuilds_the_builder_and_keeps_invalid_json_open(page):
     view(page, "playground")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.fill("#requestJson", "{ invalid")
     page.click("#editJsonToggle")  # stays checked: the toggle refuses to leave invalid JSON
@@ -602,7 +860,7 @@ def test_safety_strip_and_inspect_button_on_a_decision(page, ui, text_model):
 
 
 def test_the_load_options_dialog_lists_the_modes(page, text_model):
-    view(page, "overview")  # the loaded model's ⚙: restart with other options
+    manager_tab(page, "library")  # the loaded model's restart options
     page.click(f'#loadedModels .options-model[data-id="{text_model["id"]}"]')
     dialog = page.locator("#loadOptions")
     sync_api.expect(dialog).to_be_visible()
@@ -648,10 +906,10 @@ def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, tex
 
 
 def test_models_tabs_and_manager_loaded_section(page, text_model):
-    view(page, "manager")
-    positions = page.evaluate("""() => ['statsTable','benchmarks','calibrationBlock','diskModels','modelsDir']
-      .map(id => document.getElementById(id).getBoundingClientRect().top)""")
-    assert positions == sorted(positions)
+    manager_tab(page, "library")
+    sync_api.expect(page.locator("#loadedModels")).to_contain_text(text_model["id"])
+    for tab in MANAGER_TABS:
+        manager_tab(page, tab)
     view(page, "models")
     assert page.locator('#models [role="tab"]').all_text_contents() == ["Suggested", "All models"]
     sync_api.expect(page.locator("#suggestedTab")).to_have_attribute("aria-selected", "true")
@@ -693,6 +951,8 @@ def test_playground_builder_draft_survives_language_changes_once(page, text_mode
         "media": [{"type": "image", "data": "aGVsbG8="}],
     }
     page.evaluate("r => setRequest(r)", request)
+    open_appearance_controls(page)
+
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
     assert page.evaluate(
@@ -703,6 +963,8 @@ def test_playground_builder_draft_survives_language_changes_once(page, text_mode
     ) == {"buy": "Buy", "wait": "Wait"}
     assert page.evaluate("() => selectedMedia.length") == 0
     sync_api.expect(page.locator("#mediaError")).to_contain_text("dołącz media ponownie")
+    open_appearance_controls(page)
+
     page.locator('[data-lang-choice="en"]').click()
     page.wait_for_function(SWITCHED, arg="en")
     assert page.evaluate(
@@ -718,9 +980,13 @@ def test_playground_builder_draft_survives_language_changes_once(page, text_mode
 
 def test_playground_edit_json_draft_keeps_invalid_text(page):
     view(page, "playground")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     text = '{"state": "unfinished", "questions": ['
     page.fill("#requestJson", text)
+    open_appearance_controls(page)
+
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
     sync_api.expect(page.locator("#requestJson")).to_have_value(text)
@@ -754,6 +1020,8 @@ def test_playground_incomplete_builder_draft_survives_language_switch_once(page,
         )
         page.fill('.question [data-f="schema"]', '{"unfinished":')
 
+    open_appearance_controls(page)
+
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
     if draft_case == "blank-name":
@@ -783,6 +1051,7 @@ def test_playground_language_draft_preserves_blank_act_matrix_rows(page):
     page.locator(".question tbody tr").nth(1).locator(".cost-cell").nth(0).fill("17")
     page.locator(".question tbody tr").nth(1).locator(".cost-cell").nth(1).fill("23")
 
+    open_appearance_controls(page)
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
     assert page.locator(".question .cost-action").evaluate_all("(els) => els.map(el => el.value)") == ["", "custom"]
@@ -915,7 +1184,7 @@ def test_the_tool_builder_sets_the_selection_of_several_tools(page):
 
 def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_model, tmp_path):
     shipped = ui.get("/api/calibrations", params={"id": text_model["id"]})["shipped"]["file"]
-    view(page, "manager")  # Loaded section contains Calibration
+    manager_tab(page, "calibration")
     page.select_option("#calibrationModel", text_model["id"])
     page.fill("#calibrationImportPath", shipped)
     sync_api.expect(page.locator("#calibrationFiles table")).to_be_visible()
@@ -931,7 +1200,10 @@ def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_mod
 
 
 def test_theme_toggle_persists_and_sets_the_document_theme(page):
-    page.click('[data-theme-choice="dark"]')
+    appearance = page.locator(".appearance-controls")
+    if not appearance.locator('[data-theme-choice="dark"]').is_visible():
+        appearance.locator("summary").click()
+    appearance.locator('[data-theme-choice="dark"]').click()
     assert page.evaluate("() => [document.documentElement.dataset.theme, localStorage.getItem('basal-ui.theme')]") == [
         "dark",
         "dark",
@@ -1142,11 +1414,9 @@ ANSWERING = """([model, batch]) => {  // the status of this basal-ui with reques
 }"""
 
 
-def test_overview_shows_the_inference_in_flight_and_idle_otherwise(page, text_model):
-    view(page, "overview")
-    order = page.evaluate("""() => ['#hardware', '#inference', '#status', '#overview > .dashboard-grid']
-      .map(s => document.querySelector(s).getBoundingClientRect().top)""")
-    assert order == sorted(order) and len(set(order)) == 4  # Hardware, then Inference, Loaded models, the summaries
+def test_manager_library_shows_inference_in_flight_and_idle_otherwise(page, text_model):
+    manager_tab(page, "library")
+    sync_api.expect(page.locator("#inferenceNow")).to_be_visible()
     rows = page.locator("#inferenceNow .inference-row")
     sync_api.expect(rows).to_have_count(1)
     sync_api.expect(rows.first).to_contain_text("Idle")
@@ -1157,7 +1427,6 @@ def test_overview_shows_the_inference_in_flight_and_idle_otherwise(page, text_mo
     sync_api.expect(rows.nth(0)).to_contain_text("2 running · 1 queued · Playground 1 · API server 1 · longest 2.4 s")
     sync_api.expect(rows.nth(1)).to_contain_text("Batch")
     sync_api.expect(rows.nth(1)).to_contain_text("3 / 10")
-    assert rows.nth(1).locator(".progress span").get_attribute("style") == "width:30%"
     assert page.locator("#inferenceNow .status-dot.active").count() == 2
     sync_api.expect(
         page.locator(f'#loadedModels .model-row:has-text("{text_model["id"]}") .status-dot.active')
@@ -1185,14 +1454,15 @@ def test_overview_shows_the_inference_in_flight_and_idle_otherwise(page, text_mo
     assert "answering" not in page.locator("#footerState").inner_text()
 
 
-def test_overview_inference_after_a_decision_and_in_polish(page, ui, text_model):
+def test_manager_inference_after_a_decision_and_in_polish(page, ui, text_model):
     ui.decide(text_model["id"], CHOICE)
-    view(page, "overview")
+    manager_tab(page, "library")
     sync_api.expect(page.locator("#inferenceNow")).to_contain_text("last decision")  # the idle line says when
-    assert page.evaluate("() => !$('#overview').hidden")
+    assert page.evaluate("() => !$('#manager-library').hidden")
     page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
     page.reload()
     page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache?.models?.length > 0")
+    manager_tab(page, "library")
     page.evaluate(ANSWERING, [text_model["id"], True])
     rows = page.locator("#inferenceNow .inference-row")
     sync_api.expect(rows.nth(0)).to_contain_text(
@@ -1201,7 +1471,7 @@ def test_overview_inference_after_a_decision_and_in_polish(page, ui, text_model)
     sync_api.expect(page.locator("#inference .section-index")).to_have_text("WNIOSKOWANIE")
 
 
-def test_a_running_batch_shows_on_the_overview(page, ui, text_model, tmp_path):
+def test_a_running_batch_shows_in_manager_library(page, ui, text_model, tmp_path):
     many = tmp_path / "many.jsonl"
     many.write_text((EXAMPLES / "questions.jsonl").read_text() * 50)
     ui.post(
@@ -1209,7 +1479,7 @@ def test_a_running_batch_shows_on_the_overview(page, ui, text_model, tmp_path):
         {"id": text_model["id"], "input": str(many), "output": str(tmp_path / "out.jsonl"), "concurrency": 1},
     )
     try:
-        view(page, "overview")
+        manager_tab(page, "library")
         row = page.locator("#inferenceNow .inference-row", has_text="Batch")
         sync_api.expect(row).to_be_visible(timeout=10_000)
         sync_api.expect(row).to_contain_text(" / 1000")  # done / total of the real job
@@ -1231,7 +1501,7 @@ def test_usage_line_includes_branches_and_lane(page):
 
 
 def test_load_preset_save_and_apply_round_trip(page, text_model):
-    view(page, "overview")
+    manager_tab(page, "library")
     page.click(f'#loadedModels [data-id="{text_model["id"]}"].options-model')
     dialog = page.locator("#loadOptions")
     sync_api.expect(dialog).to_be_visible()

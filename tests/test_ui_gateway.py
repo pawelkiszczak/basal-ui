@@ -44,15 +44,18 @@ def fleet(tmp_path, monkeypatch):
     async def adecide(self, client, body, path="/v1/systemone"):
         calls.append((self.model, path, body))
         if body.get("state") == "fail":
-            return httpx.Response(422, json={"error": "bad question", "code": "INVALID_REQUEST"})
-        return httpx.Response(
-            200,
-            json={
-                "model": self.model,
-                "answers": {"answer": {"type": "choice", "choice": "x", "confidence": 0.6}},
-                "usage": {"input_tokens": 3},
-            },
-        )
+            response = httpx.Response(422, json={"error": "bad question", "code": "INVALID_REQUEST"})
+        else:
+            response = httpx.Response(
+                200,
+                json={
+                    "model": self.model,
+                    "answers": {"answer": {"type": "choice", "choice": "x", "confidence": 0.6}},
+                    "usage": {"input_tokens": 3},
+                },
+            )
+        response.extensions["basal.inference"] = True
+        return response
 
     monkeypatch.setattr(Runner, "adecide", adecide)
     fleet.calls = calls
@@ -106,6 +109,14 @@ def test_forwarding_counts_and_records_api_decisions(fleet):
         ("b/two", "api", 200),
     ]
     assert fleet.history.get(history[-1]["id"])["request"] == {"model": "b/two", "state": "s", "questions": {}}
+    traffic = fleet.stats.traffic_snapshot(15)
+    by_endpoint = {item["endpoint"]: item for item in traffic["endpoints"]}
+    assert traffic["requests"] == 3 and traffic["errors"] == 1
+    assert {path: (entry["method"], entry["requests"], entry["errors"]) for path, entry in by_endpoint.items()} == {
+        "/v1/systemone": ("POST", 1, 0),
+        "/v1/basal": ("POST", 1, 1),
+        "/v1/decisions": ("POST", 1, 0),
+    }
 
 
 def test_a_history_write_error_does_not_fail_the_api_answer(fleet, monkeypatch):
@@ -204,6 +215,20 @@ def test_mcp_tools_answer_with_the_first_loaded_model(fleet):
         answer = rpc(client, "tools/call", {"name": "decide", "arguments": {"state": "s", "question": "?"}})
         assert answer["structuredContent"]["model"] == "a/one"
     assert [(r["model"], r["source"]) for r in fleet.history.list()] == [("a/one", "mcp")]
+    traffic = fleet.stats.traffic_snapshot(15)
+    assert [(row["endpoint"], row["method"], row["requests"]) for row in traffic["endpoints"]] == [("/mcp", "CALL", 1)]
+
+
+def test_pre_inference_validation_stays_in_lifetime_stats_but_not_traffic(fleet):
+    response = fleet.decide(
+        "a/one",
+        {"model": "a/one", "input": "x", "questions": [], "unsupported": True},
+        path="/v1/decisions",
+        source="api",
+    )
+    assert response.status_code == 400
+    assert fleet.stats.snapshot()["models"]["a/one"]["errors"] == 1
+    assert fleet.stats.traffic_snapshot(15)["requests"] == 0
 
 
 def test_decisions_are_translated_for_a_stock_child_and_recorded_as_sent(tmp_path, monkeypatch):

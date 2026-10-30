@@ -41,7 +41,77 @@ paths, like basal-serve's own errors.
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
-MCP on this port: `decide` and `decide_many` serve the model named in the tool's `model` argument, else the first
+### Recent Decision traffic
+
+The local UI app (not the API-server gateway) exposes `GET /api/traffic?minutes=15` and
+`GET /api/traffic?minutes=60`. Unsupported integer windows return HTTP 400 with an English error; invalid query syntax
+uses FastAPI's HTTP 422 response. This is an in-memory, process-local view of **recorded Decision attempts**, not all
+HTTP traffic. An attempted child forward that fails (including a transport/connection error) counts as a request and
+an error; its latency includes the failed attempt. UI polling, UI/gateway rejections before a child forward, Batch,
+benchmarks and private Inference tests do not contribute. Playground is attributed to `POST /api/decide`; gateway
+rows retain the public `POST` path (`/v1/systemone`, `/v1/basal`, `/v1/decisions` or `/decisions`) rather than the
+translated child path. MCP uses `CALL /mcp` (one invocation, not necessarily one HTTP request).
+
+```json
+{
+  "scope": "process",
+  "window_seconds": 900,
+  "bucket_seconds": 60,
+  "window_start": 1730000000.0,
+  "window_end": 1730000900.0,
+  "observed_since": 1729999900.0,
+  "requests": 3,
+  "errors": 1,
+  "input_tokens": 240,
+  "requests_per_s": 0.0033333333,
+  "input_tokens_per_s": 0.2666666667,
+  "avg_latency_ms": 120.0,
+  "p95_ms": 170.0,
+  "latency_sample_limit": 100,
+  "series": [
+    {
+      "start": 1730000880.0,
+      "requests": 1,
+      "errors": 0,
+      "input_tokens": 80,
+      "requests_per_s": 0.05,
+      "input_tokens_per_s": 4.0
+    }
+  ],
+  "endpoints": [
+    {
+      "endpoint": "/api/decide",
+      "method": "POST",
+      "requests": 1,
+      "errors": 0,
+      "input_tokens": 80,
+      "requests_per_s": 0.0011111111,
+      "input_tokens_per_s": 0.0888888889,
+      "avg_latency_ms": 80.0,
+      "p95_ms": 80.0
+    }
+  ]
+}
+```
+
+Timestamp and rate fields are JSON numbers; counters and `window_seconds`, `bucket_seconds`, and
+`latency_sample_limit` are integers. `avg_latency_ms` and `p95_ms` are numbers or `null` when no sample exists.
+`series` is ordered oldest to newest; its rows use Unix minute starts and may include zero-count minutes, but never
+complete minutes before observation began. Rates use the actual observed elapsed time, capped to the selected window,
+this process's `observed_since`, and the retained bucket span, not a model generation-speed measure. Latencies use
+request-weighted means and sampled p95: at most 100 latency values per model, endpoint and minute are retained; each
+returned aggregate uses at most 6000 samples. The percentile is explicitly approximate under high traffic.
+Only the latest 60 minute buckets are retained. The first/last bucket can cover a partial requested window because
+counters are bucketed by minute; a 60-minute query returns at most those 60 retained minute buckets.
+`input_tokens` is Engine-reported usage when present; missing usage contributes zero and is never estimated.
+
+`GET /api/stats` and `/v1/stats` keep their existing lifetime response shape and cross-process persistence. Deleting
+all stats or one model at `/api/stats` (or `/api/stats/{model_id}`) also clears matching rolling data in that app
+process only; it does not clear another process's in-memory window. Rolling telemetry is not persisted or merged.
+
+### MCP routing
+
+On the API-server gateway port, MCP `decide` and `decide_many` serve the model named in the tool's `model` argument, else the first
 loaded model. The engine's MCP server lists no models (`list_models` and `basal-mcp --model` arrive with the
 model-argument proposal upstream); until then the first loaded model answers every tool call.
 

@@ -4,6 +4,7 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
+let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
 function httpFailure(status,message) {
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
@@ -42,7 +43,7 @@ function applyTheme(theme) {
   document.querySelectorAll('.side-nav button').forEach(b=>{if(document.documentElement.dataset.theme==='dark')b.style.setProperty('color','#edf0e9','important');else b.style.removeProperty('color');});
   localStorage.setItem('basal-ui.theme',value);
 }
-document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>applyTheme(b.dataset.themeChoice));
+document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);$('.appearance-controls details').open=false;});
 applyTheme(localStorage.getItem('basal-ui.theme')||'system');
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
@@ -61,8 +62,11 @@ document.addEventListener('keydown',event=>{
     event.target.dispatchEvent(new Event('change',{bubbles:true}));
   }
 });
-document.querySelectorAll('.side-nav [data-view]:not([data-view=backends])').forEach((b,i)=>b.dataset.shortcut=String(i+1));
+['overview','models','manager','playground','batch','inspect','api','history','logs'].forEach((view,index)=>{$(`.side-nav [data-view="${view}"]`).dataset.shortcut=String(index+1);});
 $('.side-nav [data-view=backends]').dataset.shortcut='0';
+$('#shortcutViews').innerHTML=[...document.querySelectorAll('.side-nav [data-shortcut]')]
+  .sort((a,b)=>Number(a.dataset.shortcut)-Number(b.dataset.shortcut))
+  .map(button=>`<p><kbd>Alt + ${button.dataset.shortcut}</kbd> ${esc(t(button.textContent.trim()))}</p>`).join('');
 function setChecked(input, value) {
   input.checked=Boolean(value);
   input.setAttribute('aria-checked',String(input.checked));
@@ -94,8 +98,6 @@ function renderModels(data) {
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
-  const overviewSuggestion=$('#overviewSuggested'), firstSuggestion=$('#suggested .suggestion-card');
-  overviewSuggestion.replaceChildren(firstSuggestion?firstSuggestion.cloneNode(true):Object.assign(document.createElement('p'),{className:'muted',textContent:t('No suggested model fits right now.')}));
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
   const older = $('#olderToggle').checked, showBad = $('#notRunnableToggle').checked, downloadedOnly = $('#downloadedToggle').checked;
   const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable) && (!downloadedOnly || m.downloaded));
@@ -159,7 +161,7 @@ function renderSuggestions(suggestions) {
     if (!m) return '';
     const why = esc(ts(s.why, s.why_code, s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g, '<code>$1</code>');
     const download=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
-    const action=`<div class="controls">${loaded?`<span class="chip">${t('loaded')}</span>`:!m.downloaded?downloadControl(m,download):''}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>${m.downloaded&&!loaded?`<a class="dashboard-link" href="#manager">${t('Load in Model manager')}${ARROW}</a>`:''}`;
+    const action=`<div class="controls">${loaded?`<span class="chip">${t('loaded')}</span>`:!m.downloaded?downloadControl(m,download):''}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>${m.downloaded&&!loaded?`<a class="dashboard-link" href="#manager/library">${t('Load in Model manager')}${ARROW}</a>`:''}`;
     return `<article class="suggestion-card${m.family==='omni'?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(m.est_memory_bytes)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(m.fit_now || 'unknown')}">${esc(t(m.fit_now || 'unknown'))}</span></div><p class="why">${why}</p>${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
   }).join('')}</div>`;
 }
@@ -191,8 +193,7 @@ function renderDiskModels() {
     return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
   $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
-  $('#diskSummary').textContent=t('{models} on disk',{models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
-  $('#diskSummaryMeta').textContent=t('{size} total',{size:gb(total)});
+  renderManagerSummary();
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m) {
@@ -316,13 +317,36 @@ async function selectMedia(files) {
     renderSelectedMedia(); syncRequest();
   } catch (error) { if (selection === mediaSelection) showMediaError(error.message); }
 }
+function renderDashboard() {
+  window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
+}
+async function refreshTraffic() {
+  if ($('#dashboard').hidden) return;
+  if (trafficInFlight) { trafficPending=true; return; }
+  trafficInFlight=true; trafficPending=false;
+  const sequence=++trafficGeneration, minutes=trafficMinutes;
+  try {
+    const data=await api(`/api/traffic?minutes=${minutes}`);
+    if(sequence===trafficGeneration&&minutes===trafficMinutes&&!$('#dashboard').hidden){trafficData=data;trafficError=null;renderDashboard();}
+  } catch(error) {
+    if(sequence===trafficGeneration&&minutes===trafficMinutes&&!$('#dashboard').hidden){trafficError=error.message;renderDashboard();}
+  } finally {
+    trafficInFlight=false;
+    if(trafficPending&&!$('#dashboard').hidden)refreshTraffic();
+  }
+}
+document.addEventListener('dashboard:window',event=>{
+  if(![15,60].includes(event.detail?.minutes))return;
+  if(trafficMinutes!==event.detail.minutes){trafficMinutes=event.detail.minutes;trafficGeneration++;trafficPending=true;trafficData=null;trafficError=null;renderDashboard();}
+  refreshTraffic();
+});
 async function refreshStatus() {
   const sequence = ++statusSequence;
   try {
     const status = await api('/api/status');
-    if (sequence === statusSequence) { renderStatus(status); if (serveData) renderServeStatus(status); }
+    if (sequence === statusSequence) { renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { showStatusError(e.message); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; showStatusError(e.message); trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {
@@ -1134,8 +1158,6 @@ function renderServeStatus(status) {
     ?`${serving.url?`<span class="mono">${esc(serving.url)}</span>`:`<span>${t('Not running')}</span>`} <span class="chip">${tp(serving.models?.length??0,'{n} model','{n} models')}</span>${serving.require_key?` <span class="chip">${t('key required')}</span>`:''}${serving.mcp?` <span class="chip">${t('mcp')}</span>`:''}${serving.error?` <span class="reason">${esc(serving.error)}</span>`:''} ${restart}`
     :`<span>${t('Only this app can reach the models')}</span>`;
   $('#restartServe').disabled=!(serveData?.settings?.enabled||serving?.running);
-  $('#apiSummary').textContent=serving?.running?t('Serving'):serving?.error?t('Error'):t('Off');
-  $('#apiSummaryMeta').textContent=`${serving?.url||serving?.error||t('API server is not serving')} · ${tp(serveData?.keys?.length ?? 0,'{n} API keys','{n} API keys')}`;
   renderConnect();
 }
 async function loadServe(){
@@ -1214,8 +1236,16 @@ const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+function renderManagerSummary() {
+  const loaded=statusCache?.models?.length||0, downloaded=modelData.filter(m=>m.downloaded);
+  const bytes=downloaded.reduce((sum,model)=>sum+(Number(model.downloaded_bytes)||0),0);
+  $('#managerLoadedCount').textContent=`${loaded} ${t('loaded')}`;
+  $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
+  $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
+}
 function renderStatus(s) {
-  statusCache=s;
+  statusAvailable=true; statusCache=s;
+  renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
@@ -1233,6 +1263,7 @@ function renderStatus(s) {
   $('#footerUnload').hidden=!models.length; $('#footerUnload').textContent=models.length>1?t('Unload all'):t('Unload');
   renderMemoryBar(s.memory||{},models);
   renderLoadedRows(models);
+  renderManagerSummary();
   renderInference(s);
   renderPlaygroundModels(ready);
   renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
@@ -1240,8 +1271,8 @@ function renderStatus(s) {
   if(serveData)renderServeStatus(s);
   loadStats();
   const jobsRunning=Object.values(s.jobs||{}).some(j=>j.running);
-  // every second while anything is answered and while the Overview (which shows it live) is open
-  clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,busy||repos.size||jobsRunning||models.some(answering)||!$('#overview').hidden?1000:5000);
+  // Keep the existing status poll responsive while the Dashboard or Model manager is visible.
+  clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,busy||repos.size||jobsRunning||models.some(answering)||!$('#dashboard').hidden||!$('#manager').hidden?1000:5000);
 }
 function renderMemoryBar(memory, models) {
   const budget=Number(memory.budget_bytes)||0, reserve=Number(memory.reserve_bytes)||0, limit=Math.max(1,budget-reserve);
@@ -1276,7 +1307,7 @@ function renderInference(s) {
 }
 function renderLoadedRows(models) {
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
-    const stats=statsData.models?.[m.id], p=m.progress;
+    const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
     const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
     const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
@@ -1284,7 +1315,7 @@ function renderLoadedRows(models) {
     const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
     return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
-  }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager">${t('Load a model')}</a>`})}</div>`;
+  }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`;
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
 }
@@ -1317,12 +1348,19 @@ async function loadStats() {
   try{
     const data=await api('/api/stats');
     if(sequence!==statsSequence)return;  // a reset or a newer poll answered meanwhile
-    statsData=data;
+    statsData=data; statsAvailable=true;
+    renderDashboard();
     const signature=JSON.stringify(statsData.models);
     if(signature!==statsSignature){statsSignature=signature;renderStats();if(statusCache)renderLoadedRows(statusCache.models||[]);}
     const bench=JSON.stringify(statsData.benchmarks);
     if(bench!==benchSignature){benchSignature=bench;renderBenchmarkResults();}
-  }catch{}
+  }catch(error){
+    if(sequence!==statsSequence)return;
+    statsAvailable=false; statsSignature='';
+    $('#statsTable').innerHTML=`<div class="error-box" role="alert">${esc(t('Statistics unavailable: {message}',{message:error.message}))}</div>`;
+    if(statusCache)renderLoadedRows(statusCache.models||[]);
+    renderDashboard();
+  }
 }
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
@@ -1334,10 +1372,10 @@ const BENCH_HINTS={benchmark:t('5 warm-up, 30 sequential and 120 concurrent requ
   loadtest:t('basal-loadtest against the model: 10 warm-up, sequential requests for the latency, then the concurrent ones for the throughput. Synthetic states of about N tokens replace the set when given.'),
   determinism:t('basal-loadtest --determinism: N requests alone, then the same N mixed with N others at the concurrency; a model loaded with Deterministic must return identical probabilities.'),
   modes:t('basal-bench in basal-ui’s process: each mode is loaded, measured and freed in turn (the first is the reference of the agreement). Needs the model’s memory once more (twice for eager-fp32) while it runs.')};
-$('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3></div><div class="controls"><select id="benchmarkKind" aria-label="${t('Measurement')}"><option value="benchmark">${t('Benchmark (preset)')}</option><option value="loadtest">${t('Load test')}</option><option value="determinism">${t('Determinism check')}</option><option value="modes">${t('Compare engine modes')}</option></select><select id="benchmarkModel" aria-label="${t('Model to benchmark')}"></select><select id="benchmarkSet" aria-label="${t('Benchmark set')}"><option value="bundled">${tp(44,'Bundled examples ({n} item)','Bundled examples ({n} items)')}</option><option value="custom">${t('Custom path…')}</option></select><input id="benchmarkPath" type="text" aria-label="${t('Custom path…')}" placeholder="${t('/path/to/set.jsonl or a directory of .jsonl')}" hidden><button type="button" id="runBenchmark">${t('Run')}</button><button type="button" id="cancelBenchmark" hidden>${t('Cancel')}</button><span id="benchmarkProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Abenchmark">${t('Logs')}</a></div>
+$('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Measurement')}<select id="benchmarkKind"><option value="benchmark">${t('Benchmark (preset)')}</option><option value="loadtest">${t('Load test')}</option><option value="determinism">${t('Determinism check')}</option><option value="modes">${t('Compare engine modes')}</option></select></label><label class="manager-field">${t('Model to benchmark')}<select id="benchmarkModel"></select></label><label class="manager-field">${t('Benchmark set')}<select id="benchmarkSet"><option value="bundled">${tp(44,'Bundled examples ({n} item)','Bundled examples ({n} items)')}</option><option value="custom">${t('Custom path…')}</option></select></label><label class="manager-field" id="benchmarkPathField">${t('Custom dataset')}<input id="benchmarkPath" type="text" placeholder="${t('/path/to/set.jsonl or a directory of .jsonl')}" hidden></label><div class="manager-actions"><button type="button" id="runBenchmark">${t('Run')}</button><button type="button" id="cancelBenchmark" hidden>${t('Cancel')}</button><span id="benchmarkProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Abenchmark">${t('Logs')}</a></div></div>
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
-<p class="muted" id="benchmarkHint"></p><div id="benchmarkResults"></div>`;
+<details class="manager-help"><summary>${t('How this measurement runs')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
@@ -1409,9 +1447,10 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="controls"><select id="calibrationModel" aria-label="${t('Model to calibrate')}"></select><input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}" size="40"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div><div class="controls"><input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}" size="40" aria-label="${t('Calibration file to import')}"><button type="button" id="importCalibration">${t('Import')}</button></div><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
-$('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
-$('#calCompare').onchange=()=>$('#calComparePath').hidden=$('#calCompare').value!=='path';
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
+$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;};
+$('#calCompare').onchange();
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
 $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInput',$('#calibrationInput').value);
@@ -1950,18 +1989,27 @@ function inspectDecision(request) {
   const frame=$('#vizFrame'), send=()=>frame.contentWindow.postMessage({request:handoff.body},location.origin);
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
-const PAGES={backends:['10 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],overview:['01 / OVERVIEW','Overview','Hardware, model readiness, and serving at a glance.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],manager:['03 / MODEL MANAGER','Model manager','Loaded models, their statistics and benchmarks, models on disk, and the models directory.'],playground:['04 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],api:['05 / API SERVER','API server','One port for every loaded model, keys, MCP and the memory budget.'],history:['06 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],logs:['07 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],batch:['08 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['09 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.']};
+const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, MCP and the memory budget.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.']};
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
-  const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'overview';
+  const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
+  const wasDashboard=!$('#dashboard').hidden;
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
   document.querySelectorAll('.view').forEach(v=>v.hidden=v.dataset.page!==name);
   document.querySelectorAll('.side-nav [data-view]').forEach(b=>{const active=b.dataset.view===name;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+  const secondary=Boolean(document.querySelector(`.nav-tools [data-view="${name}"]`));
+  $('.nav-tools').classList.toggle('active',secondary);
+  $('.nav-tools').open=false;
+  $('.appearance-controls details').open=false;
+  if(name!=='dashboard'){trafficGeneration++;trafficPending=false;}
+  else if(!wasDashboard)refreshStatus();
   const target=`#${name}${arg?`/${arg}`:''}`;
   if(updateHash&&location.hash!==target)history.pushState(null,'',target);
+  else if(!raw&&!location.hash)history.replaceState(null,'',target);
   shownHash=location.hash;
   clearTimeout(historyTimer); clearTimeout(logTimer);
+  if(name==='manager'&&arg)selectManagerTab(arg);
   if(name==='backends')window.dispatchEvent(new Event('backends:view'));
   if(name==='history')loadHistory('reset');
   if(name==='logs'){
@@ -1973,6 +2021,27 @@ function showView(hash, updateHash=false) {
 const route=()=>{if(location.hash!==shownHash)showView(location.hash);};
 document.querySelectorAll('.side-nav [data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 window.addEventListener('hashchange',route); window.addEventListener('popstate',route);
+function selectManagerTab(tab) {
+  const valid=['library','usage','benchmarks','calibration'], selected=valid.includes(tab)?tab:'library';
+  for(const key of valid){
+    const active=key===selected, button=$(`#manager-tab-${key}`), panel=$(`#manager-${key}`);
+    button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;panel.hidden=!active;
+  }
+  localStorage.setItem('basal-ui.managerTab',selected);
+}
+const managerTabs=[...document.querySelectorAll('.manager-tabs [data-manager-tab]')];
+managerTabs.forEach((button,index)=>{
+  button.onclick=()=>showView(`manager/${button.dataset.managerTab}`,true);
+  button.onkeydown=event=>{
+    if(event.altKey||event.ctrlKey||event.metaKey)return;
+    const keys=['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'];
+    if(!keys.includes(event.key))return;
+    event.preventDefault();
+    const target=event.key==='Home'?0:event.key==='End'?managerTabs.length-1:(index+(event.key==='ArrowRight'||event.key==='ArrowDown'?1:-1)+managerTabs.length)%managerTabs.length;
+    managerTabs[target].focus();showView(`manager/${managerTabs[target].dataset.managerTab}`,true);
+  };
+});
+selectManagerTab(new URLSearchParams(location.search).get('managerTab')||localStorage.getItem('basal-ui.managerTab')||'library');
 function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
 $('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
 selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');

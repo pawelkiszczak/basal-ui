@@ -55,10 +55,47 @@ the hardware allows.
 | `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Model manager section order and the two Models tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs, including real-model recording, browser Replay and resubmission preserving structured state and choice descriptions named `data`; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons (including unavailable older families), suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
 | `test_elements.py` | marked image elements (Chromium) | natural-pixel box coordinates despite display scaling; drawing, tiny-box rejection, movement, resizing, edge clamping, deletion/renumbering and the 26-box limit; labels, linked choice question, read-only options, clear/delete cleanup, original-image restore, marked PNG badge and re-edit; one-image restriction; clean decide payload and probability overlay; saved-request round trip; evidence disabled with media and re-enabled without it |
 | `test_activity.py` | history, calibration and logs polling (Chromium) | oldest-first history draining of more than one page per poll; the 500-row live-only limit and older-page pagination across idle polls; delayed calibration responses never replacing the selected model's controls; the Logs view clearing old lines when a buffer's generation changes |
-| `test_visual.py` | responsive presentation (Chromium) | every view fits 1440–390 px without horizontal overflow in both themes; the question controls stay contained and keep their names |
+| `test_visual.py` | responsive presentation (Chromium) | all eleven views and every Manager tab fit 1440–390 px in both themes; loaded calibration tables scroll locally; phone header and question controls stay contained and named |
+| `test_pages.py` | Studio Dashboard and Manager (Chromium) | real Decision throughput and public endpoint attribution; shared lifetime usage and model reset; unavailable Stats/status and recovery; Manager tab click/keyboard, reload and Back routes |
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Studio redesign gate 2026-10-30
+
+Validated on `feat/studio-redesign`, based on `dev` commit
+[`f37fe44`](https://github.com/pawelkiszczak/basal-ui/commit/f37fe44d765f9e4ce6aab1b77fcea43e833e63c8).
+This is feature-branch verification, not a release or a claim of promotion to `stage`/`main`.
+Package version `0.1.0rc1` and the supported Engine range are unchanged.
+
+Host: Apple Silicon (arm64), macOS, Python 3.13.11, Engine 2.4.1 with MLX and Chromium.
+The configured cached models were `Remek/basal-2.0-mini-MLX-8bit` and `Remek/basal-2.0-mini`
+(also selected for bf16 inspection). No weights were downloaded.
+
+| Local check | Observed result |
+|---|---|
+| `make lint` | Ruff lint and format check passed |
+| `make test` | 318 passed, 3 skipped; 88% coverage |
+| Full real-model `make e2e ARGS='-v -rs --tb=short'` | 115 passed, 5 skipped |
+| Focused unavailable-data and responsive regressions | 2 passed |
+| `make screenshots` | Nine real-inference screenshots and the tour GIF refreshed; no dependency sync |
+| Live API/MCP smoke | HTTP 200 through all four gateway aliases and MCP; traffic retained each public path and `CALL /mcp` |
+| Wheel build/runtime smoke | `0.1.0rc1` wheel built; extracted-package app, Dashboard JS/CSS and `/api/traffic` returned HTTP 200 with static `no-cache` headers; lifetime Stats shape preserved |
+
+The full run used the offline command in the [earlier dev record](#verified-dev-gate-2026-10-29).
+The five skips remain explicit: thinking needs a downloaded 4.5B model and vLLM; early exit needs basal-1.0 bf16 on CUDA;
+three context-policy checks need metadata absent from Engine 2.4.1's `GET /v1/models`.
+This does not validate unavailable NVIDIA/Strix/TPU hardware or replace a `stage` gate.
+
+The wheel build emits setuptools data-directory discovery warnings. The runtime smoke imports the extracted wheel,
+not the checkout, and verifies the new assets/API; no prototype assets are packaged. No package was published.
+
+The browser gate covers all eleven views, every Manager panel, both themes at 1440/1280/1024/768/390 px,
+Polish localization and draft preservation. Real Decisions establish the Dashboard counters; HTTP 503 responses
+are injected only for deterministic unavailable-data cases, not to simulate a physical GPU or storage failure.
+Regression checks retain viewport-centred dialogs, contrast, local table scrolling, original numeric shortcuts,
+History context/older pages, delayed calibration responses and Logs generation changes.
+GitHub's required `ci-ok` check remains a separate merge gate; CI does not run real-model E2E.
 
 ## Verified dev gate 2026-10-29
 

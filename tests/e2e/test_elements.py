@@ -8,6 +8,8 @@ import zlib
 
 import pytest
 
+from tests.e2e.test_pages import open_request_settings
+
 sync_api = pytest.importorskip("playwright.sync_api", reason="install basal[e2e] and run: playwright install chromium")
 
 
@@ -284,6 +286,8 @@ def test_marked_request_payload_overlay_presets_and_evidence(page):
     page.locator("[data-label='0']").fill("Button")
     page.locator(".elements-save").click()
     # The evidence guard still rejects raw JSON carrying evidence and media.
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.evaluate(
         "() => { const r=JSON.parse($('#requestJson').value); r.questions.element.evidence=true; $('#requestJson').value=JSON.stringify(r); }"
@@ -483,6 +487,8 @@ def test_mixed_media_presets_keep_indexes_fallback_and_json_marks(page):
     assert page.evaluate("() => selectedMedia.map(m=>m.file.name)") == ["call.wav", "screen-marked.png"]
     assert page.evaluate("() => selectedMedia[1].elements.image") == 1
     assert page.evaluate("() => Boolean(selectedMedia[1].originalData)")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.uncheck("#editJsonToggle")
     assert page.evaluate("() => selectedMedia[1].elements.image===1&&Boolean(selectedMedia[1].originalData)")
@@ -571,6 +577,8 @@ def test_media_attachment_clears_evidence_and_language_draft_omits_media_bytes(p
     draft = page.evaluate("() => sessionStorage.getItem('basal-ui.language-draft')")
     assert "data:" not in draft and "_elements" not in draft
 
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.evaluate("""() => {
       const request=JSON.parse($('#requestJson').value);
@@ -586,6 +594,8 @@ def test_media_attachment_clears_evidence_and_language_draft_omits_media_bytes(p
 def test_edit_json_media_language_switch_restores_attach_notice(page):
     request = page.evaluate("() => buildRequest()")
     page.evaluate("() => clearSelectedMedia()")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.evaluate("request => $('#requestJson').value=JSON.stringify(request)", request)
     page.evaluate("() => preparePlaygroundLanguageSwitch()")
@@ -600,6 +610,8 @@ def test_edit_json_media_language_switch_restores_attach_notice(page):
 def test_json_removing_linked_question_restores_unmarked_image(page):
     mark_image(page, label="Button")
     original = page.evaluate("() => selectedMedia[0].originalData")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.evaluate("""() => {
       const request=JSON.parse($('#requestJson').value);
@@ -614,6 +626,7 @@ def test_json_removing_linked_question_restores_unmarked_image(page):
 
 def test_preset_fallback_preserves_unsupported_media_fields(page):
     mark_image(page, label="Button")
+    open_request_settings(page)
     page.check("#editJsonToggle")
     request = page.evaluate("""() => {
       const request=JSON.parse($('#requestJson').value);

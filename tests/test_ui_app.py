@@ -470,6 +470,15 @@ HTTPServer(('127.0.0.1', int(__import__('sys').argv[1])), Handler).serve_forever
             12,
             0.75,
         )
+        traffic_response = client.get("/api/traffic")
+        assert traffic_response.status_code == 200
+        traffic = traffic_response.json()
+        assert traffic["scope"] == "process" and traffic["window_seconds"] == 900
+        assert traffic["bucket_seconds"] == 60 and traffic["requests"] == 1
+        assert [(row["endpoint"], row["method"], row["requests"]) for row in traffic["endpoints"]] == [
+            ("/api/decide", "POST", 1)
+        ]
+        assert client.get("/api/traffic?minutes=5").status_code == 400
 
         logs = client.get("/api/logs", params={"source": "mini"}).json()
         assert "child up" in [line["text"] for line in logs["lines"]]
@@ -843,15 +852,18 @@ def test_rss_is_summed_per_process_group(monkeypatch):
 
 def test_benchmark_decisions_leave_statistics_and_history_untouched(tmp_path, monkeypatch, instant_start):
     response = httpx.Response(200, json={"answers": {"q": {"type": "noul", "noul": 0.9, "confidence": 0.9}}})
+    response.extensions["basal.inference"] = True
     monkeypatch.setattr(Runner, "decide", lambda self, body, path="/v1/systemone": response)
     fleet = make_fleet(tmp_path)
     fleet.load(SimpleNamespace(variant=MINI, mode="eager", est_memory_bytes=None))
     wait_for(lambda: fleet.loaded_ids() == ["mini"])
     fleet.decide("mini", {"state": "x"}, source="benchmark")
     assert fleet.stats.snapshot()["models"] == {} and fleet.history.list() == []
+    assert fleet.stats.traffic_snapshot(15)["requests"] == 0
     fleet.decide("mini", {"state": "x"}, source="playground")
     assert fleet.stats.snapshot()["models"]["mini"]["requests"] == 1
     assert [(r["source"], r["answers"]["q"]["best"]) for r in fleet.history.list()] == [("playground", "true")]
+    assert fleet.stats.traffic_snapshot(15)["requests"] == 1
 
 
 def test_status_lists_the_requests_being_answered_per_model_until_each_returns_or_fails(

@@ -1,6 +1,6 @@
 # Local backend manager
 
-Open **Backends** in the sidebar (Alt+0). Existing Alt+1–9 shortcuts remain unchanged. This view describes the machine running basal-ui and its Python environment, not the browser machine or an external Ollama/llama.cpp server.
+Open **Tools → Backends** (Alt+0). Existing Alt+1–9 shortcuts remain unchanged. This view describes the machine running basal-ui and its Python environment, not the browser machine or an external Ollama/llama.cpp server.
 
 The inventory groups execution modes under PyTorch, MLX, in-process llama.cpp, vLLM, SGLang, Strix Halo and TPU/JAX. Compatible engines appear first; unavailable engines are hidden until **Show unavailable** is selected. Package versions and bounded dependency/device probes distinguish Installed, Not installed, Needs attention and Unavailable. Installed means dependency checks passed, not that inference was verified. Refresh reruns hardware and package probes in child processes, each with a 20-second deadline.
 
@@ -57,7 +57,8 @@ Model status includes an opaque `generation` token for unload confirmation. Test
 execution, cancellation, restoration, local-only failure, active-commit pinning and selected-snapshot sizing.
 `HF_HUB_OFFLINE=1 BASAL_E2E=1 uv run --no-sync pytest tests/e2e/test_backends.py -v -rs` runs an actual downloaded model
 in an isolated app and checks browser navigation/filtering/dialogs; first follow the [e2e setup](E2E.md).
-The [2026-10-29 verified dev gate](E2E.md#verified-dev-gate-2026-10-29) records the current integrated snapshot and CI.
+The [Studio redesign gate](E2E.md#studio-redesign-gate-2026-10-30) records the latest local app verification;
+the [2026-10-29 dev record](E2E.md#verified-dev-gate-2026-10-29) retains its earlier integrated snapshot and CI evidence.
 Hardware unavailable on the test host still requires separate real-device validation.
 
 Local implementation validation (2026-10-27): 220 UI unit tests passed; 31 browser/end-to-end tests passed, including real local inference, explicit unload/restoration on Apple M4 Max, and navigation through all ten views. Desktop and 390px mobile layouts were inspected; no horizontal page overflow was found. After the final unload-conflict handling change, the 57 backend/app tests passed again. Other hardware families have fixture coverage, not real-device validation. CI/deployment were not run.

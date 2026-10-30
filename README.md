@@ -17,10 +17,10 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
 ## What it does
 
-- **Overview**: the hardware basal-ui detected, the loaded models and what they are doing, and the API server at a
-  glance.
+- **Dashboard**: recorded Decision traffic in input tokens/s and requests/s, latency, errors, endpoint traffic and
+  loaded-model activity. Recent traffic is local to this app process; lifetime model usage is shared with Model manager.
 
-  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/overview.png" width="900" alt="Overview: hardware, loaded models and the API server">
+  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/dashboard.png" width="900" alt="Studio Dashboard: real Decision throughput, model activity and endpoint traffic">
 
 - **Models**: every basal model on Hugging Face, with what this machine can run and a suggestion per use; download and
   load with one click.
@@ -32,10 +32,10 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground: a choice question answered with calibrated confidence">
 
-- **calibration** on your own labelled requests, benchmark sets, load tests, determinism checks and engine-mode
-  comparisons, in the **Model manager** next to the loaded models and the models on disk.
+- a **Model manager** with separate **Library**, **Usage by model**, **Benchmarks** and **Calibration** tabs.
+  Loaded models, memory and on-disk variants stay in Library; measurement and tuning controls no longer crowd it.
 
-  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/model-manager.png" width="900" alt="Model manager: loaded models, statistics, benchmarks and calibration">
+  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/model-manager.png" width="900" alt="Studio Model manager: Library with live inference, memory and loaded models">
 
 - **batch** inference over a JSONL file;
 - **Inspect**, which embeds `basal-viz` to show how a decision is made, layer by layer;
@@ -109,7 +109,7 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | the browser app end to end |
 | [docs/API.md](docs/API.md) | basal-ui's API server: keys, CORS, errors, OpenAI Decisions, MCP, clients |
-| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [verified development gate](docs/E2E.md#verified-dev-gate-2026-10-29) |
+| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [Studio redesign verification](docs/E2E.md#studio-redesign-gate-2026-10-30) |
 | [docs/BACKENDS.md](docs/BACKENDS.md) | backend inventory, machine/model compatibility and isolated Inference tests |
 | [docs/WHATS_NEW.md](docs/WHATS_NEW.md) | the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | dev setup, code style, tests, [branches and CI](CONTRIBUTING.md#branches-and-ci) (`dev` → `stage` → `main`), pull requests, the Engine-proposal pipeline, [releasing](CONTRIBUTING.md#releasing) |
