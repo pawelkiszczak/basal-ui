@@ -19,7 +19,7 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if HERE in Path(item.path).parents:
             item.add_marker(pytest.mark.e2e)
-            if not ENABLED:
+            if not ENABLED and getattr(item.module, "REAL_MODELS", True):  # test_a11y.py runs on the fixture server
                 item.add_marker(skip)
 
 

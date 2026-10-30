@@ -37,13 +37,40 @@ paths, like basal-serve's own errors.
 `GET /health` answers `{"status": "ok", "models": [ids]}`.
 
 `GET /v1/stats` returns basal-ui's statistics: `{"models": {id: {"requests", "questions", "errors", "input_tokens",
-"avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
+"avg_latency_ms", "p50_ms", "p95_ms", "latency_recent_ms" (the newest 200 latencies), "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
 MCP on this port: `decide` and `decide_many` serve the model named in the tool's `model` argument, else the first
 loaded model. The engine's MCP server lists no models (`list_models` and `basal-mcp --model` arrive with the
-model-argument proposal upstream); until then the first loaded model answers every tool call.
+model-argument proposal upstream); until then the first loaded model answers every tool call. `decide` takes one
+question (`state`, `question`, `type`, `options`, `lang`); `decide_many` takes a System One request's `state`,
+`questions`, `lang` and `facts` (the Playground's **Copy as code → MCP tool call**). The engine's stdio bridge
+`basal-mcp` takes only `--url` and `--timeout` and sends no API key: with **Require an API key** on, connect MCP
+clients over HTTP with an `Authorization: Bearer` header instead.
+
+The browser app's own routes (`/api/...` on basal-ui's port, not this one) are documented where they are used in
+[USAGE.md](USAGE.md); `POST /api/paths/check` is the one below.
+
+### Browser app: path check
+
+`POST /api/paths/check` on basal-ui's port (not the API server) is the live hint under the Batch, Calibration,
+decision-log and models-directory path fields. Browsers do not reveal a picked file's path, so these fields name files
+on the machine basal-ui runs on, and this says what such a path points at before a job uses it:
+
+```json
+{"path": "~/data/items.jsonl", "kind": "jsonl"}
+```
+
+`kind` is `jsonl` (an input file), `json` (a calibration to import), `output` (a file to write, replaced), `append`
+(the decision log) or `dir` (a directory, created if missing). The answer always has `path` (resolved), `kind`,
+`exists`, `is_file`, `is_dir`, `ok` and `code` (`null` when the path is usable, else one of `missing`, `is_dir`,
+`not_file`, `not_dir`, `unreadable`, `not_text`, `not_json`, `empty`, `unknown_format`, `too_large`, `dir_missing`,
+`not_writable`, `invalid`), plus by kind: `size`, `lines` (counted up to 100 000, then `lines_capped`) and `first` for
+`jsonl` — the first row's `format` (`request` or `simple`), `questions`, `types`, `fields`, `labelled` and a
+300-character `preview` of its request fields, only when that row is one Batch or Calibration can read; `size` and the
+top-level `fields` for `json` (files up to 32 MiB are parsed); `writable` for `output`, `append` and `dir`. Nothing
+else of a file's content is returned. An unknown `kind` or an empty `path` is a 400.
 
 ## Errors and request IDs
 

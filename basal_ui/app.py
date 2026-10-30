@@ -1301,6 +1301,17 @@ def create_app(
         path = batch_output()
         return FileResponse(path, filename=path.name, media_type="application/x-ndjson")
 
+    @app.post("/api/paths/check")
+    def check_path(body: dict = Body(...)):
+        """The live hint under a path field: whether the file exists or can be written, its lines and its first row's
+        shape (basal_ui/paths.py)."""
+        from . import paths
+
+        try:
+            return paths.check(body.get("path"), body.get("kind"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @app.get("/api/benchmarks")
     def get_benchmarks():
         return stats.snapshot()["benchmarks"]

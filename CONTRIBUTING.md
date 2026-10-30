@@ -28,6 +28,13 @@ release it installs. `make engine REF=…` switches to another release-tag archi
 - Frontend: plain JavaScript and CSS in `basal_ui/static/` (no build step). Every UI string is English in the code and
   passed through `t()` / `tp()`; its Polish translation goes into `basal_ui/static/i18n.js`.
   `tests/test_ui_i18n.py` fails on a string without one.
+- Frontend layout: `index.html` loads classic scripts in order (no modules, no bundler): `js/core.js` (helpers,
+  `api`, `toast`, `html\`\`` escaping), one file per view, `js/boot.js` last with the first loads; a later file's
+  functions are not defined yet while an earlier one runs, so start-up calls go into `boot.js`. CSS is
+  `tokens.css` (every colour, both themes, AA-checked), `components.css` and `views.css` in `@layer`s; use tokens,
+  not hex values.
+- UI work without models: `uv run --no-sync python scripts/ui_fixture_server.py [--preload | --empty]` serves the app
+  on port 7861 with fake hardware, catalog and `basal-serve` answers and a throwaway config.
 - Server errors stay English; translatable explanations carry a message code alongside the English text.
 
 ## Tests

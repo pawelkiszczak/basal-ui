@@ -2,6 +2,7 @@
 let backendInventory=null, backendTimer=null, testingBackend=null;
 const backendStatus={installed:t('Installed'),not_installed:t('Not installed'),needs_attention:t('Needs attention'),unavailable:t('Unavailable on this machine')};
 async function loadBackends(refresh=false){
+  const refocus=holdFocus($('#refreshBackends'));
   $('#refreshBackends').disabled=true;$('#backendError').hidden=true;
   if(!backendInventory)$('#backendInventory').textContent=t('Checking backend dependencies and devices…');
   try{
@@ -11,12 +12,12 @@ async function loadBackends(refresh=false){
     renderBackends();renderBackendTests(backendInventory.tests);
     scheduleBackendTests();
   }catch(e){$('#backendError').textContent=e.message;$('#backendError').hidden=false;}
-  finally{$('#refreshBackends').disabled=false;}
+  finally{$('#refreshBackends').disabled=false;refocus();}
 }
 function renderBackends(){
   if(!backendInventory)return;
   const entries=backendInventory.backends.filter(b=>b.compatible||$('#showUnavailableBackends').checked);
-  $('#backendInventory').innerHTML=entries.map(b=>{const reason=ts(b.reason,b.reason_code,b.reason_params),note=ts(b.setup.note,b.setup.note_code,b.setup.note_params),status=ts(backendStatus[b.status],b.status_code,b.status_params);return `<article class="backend-card"><div class="section-head"><h3>${esc(b.name)}</h3><span class="badge ${b.status==='installed'?'fit-fits':b.status==='needs_attention'?'fit-tight':'fit-unknown'}">${esc(status)}</span></div><p>${esc(reason)}</p><p class="muted">${Object.entries(b.versions).map(([p,v])=>`${esc(p)}: ${esc(v||t('not installed'))}`).join(' · ')}</p><div class="muted">${t('Engine modes (availability depends on model and machine)')}</div><div class="chips">${b.modes.map(m=>`<span class="chip">${esc(m)}</span>`).join('')}</div><details><summary>${t('Setup guidance')}</summary><p>${esc(note)}</p>${b.setup.command?`<pre>${esc(b.setup.command)}</pre><button type="button" data-backend-copy="${esc(b.id)}">${t('Copy setup command')}</button>`:''}<p><a href="${esc(b.documentation)}" target="_blank" rel="noopener">${t('Backend documentation')}</a></p></details><div class="controls"><button type="button" data-backend-models="${esc(b.id)}" ${b.models.length?'':'disabled'}>${tp(b.models.length,'View matching models ({n})','View matching models ({n})')}</button><button type="button" data-backend-test="${esc(b.id)}" ${b.status==='installed'&&b.models.some(m=>m.downloaded)?'':'disabled'}>${t('Test inference…')}</button></div>${b.compatible&&!b.models.some(m=>m.downloaded)?`<p class="muted">${t('Download a compatible model from Models before testing.')}</p>`:''}</article>`}).join('');
+  $('#backendInventory').innerHTML=entries.map(b=>{const reason=ts(b.reason,b.reason_code,b.reason_params),note=ts(b.setup.note,b.setup.note_code,b.setup.note_params),status=ts(backendStatus[b.status],b.status_code,b.status_params);return `<article class="backend-card"><div class="section-head"><h2>${esc(b.name)}</h2><span class="badge ${b.status==='installed'?'fit-fits':b.status==='needs_attention'?'fit-tight':'fit-unknown'}">${esc(status)}</span></div><p>${esc(reason)}</p><p class="muted">${Object.entries(b.versions).map(([p,v])=>`${esc(p)}: ${esc(v||t('not installed'))}`).join(' · ')}</p><div class="muted">${t('Engine modes (availability depends on model and machine)')}</div><div class="chips">${b.modes.map(m=>`<span class="chip">${esc(m)}</span>`).join('')}</div><details><summary>${t('Setup guidance')}</summary><p>${esc(note)}</p>${b.setup.command?`<pre>${esc(b.setup.command)}</pre><button type="button" data-backend-copy="${esc(b.id)}">${t('Copy setup command')}</button>`:''}<p><a href="${esc(b.documentation)}" target="_blank" rel="noopener">${t('Backend documentation')}</a></p></details><div class="controls"><button type="button" data-backend-models="${esc(b.id)}" ${b.models.length?'':'disabled'}>${tp(b.models.length,'View matching models ({n})','View matching models ({n})')}</button><button type="button" data-backend-test="${esc(b.id)}" ${b.status==='installed'&&b.models.some(m=>m.downloaded)?'':'disabled'}>${t('Test inference…')}</button></div>${b.compatible&&!b.models.some(m=>m.downloaded)?`<p class="muted">${t('Download a compatible model from Discover before testing.')}</p>`:''}</article>`}).join('');
 }
 $('#refreshBackends').onclick=()=>loadBackends(true);
 $('#showUnavailableBackends').onchange=renderBackends;
@@ -61,17 +62,18 @@ $('#backendTestModel').onchange=updateBackendTestModes;$('#backendTestMode').onc
 $('#startBackendTest').onclick=async()=>{
   const unload=[...$('#backendUnloadChoices input:checked')].map(e=>({id:e.value,generation:e.dataset.generation}));
   if(unload.length&&!await confirmDialog({title:t('Unload selected models for this test?'),description:t('{models} will remain stopped after the test. Use Restore to reload their previous configuration. Busy models will be refused.',{models:unload.map(m=>m.id).join(', ')}),confirmLabel:t('Unload and test')}))return;
+  const refocus=holdFocus($('#startBackendTest'));
   $('#startBackendTest').disabled=true;
   try{
     await api('/api/backends/tests',{method:'POST',body:JSON.stringify({backend:testingBackend.id,model:$('#backendTestModel').value,mode:$('#backendTestMode').value,unload})});
     $('#backendTestDialog').close();await pollBackendTests();
   }catch(e){$('#backendTestError').textContent=e.message;$('#backendTestError').hidden=false;}
-  finally{$('#startBackendTest').disabled=false;}
+  finally{$('#startBackendTest').disabled=false;refocus();}
 };
 function renderBackendTests(tests){
   $('#backendTests').innerHTML=tests.length?[...tests].reverse().map(test=>{
     const job=statusCache?.jobs?.[test.restoring?'backend-restore':'backend-test'];
-    return `<article class="backend-card"><h4>${esc(test.backend)} · ${esc(test.mode)} · ${esc(test.model)}</h4><p>${test.status==='passed'?t('Inference test passed'):esc(ts(test.status,test.status_code,test.status_params))}${test.status==='starting'&&job?.running?` · ${esc(ts(job.phase,job.phase_code,job.phase_params))}`:''}${test.restoring?` · ${t('restoring models')}`:''}</p>${test.result?`<p class="muted">${esc(test.result.elapsed_seconds)} ${t('seconds')} · ${t('revision')} ${esc(test.revision||t('local snapshot'))} · ${t('valid response; not an accuracy or performance certification')}</p>`:''}${test.error?`<p class="error-box">${esc(test.error)}</p>`:''}${test.stopped_models.length?`<p>${t('Stopped models:')}</p><ul>${test.stopped_models.map(m=>`<li>${esc(m.id)} · ${esc(m.mode)}${m.error?` — ${esc(m.error)}`:''}</li>`).join('')}</ul>`:''}<div class="controls"><a href="#logs/job%3A${test.restoring?'backend-restore':'backend-test'}">${t('Latest job logs')}</a>${test.status==='starting'||test.restoring?`<button type="button" data-backend-cancel="${esc(test.id)}">${t('Cancel')}</button>`:''}${test.stopped_models.length&&test.status!=='starting'?`<button type="button" data-backend-restore="${esc(test.id)}" ${test.restoring?'disabled':''}>${t('Restore stopped models')}</button>`:''}</div></article>`;
+    return `<article class="backend-card"><h3>${esc(test.backend)} · ${esc(test.mode)} · ${esc(test.model)}</h3><p>${test.status==='passed'?t('Inference test passed'):esc(ts(test.status,test.status_code,test.status_params))}${test.status==='starting'&&job?.running?` · ${esc(ts(job.phase,job.phase_code,job.phase_params))}`:''}${test.restoring?` · ${t('restoring models')}`:''}</p>${test.result?`<p class="muted">${esc(test.result.elapsed_seconds)} ${t('seconds')} · ${t('revision')} ${esc(test.revision||t('local snapshot'))} · ${t('valid response; not an accuracy or performance certification')}</p>`:''}${test.error?`<p class="error-box">${esc(test.error)}</p>`:''}${test.stopped_models.length?`<p>${t('Stopped models:')}</p><ul>${test.stopped_models.map(m=>`<li>${esc(m.id)} · ${esc(m.mode)}${m.error?` — ${esc(m.error)}`:''}</li>`).join('')}</ul>`:''}<div class="controls"><a href="#logs/job%3A${test.restoring?'backend-restore':'backend-test'}">${t('Latest job logs')}</a>${test.status==='starting'||test.restoring?`<button type="button" data-backend-cancel="${esc(test.id)}">${t('Cancel')}</button>`:''}${test.stopped_models.length&&test.status!=='starting'?`<button type="button" data-backend-restore="${esc(test.id)}" ${test.restoring?'disabled':''}>${t('Restore stopped models')}</button>`:''}</div></article>`;
   }).join(''):`<p class="muted">${t('No tests in this app session. Dependency checks do not verify inference.')}</p>`;
 }
 $('#backendTests').onclick=e=>{
@@ -79,10 +81,10 @@ $('#backendTests').onclick=e=>{
   if(cancel)act(async()=>{await api(`/api/backends/tests/${encodeURIComponent(cancel.dataset.backendCancel)}`,{method:'DELETE'});await pollBackendTests();});
   if(restore)act(async()=>{await api(`/api/backends/tests/${encodeURIComponent(restore.dataset.backendRestore)}/restore`,{method:'POST'});await pollBackendTests();});
 };
-function scheduleBackendTests(){clearTimeout(backendTimer);if(!$('#backends').hidden)backendTimer=setTimeout(pollBackendTests,2000);}
+function scheduleBackendTests(){clearTimeout(backendTimer);if(!$('#view-backends').hidden)backendTimer=setTimeout(pollBackendTests,2000);}
 async function pollBackendTests(){
   try{const data=await api('/api/backends/tests');renderBackendTests(data.tests);}catch(e){$('#backendError').textContent=e.message;$('#backendError').hidden=false;}
   scheduleBackendTests();
 }
 window.addEventListener('backends:view',()=>backendInventory?pollBackendTests():loadBackends());
-if(!$('#backends').hidden)loadBackends();
+if(!$('#view-backends').hidden)loadBackends();

@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 SAMPLES = 1000  # latencies kept per model for the percentiles
+RECENT = 200  # of them in the snapshot
 BENCHMARKS = 20  # results kept per model (benchmarks, load tests, determinism checks, mode comparisons)
 FLUSH_S = 5
 
@@ -207,6 +208,7 @@ class Stats:
                 "avg_latency_ms": avg(e["latency_ms_sum"], e["requests"]),
                 "p50_ms": _percentile(e["latency_samples"], 0.5),
                 "p95_ms": _percentile(e["latency_samples"], 0.95),
+                "latency_recent_ms": e["latency_samples"][-RECENT:],  # the newest, oldest first: the UI's histogram
                 "avg_best_prob": avg(e["best_prob_sum"], e["best_prob_n"]),
                 "by_type": {
                     kind: {"questions": t["questions"], "avg_best_prob": avg(t["best_prob_sum"], t["best_prob_n"])}

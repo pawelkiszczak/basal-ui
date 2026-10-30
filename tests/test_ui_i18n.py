@@ -19,11 +19,11 @@ def dictionary(name):
 def literals(pattern):
     """(file, key) of every literal first argument the frontend scripts pass to t( / tp(n, ."""
     out = []
-    for f in sorted(STATIC.glob("*.js")):
-        if f.name == "i18n.js":
+    for f in sorted(STATIC.rglob("*.js")):  # static/*.js and the per-view scripts in static/js/
+        if f.name == "i18n.js" or "vendor" in f.parts:
             continue
         for m in re.finditer(pattern + JS_STRING, f.read_text()):
-            out.append((f.name, re.sub(r"\\(.)", r"\1", m.group(2))))
+            out.append((str(f.relative_to(STATIC)), re.sub(r"\\(.)", r"\1", m.group(2))))
     return out
 
 
@@ -35,6 +35,15 @@ def test_every_t_key_in_the_frontend_has_a_polish_translation():
     pl = dictionary("PL")
     keys = literals(r"(?<![\w.$])t\(\s*")
     assert len(keys) > 300  # the scan sees the frontend's strings, not an empty pattern
+    missing = sorted({f"{f}: {k}" for f, k in keys if k not in pl})
+    assert not missing, "\n".join(missing)
+
+
+def test_labels_passed_to_the_playground_field_helpers_have_polish_translations():
+    """qSwitch(field, value, 'label') translates its label inside the helper, where the t( scan above cannot see it."""
+    pl = dictionary("PL")
+    keys = literals(r"(?<![\w.$])qSwitch\('[^']*',(?:[^,()]|\([^()]*\))*,\s*")
+    assert len(keys) > 5
     missing = sorted({f"{f}: {k}" for f, k in keys if k not in pl})
     assert not missing, "\n".join(missing)
 
@@ -76,6 +85,9 @@ SAME_IN_POLISH = {  # names, code, paths and keys: translateStatic leaves them a
     "Alt + 0",
     "Alt + 1–9",
     "Ctrl/⌘ + Enter",
+    "Esc",
+    "Home",
+    "End",
     "https://app.example.com",
     "~/basal-decisions.jsonl",
 }

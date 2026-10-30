@@ -15,6 +15,24 @@ uv run --no-sync playwright install chromium     # once: the page tests drive Ch
 BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what this machine skipped and why
 ```
 
+For layout, screenshot and accessibility checks without models, `scripts/ui_fixture_server.py` serves basal-ui on
+fake hardware with stand-in `basal-serve` answers (`--preload`, `--empty`; see its docstring). The README screenshots
+and the recordings in `docs/images/ux/` were captured on it with Playwright.
+
+## Accessibility
+
+`tests/e2e/test_a11y.py` starts the fixture server itself and needs no model, so it runs without `BASAL_E2E=1`:
+
+```bash
+uv run --no-sync pytest tests/e2e/test_a11y.py -v
+```
+
+It opens every view in light and dark at 1440 and 390 px, injects axe-core (vendored in `tests/e2e/assets/`, never
+served by basal-ui) and fails on any serious or critical violation; it skips when Playwright or Chromium is missing.
+`tests/test_ui_a11y.py` (unit tests, no browser) checks the landmarks, heading order, labels and tab markup of
+`index.html`. Before a release, also walk *load a model → send a decision → copy the endpoint* with the keyboard only,
+and smoke-test that path with VoiceOver (macOS) and NVDA (Windows); note the result in the release PR.
+
 Run it on every hardware class you ship for (Apple Silicon, an NVIDIA GPU, a CPU-only machine): each run tests the
 engines that machine has and lists the rest as skipped.
 
@@ -52,7 +70,7 @@ the hardware allows.
 | `test_measurements.py` | benchmarks | the preset (44 items), a load test (questions per request), a determinism check on a model loaded with `deterministic` (identical answers), two engine modes in process agreeing on 90% or more with the memory released |
 | `test_inspect.py` | Inspect | basal-viz at `/viz` for a bf16 model: info, an explanation that matches basal-serve's probabilities, memory counted then released; other ports refused |
 | `test_experimental.py` | thinking, early exit | refused where they cannot run; with basal-2.0 4.5B and vLLM: forced reasoning with its text, and `think: off`; with basal-1.0 bf16 on CUDA: every early-exit level |
-| `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Model manager section order and the two Models tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs, including real-model recording, browser Replay and resubmission preserving structured state and choice descriptions named `data`; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons (including unavailable older families), suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
+| `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Library section order and lifecycle rows, and the two Discover tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs, including real-model recording, browser Replay and resubmission preserving structured state and choice descriptions named `data`; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons (including unavailable older families), suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
 | `test_elements.py` | marked image elements (Chromium) | natural-pixel box coordinates despite display scaling; drawing, tiny-box rejection, movement, resizing, edge clamping, deletion/renumbering and the 26-box limit; labels, linked choice question, read-only options, clear/delete cleanup, original-image restore, marked PNG badge and re-edit; one-image restriction; clean decide payload and probability overlay; saved-request round trip; evidence disabled with media and re-enabled without it |
 | `test_activity.py` | history, calibration and logs polling (Chromium) | oldest-first history draining of more than one page per poll; the 500-row live-only limit and older-page pagination across idle polls; delayed calibration responses never replacing the selected model's controls; the Logs view clearing old lines when a buffer's generation changes |
 | `test_visual.py` | responsive presentation (Chromium) | every view fits 1440–390 px without horizontal overflow in both themes; the question controls stay contained and keep their names |

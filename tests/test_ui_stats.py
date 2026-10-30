@@ -49,6 +49,7 @@ def test_errors_and_latency_percentiles(stats):
     m = stats.snapshot()["models"]["m"]
     assert (m["requests"], m["errors"], m["avg_best_prob"]) == (101, 1, None)
     assert (m["p50_ms"], m["p95_ms"]) == (50.0, 95.0)
+    assert len(m["latency_recent_ms"]) == 101 and m["latency_recent_ms"][-2:] == [100.0, 1.0]  # newest last
 
 
 def test_persistence_round_trip_and_reset_of_one_model(tmp_path, stats):

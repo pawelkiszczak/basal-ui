@@ -1,10 +1,12 @@
 import base64
 import contextlib
 import os
+import re
 import struct
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -94,11 +96,18 @@ def test_examples_include_a_full_request_of_every_advanced_type(tmp_path):
 def test_the_page_and_its_scripts_are_revalidated_so_an_update_is_never_served_from_cache(tmp_path):
     app, _ = app_for(tmp_path, [])
     with TestClient(app, base_url="http://127.0.0.1") as client:
-        for path in ("/", "/viz/", "/static/app.js", "/static/app.css", "/static/i18n.js"):
+        static = (
+            "/static/js/core.js",
+            "/static/js/boot.js",
+            "/static/tokens.css",
+            "/static/views.css",
+            "/static/i18n.js",
+        )
+        for path in ("/", "/viz/", *static):
             response = client.get(path)
             assert response.status_code == 200 and response.headers["cache-control"] == "no-cache", path
-        etag = client.get("/static/app.js").headers["etag"]
-        again = client.get("/static/app.js", headers={"If-None-Match": etag})
+        etag = client.get("/static/js/core.js").headers["etag"]
+        again = client.get("/static/js/core.js", headers={"If-None-Match": etag})
         assert again.status_code == 304 and again.headers["cache-control"] == "no-cache"  # unchanged: no download
         examples = client.get("/api/examples").headers
         assert "cache-control" not in examples  # the rule is for the page's files only
@@ -1092,3 +1101,11 @@ def test_revision_reaches_cached_check_and_download_but_not_child_flags(tmp_path
     del runner._build_command
     command = runner._build_command(MINI, tmp_path, assessment, False, 1, settings.serve_settings())
     assert "--revision" not in command
+
+
+def test_the_page_loads_every_view_script_once_with_boot_last():
+    """The scripts share one global scope and run in order: boot.js makes the first calls once all are defined."""
+    static = Path(__file__).parents[1] / "basal_ui/static"
+    loaded = re.findall(r'<script src="/static/js/([\w-]+\.js)" defer>', (static / "index.html").read_text())
+    assert sorted(loaded) == sorted(f.name for f in (static / "js").glob("*.js"))
+    assert loaded[0] == "core.js" and loaded[-1] == "boot.js"
