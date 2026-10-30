@@ -162,3 +162,7 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 .elements-dialog{max-height:min(94dvh,calc(100dvh - 24px))}
 .confirm-dialog:not(.options-dialog){max-height:calc(100dvh - 32px);overflow:auto}
 .nav-tools:not([open])>div,.appearance-controls details:not([open])>.appearance-content,.request-settings:not([open])>.request-settings-content{display:none}
+.page-header{position:relative;padding-right:230px}.page-header>#openModelLoader{position:absolute;right:0;top:8px}
+.model-loader-dialog{width:min(900px,calc(100vw - 32px))}.model-loader-dialog h2{font-size:20px}.model-loader-row{display:grid;gap:12px;padding:20px 0;border-bottom:1px solid var(--line)}.model-loader-row strong{overflow-wrap:anywhere}.model-loader-row .controls{flex-wrap:wrap}.model-loader-dialog>.dashboard-link{display:inline-flex;margin-top:20px}
+.recommendation-controls{gap:8px;margin-bottom:24px}.recommendation-controls>select{max-width:380px;width:100%}.recommendation-controls>.manager-help{margin:8px 0 0}.recommendation-controls p+p{margin-top:12px}
+@media(max-width:720px){.page-header{padding-right:0}.page-header>#openModelLoader{position:static;margin-top:18px}}

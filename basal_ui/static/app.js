@@ -15,7 +15,8 @@ async function api(path, options={}) {
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!response.ok) {  // basal-ui: {"detail": msg}; basal-serve 422: {"error": msg, "detail": [{"msg"}]}
     const detail = typeof data?.detail === 'string' ? data.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
-    const message=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
+    const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
+    const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
     throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
   }
@@ -92,15 +93,21 @@ function familyOrder(family) {
   return ({'basal-2.0':6,'basal-omni-1.1':5,'basal-omni-1.0':4,'basal-omni':3,'basal-1.5':2,'basal-1.0':1})[family] || 0;
 }
 function tierOrder(tier) { return ({pico:0,mini:1,'1.5B':2,'4.5B':3,max:4,ultra:5})[tier] ?? 9; }
-let backendModelFilter=null;
+let backendModelFilter=null, recommendationBackend='automatic', modelSequence=0, modelCatalogError='';
 function renderModels(data) {
   modelData = data.models || [];
+  const backendSelect=$('#recommendationBackend'), choices=data.recommendation_backends;
+  const choicesSignature=JSON.stringify(choices);
+  if(backendSelect.dataset.choices!==choicesSignature){backendSelect.dataset.choices=choicesSignature;backendSelect.innerHTML=choices.map(choice=>`<option value="${esc(choice.id)}">${esc(t(choice.name))}</option>`).join('');}
+  backendSelect.value=recommendationBackend;
+  $('#recommendationMethod').textContent=t(data.recommendation_note);
+  renderModelLoader();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
   const older = $('#olderToggle').checked, showBad = $('#notRunnableToggle').checked, downloadedOnly = $('#downloadedToggle').checked;
-  const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable) && (!downloadedOnly || m.downloaded));
+  const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable || m.media_mode) && (!downloadedOnly || m.downloaded));
   list.sort((a,b) => familyOrder(b.family)-familyOrder(a.family) || tierOrder(a.tier)-tierOrder(b.tier) || a.port.localeCompare(b.port));
   const groups = new Map(); for (const m of list) { if (!groups.has(m.family)) groups.set(m.family, []); groups.get(m.family).push(m); }
   if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty">${t('No models match these filters.')}</div>`; return; }
@@ -118,9 +125,8 @@ function renderModels(data) {
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
       const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
       const downloadButton=downloadControl(m,downloadStatus);
-      // Models: download, set up and delete; loading is the Model manager's (renderDiskModels)
-      const actions=`${!m.downloaded?downloadButton:''}${m.runnable?optionsButton(m.id,false,'save'):''}${loaded?`<span class="chip">${t('loaded')}</span>`:m.downloaded?deleteButton(m.id):''}`;
-      html += `<tr class="${m.runnable?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
+      const actions=`${m.downloaded?diskActions(m,false):downloadButton}${m.runnable?optionsButton(m.id,false,'save'):''}${!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
   }
@@ -135,7 +141,7 @@ document.addEventListener('click',e=>{
   if(b.classList.contains('download-model'))act(async()=>{await api('/api/download',{method:'POST',body:JSON.stringify({id})});await refreshStatus();});
   else if(b.classList.contains('unload-model'))act(()=>unloadOne(id));
   else if(b.classList.contains('delete-model'))act(()=>deleteModel(id));
-  else loadModel(id,b.dataset.media==='true');
+  else act(()=>loadModel(id,b.dataset.media==='true',b.dataset.mode||null));
 });
 async function deleteModel(id) {
   const model=modelData.find(m=>m.id===id);
@@ -157,12 +163,15 @@ function renderSuggestions(suggestions) {
   if (!suggestions.length) { $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>`; return; }
   const models = new Map(modelData.map(m => [m.id, m]));
   $('#suggested').innerHTML = `<div class="suggestion-grid">${suggestions.map(s => {
-    const m = models.get(s.id);
-    if (!m) return '';
-    const why = esc(ts(s.why, s.why_code, s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g, '<code>$1</code>');
-    const download=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
-    const action=`<div class="controls">${loaded?`<span class="chip">${t('loaded')}</span>`:!m.downloaded?downloadControl(m,download):''}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>${m.downloaded&&!loaded?`<a class="dashboard-link" href="#manager/library">${t('Load in Model manager')}${ARROW}</a>`:''}`;
-    return `<article class="suggestion-card${m.family==='omni'?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(m.est_memory_bytes)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(m.fit_now || 'unknown')}">${esc(t(m.fit_now || 'unknown'))}</span></div><p class="why">${why}</p>${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
+    const m=models.get(s.id);if(!m)return '';
+    const why=esc(ts(s.why,s.why_code,s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g,'<code>$1</code>');
+    const loaded=statusCache?.models?.find(x=>x.id===m.id), chosenMode=recommendationBackend!=='automatic'||s.media?s.mode:null, mode=chosenMode?` data-mode="${esc(chosenMode)}"`:'';
+    const media=s.media&&s.media_available!==false, estimate=s.est_memory_bytes;
+    const fit=s.fit_now||s.fit;
+    const load=m.downloaded&&!loaded&&(s.media?media:m.runnable||s.mode)?`<button type="button" class="load-model primary" data-id="${esc(m.id)}" data-media="${media}"${mode}>${t(media?'Load with media':'Load')}</button>`:'';
+    const setup=s.media_available===false?`<p class="reason">${esc(ts(s.media_reason,s.media_reason_code,s.media_reason_params))}</p><a class="dashboard-link" href="#backends">${t('Install media add-on')} →</a>`:'';
+    const action=`<div class="controls">${loaded?diskActions(m):!m.downloaded?downloadControl(m,statusCache?.downloads?.[m.repo]):load}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>`;
+    return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
   }).join('')}</div>`;
 }
 document.addEventListener('click',e=>{const b=e.target.closest('.model-card-open');if(b)act(()=>openModelCard(b.dataset.id));});
@@ -196,15 +205,34 @@ function renderDiskModels() {
   renderManagerSummary();
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
-function diskActions(m) {
+function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
   if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model" data-id="${esc(m.id)}">${t('Unload')}</button>`;
-  if(!m.runnable){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
+  if(!m.runnable&&!m.media_mode){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
   const noMedia=!m.media_mode&&(m.media||[]).length?`<small class="muted">${esc(noMediaText||'')}</small>`:'';
-  return `<button type="button" class="load-model primary" data-id="${esc(m.id)}">${t('Load')}</button>${media}${optionsButton(m.id)}${noMedia}`;
+  return `${m.runnable?`<button type="button" class="load-model primary" data-id="${esc(m.id)}">${t('Load')}</button>`:''}${media}${details?optionsButton(m.id,!m.runnable&&Boolean(m.media_mode))+noMedia:''}`;
 }
+function renderModelLoader() {
+  const container=$('#modelLoaderModels'), inspecting=location.hash.slice(1).split('/')[0]==='inspect', rows=modelData.filter(model=>model.downloaded&&(!inspecting||inspectableModel(model)));
+  const html=modelCatalogError?`<p class="error-box">${esc(modelCatalogError)}</p>`:!catalogData?`<p class="muted">${t('Loading models…')}</p>`:rows.length?rows.map(model=>{
+    const ready=readyModels().some(entry=>entry.id===model.id);
+    return `<article class="model-loader-row"><div><strong>${esc(model.id)}</strong><p class="muted">${esc(model.label)} · ${gb(model.downloaded_bytes)}${model.media.length?` · ${esc(mediaTitle(model.media))}`:''}</p></div><div class="controls">${diskActions(model)}${ready?`<button type="button" class="use-loaded-model" data-id="${esc(model.id)}">${t('Use')}</button>`:''}</div></article>`;
+  }).join(''):`<p class="muted">${t(inspecting?'Download a bf16 model first':'Nothing downloaded yet')}</p>`;
+  if(container.innerHTML!==html)container.innerHTML=html;
+}
+$('#openModelLoader').onclick=()=>{$('#modelLoaderDialog').showModal();renderModelLoader();};
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.use-loaded-model');if(!button)return;
+  const id=button.dataset.id;if(!readyModels().some(model=>model.id===id))return;
+  selectedModel=id;localStorage.setItem('basal-ui.model',id);renderPlaygroundModels(readyModels());$('#playgroundModel').dispatchEvent(new Event('change'));
+  const view=location.hash.slice(1).split('/')[0], selector={batch:'#batchModel',inspect:'#inspectModel',manager:!$('#manager-benchmarks').hidden?'#benchmarkModel':!$('#manager-calibration').hidden?'#calibrationModel':null}[view];
+  const select=selector?$(selector):null;
+  if(select&&[...select.options].some(option=>option.value===id&&!option.disabled)){select.value=id;select.dispatchEvent(new Event('change',{bubbles:true}));}
+  if(serveData)renderConnect();
+  $('#modelLoaderDialog').close();
+});
 async function loadSettings() {
   try {
     const settings = await api('/api/settings');
@@ -237,14 +265,16 @@ async function saveModelsDir(value) {
   } catch (e) { $('#modelsDirError').textContent = e.message; toast(e.message,'error'); }
 }
 async function loadModels(refresh=false) {
-  $('#modelsTable').innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
-  $('#suggested').innerHTML = `<div class="empty">${t('Loading suggestions…')}</div>`;
-  try { renderModels(await api(`/api/models${refresh?'?refresh=1':''}`)); }
-  catch (e) { $('#modelsTable').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; $('#suggested').innerHTML = `<div class="error-box">${esc(e.message)}</div>`; toast(e.message,'error'); }
+  const sequence=++modelSequence, backend=recommendationBackend, params=new URLSearchParams({backend});
+  if(refresh)params.set('refresh','1');
+  $('#modelsTable').innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+  $('#suggested').innerHTML=`<div class="empty">${t('Loading suggestions…')}</div>`;
+  try {const data=await api(`/api/models?${params}`);if(sequence===modelSequence){modelCatalogError='';renderModels(data);}}
+  catch(e){if(sequence!==modelSequence)return;modelCatalogError=e.message;$('#modelsTable').innerHTML=`<div class="error-box">${esc(e.message)}</div>`;$('#suggested').innerHTML=`<div class="error-box">${esc(e.message)}</div>`;renderModelLoader();toast(e.message,'error');}
 }
-async function loadModel(id, media=false) {
+async function loadModel(id, media=false, mode=null) {
+  if(mode)return openLoadOptions(id,media,'load',mode);
   statusSequence++;
-  clearSelectedMedia();
   try { await api('/api/load', {method:'POST', body:JSON.stringify({id,...(media?{media:true}:{})})}); toast(t('Model load started')); await refreshStatus(); }
   catch (e) { showStatusError(e.message); toast(e.message,'error'); }
 }
@@ -722,8 +752,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   $('#questions').append(card); updateMediaEvidence(); syncRequest();
 }
 function setRequest(req, names=[]) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
-  mediaSelection++;
-  selectedMedia.forEach(item=>URL.revokeObjectURL(item.url));selectedMedia=[];$('#mediaInput').value='';renderSelectedMedia();
+  clearSelectedMedia();
   const preserveJson=()=>{
     $('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;
     $('#requestJson').value=JSON.stringify(req,null,2);
@@ -1044,13 +1073,14 @@ async function sendDecision() {
   finally { $('#sendButton').disabled=false; }
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
+$('#recommendationBackend').onchange=event=>{recommendationBackend=event.target.value;loadModels();};
 $('#downloadedToggle').addEventListener('change',rerenderFilters);
 $('#saveModelsDir').addEventListener('click',()=>saveModelsDir($('#modelsDir').value));
 $('#defaultModelsDir').addEventListener('click',()=>saveModelsDir(null));
 let catalogData=null;
 const originalRenderModels=renderModels;
 renderModels=function(data){catalogData=data; originalRenderModels(data);};
-function rerenderFilters(){if(catalogData) originalRenderModels(catalogData);}
+function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===recommendationBackend) originalRenderModels(catalogData);}
 $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
@@ -1264,6 +1294,7 @@ function renderStatus(s) {
   renderMemoryBar(s.memory||{},models);
   renderLoadedRows(models);
   renderManagerSummary();
+  if($('#modelLoaderDialog').open)renderModelLoader();
   renderInference(s);
   renderPlaygroundModels(ready);
   renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
@@ -1272,6 +1303,7 @@ function renderStatus(s) {
   loadStats();
   const jobsRunning=Object.values(s.jobs||{}).some(j=>j.running);
   // Keep the existing status poll responsive while the Dashboard or Model manager is visible.
+  document.dispatchEvent(new CustomEvent('app:status',{detail:s}));
   clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,busy||repos.size||jobsRunning||models.some(answering)||!$('#dashboard').hidden||!$('#manager').hidden?1000:5000);
 }
 function renderMemoryBar(memory, models) {
@@ -1332,7 +1364,7 @@ function renderPlaygroundModels(ready) {
 }
 function setPlaygroundMedia(kinds) {
   if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
-  loadedMedia=kinds; clearSelectedMedia(); syncRequest();
+  loadedMedia=kinds; renderSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
 }
 $('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
@@ -1709,16 +1741,16 @@ function collectOptions() {
   }
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));
 }
-async function openLoadOptions(id, media=false, action='load') {
+async function openLoadOptions(id, media=false, action='load', initialMode=null) {
   const data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);
   const loaded=(statusCache?.models||[]).find(m=>m.id===id), restart=action==='restart', save=action==='save';
-  optionsState={id,media,restart,save,data};
+  optionsState={id,media,restart,save,data,initialMode};
   $('#optionsModel').textContent=`${id}${media?` · ${t('with media')}`:''}${restart?` · ${t('restarts the running model')}`:save?` · ${t('kept for the next load')}`:''}`;
   $('#optionsApply').textContent=restart?t('Restart'):save?t('Save'):t('Load');
   $('#optionsSetupNote').hidden=!save;
   $('#optionsRemember').closest('label').hidden=save;  // Save always remembers
-  setChecked($('#optionsRemember'),data.saved);
-  renderOptionsForm(restart&&loaded?{...data.defaults,...loaded.options}:data.options);
+  setChecked($('#optionsRemember'),initialMode?false:data.saved);
+  renderOptionsForm(restart&&loaded?{...data.defaults,...loaded.options}:{...data.options,...(initialMode?{mode:initialMode}:{})});
   $('#optionsError').hidden=true;
   await loadPresets();renderLoadPresets();
   $('#loadPresetSelect').value='';
@@ -1726,17 +1758,17 @@ async function openLoadOptions(id, media=false, action='load') {
   $('#loadOptions').showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
-document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b)act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));});
+document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
-  const {id,media,restart,save,data}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
+  const {id,media,restart,save,data,initialMode}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
   $('#optionsApply').disabled=true;
   try{
-    if(remember||data.saved)await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});
+    if(remember||data.saved&&!initialMode)await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();return;}
     if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
-    else{statusSequence++;clearSelectedMedia();await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
+    else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
     $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
   }catch(e){$('#optionsError').textContent=e.message;$('#optionsError').hidden=false;}
   finally{$('#optionsApply').disabled=false;}

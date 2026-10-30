@@ -9,6 +9,8 @@
   const q = selector => root.querySelector(selector);
   const number = (value, fractional=false) => Number.isFinite(value) ? (fractional ? decimal : integer).format(value) : '—';
   const setText = (selector, text) => {const node=q(selector);if(node.textContent!==text)node.textContent=text;};
+  const text = (node,value) => {if(node.textContent!==value)node.textContent=value;};
+  const html = (node,value) => {if(node.innerHTML!==value)node.innerHTML=value;};
 
   root.innerHTML = `<div class="traffic-toolbar">
     <div><strong>${t('Recorded Decision traffic')}</strong><p>${t('Recent traffic from this app process')}</p></div>
@@ -26,47 +28,61 @@
   <p class="traffic-definition">${t('Input tokens processed per second, not generated output tokens.')} ${t('Lifetime model usage is shared with Model manager; recent traffic is local to this app process.')}</p>`;
 
   function renderChart(traffic) {
-    if (!traffic || state.error) {
-      q('#trafficChart').innerHTML = `<p class="traffic-empty">${t(state.error?'Traffic data unavailable':'Waiting for traffic data…')}</p>`;
-      return;
-    }
-    const series = traffic.series || [];
-    if (!traffic.requests || !series.length) {
-      q('#trafficChart').innerHTML = `<p class="traffic-empty">${t('No Decisions recorded in this window.')}</p>`;
-      return;
-    }
-    const values = series.map(bucket=>Number(bucket[metric])||0);
-    const maximum = (Math.max(...values)||1)*1.15;
-    const coordinates = values.map((value,index)=>({x:48+index*604/Math.max(1,values.length-1),y:164-value/maximum*138}));
-    const path = coordinates.map((point,index)=>`${index?'L':'M'}${point.x},${point.y}`).join(' ');
-    const labels = [series[0].start, traffic.window_end];
-    const formatter = series.length < 3 ? preciseClock : clock;
-    const last = coordinates.at(-1);
-    q('#trafficChart').innerHTML = `<svg class="traffic-chart" viewBox="0 0 680 204" role="img" aria-label="${t(metric==='input_tokens_per_s'?'Input throughput over time':'Requests over time')}">
+    const container=q('#trafficChart');
+    if(!container.querySelector('svg'))container.innerHTML=`<p class="traffic-empty"></p><svg class="traffic-chart" viewBox="0 0 680 204" role="img" hidden>
       <defs><linearGradient id="trafficFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity=".18"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
-      ${[0,.5,1].map(fraction=>`<line x1="48" x2="652" y1="${164-fraction*138}" y2="${164-fraction*138}" stroke="var(--line)" stroke-dasharray="3 5"/><text x="0" y="${168-fraction*138}" fill="var(--muted)">${number(maximum*fraction,true)}</text>`).join('')}
-      ${coordinates.length>1?`<path d="${path} L${last.x},164 L48,164 Z" fill="url(#trafficFill)"/><path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>`:''}
-      <circle cx="${last.x}" cy="${last.y}" r="3.5" fill="var(--accent)"/>
-      ${labels.map((stamp,index)=>`<text x="${index?652:48}" y="194" text-anchor="${index?'end':'start'}" fill="var(--muted)">${formatter.format(new Date(stamp*1000))}</text>`).join('')}
-    </svg>`;
+      ${[0,.5,1].map(fraction=>`<line x1="48" x2="652" y1="${164-fraction*138}" y2="${164-fraction*138}" stroke="var(--line)" stroke-dasharray="3 5"/><text class="traffic-axis" x="0" y="${168-fraction*138}" fill="var(--muted)"></text>`).join('')}
+      <path class="traffic-area" fill="url(#trafficFill)"/><path class="traffic-line" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>
+      <circle r="3.5" fill="var(--accent)"/><text class="traffic-start" x="48" y="194" fill="var(--muted)"></text><text class="traffic-end" x="652" y="194" text-anchor="end" fill="var(--muted)"></text></svg>`;
+    const series=traffic?.series||[], available=traffic&&!state.error&&traffic.requests&&series.length;
+    const svg=container.querySelector('svg'), empty=container.querySelector('.traffic-empty');
+    svg.toggleAttribute('hidden',!available); empty.hidden=Boolean(available);
+    if(!available){
+      text(empty,t(state.error?'Traffic data unavailable':traffic?'No Decisions recorded in this window.':'Waiting for traffic data…'));
+      return;
+    }
+    const values=series.map(bucket=>Number(bucket[metric])||0), maximum=(Math.max(...values)||1)*1.15;
+    const coordinates=values.map((value,index)=>({x:48+index*604/Math.max(1,values.length-1),y:164-value/maximum*138}));
+    const path=coordinates.map((point,index)=>`${index?'L':'M'}${point.x},${point.y}`).join(' '), last=coordinates.at(-1);
+    svg.setAttribute('aria-label',t(metric==='input_tokens_per_s'?'Input throughput over time':'Requests over time'));
+    svg.querySelectorAll('.traffic-axis').forEach((node,index)=>text(node,number(maximum*index/2,true)));
+    svg.querySelector('.traffic-area').setAttribute('d',coordinates.length>1?`${path} L${last.x},164 L48,164 Z`:'');
+    svg.querySelector('.traffic-line').setAttribute('d',coordinates.length>1?path:'');
+    svg.querySelector('circle').setAttribute('cx',last.x); svg.querySelector('circle').setAttribute('cy',last.y);
+    const formatter=series.length<3?preciseClock:clock;
+    text(svg.querySelector('.traffic-start'),formatter.format(new Date(series[0].start*1000)));
+    text(svg.querySelector('.traffic-end'),formatter.format(new Date(traffic.window_end*1000)));
   }
 
   function renderModels() {
     const models = state.status?.models;
     if (!models) {
       q('#trafficActivityCounts').textContent = '';
-      q('#trafficModels').innerHTML = `<p class="muted">${t('Model status unavailable')}</p>`;
+      html(q('#trafficModels'),`<p class="muted">${t('Model status unavailable')}</p>`);
       return;
     }
     const ready = models.filter(model=>model.state==='ready'&&model.health?.reachable!==false);
     const inFlight = models.reduce((sum,model)=>sum+(model.inflight?.length||0),0);
     const queued = ready.every(model=>Number.isFinite(model.health?.queued)) ? ready.reduce((sum,model)=>sum+model.health.queued,0) : null;
-    q('#trafficActivityCounts').innerHTML = `<span>${t('Ready models')}: <b>${ready.length}</b></span><span>${t('In flight')}: <b>${inFlight}</b></span><span>${t('Queued')}: <b>${number(queued)}</b></span>`;
-    q('#trafficModels').innerHTML = models.length ? models.map(model=>{
-      const usage = state.stats?.models?.[model.id];
-      const reachable = model.health?.reachable!==false;
-      return `<article class="traffic-model"><div><span class="status-dot${model.state==='ready'&&reachable?' ready':''}"></span><strong title="${esc(model.id)}">${esc(shortName(model.id))}</strong><span class="chip">${esc(t(reachable?model.state:'unreachable'))}</span></div><p>${t('Lifetime requests')}: <span class="traffic-model-requests">${number(state.stats?(usage?.requests??0):null)}</span> · ${t('Input tokens')}: <span class="traffic-model-tokens">${number(state.stats?(usage?.input_tokens??0):null)}</span></p></article>`;
-    }).join('') : `<p class="muted">${t('No model loaded')}</p>`;
+    html(q('#trafficActivityCounts'),`<span>${t('Ready models')}: <b>${ready.length}</b></span><span>${t('In flight')}: <b>${inFlight}</b></span><span>${t('Queued')}: <b>${number(queued)}</b></span>`);
+    const container=q('#trafficModels'), existing=new Map([...container.querySelectorAll('.traffic-model')].map(node=>[node.dataset.model,node]));
+    if(!models.length){html(container,`<p class="muted">${t('No model loaded')}</p>`);return;}
+    container.querySelectorAll(':scope > p').forEach(node=>node.remove());
+    models.forEach((model,index)=>{
+      let node=existing.get(model.id); existing.delete(model.id);
+      if(!node){
+        node=document.createElement('article');node.className='traffic-model';node.dataset.model=model.id;
+        node.innerHTML=`<div><span class="status-dot"></span><strong></strong><span class="chip"></span></div><p>${t('Lifetime requests')}: <span class="traffic-model-requests"></span> · ${t('Input tokens')}: <span class="traffic-model-tokens"></span></p>`;
+        node.querySelector('strong').title=model.id;
+      }
+      const usage=state.stats?.models?.[model.id], reachable=model.health?.reachable!==false;
+      node.querySelector('.status-dot').className=`status-dot${model.state==='ready'&&reachable?' ready':''}`;
+      text(node.querySelector('strong'),shortName(model.id));text(node.querySelector('.chip'),t(reachable?model.state:'unreachable'));
+      text(node.querySelector('.traffic-model-requests'),number(state.stats?(usage?.requests??0):null));
+      text(node.querySelector('.traffic-model-tokens'),number(state.stats?(usage?.input_tokens??0):null));
+      if(container.children[index]!==node)container.insertBefore(node,container.children[index]||null);
+    });
+    existing.forEach(node=>node.remove());
   }
 
   function render() {
@@ -86,7 +102,17 @@
     renderChart(traffic);
     renderModels();
     const endpoints = available ? traffic.endpoints || [] : [];
-    q('#trafficEndpoints').innerHTML = endpoints.length ? endpoints.map(row=>`<tr><td><span class="traffic-method">${esc(row.method)}</span><code>${esc(row.endpoint)}</code></td><td>${number(row.requests)}</td><td>${number(row.requests_per_s,true)}</td><td>${number(row.p95_ms)}</td><td>${number(row.errors)}</td></tr>`).join('') : `<tr><td colspan="5" class="traffic-no-endpoints">${t(state.error?'Traffic data unavailable':available?'No Decisions recorded in this window.':'Waiting for traffic data…')}</td></tr>`;
+    const container=q('#trafficEndpoints'), existing=new Map([...container.querySelectorAll('[data-endpoint]')].map(node=>[node.dataset.endpoint,node]));
+    if(!endpoints.length){html(container,`<tr><td colspan="5" class="traffic-no-endpoints">${t(state.error?'Traffic data unavailable':available?'No Decisions recorded in this window.':'Waiting for traffic data…')}</td></tr>`);return;}
+    container.querySelectorAll('tr:not([data-endpoint])').forEach(node=>node.remove());
+    endpoints.forEach((row,index)=>{
+      const key=`${row.method} ${row.endpoint}`;let node=existing.get(key);existing.delete(key);
+      if(!node){node=document.createElement('tr');node.dataset.endpoint=key;node.innerHTML='<td><span class="traffic-method"></span><code></code></td><td></td><td></td><td></td><td></td>';}
+      text(node.querySelector('.traffic-method'),row.method);text(node.querySelector('code'),row.endpoint);
+      [number(row.requests),number(row.requests_per_s,true),number(row.p95_ms),number(row.errors)].forEach((value,column)=>text(node.children[column+1],value));
+      if(container.children[index]!==node)container.insertBefore(node,container.children[index]||null);
+    });
+    existing.forEach(node=>node.remove());
   }
 
   q('#trafficWindow').onchange = event => {

@@ -16,6 +16,16 @@ No promotion to `stage`/`main` or PyPI publication was performed for that snapsh
   reports real process-local recorded Decision traffic, including input tokens/s, requests/s, latency, errors and
   public endpoint attribution. Lifetime `/api/stats` stays compatible and shared with Manager; reset scope is explicit.
   No prototype/demo data or layout switcher ships. Engine range and package version are unchanged.
+- Keep Dashboard chart/model/endpoint nodes stable during live updates so scrolling and selected endpoint text are
+  preserved. Add a shared **Load downloaded model** action across views, including Dashboard, with supported
+  text/media loads and **Use** for the current view without discarding its input. Playground attachments and
+  marked-element questions survive model loads/selections; incompatible media cannot be sent accidentally.
+- Explain Suggested's real constraints and tier/format heuristics; add detected local Backend choices with
+  mode-specific estimates and native multimodal suggestions even when media dependencies need installation.
+  Manual Backend choices cannot bypass a stored FP8/NVFP4 checkpoint's hardware requirements.
+- Add **Backends → Engine add-ons** for explicit media/GGUF dependency installation through `uv`, with maintenance
+  guards, logs, cancellation and restart guidance. Preserve the installed Engine and existing package versions;
+  never fetch the unrelated PyPI `basal` package. System toolchains remain operator-managed.
 
 - basal-ui is its own repository and package: import `basal_ui`, the `basal-ui` command, and `pip install basal-ui`
   after the first PyPI release. Until then, use the [source install](../README.md#install).

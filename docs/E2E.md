@@ -56,10 +56,46 @@ the hardware allows.
 | `test_elements.py` | marked image elements (Chromium) | natural-pixel box coordinates despite display scaling; drawing, tiny-box rejection, movement, resizing, edge clamping, deletion/renumbering and the 26-box limit; labels, linked choice question, read-only options, clear/delete cleanup, original-image restore, marked PNG badge and re-edit; one-image restriction; clean decide payload and probability overlay; saved-request round trip; evidence disabled with media and re-enabled without it |
 | `test_activity.py` | history, calibration and logs polling (Chromium) | oldest-first history draining of more than one page per poll; the 500-row live-only limit and older-page pagination across idle polls; delayed calibration responses never replacing the selected model's controls; the Logs view clearing old lines when a buffer's generation changes |
 | `test_visual.py` | responsive presentation (Chromium) | all eleven views and every Manager tab fit 1440–390 px in both themes; loaded calibration tables scroll locally; phone header and question controls stay contained and named |
-| `test_pages.py` | Studio Dashboard and Manager (Chromium) | real Decision throughput and public endpoint attribution; shared lifetime usage and model reset; unavailable Stats/status and recovery; Manager tab click/keyboard, reload and Back routes |
+| `test_pages.py` | Studio Dashboard, Manager and shared loader (Chromium) | real Decision throughput/public endpoint attribution; shared lifetime usage/reset; unavailable Stats/status recovery; Manager routes; scroll/text selection across polling; downloaded-model loading across views; Saved revision preservation; retained attachments and unsupported-media refusal |
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Studio refinement gate 2026-10-30
+
+The follow-up to the approved Studio redesign is verified on `feat/studio-redesign` in
+[PR #10](https://github.com/pawelkiszczak/basal-ui/pull/10), still targeting `dev`. Version `0.1.0rc1`, Engine pins
+and the supported range are unchanged; this is not a release, merge or `stage`/`main` promotion.
+The host and offline text/bf16 model configuration are the same as the earlier Studio gate below.
+
+| Local check | Observed result |
+|---|---|
+| `make lint` | Ruff lint and format checks passed |
+| `make test` | 348 passed, 3 skipped; 88% coverage |
+| Full offline real-model `make e2e ARGS='-v -rs --tb=short'` | 120 passed, 5 skipped |
+| Focused cross-view attachment and existing media-editor regressions | 20 passed; included in the full gate |
+| `make screenshots` | Nine real-inference screenshots and the tour GIF refreshed |
+| Extracted-wheel runtime smoke | Packaged `addons.py`, app/Backend assets and status/add-on/model/traffic APIs returned HTTP 200; static `no-cache` retained; unconfirmed package installation refused with HTTP 400 |
+| Real Engine media-extra installation | Completed through the UI in a disposable virtual environment; Engine 2.4.1, Torch, NumPy and Transformers versions unchanged; fresh-process probes passed |
+| Restart after media installation | Media detected as installed; cached `Remek/basal-omni-1.0-max` loaded through the shared picker in eager/MPS mode with image/audio support |
+| Real multimodal image Decision | Bundled revenue-chart example completed with two answers, 806 input tokens and 546 media tokens on eager/MPS |
+| Documentation links | 74 local file/heading links across all 18 repository Markdown documents checked; no errors |
+
+Regression tests first exposed and then verified fixes for manually selected Backends bypassing stored FP8/NVFP4
+hardware requirements, cross-view loads clearing Playground attachments, and cancellation during installer
+preparation/verification. Desktop and phone Dashboard checks preserve scroll position and selected endpoint text
+across real polling. Backend recommendation loads retain Saved revision/options unless explicitly remembered.
+The attachment-transition test advertises image capability for one text model solely to exercise draft retention;
+it does not claim that text checkpoint performs image inference.
+
+The real image smoke verifies the installed encoders/request path, not model accuracy or media calibration.
+Audio inference was not exercised.
+
+The add-on smoke changed only its disposable environment, not the running user's packages. GGUF source-build
+flags and cancellation/maintenance boundaries have regression coverage; an actual GGUF build was not performed.
+The five E2E skips remain those described below. Missing NVIDIA/ROCm/Strix/TPU hardware is not certified by this run.
+The wheel build still emits the previously recorded setuptools data-directory discovery warnings.
+GitHub's required `ci-ok` remains a separate merge gate; CI does not run real-model E2E.
 
 ## Studio redesign gate 2026-10-30
 

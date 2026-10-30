@@ -2,7 +2,7 @@
 
 Historical record of the 2026-10-27 implementation run; its paths, counts and boundaries describe that run only.
 For the merged development snapshot see the [2026-10-29 dev gate](E2E.md#verified-dev-gate-2026-10-29);
-the later [Studio redesign verification](E2E.md#studio-redesign-gate-2026-10-30) supersedes this record's navigation/layout.
+the later [Studio refinement verification](E2E.md#studio-refinement-gate-2026-10-30) supersedes this record's navigation/layout.
 
 Implemented on the current fork with three isolated Luna work packages. Shared preparation extracted the classic script without introducing a frontend build. Production bundles Basecoat 1.1.0 and its MIT license, the application styles, JavaScript, and existing fonts. Sidebar navigation, all nine views, native dialogs, and fork serving contracts are retained.
 

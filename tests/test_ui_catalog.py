@@ -181,18 +181,17 @@ def test_suggestions_by_hardware_and_available_memory():
 
     omni = "Remek/basal-omni-1.0-mini"
     without_media = choices(dc, [omni])
-    assert all(card["slot"] != "multimodal" for card in without_media)
+    assert without_media[-1]["slot"] == "multimodal"
+    assert without_media[-1]["media"] is True and without_media[-1]["media_available"] is False
+    assert without_media[-1]["media_reason_code"] == "media_dependency"
+    assert without_media[-1]["media_setup"] == "#backends"
     media_hw = hw("cuda", "H100", (9, 0), frozenset({"cuda", "media"}), 80 * 1024**3, 70 * 1024**3)
     media_cards = choices(media_hw, [omni])
-    assert media_cards == [
-        {
-            "slot": "multimodal",
-            "id": omni,
-            "why": "images and audio, served with --mode eager",
-            "why_code": "suggest_multimodal",
-            "why_params": {"kinds": ["image", "audio"], "mode": "eager"},
-        }
-    ]
+    media_card = next(card for card in media_cards if card["slot"] == "multimodal")
+    assert media_card["id"] == omni
+    assert media_card["media"] is True and media_card["media_available"] is True
+    assert media_card["mode"] == "eager"
+    assert media_card["media_setup"] is None and media_card["media_reason_code"] is None
 
 
 def test_suggestion_codes_reproduce_english_text_with_structured_params():

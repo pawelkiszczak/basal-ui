@@ -1008,6 +1008,45 @@ const PL = {
   "Request settings": "Ustawienia żądania",
   "Statistics unavailable: {message}": "Statystyki niedostępne: {message}",
   "Unavailable": "Niedostępne",
+  "Media (image and audio)": "Media (obrazy i audio)",
+  "GGUF (llama.cpp)": "GGUF (llama.cpp)",
+  "Engine add-on requirements are not safe to install: {message}": "Instalacja wymagań dodatku Engine jest niebezpieczna: {message}",
+  "The installed Engine does not declare installable requirements for this extra": "Zainstalowany Engine nie deklaruje wymagań tego dodatku, które można zainstalować",
+  "code:addon_missing_extra": "Zainstalowany Engine nie deklaruje dodatku {extra}",
+  "code:addon_gguf_machine": "Instalacja GGUF jest niedostępna na tym komputerze",
+  "code:addon_inventory_error": "Lista dodatków Engine jest niedostępna: {message}",
+  "code:addon_requirements_error": "Instalacja wymagań dodatku Engine jest niebezpieczna: {message}",
+  "code:addon_no_requirements": "Zainstalowany Engine nie deklaruje wymagań tego dodatku, które można zainstalować",
+  "code:addon_busy": "Operacje na modelach są niedostępne podczas instalacji dodatku Engine",
+  "code:addon_install_refused": "Nie można zainstalować dodatku Engine: {message}",
+  "Automatic": "Automatycznie",
+  "Available to install": "Dostępny do instalacji",
+  "Browse models to download →": "Przeglądaj modele do pobrania →",
+  "Cancel installation": "Anuluj instalację",
+  "Engine add-ons": "Dodatki Engine",
+  "Engine add-on installation": "Instalacja dodatku Engine",
+  "Engine add-on inventory is unavailable: {message}": "Lista dodatków Engine jest niedostępna: {message}",
+  "Engine {version} · source {source}": "Engine {version} · źródło {source}",
+  "GGUF installation is unavailable on this machine": "Instalacja GGUF jest niedostępna na tym komputerze",
+  "How recommendations are chosen": "Jak wybierane są rekomendacje",
+  "Install and restart later": "Zainstaluj i uruchom ponownie później",
+  "Install command": "Polecenie instalacji",
+  "Install media add-on": "Zainstaluj dodatek mediów",
+  "Install supported extras into this app’s current Engine environment. All models and jobs must be stopped; restart basal-ui after installation.": "Zainstaluj obsługiwane dodatki w bieżącym środowisku Engine tej aplikacji. Wszystkie modele i zadania muszą być zatrzymane; po instalacji uruchom basal-ui ponownie.",
+  "Install {name}": "Zainstaluj {name}",
+  "Install {name}?": "Zainstalować {name}?",
+  "Installation complete. Restart basal-ui before using this add-on.": "Instalacja zakończona. Uruchom basal-ui ponownie przed użyciem dodatku.",
+  "Installed; restart to use": "Zainstalowany; wymagane ponowne uruchomienie",
+  "Load a model here, then choose Use when it is ready. Load options and media support are shared with Model manager.": "Załaduj tutaj model, a gdy będzie gotowy, wybierz Użyj. Opcje ładowania i obsługa mediów są wspólne z menedżerem modeli.",
+  "Load downloaded model": "Załaduj pobrany model",
+  "Multimodal recommendations show image/audio capabilities and missing add-ons. Install required add-ons in Backends before loading with media. Saved load settings are not changed by the recommendation Backend.": "Rekomendacje multimodalne pokazują obsługę obrazów/audio i brakujące dodatki. Przed ładowaniem z mediami zainstaluj wymagane dodatki w Backendach. Backend rekomendacji nie zmienia zapisanych ustawień ładowania.",
+  "Python environment": "Środowisko Pythona",
+  "Recommendation Backend": "Backend rekomendacji",
+  "Recommendation slots use catalog format and tier heuristics, not measured benchmarks. Best quality means the largest fitting tier; fastest means the smallest tier.": "Rekomendacje opierają się na heurystykach formatu i rozmiaru modeli w katalogu, a nie na pomiarach. Najlepsza jakość oznacza największy mieszczący się model, a najszybszy — najmniejszy wariant.",
+  "Recommendations consider machine compatibility, installed Backends, model architecture and format, estimated memory, and available memory now. They prefer official current-family checkpoints and comfortable fits; community and experimental text variants remain in All models.": "Rekomendacje uwzględniają zgodność komputera, zainstalowane Backendy, architekturę i format modelu, szacowaną pamięć oraz pamięć dostępną obecnie. Preferują oficjalne modele z bieżącej rodziny i wygodny zapas pamięci; społecznościowe i eksperymentalne warianty tekstowe pozostają we Wszystkich modelach.",
+  "Refresh add-ons": "Odśwież dodatki",
+  "The installed Engine does not declare the {extra} extra": "Zainstalowany Engine nie deklaruje dodatku {extra}",
+  "This changes packages in the current Engine environment. Stop all models and jobs first. Basal-ui will not restart automatically; restart it after installation.": "To zmienia pakiety w bieżącym środowisku Engine. Najpierw zatrzymaj wszystkie modele i zadania. Basal-ui nie uruchomi się ponownie automatycznie; zrób to po instalacji.",
 };  // 'English text': 'tekst po polsku'
 const PL_PLURAL = {
   "{n} request": ["{n} żądanie", "{n} żądania", "{n} żądań"],
@@ -1042,7 +1081,7 @@ function ts(text, code, params) {
          ? {kinds: params.kinds.map(kind => ({image: 'obrazy', audio: 'audio'}[kind] || kind)).join(' i ')}
          : {})}
     : params;
-  const result = fill(translated || text, values);
+  const result = fill(translated || text || '', values);
   return params?.estimate === null ? result.replace('— GB', '—') : result;
 }
 function plForm(n) {  // Polish: 1 model, 2-4 modele (not 12-14), 5+ modeli

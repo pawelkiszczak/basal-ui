@@ -27,6 +27,12 @@ The hardware view retains `#overview`; existing model log links (`#logs/<model i
 [Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
 Manager does not add requests. **Models** opens Suggested (default) and All models.
 
+**Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
+Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load
+options. Keep it open to see startup, then choose **Use** when ready; the current view's model selector is updated
+without navigating away or clearing its input. Inspect lists only its supported bf16 checkpoints. **Browse models
+to download** opens Models when the required checkpoint is not on disk.
+
 **Model manager** separates **Library**, **Usage by model**, **Benchmarks** and **Calibration**. Library holds live
 inference, loaded models, memory, on-disk variants and a collapsed **Storage location** disclosure. Inference updates
 every second while Manager is visible: per-model Playground/API/MCP/benchmark requests, longest wait, Engine running
@@ -61,29 +67,43 @@ Decision. Existing physical-key shortcuts are preserved: Alt+1 Hardware, 2 Model
   extra fixes that. Offline, the list uses one complete cached snapshot per repository: `main` when complete,
   otherwise the newest complete snapshot. Partial shards are never combined across revisions; repositories with no
   complete snapshot are omitted.
-- **Suggested**: cards for the models that fit both the budget and the memory available now, a comfortable fit before
-  a tight one. *Recommended*: the basal-2.0 family in the format of the machine (after
-  [HARDWARE.md](https://github.com/rkinas/basal/blob/main/docs/HARDWARE.md#recommendation): FP8 on NVIDIA GPUs with compute capability 8.9+ other than data-centre
-  GPUs and the RTX 4090, bf16 there, `-MLX-8bit` on Apple Silicon, GGUF `Q8_0` on a CPU with `llama-cpp-python`,
-  else bf16), 4.5B if it fits now, else mini. *Best quality*: the largest tier that fits now. *Fastest*: mini.
-  *Multimodal*: the largest basal-omni checkpoint this machine can serve with media. Without a reading of the
-  available memory the budget fit stands in for it.
+- **Suggested** excludes community variants and experimental text variants, prefers the current text family and a
+  comfortable fit over a tight one, and excludes estimates larger than the hardware budget or available memory now.
+  If available memory is unknown, the budget fit stands in for it; unknown estimates remain visibly unknown.
+  **Recommendation Backend** defaults to **Automatic**; the alternatives are detected, machine-compatible local
+  Backends, not hypothetical installations or external servers. Selecting one recalculates its supported Execution
+  modes and memory estimates for Suggested only. All models retains the normal machine-wide assessment.
+  *Recommended*: the basal-2.0 family in the machine's preferred format (FP8 on suitable NVIDIA GPUs other than
+  data-centre GPUs/the RTX 4090, bf16 there, MLX 8-bit on Apple Silicon, GGUF Q8_0 where available, otherwise bf16),
+  4.5B if comfortably fitting, otherwise mini/smallest available. *Best quality* means the largest fitting tier;
+  *Fastest* is the mini-tier heuristic, not measured throughput. Use Benchmarks to measure actual performance.
+  *Lightest* offers the recurrent pico family. *Multimodal* selects fitting native image/audio checkpoints, including
+  when the media add-on is missing; such a card explains the missing dependency and links to Backends instead of
+  pretending media can load. Media estimates use their eager/vLLM path, not a text CUDA-graph estimate.
+  Loads still enforce the configured Fleet budget, keep-free reserve and existing reservations; recommendations are
+  estimates, not a reservation or an Inference test. A selected Backend opens its recommendation's load options for
+  review, retaining the Saved revision and other inputs. Leave **Remember** unchecked to load this choice without
+  overwriting Saved load settings; check it to save the reviewed options.
 - **Download** (a model not on disk yet) fetches only what serving needs (the chosen `.gguf` file of a `-GGUF`
   repository; not the 4.5B's `think/` model) into the models directory and shows the progress in the row; nothing is
-  started. **Models** downloads, sets up and deletes models; loading is in **Model manager**. Once on disk the row
-  offers **⚙ Setup** and **Delete** (a loaded model cannot be deleted), and a suggestion card links to Model manager.
+  started. Once on disk, Models and its suggestions offer applicable **Load** / **Load with media** actions,
+  **⚙ Setup** and **Delete** (a loaded model cannot be deleted). Loading is also available from the shared header
+  loader and **Model manager → Library**.
 - **⚙ Setup** (Models) opens the load options and saves them for the model without loading it; the next load uses
-  them. **⚙ Options** in Model manager is the same dialog with **Load**.
-  For media, the mode (eager or vLLM) is chosen when loading from Model manager.
-- **Load** (Model manager) runs `basal-serve` for the model as a subprocess on a free loopback port.
+  them. **⚙ Options** in Model manager and the shared loader opens the same dialog with **Load**.
+  Media loads use eager by default; a selected vLLM recommendation or a Saved vLLM mode chooses that path when available.
+- **Load** runs `basal-serve` for the model as a subprocess on a free loopback port.
   **Several models can be loaded at once**: each gets its own private `basal-serve`; a loaded model's row shows its
   state and **Unload**, and Models shows a *loaded* chip. A load that would exceed the memory budget is refused (below).
-- **Load with media** (Model manager), for the basal-omni-1.0 bf16 checkpoints (mini and max: images and audio; ultra: images; the
+- **Load with media**, for the basal-omni-1.0 bf16 checkpoints (mini and max: images and audio; ultra: images; the
   FP8, GGUF and MLX ports and basal-omni-1.1-max have no encoders): `basal-serve --mode eager --media on`, with
-  `--device mps` on Apple Silicon and `--device cpu` on a machine without a GPU, or — chosen in the media load's
-  ⚙ Options on an NVIDIA GPU with `basal[vllm]` — `--mode vllm --media on` ([OMNI.md](https://github.com/rkinas/basal/blob/main/docs/OMNI.md#vllm---mode-vllm)).
-  Needs the `basal[media]` extra (pillow, soundfile, scipy, torchvision); the row says so when it is missing. A
-  remembered text-only engine mode is not applied to a media load.
+  `--device mps` on Apple Silicon and `--device cpu` on a machine without a GPU, or — with the vLLM Backend selected
+  in Suggested or a Saved vLLM mode on an NVIDIA GPU — `--mode vllm --media on`
+  ([OMNI.md](https://github.com/rkinas/basal/blob/main/docs/OMNI.md#vllm---mode-vllm)).
+  Needs the `basal[media]` extra (pillow, soundfile, scipy, torchvision); the row says so when it is missing.
+  **Tools → Backends → Engine add-ons** can install its declared dependencies in the app's virtual environment;
+  stop all models/jobs first and restart basal-ui afterward. See [installation safety and limits](BACKENDS.md#installing-engine-add-ons).
+  A remembered text-only mode outside eager/vLLM is not applied to a media load.
 - **Model manager → Library → Storage location**: the models directory (default: the Hugging Face cache, `HF_HUB_CACHE`) can be set to any
   writable directory; downloads, the downloaded marks, serving and deletes all use it. The setting is kept in
   `~/.config/basal-ui/settings.json` (`BASAL_UI_CONFIG` moves it). The variants on disk are listed with their size and
@@ -101,6 +121,9 @@ Decision. Existing physical-key shortcuts are preserved: Alt+1 Hardware, 2 Model
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
   and must be attached again.
+  Loading or selecting a model, including from another view, retains this tab's attachments and marked-element
+  questions. Sending is blocked if the selected model cannot accept the retained media; remove it or select a
+  compatible media-loaded model.
   Each type has its own
   result view; every answer shows whether it was deferred, whether its confidence clears the model's certified 1% / 5%
   thresholds and how it is calibrated; an answer whose calibration does not hold for it (media answers on a

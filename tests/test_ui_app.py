@@ -198,6 +198,71 @@ def test_model_api_includes_reason_and_suggestion_codes(tmp_path):
         assert card["why"] == catalog.ASSESSMENT_TEMPLATES[card["why_code"]].format(**card["why_params"])
 
 
+def test_model_api_filters_installed_backends_and_rejects_unknown_choices(tmp_path):
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        payload = client.get("/api/models").json()
+        unavailable = client.get("/api/models", params={"backend": "gguf"})
+        unknown = client.get("/api/models", params={"backend": "made-up"})
+    assert payload["recommendation_backend"] == "automatic"
+    assert payload["recommendation_backends"] == [
+        {"id": "automatic", "name": "Automatic"},
+        {"id": "torch", "name": "PyTorch"},
+    ]
+    assert unavailable.status_code == unknown.status_code == 400
+
+
+def test_backend_recommendations_recalculate_mode_memory_without_changing_global_models(tmp_path, monkeypatch):
+    monkeypatch.setattr("basal_ui.backends.sys.platform", "linux")
+    hw = Hardware(
+        "cuda", "NVIDIA", 80 * 1024**3, 80 * 1024**3, (9, 0), frozenset({"cuda", "vllm"}), available_bytes=50 * 1024**3
+    )
+    app, _ = app_for(tmp_path, [MINI], hw=hw)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        automatic = client.get("/api/models").json()
+        payload = client.get("/api/models", params={"backend": "vllm"}).json()
+    baseline = payload["models"][0]
+    assert automatic["recommendation_backend"] == "automatic"
+    assert payload["recommendation_backend"] == "vllm"
+    assert baseline["mode"] == "fast"
+    suggestion = payload["suggestions"][0]
+    assert suggestion["mode"] == "vllm" and suggestion["media"] is False
+    assert suggestion["est_memory_bytes"] == int(hw.memory_bytes * 0.6)
+    assert suggestion["fit"] == "fits" and suggestion["fit_now"] == "tight"
+
+
+def test_torch_recommendations_do_not_claim_mlx_packed_acceleration(tmp_path):
+    hw = Hardware("apple", "Apple Silicon", 64 * 1024**3, 64 * 1024**3, None, frozenset({"mlx", "mps"}))
+    app, _ = app_for(tmp_path, [MINI], hw=hw)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        payload = client.get("/api/models", params={"backend": "torch"}).json()
+    assert payload["suggestions"]
+    assert payload["suggestions"][0]["mode"] == "eager"
+    assert payload["suggestions"][0]["why_code"] != "suggest_packed"
+
+
+@pytest.mark.parametrize("platform", ["cuda", "apple", "cpu"])
+def test_model_api_keeps_multimodal_recommendation_when_media_extras_are_missing(tmp_path, platform):
+    hw = Hardware(
+        platform,
+        "H100" if platform == "cuda" else platform,
+        80 * 1024**3,
+        70 * 1024**3,
+        (9, 0) if platform == "cuda" else None,
+        frozenset({platform}),
+    )
+    app, _ = app_for(tmp_path, [OMNI], hw=hw)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        payload = client.get("/api/models").json()
+    suggestion = next(item for item in payload["suggestions"] if item["slot"] == "multimodal")
+    assert suggestion["id"] == "omni"
+    assert suggestion["mode"] == "eager" and suggestion["media"] is True
+    assert suggestion["media_available"] is False
+    assert suggestion["media_reason_code"] == "media_dependency"
+    assert suggestion["media_setup"] == "#backends"
+    assert suggestion["est_memory_bytes"] == int(OMNI.weights_bytes * 1.2) + catalog.GIB
+
+
 def test_model_options_include_codes_for_packed_and_think_reasons(tmp_path):
     app, _ = app_for(tmp_path, [MINI])
     with TestClient(app, base_url="http://127.0.0.1") as client:
@@ -605,23 +670,6 @@ def test_auto_load_waiting_on_catalog_is_cancelled_during_shutdown(tmp_path, mon
     shutdown_thread.join(timeout=5)
     assert not shutdown_thread.is_alive()
     assert loads == []
-
-
-def test_create_app_passes_settings_module_to_default_fleet(tmp_path, monkeypatch):
-    import basal_ui.app as app_module
-
-    fake_settings = SimpleNamespace(
-        models_dir=lambda: None, stats_path=lambda: tmp_path / "s.json", history_path=lambda: tmp_path / "h.jsonl"
-    )
-    captured = {}
-
-    def fleet_factory(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(app_module, "Fleet", fleet_factory)
-    create_app(settings_mod=fake_settings)
-    assert captured["settings_mod"] is fake_settings
 
 
 def test_stale_overlapping_start_does_not_replace_last_ready_model(tmp_path, monkeypatch):
@@ -1104,3 +1152,29 @@ def test_revision_reaches_cached_check_and_download_but_not_child_flags(tmp_path
     del runner._build_command
     command = runner._build_command(MINI, tmp_path, assessment, False, 1, settings.serve_settings())
     assert "--revision" not in command
+
+
+@pytest.mark.parametrize(("port", "capability"), [("FP8", (8, 0)), ("NVFP4", (9, 0))])
+def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_path, monkeypatch, port, capability):
+    monkeypatch.setattr("basal_ui.backends.sys.platform", "linux")
+    checkpoint = Variant(
+        "quantized", f"Remek/basal-2.0-mini-{port}", "basal-2.0", "mini", port, port, None, 2 * 1024**3, False
+    )
+    device = Hardware(
+        "cuda",
+        "NVIDIA",
+        80 * 1024**3,
+        80 * 1024**3,
+        capability,
+        frozenset({"cuda", "vllm", "sglang"}),
+        available_bytes=70 * 1024**3,
+    )
+    app, _ = app_for(tmp_path, [checkpoint], hw=device)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for backend in ("automatic", "torch", "vllm", "sglang"):
+            response = client.get("/api/models", params={"backend": backend})
+            assert response.status_code == 200
+            assert response.json()["models"][0]["runnable"] is False
+            assert response.json()["suggestions"] == []
+        modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
+        assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))

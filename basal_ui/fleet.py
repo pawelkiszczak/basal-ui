@@ -485,8 +485,10 @@ class Fleet:
         self.lock = threading.RLock()
         self.runners: dict[str, Runner] = {}
         self.logs: dict[str, LogBuffer] = {"basal-ui": LogBuffer()}
+        self.engine_addon_installing = False
+        self._engine_addon_job_target = None
         self.downloads = Downloads(self.event)
-        self.jobs = Jobs(self.logs, self.event)
+        self.jobs = Jobs(self.logs, self.event, start_lock=self.lock, start_guard=self._check_job_start)
         self.draining: set[str] = set()
         self.leases: dict[Runner, int] = {}
         self.inflight: dict[object, tuple[str, str, float]] = {}  # each request being answered: (model, source, start)
@@ -496,6 +498,15 @@ class Fleet:
         self._lan_ip = None
         self.retiring: dict[Runner, int | None] = {}  # unloaded runners whose child is still being terminated
         self._rss_cache = (0.0, {})
+
+    def _check_addon_maintenance(self):
+        """Reject model/process activity while uv mutates the Engine environment."""
+        if self.engine_addon_installing and not self.stopping:
+            raise RuntimeError("model operations are unavailable during Engine add-on installation")
+
+    def _check_job_start(self, kind, target):
+        if self.engine_addon_installing and (kind != "engine-addon" or target != self._engine_addon_job_target):
+            raise RuntimeError("jobs are unavailable during Engine add-on installation")
 
     def event(self, level, message):
         self.logs["basal-ui"].append(f"{level} {message}")
@@ -554,6 +565,7 @@ class Fleet:
     ) -> Runner:
         """A private, unremembered child for a job (its memory counted in the budget); stop_temporary ends it."""
         with self.lock:
+            self._check_addon_maintenance()
             if kind in self.temporary:
                 raise RuntimeError(f"a {kind} child is already running")
             if self.stopping:
@@ -577,6 +589,7 @@ class Fleet:
 
     def stop_temporary(self, kind):
         with self.lock:
+            self._check_addon_maintenance()
             runner = self.temporary.pop(kind, None)
             if runner is not None:
                 self.retiring[runner] = runner.est_memory_bytes
@@ -589,6 +602,7 @@ class Fleet:
         """Count `needed` bytes for a job that loads a model into basal-ui's own process (RuntimeError over the
         budget); release(kind) frees them."""
         with self.lock:
+            self._check_addon_maintenance()
             if kind in self.reserved:
                 raise RuntimeError(f"a {kind} job already holds memory")
             self.check_budget(needed)
@@ -602,6 +616,7 @@ class Fleet:
         """_reservation: the memory restart() reserved; that restart also holds the model in maintenance."""
         model_id = assessment.variant.id
         with self.lock:
+            self._check_addon_maintenance()
             if self.stopping or (model_id in self.draining and _reservation is None):
                 raise RuntimeError("model is unavailable during maintenance")
             existing = self.runners.get(model_id)
@@ -636,6 +651,7 @@ class Fleet:
     def unload(self, model_id=None, forget=True):
         """Unload one model (KeyError when it is not loaded) or every model; forget=False keeps it for auto-load."""
         with self.lock:
+            self._check_addon_maintenance()
             if model_id is not None and model_id not in self.runners:
                 raise KeyError(model_id)
             ids = [model_id] if model_id is not None else list(self.runners)
@@ -669,6 +685,7 @@ class Fleet:
         (no concurrent load) until the replacement load starts, and a failed load releases the memory it reserved."""
         model_id = assessment.variant.id
         with self.lock:
+            self._check_addon_maintenance()
             if model_id in self.draining:
                 raise RuntimeError("model is unavailable during maintenance")
             current = self.runners.get(model_id)
@@ -700,6 +717,7 @@ class Fleet:
         Under the fleet lock, so the directory cannot change (while_idle) or the repository be deleted
         (while_not_busy) between the check and the start."""
         with self.lock:
+            self._check_addon_maintenance()
             cache_dir = self.models_dir_fn()
             if catalog.is_downloaded(variant, cache_dir):
                 return False
@@ -735,6 +753,7 @@ class Fleet:
 
     def ready(self, model_id) -> Runner:
         with self.lock:
+            self._check_addon_maintenance()
             if self.stopping or model_id in self.draining:
                 raise RuntimeError(f"model {model_id} is not ready (maintenance)")
             runner = self.runners.get(model_id)
@@ -771,6 +790,7 @@ class Fleet:
     def while_idle(self, fn):
         """fn() with no model, job child and download running, atomically with load()."""
         with self.lock:
+            self._check_addon_maintenance()
             if self.runners or self.temporary or self.downloads.any_alive():
                 raise RuntimeError("unload every model before changing the models directory")
             return fn()
@@ -778,6 +798,7 @@ class Fleet:
     def while_not_busy(self, repo, fn):
         """fn() while nothing uses the repository, atomically with load()."""
         with self.lock:
+            self._check_addon_maintenance()
             if self.busy(repo):
                 raise RuntimeError("unload the model first")
             return fn()

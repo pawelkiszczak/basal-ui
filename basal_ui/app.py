@@ -27,8 +27,9 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import catalog, hardware, settings
+from . import backends, catalog, hardware, settings
 from . import options as load_options
+from .addons import AddonManager
 from .fleet import Fleet
 from .gateway import Gateway
 from .history import History, replay_fields
@@ -104,6 +105,7 @@ def create_app(
     gateway=None,
     stats=None,
     history=None,
+    addons=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -116,6 +118,7 @@ def create_app(
         history=history,
     )
     gateway = gateway or Gateway(fleet, settings_mod, stats)
+    addon_manager = addons or AddonManager(fleet, hardware_fn)
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -201,6 +204,33 @@ def create_app(
         settings_mod.remove_keys_file()
 
     app = host_middleware(FastAPI(title="basal-ui", lifespan=lifespan), allowed_hosts)
+    app.state.addons = addon_manager
+
+    @app.middleware("http")
+    async def protect_engine_installation(request: Request, call_next):
+        paths = (
+            "/api/load",
+            "/api/unload",
+            "/api/restart",
+            "/api/download",
+            "/api/decide",
+            "/api/benchmark",
+            "/api/calibrate",
+            "/api/batch",
+            "/api/inspect",
+            "/api/models/delete",
+        )
+        if (
+            request.method == "POST"
+            and (request.url.path in paths or request.url.path.startswith("/api/backends/tests"))
+            and addon_manager.busy()
+        ):
+            return JSONResponse(
+                {"detail": "model operations are unavailable during Engine add-on installation", "code": "addon_busy"},
+                status_code=409,
+            )
+        return await call_next(request)
+
     if STATIC.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
     app.mount("/viz", inspect_app(inspector.explainer, examples))  # basal-viz for the Inspect view
@@ -372,6 +402,24 @@ def create_app(
     )
     app.state.backends = backend_manager
 
+    @app.get("/api/addons")
+    def get_addons():
+        return addon_manager.inventory()
+
+    @app.post("/api/addons", status_code=202)
+    def install_addon(body: dict = Body(...)):
+        try:
+            return addon_manager.install(body)
+        except (ValueError, RuntimeError) as exc:
+            return JSONResponse(
+                {"detail": str(exc), "code": "addon_install_refused", "params": {"message": str(exc)}},
+                status_code=400 if isinstance(exc, ValueError) else 409,
+            )
+
+    @app.delete("/api/addons")
+    def cancel_addon():
+        return addon_manager.cancel()
+
     @app.get("/api/backends")
     def get_backends(refresh: bool = False):
         try:
@@ -454,12 +502,59 @@ def create_app(
         return settings_response()
 
     @app.get("/api/models")
-    def get_models(refresh: bool = False):
+    def get_models(refresh: bool = False, backend: str = "automatic"):
         cache_dir = settings_mod.models_dir()
         current_hw = hw()
+
+        def mode_assessment(variant, mode, baseline_assessment):
+            try:
+                estimate = backends.estimate(variant, current_hw, mode)
+            except (TypeError, ValueError):
+                return dataclasses.replace(
+                    baseline_assessment, mode=mode, est_memory_bytes=None, fit="unknown", fit_now="unknown"
+                )
+            needed = int(variant.weights_bytes * 1.2) + (
+                catalog.GRAPH_ENGINE_OVERHEAD if mode in catalog.GRAPH_ENGINE_MODES else catalog.GIB
+            )
+            if mode in ("vllm", "sglang"):
+                needed = max(needed, int(current_hw.memory_bytes * load_options.DEFAULTS["gpu_memory"]))
+            return dataclasses.replace(
+                estimate,
+                runnable=True,
+                reason=None,
+                mode=mode,
+                est_memory_bytes=needed,
+                fit=catalog._fit(needed, current_hw.memory_bytes),
+                fit_now=catalog._fit(needed, current_hw.available_bytes),
+            )
+
+        installed = [
+            {"id": "automatic", "name": "Automatic"},
+            *[
+                {"id": key, "name": value[0]}
+                for key, value in backends.BACKENDS.items()
+                if (key == "torch" or key in current_hw.engines) and backends.machine_reason(key, current_hw) is None
+            ],
+        ]
+        available = {item["id"] for item in installed}
+        if backend not in available:
+            raise HTTPException(400, f"unknown or unavailable recommendation backend {backend!r}")
         variants, source = catalog_fn(refresh=refresh, cache_dir=cache_dir)
-        assessed = [catalog.assess(v, current_hw) for v in variants]
-        assessed.sort(
+        baseline = [catalog.assess(v, current_hw) for v in variants]
+        recommended = baseline
+        if backend != "automatic":
+            recommended = []
+            for item in baseline:
+                modes = backends.matching_modes(backend, item.variant, current_hw)
+                if not modes:
+                    continue
+                chosen = mode_assessment(item.variant, modes[0], item)
+                if item.variant.media and backend in ("torch", "vllm"):
+                    chosen = dataclasses.replace(chosen, media_mode="eager" if backend == "torch" else "vllm")
+                elif item.variant.media:
+                    chosen = dataclasses.replace(chosen, media_mode=None)
+                recommended.append(chosen)
+        baseline.sort(
             key=lambda a: (
                 FAMILY_ORDER.get(a.variant.family, 99),
                 catalog.TIER_ORDER.get(a.variant.tier, 99),
@@ -467,6 +562,54 @@ def create_app(
                 a.variant.label,
             )
         )
+        recommended.sort(
+            key=lambda a: (
+                FAMILY_ORDER.get(a.variant.family, 99),
+                catalog.TIER_ORDER.get(a.variant.tier, 99),
+                a.variant.port,
+                a.variant.label,
+            )
+        )
+        recommendation_items = recommended
+        if backend not in ("automatic", "torch", "vllm"):
+            recommendation_items = [
+                dataclasses.replace(a, variant=dataclasses.replace(a.variant, media=())) if a.variant.media else a
+                for a in recommended
+            ]
+        suggestions = catalog.suggest(recommendation_items, current_hw, packed=backend in ("automatic", "mlx"))
+        suggestions = [suggestion for suggestion in suggestions if suggestion["slot"] != "multimodal"]
+        media_assessments = []
+        if backend in ("automatic", "torch", "vllm"):
+            media_mode = "vllm" if backend == "vllm" else "eager"
+            media_hw = dataclasses.replace(current_hw, engines=current_hw.engines | {"media"})
+            for item in baseline:
+                capable = catalog.assess(item.variant, media_hw)
+                allowed = next(
+                    m for m in load_options.available_media_modes(capable, media_hw) if m["mode"] == media_mode
+                )
+                if item.variant.media and allowed["available"]:
+                    media_assessment = mode_assessment(item.variant, media_mode, item)
+                    media_assessments.append(
+                        dataclasses.replace(
+                            media_assessment,
+                            media_mode=media_mode,
+                            media_reason=item.media_reason,
+                        )
+                    )
+        media_suggestions = catalog.suggest(media_assessments, current_hw, packed=False)
+        multimodal = next((suggestion for suggestion in media_suggestions if suggestion["slot"] == "multimodal"), None)
+        if multimodal:
+            suggestions.append(multimodal)
+        recommended_by_id = {a.variant.id: a for a in recommended}
+        media_by_id = {a.variant.id: a for a in media_assessments}
+        for suggestion in suggestions:
+            suggestion.setdefault("media", False)
+            item = media_by_id.get(suggestion["id"]) if suggestion["media"] else None
+            item = item or recommended_by_id[suggestion["id"]]
+            suggestion.setdefault("mode", item.mode)
+            suggestion["est_memory_bytes"] = item.est_memory_bytes
+            suggestion["fit"] = item.fit
+            suggestion["fit_now"] = item.fit_now
         fields = (
             "id",
             "repo",
@@ -482,14 +625,20 @@ def create_app(
             "experimental",
             "recurrent",
         )
-        on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in assessed}
+        on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in baseline}
         saved = settings_mod.load().get("load_options")  # once, not load_options() per row
         revisions = (
             {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
         )
         return {
             "source": source,
-            "suggestions": catalog.suggest(assessed, current_hw),
+            "recommendation_backends": installed,
+            "recommendation_backend": backend,
+            "recommendation_note": (
+                "Recommendation slots use catalog format and tier heuristics, not measured benchmarks. "
+                "Best quality means the largest fitting tier; fastest means the smallest tier."
+            ),
+            "suggestions": suggestions,
             "models_dir": str(Path(cache_dir).resolve()),
             "models": [
                 {
@@ -512,7 +661,7 @@ def create_app(
                     "revision": revisions.get(a.variant.id),
                     "inspect_reason": inspectable(a.variant),
                 }
-                for a in assessed
+                for a in baseline
             ],
         }
 

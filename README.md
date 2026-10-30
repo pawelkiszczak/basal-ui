@@ -19,11 +19,13 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
 - **Dashboard**: recorded Decision traffic in input tokens/s and requests/s, latency, errors, endpoint traffic and
   loaded-model activity. Recent traffic is local to this app process; lifetime model usage is shared with Model manager.
+  **Load downloaded model** is available here and throughout the app without leaving the current task.
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/dashboard.png" width="900" alt="Studio Dashboard: real Decision throughput, model activity and endpoint traffic">
 
-- **Models**: every basal model on Hugging Face, with what this machine can run and a suggestion per use; download and
-  load with one click.
+- **Models**: basal checkpoints with machine/model compatibility and memory estimates. Suggested explains its
+  tier/format heuristics, supports detected local Backend choices and includes native multimodal checkpoints with
+  explicit add-on guidance. Download models, then load or review their options from any model-dependent view.
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/models.png" width="900" alt="Models: suggested and all basal variants with what this machine can run">
 
@@ -37,6 +39,9 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/model-manager.png" width="900" alt="Studio Model manager: Library with live inference, memory and loaded models">
 
+- **Backends → Engine add-ons**: explicitly install the current Engine's `media` or `gguf` dependencies with `uv`,
+  logs and cancellation. Existing package versions and the Engine are preserved; stop models/jobs first and restart afterward.
+  [Installation safety and prerequisites](docs/BACKENDS.md#installing-engine-add-ons).
 - **batch** inference over a JSONL file;
 - **Inspect**, which embeds `basal-viz` to show how a decision is made, layer by layer;
 - an **API server** with named API keys, CORS, request ids, typed errors, OpenAI Decisions translation and MCP — one
@@ -109,8 +114,8 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | the browser app end to end |
 | [docs/API.md](docs/API.md) | basal-ui's API server: keys, CORS, errors, OpenAI Decisions, MCP, clients |
-| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [Studio redesign verification](docs/E2E.md#studio-redesign-gate-2026-10-30) |
-| [docs/BACKENDS.md](docs/BACKENDS.md) | backend inventory, machine/model compatibility and isolated Inference tests |
+| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [Studio refinement verification](docs/E2E.md#studio-refinement-gate-2026-10-30) |
+| [docs/BACKENDS.md](docs/BACKENDS.md) | Backend inventory, compatibility, isolated Inference tests and Engine add-on installation |
 | [docs/WHATS_NEW.md](docs/WHATS_NEW.md) | the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | dev setup, code style, tests, [branches and CI](CONTRIBUTING.md#branches-and-ci) (`dev` → `stage` → `main`), pull requests, the Engine-proposal pipeline, [releasing](CONTRIBUTING.md#releasing) |
 | [CONTRIBUTORS.md](CONTRIBUTORS.md) | who built basal-ui and the work it stands on |
@@ -121,3 +126,4 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 
 Apache-2.0. basal-ui by Paweł Kiszczak; it wraps the [basal engine](https://github.com/rkinas/basal) by Remigiusz
 Kinas, also Apache-2.0. See [NOTICE](NOTICE) for bundled fonts and UI libraries.
+

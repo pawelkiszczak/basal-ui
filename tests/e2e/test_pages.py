@@ -3,6 +3,7 @@ Playground builds, sends and renders every question type, the load options dialo
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -887,7 +888,6 @@ def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, tex
     sync_api.expect(row.locator(".unload-model")).to_be_visible()
     view(page, "models")
     page.click("#allModelsTab")
-    assert page.locator("#models .load-model").count() == 0  # Models downloads, sets up and deletes
     loads = []
     page.route("**/api/load", lambda route: (loads.append(1), route.fulfill(status=500, body="loaded")))
     page.click(f'#modelsTable .options-model[data-action="save"][data-id="{text_model["id"]}"]')
@@ -1519,22 +1519,184 @@ def test_load_preset_save_and_apply_round_trip(page, text_model):
     page.click("#optionsCancel")
 
 
-def test_revision_option_is_shown_as_a_loaded_model_chip(page, text_model):
-    page.evaluate(
-        """id => {
-      const model = statusCache.models.find(x => x.id === id);
-      model.options ||= {};
-      model.options.revision = 'release-1';
-      renderLoadedRows(statusCache.models);
-    }""",
-        text_model["id"],
-    )
-    sync_api.expect(page.locator("#loadedModels")).to_contain_text("revision release-1")
-    view(page, "models")
-    page.evaluate(
-        """id => renderModels({suggestions: [], models: modelData.map(m => m.id === id
-      ? {...m, revision: 'release-1'} : m)})""",
-        text_model["id"],
-    )
-    row = page.locator("#modelsTable tr", has=page.locator(f'[data-id="{text_model["id"]}"]'))
-    sync_api.expect(row.first).to_contain_text("revision release-1")
+@pytest.mark.parametrize("width", [1440, 390])
+def test_dashboard_live_updates_preserve_scroll_and_copy_selection(page, ui, text_model, width):
+    ui.post("/api/decide", {**CHOICE, "model": text_model["id"]})
+    page.set_viewport_size({"width": width, "height": 700})
+    view(page, "dashboard")
+    endpoint = page.locator("#trafficEndpoints code").filter(has_text="/api/decide")
+    sync_api.expect(endpoint).to_be_visible()
+    endpoint.scroll_into_view_if_needed()
+    endpoint.evaluate("""node => {
+      const range = document.createRange(); range.selectNodeContents(node);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    }""")
+    before = page.evaluate("scrollY")
+    assert before > 100
+    for _ in range(3):
+        with page.expect_response(lambda response: "/api/traffic?" in response.url):
+            pass
+        assert abs(page.evaluate("scrollY") - before) < 3
+        assert page.evaluate("window.getSelection().toString()") == "/api/decide"
+    page.evaluate("window.getSelection().removeAllRanges()")
+
+
+def test_downloaded_model_loads_from_dashboard_and_batch_without_losing_input(browser, isolated_ui, text_model):
+    model_id = text_model["id"]
+    context = browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    try:
+        page.goto(isolated_ui.url)
+        page.wait_for_function("() => typeof catalogData !== 'undefined' && catalogData && modelData.length")
+
+        def load_here():
+            page.click("#openModelLoader")
+            row = page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True))
+            with page.expect_response(lambda response: response.url.endswith("/api/load")) as loaded:
+                row.locator(".load-model:not([data-media])").click()
+            assert loaded.value.status == 202
+            page.wait_for_function(
+                "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+                arg=model_id,
+                timeout=WAIT,
+            )
+            row.locator(".use-loaded-model").click()
+            sync_api.expect(page.locator("#modelLoaderDialog")).to_be_hidden()
+
+        load_here()
+        sync_api.expect(page.locator(f'#trafficModels strong[title="{model_id}"]')).to_be_visible()
+        for name in ("models", "playground", "api", "backends"):
+            view(page, name)
+            page.click("#openModelLoader")
+            row = page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True))
+            row.locator(".use-loaded-model").click()
+            if name == "playground":
+                assert page.input_value("#playgroundModel") == model_id
+        for panel, selector in (("benchmarks", "#benchmarkModel"), ("calibration", "#calibrationModel")):
+            manager_tab(page, panel)
+            page.click("#openModelLoader")
+            page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True)).locator(
+                ".use-loaded-model"
+            ).click()
+            assert page.input_value(selector) == model_id
+
+        view(page, "inspect")
+        page.click("#openModelLoader")
+        if text_model["inspect_reason"]:
+            assert not page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True)).is_visible()
+        page.locator('button[data-close="modelLoaderDialog"]').click()
+
+        view(page, "batch")
+        page.fill("#batchInput", "/tmp/preserved-requests.jsonl")
+        isolated_ui.unload(model_id)
+        page.wait_for_function("id => !statusCache.models.some(model => model.id === id)", arg=model_id)
+        load_here()
+        assert page.input_value("#batchModel") == model_id
+        assert page.input_value("#batchInput") == "/tmp/preserved-requests.jsonl"
+    finally:
+        context.close()
+
+
+def test_backend_recommendation_load_preserves_saved_revision_and_settings(browser, isolated_ui, text_model):
+    backend = "mlx" if text_model["port"].startswith("MLX") else "torch"
+    data = isolated_ui.get("/api/models", params={"backend": backend})
+    downloaded = {model["id"] for model in data["models"] if model["downloaded"]}
+    choice = next((item for item in data["suggestions"] if not item["media"] and item["id"] in downloaded), None)
+    if choice is None:
+        pytest.skip("No downloaded text recommendation for the model's installed Backend")
+    model_id = choice["id"]
+    isolated_ui.put("/api/models/options", {"id": model_id, "options": {"revision": "main", "orders": "1"}})
+    before = isolated_ui.get("/api/models/options", params={"id": model_id})["options"]
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    try:
+        page.goto(isolated_ui.url + "/#models")
+        page.wait_for_function("() => typeof catalogData !== 'undefined' && catalogData")
+        page.select_option("#recommendationBackend", backend)
+        page.wait_for_function("backend => catalogData.recommendation_backend === backend", arg=backend)
+        page.click("#suggestedTab")
+        page.locator(f'#suggested .load-model[data-id="{model_id}"]').first.click()
+        sync_api.expect(page.locator("#loadOptions")).to_be_visible()
+        assert page.input_value("#opt-revision") == "main"
+        sync_api.expect(page.locator(f'input[name="optMode"][value="{choice["mode"]}"]')).to_be_checked()
+        sync_api.expect(page.locator("#optionsRemember")).not_to_be_checked()
+        page.click("#optionsApply")
+        page.wait_for_function(
+            "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+            arg=model_id,
+            timeout=WAIT,
+        )
+        loaded = next(model for model in isolated_ui.get("/api/status")["models"] if model["id"] == model_id)
+        assert loaded["mode"] == choice["mode"]
+        assert loaded["options"]["revision"] == "main"
+        assert loaded["options"]["orders"] == "1"
+        assert isolated_ui.get("/api/models/options", params={"id": model_id})["options"] == before
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("with_options", [False, True])
+def test_loading_from_batch_preserves_the_hidden_playground_media_draft(
+    browser, isolated_ui, text_model, second_model, with_options
+):
+    isolated_ui.load(text_model["id"])
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+
+    def previous_media_capability(route):
+        # Exercise client-side draft transitions without claiming image inference from these text checkpoints.
+        response = route.fetch()
+        payload = response.json()
+        for model in payload["models"]:
+            if model["id"] == text_model["id"]:
+                model["media"] = ["image"]
+        route.fulfill(response=response, json=payload)
+
+    page.route("**/api/status", previous_media_capability)
+    try:
+        page.goto(isolated_ui.url + "/#playground")
+        page.wait_for_function("() => typeof catalogData !== 'undefined' && catalogData && !$('#mediaInput').disabled")
+        page.evaluate("request => setRequest(request)", CHOICE)
+        page.fill("#stateInput", "Preserve this Playground draft while loading in Batch.")
+        page.set_input_files(
+            "#mediaInput", str(Path(__file__).resolve().parents[2] / "basal_ui/examples/media/checkout.png")
+        )
+        sync_api.expect(page.locator(".media-item img")).to_be_visible()
+        before = page.evaluate("buildRequest()")
+
+        view(page, "batch")
+        page.click("#openModelLoader")
+        row = page.locator(".model-loader-row").filter(has=page.get_by_text(second_model["id"], exact=True))
+        if with_options:
+            row.locator(".options-model").click()
+            page.click("#optionsApply")
+        else:
+            row.locator(".load-model:not([data-media])").click()
+        page.wait_for_function(
+            "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+            arg=second_model["id"],
+            timeout=WAIT,
+        )
+        if with_options:
+            page.click("#openModelLoader")
+        row.locator(".use-loaded-model").click()
+
+        view(page, "playground")
+        sync_api.expect(page.locator(".media-item img")).to_be_visible()
+        assert page.input_value("#stateInput") == before["state"]
+        assert page.evaluate("buildRequest().media") == before["media"]
+        assert page.evaluate("buildRequest().questions") == before["questions"]
+        assert page.evaluate("loadedMedia") == []
+        posted = []
+        page.on(
+            "request",
+            lambda request: posted.append(request) if request.url.endswith("/api/decide") else None,
+        )
+        page.click("#sendButton")
+        sync_api.expect(page.locator("#decideError")).to_be_visible()
+        assert posted == []  # Preserved media must not be sent to a model without image support.
+    finally:
+        context.close()

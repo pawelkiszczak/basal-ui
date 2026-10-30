@@ -11,6 +11,37 @@ isolation from other users of the same machine — any local account can reach a
 only on a host whose users you trust. Backend URLs and interpreters set in a model's load options (`ollama_url`,
 `llamacpp_url`, `think_url`, `think_python`) are contacted or run with basal-ui's own privileges.
 
+## Local app management API
+
+These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
+
+`GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
+`{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
+selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
+a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
+
+Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
+`est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
+`media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies are
+missing). A missing add-on is not represented as a working media load. `recommendation_note` explicitly identifies
+format/tier rankings as heuristics rather than benchmarks. Physical-memory estimates do not reserve capacity;
+`POST /api/load` separately enforces configured budget/reserve and active commitments.
+
+| Route | Contract |
+|---|---|
+| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
+
+Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
+`GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
+`result: {"restart_required":true,"extra":"media","engine_version":"..."}`. While installation is active,
+model-mutating UI routes return 409 / `addon_busy`; Fleet leases and job starts also enforce maintenance atomically.
+The installer changes only declared extra dependencies in the current virtual environment, constrains existing
+versions, never requests/reinstalls the Engine and verifies its identity afterward. Package changes are not
+transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
+These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
+
 ## Several models behind basal-ui
 
 basal-ui's API server ([USAGE.md](USAGE.md#api-server)) serves every model loaded in the app on one port and
