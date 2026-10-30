@@ -31,7 +31,7 @@ flowchart LR
 | Path | Purpose |
 |---|---|
 | `basal_ui/` | Python package. Feature modules: `catalog`, `hardware`, `backends`, `options`, `calibration`, `bench`, `batch`, `inspect`, `auth`, `history`, `stats`, `settings`, `jobs`, `updates` |
-| `basal_ui/static/` | Plain HTML/JS/CSS SPA with no build step. Basecoat, fonts, and vendor assets are bundled locally, with no CDN (ADR 0001) |
+| `basal_ui/static/` | Plain HTML/JS/CSS SPA with no build step. Shared tokens and components in app.css/ui.js, optional design-system.js catalogue, locally bundled fonts and Lucide icons, no CDN (docs/design-system.md) |
 | `basal_ui/examples/` | Bundled example requests, shipped as package-data |
 | `tests/` | Unit tests (`test_ui_<area>.py`, grouped by topic rather than one file per module) |
 | `tests/e2e/` | Real-model + Chromium release gate, opt-in |

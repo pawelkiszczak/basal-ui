@@ -39,7 +39,7 @@ function applyTheme(theme) {
   const value=['light','dark','system'].includes(theme)?theme:'system';
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
   document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
-  document.querySelectorAll('.side-nav button').forEach(b=>{if(document.documentElement.dataset.theme==='dark')b.style.setProperty('color','#edf0e9','important');else b.style.removeProperty('color');});
+  document.querySelectorAll('[data-theme-choice]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
 document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>applyTheme(b.dataset.themeChoice));
@@ -61,24 +61,17 @@ document.addEventListener('keydown',event=>{
     event.target.dispatchEvent(new Event('change',{bubbles:true}));
   }
 });
-document.querySelectorAll('.side-nav [data-view]:not([data-view=backends])').forEach((b,i)=>b.dataset.shortcut=String(i+1));
+document.querySelectorAll('.side-nav [data-view]:not([data-view=backends]):not([data-view=design-system])').forEach((b,i)=>b.dataset.shortcut=String(i+1));
 $('.side-nav [data-view=backends]').dataset.shortcut='0';
 function setChecked(input, value) {
   input.checked=Boolean(value);
   input.setAttribute('aria-checked',String(input.checked));
 }
 document.querySelectorAll('input[type=checkbox]').forEach(input=>{input.setAttribute('role','switch');setChecked(input,input.checked);});
-document.querySelectorAll('.icon-button').forEach(button=>{
-  const icon=button.id==='logsToggle'
-    ?'<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v12H4zM7 8h6M7 11h6M7 14h3"/></svg>'
-    :'<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="11" rx="1"/><path d="M4 13V3h10"/></svg>';
-  button.className='outline-action button-icon icon-button';
-  button.innerHTML=icon+`<span>${esc(button.textContent.trim())}</span>`;
-});
 function renderHardware(data) {
   hw = data;
   $('#deviceName').textContent = data.device_name || t('Unknown device');
-  $('#platform').textContent = data.platform || '—';
+  $('#platform').textContent = ({apple:'Apple',linux:'Linux',windows:'Windows'}[data.platform] || data.platform || '—');
   $('#hardwareBudget').textContent = gb(data.memory_bytes);
   $('#availableMemory').textContent = gb(data.available_bytes);
   $('#systemRam').textContent = gb(data.system_ram_bytes);
@@ -101,7 +94,7 @@ function renderModels(data) {
   const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable) && (!downloadedOnly || m.downloaded));
   list.sort((a,b) => familyOrder(b.family)-familyOrder(a.family) || tierOrder(a.tier)-tierOrder(b.tier) || a.port.localeCompare(b.port));
   const groups = new Map(); for (const m of list) { if (!groups.has(m.family)) groups.set(m.family, []); groups.get(m.family).push(m); }
-  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty">${t('No models match these filters.')}</div>`; return; }
+  if (!list.length) { $('#modelsTable').innerHTML = emptyState({icon:'search',title:'No models match these filters.',description:'Try another filter or search term.'}); return; }
   let html = '';
   const tableHead=`<table class="model-variants"><colgroup><col style="width:20%"><col style="width:13%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:9%"><col style="width:30%"></colgroup><thead><tr><th>${t('Tier')}</th><th>${t('Format')}</th><th>${t('Size')}</th><th>${t('Est. memory')}</th><th>${t('Fit')}</th><th>${t('Fit now')}</th><th>${t('Action')}</th></tr></thead><tbody>`;
   for (const [family, rows] of groups) {
@@ -118,13 +111,13 @@ function renderModels(data) {
       const downloadButton=downloadControl(m,downloadStatus);
       // Models: download, set up and delete; loading is the Model manager's (renderDiskModels)
       const actions=`${!m.downloaded?downloadButton:''}${m.runnable?optionsButton(m.id,false,'save'):''}${loaded?`<span class="chip">${t('loaded')}</span>`:m.downloaded?deleteButton(m.id):''}`;
-      html += `<tr class="${m.runnable?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
+      html += `<tr class="${m.runnable?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
   }
   $('#modelsTable').innerHTML = html;
 }
-const deleteButton=id=>`<button type="button" class="delete-model" data-id="${esc(id)}">${t('Delete')}</button>`;
+const deleteButton=id=>`<button type="button" class="delete-model destructive" data-id="${esc(id)}">${uiIcon('trash-2')}${t('Delete')}</button>`;
 // the model buttons of every list (Models, Model manager, the Overview's copy of a suggestion card), bound once
 document.addEventListener('click',e=>{
   const b=e.target.closest('.download-model,.unload-model,.delete-model,.load-model');
@@ -146,21 +139,25 @@ function familyMark(family) {
   if (!parts) return esc(family);
   return parts[1] ? `basal<span class="family-suffix">-omni</span><small>${esc(parts[2])}</small>` : `basal<span class="family-suffix">-${esc(parts[2])}</span>`;
 }
-const ARROW = '<svg class="icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11m-4-4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
+const ARROW = uiIcon('arrow-right');
 function downloadControl(m, progress) {
-  if(progress&&!progress.error)return `<button class="download-model" data-id="${esc(m.id)}" disabled>${t('Downloading…')}</button><small class="muted download-progress">${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}</small>`;
-  return `<button class="download-model" data-id="${esc(m.id)}">${t('Download')}</button>${progress?.error?`<span class="reason">${esc(progress.error)}</span>`:''}`;
+  if(progress&&!progress.error)return `<button class="download-model primary" data-id="${esc(m.id)}" disabled>${t('Downloading…')}</button><small class="muted download-progress">${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}</small>`;
+  return `<button class="download-model primary" data-id="${esc(m.id)}">${uiIcon('download')}${t('Download')}</button>${progress?.error?`<span class="reason">${esc(progress.error)}</span>`:''}`;
+}
+function renderSuggestionCard(s,m,action,informationControl) {
+  const why=esc(ts(s.why,s.why_code,s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g,'<code>$1</code>');
+  return `<article class="suggestion-card${s.slot==='recommended'?' recommended':''}"><div class="recommendation-label">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3>${informationControl}<div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(m.est_memory_bytes)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(m.fit_now || 'unknown')}">${esc(t(m.fit_now || 'unknown'))}</span></div><p class="why">${why}</p>${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
 }
 function renderSuggestions(suggestions) {
-  if (!suggestions.length) { $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>`; return; }
+  if (!suggestions.length) { $('#suggested').innerHTML = emptyState({icon:'cpu',title:'No model fits the available memory',description:'Free some memory or browse all models to compare requirements.'}); return; }
   const models = new Map(modelData.map(m => [m.id, m]));
   $('#suggested').innerHTML = `<div class="suggestion-grid">${suggestions.map(s => {
     const m = models.get(s.id);
     if (!m) return '';
-    const why = esc(ts(s.why, s.why_code, s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g, '<code>$1</code>');
     const download=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
     const action=`<div class="controls">${loaded?`<span class="chip">${t('loaded')}</span>`:!m.downloaded?downloadControl(m,download):''}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>${m.downloaded&&!loaded?`<a class="dashboard-link" href="#manager">${t('Load in Model manager')}${ARROW}</a>`:''}`;
-    return `<article class="suggestion-card${m.family==='omni'?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(m.est_memory_bytes)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(m.fit_now || 'unknown')}">${esc(t(m.fit_now || 'unknown'))}</span></div><p class="why">${why}</p>${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
+    const informationControl=`<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button>`;
+    return renderSuggestionCard(s,m,action,informationControl);
   }).join('')}</div>`;
 }
 document.addEventListener('click',e=>{const b=e.target.closest('.model-card-open');if(b)act(()=>openModelCard(b.dataset.id));});
@@ -188,11 +185,11 @@ function renderDiskModels() {
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
-  }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+  }).join(''):emptyState({icon:'hard-drive',title:'Your model library starts here',description:'Download a model to run decisions privately on this Mac.',action:'Browse models',href:'#models'});
   $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
-  $('#diskSummary').textContent=t('{models} on disk',{models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
-  $('#diskSummaryMeta').textContent=t('{size} total',{size:gb(total)});
+  $('#diskSummary').innerHTML=rows.length?uiEscape(t('{models} on disk',{models:tp(rows.length,'{n} model','{n} models',{n:rows.length})})):emptyState({icon:'hard-drive',title:'No models on disk',description:'Downloaded models will be available here, even offline.',compact:true});
+  $('#diskSummaryMeta').textContent=rows.length?t('{size} total',{size:gb(total)}):'';
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m) {
@@ -202,7 +199,7 @@ function diskActions(m) {
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
   const noMedia=!m.media_mode&&(m.media||[]).length?`<small class="muted">${esc(noMediaText||'')}</small>`:'';
-  return `<button type="button" class="load-model primary" data-id="${esc(m.id)}">${t('Load')}</button>${media}${optionsButton(m.id)}${noMedia}`;
+  return `<button type="button" class="load-model primary" data-id="${esc(m.id)}">${uiIcon('play')}${t('Load')}</button>${media}${optionsButton(m.id)}${noMedia}`;
 }
 async function loadSettings() {
   try {
@@ -992,7 +989,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : emptyState({icon:'circle-help',title:'No answers returned.',description:'Review the request and try again.',compact:true}));
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1134,8 +1131,8 @@ function renderServeStatus(status) {
     ?`${serving.url?`<span class="mono">${esc(serving.url)}</span>`:`<span>${t('Not running')}</span>`} <span class="chip">${tp(serving.models?.length??0,'{n} model','{n} models')}</span>${serving.require_key?` <span class="chip">${t('key required')}</span>`:''}${serving.mcp?` <span class="chip">${t('mcp')}</span>`:''}${serving.error?` <span class="reason">${esc(serving.error)}</span>`:''} ${restart}`
     :`<span>${t('Only this app can reach the models')}</span>`;
   $('#restartServe').disabled=!(serveData?.settings?.enabled||serving?.running);
-  $('#apiSummary').textContent=serving?.running?t('Serving'):serving?.error?t('Error'):t('Off');
-  $('#apiSummaryMeta').textContent=`${serving?.url||serving?.error||t('API server is not serving')} · ${tp(serveData?.keys?.length ?? 0,'{n} API keys','{n} API keys')}`;
+  $('#apiSummary').innerHTML=serving?.running?`<span class="badge success">${uiIcon('activity')}${t('Serving')}</span>`:serving?.error?`<span class="badge error">${t('Error')}</span>`:emptyState({icon:'server',title:'API is switched off',description:'Use models in this app, or enable the API to connect your own tools.',compact:true});
+  $('#apiSummaryMeta').textContent=serving?.running||serving?.error?`${serving?.url||serving?.error} · ${tp(serveData?.keys?.length ?? 0,'{n} API keys','{n} API keys')}`:'';
   renderConnect();
 }
 async function loadServe(){
@@ -1150,7 +1147,7 @@ async function loadServe(){
     $('#serveLan').classList.toggle('active',serveHost==='0.0.0.0');
     $('#serveWarning').hidden=s.host!=='0.0.0.0'||s.require_key;
     renderServeStatus(statusCache);
-    $('#serveKeys').innerHTML=serveData.keys.map(k=>`<div class="disk-row"><span class="disk-info">${esc(k.name)} · ${esc(k.prefix)} · ${t('created')} ${esc(new Date(k.created*1000).toLocaleString())} · ${t('last used')} ${k.last_used?esc(new Date(k.last_used*1000).toLocaleString()):t('never')}</span><button type="button" data-revoke="${esc(k.name)}">${t('Revoke')}</button></div>`).join('')||`<p class="muted">${t('No API keys created.')}</p>`;
+    $('#serveKeys').innerHTML=serveData.keys.map(k=>`<div class="disk-row"><span class="disk-info">${esc(k.name)} · ${esc(k.prefix)} · ${t('created')} ${esc(new Date(k.created*1000).toLocaleString())} · ${t('last used')} ${k.last_used?esc(new Date(k.last_used*1000).toLocaleString()):t('never')}</span><button type="button" data-revoke="${esc(k.name)}">${t('Revoke')}</button></div>`).join('')||emptyState({icon:'key-round',title:'No API keys created.',description:'Create a named key for each app that connects to this server.',compact:true});
     $('#serveKeys').querySelectorAll('[data-revoke]').forEach(button=>button.addEventListener('click',async()=>{
       if(await confirmDialog({title:t('Revoke API key?'),description:t('{key} will no longer be able to access this server.',{key:button.dataset.revoke}),confirmLabel:t('Revoke'),destructive:true})){
         try{await api(`/api/serve/keys/${encodeURIComponent(button.dataset.revoke)}`,{method:'DELETE'});toast(t('API key revoked'));await loadServe();}
@@ -1283,8 +1280,8 @@ function renderLoadedRows(models) {
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
     const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
-    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
-  }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager">${t('Load a model')}</a>`})}</div>`;
+    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">${uiIcon('info')}</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
+  }).join(''):emptyState({icon:'layers',title:'Ready for your first model',description:'Choose a model that fits your machine, then load it to start making decisions.',action:'Browse models',href:'#models',inline:true});
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
 }
@@ -1326,7 +1323,7 @@ async function loadStats() {
 }
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
-  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
+  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:emptyState({icon:'activity',title:'See how your models perform',description:'Request counts, confidence and latency appear after your first decision.',action:'Open Playground',href:'#playground',inline:true})}`;
   $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
   const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
 }
@@ -1334,10 +1331,10 @@ const BENCH_HINTS={benchmark:t('5 warm-up, 30 sequential and 120 concurrent requ
   loadtest:t('basal-loadtest against the model: 10 warm-up, sequential requests for the latency, then the concurrent ones for the throughput. Synthetic states of about N tokens replace the set when given.'),
   determinism:t('basal-loadtest --determinism: N requests alone, then the same N mixed with N others at the concurrency; a model loaded with Deterministic must return identical probabilities.'),
   modes:t('basal-bench in basal-ui’s process: each mode is loaded, measured and freed in turn (the first is the reference of the agreement). Needs the model’s memory once more (twice for eager-fp32) while it runs.')};
-$('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3></div><div class="controls"><select id="benchmarkKind" aria-label="${t('Measurement')}"><option value="benchmark">${t('Benchmark (preset)')}</option><option value="loadtest">${t('Load test')}</option><option value="determinism">${t('Determinism check')}</option><option value="modes">${t('Compare engine modes')}</option></select><select id="benchmarkModel" aria-label="${t('Model to benchmark')}"></select><select id="benchmarkSet" aria-label="${t('Benchmark set')}"><option value="bundled">${tp(44,'Bundled examples ({n} item)','Bundled examples ({n} items)')}</option><option value="custom">${t('Custom path…')}</option></select><input id="benchmarkPath" type="text" aria-label="${t('Custom path…')}" placeholder="${t('/path/to/set.jsonl or a directory of .jsonl')}" hidden><button type="button" id="runBenchmark">${t('Run')}</button><button type="button" id="cancelBenchmark" hidden>${t('Cancel')}</button><span id="benchmarkProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Abenchmark">${t('Logs')}</a></div>
+$('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3></div><div class="controls"><select id="benchmarkKind" aria-label="${t('Measurement')}"><option value="benchmark">${t('Benchmark (preset)')}</option><option value="loadtest">${t('Load test')}</option><option value="determinism">${t('Determinism check')}</option><option value="modes">${t('Compare engine modes')}</option></select><select id="benchmarkModel" aria-label="${t('Model to benchmark')}"></select><select id="benchmarkSet" aria-label="${t('Benchmark set')}"><option value="bundled">${tp(44,'Bundled examples ({n} item)','Bundled examples ({n} items)')}</option><option value="custom">${t('Custom path…')}</option></select><input id="benchmarkPath" type="text" aria-label="${t('Custom path…')}" placeholder="${t('/path/to/set.jsonl or a directory of .jsonl')}" hidden><button type="button" id="runBenchmark" class="primary">${uiIcon('play')}${t('Run')}</button><button type="button" id="cancelBenchmark" hidden>${t('Cancel')}</button><span id="benchmarkProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Abenchmark">${t('Logs')}</a></div>
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
-<p class="muted" id="benchmarkHint"></p><div id="benchmarkResults"></div>`;
+<details class="technical-help"><summary>${t('Benchmark details')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
@@ -1383,7 +1380,7 @@ function renderBenchmarkState(bench, ready) {
   const signature=JSON.stringify([kind,ids]);
   if(signature!==benchModelsSignature){
     benchModelsSignature=signature;
-    select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
+    select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;select.disabled=!ids.length;
     if(ids.includes(current))select.value=current;
     updateBenchmarkForm(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
   }
@@ -1405,11 +1402,11 @@ function benchmarkRow(x) {
 }
 function renderBenchmarkResults() {
   const rows=Object.values(statsData.benchmarks||{}).flat().sort((a,b)=>b.when-a.when);
-  $('#benchmarkResults').innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Kind')}</th><th>${t('Set')}</th><th>${t('When')}</th><th>p50</th><th>p95</th><th>${t('dec/s')}</th><th>q/s</th><th>tok/s</th><th>${t('Accuracy')}</th><th>${t('Errors')}</th></tr></thead><tbody>${rows.map(benchmarkRow).join('')}</tbody></table></div>`:`<div class="empty">${t('No benchmark results yet.')}</div>`;
+  $('#benchmarkResults').innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Kind')}</th><th>${t('Set')}</th><th>${t('When')}</th><th>p50</th><th>p95</th><th>${t('dec/s')}</th><th>q/s</th><th>tok/s</th><th>${t('Accuracy')}</th><th>${t('Errors')}</th></tr></thead><tbody>${rows.map(benchmarkRow).join('')}</tbody></table></div>`:emptyState({icon:'activity',title:'No benchmark runs yet',description:'Load a model and run a benchmark to compare speed and accuracy.',compact:true});
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="controls"><select id="calibrationModel" aria-label="${t('Model to calibrate')}"></select><input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}" size="40"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div><div class="controls"><input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}" size="40" aria-label="${t('Calibration file to import')}"><button type="button" id="importCalibration">${t('Import')}</button></div><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="controls"><select id="calibrationModel" aria-label="${t('Model to calibrate')}"></select><input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}" size="40"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label><button type="button" id="runCalibration">${uiIcon('activity')}${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div><div class="controls"><input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}" size="40" aria-label="${t('Calibration file to import')}"><button type="button" id="importCalibration">${t('Import')}</button></div><p class="form-hint">${t('Improve confidence estimates using your labelled examples.')}</p><details class="technical-help"><summary>${t('Calibration format and memory requirements')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
 $('#calCompare').onchange=()=>$('#calComparePath').hidden=$('#calCompare').value!=='path';
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
@@ -1597,8 +1594,8 @@ const OPTION_FIELDS={
   early_exit:{label:'Early exit (default policy)',kind:'select',values:['off','0.999','0.995','0.99','0.98']},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
-const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
-document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog"><h3>${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
+const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">${uiIcon('sliders-horizontal')}${t({load:' Options',save:' Setup',restart:' Options'}[action])}</button>`;
+document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog"><h3>${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${uiIcon('play')}${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
@@ -1754,7 +1751,7 @@ async function loadHistory(mode='reset') {
 function renderHistory(items) {
   const flags=x=>`${x.deferred?` <span class="badge fit-too_large">${t('deferred')}</span>`:''}${x.truncated?` <span class="badge fit-tight">${t('truncated')}</span>`:''}`;
   const focused=$('#historyTable').contains(document.activeElement)?document.activeElement.closest('[data-history]')?.dataset.history:null;
-  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:`<div class="empty">${t('No decisions yet — try the Playground.')}</div>`;
+  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:emptyState({icon:'history',title:$('#historySearch').value||$('#historyModel').value||historySource?'No matching decisions':'Your decisions, in one place',description:$('#historySearch').value||$('#historyModel').value||historySource?'Try another filter or search term.':'Run a request in the Playground. Its input, answer and timing will appear here.',action:'Open Playground',href:'#playground'});
   $('#historyTable').querySelectorAll('[data-history]').forEach(row=>{
     row.onclick=()=>act(()=>toggleHistory(row));  // pointer users click anywhere on the row
     const open=$('.history-open',row);
@@ -1842,11 +1839,12 @@ $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
 function renderBatchState(job, ready) {
   const select=$('#batchModel'), current=select.value, ids=ready.map(m=>m.id);
-  if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
+  if(!select.options.length||JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids.length?ids:['']))select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
   if(ids.includes(current))select.value=current; else if(ids.includes(selectedModel))select.value=selectedModel;
   const levels=modelEntry(select.value)?.early_exit||[], ee=$('#batchEarlyExit');
   if(JSON.stringify([...ee.options].map(o=>o.value))!==JSON.stringify(['',...levels]))ee.innerHTML=['',...levels].map(l=>`<option value="${esc(l)}">${l?`${t('early exit')} ${esc(l)}`:t('no early exit')}</option>`).join('');
   ee.hidden=!levels.length;
+  select.disabled=!ids.length;
   const running=Boolean(job?.running);
   $('#runBatch').disabled=running||!ids.length; $('#cancelBatch').hidden=!running;
   $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
@@ -1886,6 +1884,7 @@ function renderInspectModels() {
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
+  select.disabled=!rows.some(inspectableModel);
   select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz reads bf16 weights')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
@@ -1950,17 +1949,18 @@ function inspectDecision(request) {
   const frame=$('#vizFrame'), send=()=>frame.contentWindow.postMessage({request:handoff.body},location.origin);
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
-const PAGES={backends:['10 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],overview:['01 / OVERVIEW','Overview','Hardware, model readiness, and serving at a glance.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],manager:['03 / MODEL MANAGER','Model manager','Loaded models, their statistics and benchmarks, models on disk, and the models directory.'],playground:['04 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],api:['05 / API SERVER','API server','One port for every loaded model, keys, MCP and the memory budget.'],history:['06 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],logs:['07 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],batch:['08 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['09 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.']};
+const PAGES={...(window.basalExtraPages||{}),backends:['','Backends','The engines that run your models on this machine.'],overview:['','Overview','Hardware, model readiness, and serving at a glance.'],models:['','Models','Browse suggested and all basal variants.'],manager:['','Model manager','Manage local models, measure performance and calibrate decisions.'],playground:['','Playground','Ask typed questions of a loaded model.'],api:['','API server','Connect your apps to local models.'],history:['','History','Every decision this app answered: playground, API and MCP.'],logs:['','Logs','Output of each basal-serve and basal-ui’s own events.'],batch:['','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['','Inspect','Explore how a model reaches a decision, layer by layer.']};
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'overview';
-  const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
-  $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
+  const [,title,description]=PAGES[name];
+  $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
   document.querySelectorAll('.view').forEach(v=>v.hidden=v.dataset.page!==name);
   document.querySelectorAll('.side-nav [data-view]').forEach(b=>{const active=b.dataset.view===name;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   const target=`#${name}${arg?`/${arg}`:''}`;
   if(updateHash&&location.hash!==target)history.pushState(null,'',target);
   shownHash=location.hash;
+  if(updateHash)window.scrollTo({top:0,behavior:'instant'});
   clearTimeout(historyTimer); clearTimeout(logTimer);
   if(name==='backends')window.dispatchEvent(new Event('backends:view'));
   if(name==='history')loadHistory('reset');
@@ -1993,6 +1993,9 @@ $('#saveMemory').onclick=async()=>{
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };
+$('#playgroundHint').innerHTML=uiIcon('info')+`<span>${t('Load a model to enable the playground.')}</span><a class="dashboard-link" href="#manager">${t('Load a model')}${uiIcon('arrow-right')}</a>`;
+$('#logEmpty').innerHTML=emptyState({icon:'terminal',title:'Waiting for activity',description:'Model startup, downloads and server events will appear here. Select a source to follow its output.'});
+$('#results').dataset.emptyLabel=t('Send a request to see the model’s decision.');
 showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();

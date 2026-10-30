@@ -9,3 +9,7 @@ License, Version 1.1 (OFL-Manrope.txt, OFL-IBMPlexMono.txt in that directory).
 
 basal-ui bundles Basecoat 1.1.0 (https://basecoatui.com), MIT licensed.
 The license is in basal_ui/static/vendor/BASECOAT-LICENSE.md.
+
+The interface uses Lucide 0.468.0 (https://lucide.dev), ISC licensed, with Feather-derived icons under MIT.
+The license is in basal_ui/static/vendor/lucide-LICENSE.
+Basecoat remains bundled for compatibility but is not loaded by the current interface.

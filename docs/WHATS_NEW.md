@@ -1,5 +1,9 @@
 # 0.1.0rc1
 
+- Unify every view around shared light/dark tokens, spacing, Lucide icons and actionable empty states.
+  Remove numbered page eyebrows, align Playground controls, structure Batch fields and model-manager help,
+  and add an optional interactive [Design System catalogue](design-system.md).
+
 Unreleased release candidate (planned tag `v0.1.0rc1`). The review fixes and contributor PRs
 [#4](https://github.com/pawelkiszczak/basal-ui/pull/4), [#5](https://github.com/pawelkiszczak/basal-ui/pull/5)
 and [#6](https://github.com/pawelkiszczak/basal-ui/pull/6) are merged

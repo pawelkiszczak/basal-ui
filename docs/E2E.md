@@ -130,3 +130,45 @@ cases use simulated responses, so their success does not prove a physical GPU OO
 NVIDIA compact/fine and sm_120 routing still require hardware-specific acceptance; capability tests alone do not
 prove the kernels. Calibration jobs may finish as `done_with_warnings`; the release helper treats that as completed
 work and the tests must inspect its warnings/thresholds instead of treating completion as certification.
+
+## Interface design system check
+
+For presentation changes, run `make run` on loopback and use the in-app browser.
+Do not save settings, start inference or create credentials during this read-only UI check.
+
+1. Visit Overview, Models, Model manager, Backends, Playground, Batch, Inspect,
+   API server, History, Logs and Design System. Check console errors, visible labels,
+   disabled prerequisites and empty states. Model discovery and hardware checks must
+   still come from the real local APIs.
+2. On Models, open Setup, inspect its engine choices and collapsed sections, then
+   cancel. On History, filter the empty result; clear the filter afterward. In Logs,
+   check the single toolbar and source selection.
+3. In Design System, switch its example tabs by click and arrow keys, open and close
+   its example dialog with Escape, and use a sample action. Only catalogue feedback
+   should change; `/api/status` must show no new downloads or loaded models.
+4. Check all views at 1093 px and 390 px, both light/dark themes and English/Polish.
+   The page must not overflow horizontally; tables and navigation may scroll locally.
+   Reset the temporary viewport and restore the initial theme/locale afterward.
+5. To verify catalogue removal, temporarily omit its script tag, reload and verify
+   that the other views work and `#design-system` falls back to Overview. Restore the
+   tag for the requested delivery.
+6. Run `make lint`, `make test`, JavaScript syntax checks (`node --check` on changed
+   scripts), and `git diff --check`. No frontend build is needed.
+
+This recipe checks interface behavior with no downloaded model. It does not replace
+real-model tests for loading, inference, calibration, Batch execution or inspection.
+
+### Local interface evidence — 2026-10-30
+
+Apple M5 / macOS, source based on `f37fe44d765f9e4ce6aab1b77fcea43e833e63c8`,
+local `ui/design-system-refresh` candidate, served at `127.0.0.1:7860`:
+
+| Criterion | Evidence | Observed result / limit |
+| --- | --- | --- |
+| Consistent views and responsive controls | In-app browser, all 11 views at 1093 px dark and 390 px light; English and Polish spot checks | No page-level horizontal overflow, no blank visible selectors, no duplicate IDs or console errors |
+| Action and state hierarchy | Visual inspection of hardware, suggestions, manager, backends, Playground, Batch, API, History and Logs | Correct Apple capitalization; shared spacing/icons; left-aligned Playground; labelled Batch controls; actionable/compact empty states |
+| Existing setup workflow | Models → Setup → engine controls → Cancel | Real options API and modal work; no settings saved |
+| Catalogue interactions | Tab click, arrow-key selection, dialog open/Escape, example action | Correct tab content and local feedback; no model downloads or loaded models |
+| Catalogue removal | Omit catalogue script, reload direct catalogue URL, navigate to Batch, restore script | Overview fallback, ten application destinations, no console errors; full catalogue restored |
+| Repository checks | `make lint`, `make test`, `node --check` on changed scripts, `git diff --check` | 314 passed, 3 skipped; lint/syntax/diff checks passed |
+| Real-model execution | Not run for this presentation change | No downloaded model; inference, Batch execution and inspection are not certified by these checks |
