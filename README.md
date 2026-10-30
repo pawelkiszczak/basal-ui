@@ -46,8 +46,8 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
 ## Install
 
-The verified `0.1.0` snapshot is integrated on `dev` but is not yet published on PyPI. Until the first release, run
-from source (requires [uv](https://docs.astral.sh/uv/) and `make`):
+Release candidate `0.1.0rc1` is being prepared on `dev` and is not yet published on PyPI. Its planned release tag is
+`v0.1.0rc1`. Until publication, run from source (requires [uv](https://docs.astral.sh/uv/) and `make`):
 
 ```bash
 git clone --branch dev https://github.com/pawelkiszczak/basal-ui.git
@@ -62,27 +62,27 @@ Engine extras are optional. For MLX on Apple Silicon, install the extra after `m
 uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"
 ```
 
-### Released package (after publication)
+### Release candidate package (after publication)
 
-Once a release is available on PyPI:
+Once `0.1.0rc1` is available on PyPI, install that exact version. It is a prerelease, not a stable release:
 
 ```bash
 uv venv
-uv pip install "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" basal-ui
+uv pip install "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" "basal-ui==0.1.0rc1"
 uv run --no-sync basal-ui    # then open http://127.0.0.1:7860
 ```
 
 Or as a standalone tool:
 
 ```bash
-uv tool install basal-ui --with "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"
+uv tool install "basal-ui==0.1.0rc1" --with "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"
 ```
 
 The engine extras of your machine are chosen on the *engine* install, not on basal-ui, for example
 `uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"`
 on Apple Silicon (`mlx`), or `basal[gguf]`, `basal[fp8]`, `basal[vllm]` elsewhere; `basal[media]` for images and audio
-on basal-omni. Add `basal-ui[mcp]` for the UI API server's MCP endpoint. basal-ui does not declare the Engine as a
-dependency: PyPI rejects direct-URL requirements, and the PyPI package named `basal` is an unrelated project. Instead
+on basal-omni. Use `basal-ui[mcp]==0.1.0rc1` for the UI API server's MCP endpoint. basal-ui does not declare the Engine
+as a dependency: PyPI rejects direct-URL requirements, and the PyPI package named `basal` is an unrelated project. Instead
 basal-ui checks for the Engine at startup and refuses to start without it, printing the install command above.
 
 ## Supported engine range

@@ -126,7 +126,7 @@ provides-extras = ["fp8", "nvfp4", "vllm", "mlx", "media", "gguf", "gguf-export"
 
 [[package]]
 name = "basal-ui"
-version = "0.1.0"
+version = "0.1.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
