@@ -1,5 +1,77 @@
 'use strict';
 let backendInventory=null, backendTimer=null, testingBackend=null;
+let addonInventory=null, addonLogGeneration=null, addonLogAfter=0, addonLogLines=[], addonLogFetching=false;
+function ensureAddonSection(){
+  if($('#engineAddons'))return;
+  $('#backendInventory').insertAdjacentHTML('beforebegin',`<section class="card" id="engineAddons"><div class="section-head"><h3>${t('Engine add-ons')}</h3><button type="button" id="refreshAddons" data-variant="outline">${t('Refresh add-ons')}</button></div><p class="muted">${t('Install supported extras into this app’s current Engine environment. All models and jobs must be stopped; restart basal-ui after installation.')}</p><div id="addonEnvironment" class="muted"></div><div id="addonInventory" aria-live="polite"></div><div id="addonJob" aria-live="polite"></div></section>`);
+  $('#refreshAddons').onclick=()=>loadAddons();
+  $('#addonInventory').onclick=e=>act(()=>addonAction(e));
+  $('#addonJob').onclick=e=>act(()=>addonAction(e));
+}
+async function loadAddons(){
+  ensureAddonSection();
+  try{
+    addonInventory=await api('/api/addons');
+    renderAddons();
+    await renderAddonJob(statusCache);
+  }catch(e){$('#addonInventory').innerHTML=`<p class="error-box">${esc(e.message)}</p>`;}
+}
+function renderAddons(){
+  if(!addonInventory)return;
+  const env=addonInventory.environment||{}, job=statusCache?.jobs?.['engine-addon'];
+  $('#addonEnvironment').textContent=env.python?`${t('Python environment')}: ${env.python}`:'';
+  $('#addonInventory').innerHTML=addonInventory.error?`<p class="error-box">${esc(ts(addonInventory.error,addonInventory.error_code,addonInventory.error_params))}</p>`:(addonInventory.extras||[]).map(x=>{
+    const restartRequired=Boolean(x.installed&&!job?.running&&job?.result?.restart_required&&job.result.extra===x.id);
+    const name=t(x.name),status=x.installed?(restartRequired?t('Installed; restart to use'):t('Installed')):x.compatible?t('Available to install'):t('Unavailable');
+    return `<article class="backend-card"><div class="section-head"><h4>${esc(name)}</h4><span class="badge ${x.installed?'fit-fits':x.compatible?'fit-tight':'fit-unknown'}">${esc(status)}</span></div><p>${esc(ts(x.reason,x.reason_code,x.reason_params)||'')}</p><p class="muted">${t('Engine {version} · source {source}',{version:x.version,source:x.source})}</p>${x.command?`<details><summary>${t('Install command')}</summary><pre>${esc(x.command)}</pre></details>`:''}${x.compatible&&!x.installed?`<button type="button" data-addon-install="${esc(x.id)}" ${job?.running?'disabled':''}>${t('Install {name}',{name})}</button>`:''}</article>`;
+  }).join('');
+}
+async function addonAction(e){
+  const install=e.target.closest('[data-addon-install]');
+  if(install){
+    const extra=install.dataset.addonInstall;
+    const item=addonInventory.extras.find(x=>x.id===extra), name=t(item.name);
+    if(!await confirmDialog({title:t('Install {name}?',{name}),description:t('This changes packages in the current Engine environment. Stop all models and jobs first. Basal-ui will not restart automatically; restart it after installation.'),confirmLabel:t('Install and restart later')}))return;
+    try{
+      await api('/api/addons',{method:'POST',body:JSON.stringify({extra,confirmed:true})});
+      addonLogGeneration=null;addonLogAfter=0;addonLogLines=[];
+      await refreshStatus();await renderAddonJob(statusCache);
+    }catch(error){$('#addonJob').innerHTML=`<p class="error-box">${esc(error.message)}</p>`;}
+    return;
+  }
+  if(e.target.closest('[data-addon-cancel]')){
+    try{await api('/api/addons',{method:'DELETE'});await refreshStatus();await renderAddonJob(statusCache);}
+    catch(error){$('#addonJob').innerHTML=`<p class="error-box">${esc(error.message)}</p>`;}
+  }
+}
+let addonInventoryCheckedSignature=null;
+async function renderAddonJob(state=statusCache){
+  if($('#backends').hidden)return;
+  ensureAddonSection();
+  const job=state?.jobs?.['engine-addon'];
+  if(!job){$('#addonJob').innerHTML='';return;}
+  const signature=`${job.started}:${job.result?.extra||''}:${job.phase}`;
+  if(!job.running&&job.result?.restart_required&&addonInventoryCheckedSignature!==signature){
+    addonInventoryCheckedSignature=signature;
+    try{addonInventory=await api('/api/addons');}catch{}
+  }
+  if(!addonLogFetching){
+    addonLogFetching=true;
+    try{
+      const logs=await api(`/api/logs?source=${encodeURIComponent('job:engine-addon')}&after=${addonLogAfter}${addonLogGeneration?`&generation=${encodeURIComponent(addonLogGeneration)}`:''}`);
+      if(addonLogGeneration!==logs.generation){addonLogGeneration=logs.generation;addonLogAfter=0;addonLogLines=[];}
+      const lines=logs.lines||[];
+      addonLogLines.push(...lines);
+      if(lines.length)addonLogAfter=lines[lines.length-1].seq;
+      if(addonLogLines.length>1000)addonLogLines=addonLogLines.slice(-1000);
+    }catch{}
+    finally{addonLogFetching=false;}
+  }
+  renderAddons();
+  const result=job.result?.restart_required?`<p class="fit-fits">${t('Installation complete. Restart basal-ui before using this add-on.')}</p>`:'';
+  $('#addonJob').innerHTML=`<article class="backend-card"><div class="section-head"><strong>${esc(t('Engine add-on installation'))} · ${esc(ts(job.phase,job.phase_code,job.phase_params))}</strong>${job.running?`<button type="button" data-addon-cancel>${t('Cancel installation')}</button>`:''}</div>${job.error?`<p class="error-box">${esc(job.error)}</p>`:''}${result}<pre class="log-output">${esc(addonLogLines.map(x=>x.text).join('\n'))}</pre></article>`;
+}
+document.addEventListener('app:status',e=>renderAddonJob(e.detail));
 const backendStatus={installed:t('Installed'),not_installed:t('Not installed'),needs_attention:t('Needs attention'),unavailable:t('Unavailable on this machine')};
 async function loadBackends(refresh=false){
   $('#refreshBackends').disabled=true;$('#backendError').hidden=true;
@@ -9,6 +81,7 @@ async function loadBackends(refresh=false){
     const env=backendInventory.environment;
     $('#backendEnvironment').textContent=`${backendInventory.hardware.device_name} · Python ${env.version} · ${env.python}`;
     renderBackends();renderBackendTests(backendInventory.tests);
+    await loadAddons();
     scheduleBackendTests();
   }catch(e){$('#backendError').textContent=e.message;$('#backendError').hidden=false;}
   finally{$('#refreshBackends').disabled=false;}
@@ -84,5 +157,5 @@ async function pollBackendTests(){
   try{const data=await api('/api/backends/tests');renderBackendTests(data.tests);}catch(e){$('#backendError').textContent=e.message;$('#backendError').hidden=false;}
   scheduleBackendTests();
 }
-window.addEventListener('backends:view',()=>backendInventory?pollBackendTests():loadBackends());
+window.addEventListener('backends:view',()=>backendInventory?Promise.all([pollBackendTests(),loadAddons()]):loadBackends());
 if(!$('#backends').hidden)loadBackends();

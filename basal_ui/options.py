@@ -12,7 +12,7 @@ from basal.gdn_graph import refused as gdn_refused
 from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
-from .catalog import _cuda_graph
+from .catalog import _cuda_graph, _quantized_hardware_reason
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent), basal-serve 2.4 (engine.recurrent_refused, gdn_graph)
 
@@ -349,6 +349,11 @@ def available_modes(v, hw, assessment) -> list[dict]:
             reasons[m] = gdn_refused(m, device=False)
         reasons["fast-exit"] = reasons["mps"] = RECURRENT_REASON
         reasons["mlx"] = reasons["mlx-q8"] = MLX_RECURRENT_REASON
+    hardware_reason = _quantized_hardware_reason(v, hw)
+    if hardware_reason:
+        for mode in MODE_ORDER:
+            if mode not in ("ollama", "llamacpp"):
+                reasons[mode] = reasons[mode] or hardware_reason
     return [
         {
             "mode": m,

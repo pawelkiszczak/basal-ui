@@ -1,9 +1,10 @@
 """Refresh the README's screenshots and tour GIF (docs/images/) from a real basal-ui with a real model.
 
 Starts basal-ui on a fresh settings directory, loads Remek/basal-2.0-mini (it must be on disk: HF_HUB_OFFLINE=1),
-captures five views in Chromium (1280x800 at 2x, the default light theme), then records a tour (Models, load the model
-in Model manager, ask a question in the Playground) and converts it to a GIF with ffmpeg. `make screenshots`; needs
-the e2e extra, `playwright install chromium` and ffmpeg on PATH. Exits non-zero on any failure.
+captures the Studio dashboard, Overview, Models, Playground, each Model manager tab and API server in Chromium (1280x800
+at 2x, the default light theme), then records a tour (Models, load the model in Model manager, ask a question in the
+Playground) and converts it to a GIF with ffmpeg. `make screenshots`; needs the e2e extra, `playwright install chromium`
+and ffmpeg on PATH. Exits non-zero on any failure.
 """
 
 import os
@@ -37,11 +38,15 @@ CHOICE = {
     },
 }
 SHOTS = (
-    ("overview", "overview"),
-    ("models", "models"),
-    ("playground", "playground"),
-    ("manager", "model-manager"),
-    ("api", "api-server"),
+    ("dashboard", None, "dashboard"),
+    ("overview", None, "overview"),
+    ("models", None, "models"),
+    ("playground", None, "playground"),
+    ("manager", "library", "model-manager"),
+    ("manager", "usage", "model-usage"),
+    ("manager", "benchmarks", "model-benchmarks"),
+    ("manager", "calibration", "model-calibration"),
+    ("api", None, "api-server"),
 )
 READY = "id => (statusCache?.models || []).some(m => m.id === id && m.state === 'ready')"
 
@@ -91,13 +96,19 @@ def stop(proc):
 def open_page(context):
     page = context.new_page()
     page.set_default_timeout(LOAD_TIMEOUT_S * 1000)
-    page.goto(URL + "/#overview")
+    page.goto(URL + "/")
     page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
     return page
 
 
-def show(page, name):
-    page.evaluate("name => { showView(name, true); window.scrollTo(0, 0); }", name)  # showView keeps the scroll
+def show(page, name, manager_tab=None):
+    destination = page.locator(f'.side-nav [data-view="{name}"]')
+    if not destination.is_visible():
+        page.locator(".nav-tools summary").click()
+    destination.click()
+    if manager_tab:
+        page.locator(f'[data-manager-tab="{manager_tab}"]').click()
+    page.evaluate("window.scrollTo(0, 0)")
     page.wait_for_timeout(800)  # views render their lists after their own requests
 
 
@@ -112,11 +123,10 @@ def screenshots(browser):
     context = browser.new_context(viewport={"width": 1280, "height": 800}, device_scale_factor=2)
     page = open_page(context)
     page.wait_for_function(READY, arg=MODEL)
-    for view, name in SHOTS:
-        show(page, view)
-        if view == "playground":
-            ask(page)
-            page.wait_for_timeout(500)
+    show(page, "playground")
+    ask(page)
+    for view, manager_tab, name in SHOTS:
+        show(page, view, manager_tab)
         page.screenshot(path=str(OUT / f"{name}.png"))
         print(f"docs/images/{name}.png")
     context.close()

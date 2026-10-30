@@ -106,7 +106,7 @@ def test_record_during_reset_remains_in_delta_and_is_not_lost(stats, monkeypatch
 
             def record():
                 started.set()
-                stats.record("m", {"answers": {}}, 2.0)
+                stats.record("m", {"answers": {}}, 2.0, endpoint="/api/decide")
 
             worker = threading.Thread(target=record)
             workers.append(worker)
@@ -121,6 +121,7 @@ def test_record_during_reset_remains_in_delta_and_is_not_lost(stats, monkeypatch
     assert stats.snapshot()["models"]["m"]["requests"] == 1
     stats.flush()
     assert stats.snapshot()["models"]["m"]["requests"] == 1
+    assert stats.traffic_snapshot(15)["requests"] == 1
 
 
 def test_snapshot_reads_another_instances_flushed_counters(tmp_path):
@@ -170,3 +171,63 @@ def test_records_after_another_instances_reset_do_not_share_the_old_delta(tmp_pa
     finally:
         a.close()
         b.close()
+
+
+def test_process_traffic_aggregates_weighted_latency_and_bounded_samples(stats):
+    for latency in range(1, 102):
+        stats.record(
+            "m",
+            {"usage": {"input_tokens": 2}},
+            float(latency),
+            ok=latency != 101,
+            endpoint="/api/decide",
+        )
+    traffic = stats.traffic_snapshot(15)
+    assert (traffic["scope"], traffic["requests"], traffic["errors"], traffic["input_tokens"]) == (
+        "process",
+        101,
+        1,
+        202,
+    )
+    assert traffic["avg_latency_ms"] == 51
+    assert traffic["p95_ms"] == 97
+    assert traffic["latency_sample_limit"] == 100
+    assert traffic["endpoints"][0]["endpoint"] == "/api/decide"
+    assert traffic["endpoints"][0]["method"] == "POST"
+    assert traffic["endpoints"][0]["p95_ms"] == 97
+    assert set(stats.snapshot()) == {"models", "benchmarks"}
+
+
+def test_traffic_partial_observation_expiry_and_empty_windows(monkeypatch):
+    from basal_ui.traffic import Traffic
+
+    monkeypatch.setattr("basal_ui.traffic.time.time", lambda: 1000.0)
+    traffic = Traffic()
+    empty = traffic.snapshot(15, now=1030)
+    assert empty["requests"] == 0 and empty["p95_ms"] is None
+    assert empty["requests_per_s"] == 0
+    assert all(bucket["start"] + empty["bucket_seconds"] > empty["observed_since"] for bucket in empty["series"])
+    traffic.record("m", "/api/decide", "POST", 12, 200, {"usage": {"input_tokens": 4}}, now=1010)
+    partial = traffic.snapshot(15, now=1030)
+    assert partial["requests"] == 1 and partial["input_tokens"] == 4
+    assert partial["requests_per_s"] == pytest.approx(1 / 30)
+    assert partial["input_tokens_per_s"] == pytest.approx(4 / 30)
+    expired = traffic.snapshot(60, now=5000)
+    assert expired["requests"] == 0 and expired["avg_latency_ms"] is None
+    assert expired["p95_ms"] is None
+    assert len(expired["series"]) <= 60
+
+
+def test_stats_resets_clear_only_matching_process_traffic(stats):
+    stats.record("a", {"usage": {"input_tokens": 1}}, 10, endpoint="/api/decide")
+    stats.record("b", {"usage": {"input_tokens": 2}}, 20, endpoint="/v1/systemone")
+    assert stats.traffic_snapshot(15)["requests"] == 2
+    stats.reset("a")
+    local = stats.traffic_snapshot(15)
+    assert (local["requests"], local["input_tokens"]) == (1, 2)
+    assert local["endpoints"][0]["endpoint"] == "/v1/systemone"
+    assert set(stats.snapshot()["models"]) == {"b"}
+    stats.reset()
+    reset = stats.traffic_snapshot(15)
+    assert reset["requests"] == 0 and reset["p95_ms"] is None
+    assert reset["requests_per_s"] == 0

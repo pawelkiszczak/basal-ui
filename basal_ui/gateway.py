@@ -65,7 +65,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             body = {k: v for k, v in body.items() if k != "model"}
         upstream = "/v1/systemone" if path in SYSTEMONE else "/v1/decisions"
         try:
-            r = await fleet.adecide(model, body, path=upstream, source="api", client=client["http"])
+            r = await fleet.adecide(model, body, path=upstream, source="api", client=client["http"], endpoint=path)
         except (KeyError, RuntimeError) as exc:  # unloaded or restarted since the check above
             return error(path, 409, f"model '{model}' is not ready: {exc}", "MODEL_NOT_READY")
         except httpx.HTTPError as exc:
@@ -106,7 +106,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             model = body.pop("model", None) or (loaded[0] if loaded else None)  # basal-serve 2.4.1's MCP tools
             if model not in loaded:  # take no model argument: the first loaded model answers them
                 raise ValueError(f"model '{model}' is not loaded; loaded models: {loaded_text(loaded)}")
-            r = await fleet.adecide(model, body, source="mcp", client=client["http"])
+            r = await fleet.adecide(model, body, source="mcp", client=client["http"], endpoint="/mcp", method="CALL")
             if r.status_code != 200:
                 try:
                     message = r.json()["error"]

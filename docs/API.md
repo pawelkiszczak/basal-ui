@@ -11,6 +11,37 @@ isolation from other users of the same machine — any local account can reach a
 only on a host whose users you trust. Backend URLs and interpreters set in a model's load options (`ollama_url`,
 `llamacpp_url`, `think_url`, `think_python`) are contacted or run with basal-ui's own privileges.
 
+## Local app management API
+
+These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
+
+`GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
+`{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
+selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
+a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
+
+Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
+`est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
+`media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies are
+missing). A missing add-on is not represented as a working media load. `recommendation_note` explicitly identifies
+format/tier rankings as heuristics rather than benchmarks. Physical-memory estimates do not reserve capacity;
+`POST /api/load` separately enforces configured budget/reserve and active commitments.
+
+| Route | Contract |
+|---|---|
+| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
+
+Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
+`GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
+`result: {"restart_required":true,"extra":"media","engine_version":"..."}`. While installation is active,
+model-mutating UI routes return 409 / `addon_busy`; Fleet leases and job starts also enforce maintenance atomically.
+The installer changes only declared extra dependencies in the current virtual environment, constrains existing
+versions, never requests/reinstalls the Engine and verifies its identity afterward. Package changes are not
+transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
+These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
+
 ## Several models behind basal-ui
 
 basal-ui's API server ([USAGE.md](USAGE.md#api-server)) serves every model loaded in the app on one port and
@@ -41,7 +72,77 @@ paths, like basal-serve's own errors.
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
-MCP on this port: `decide` and `decide_many` serve the model named in the tool's `model` argument, else the first
+### Recent Decision traffic
+
+The local UI app (not the API-server gateway) exposes `GET /api/traffic?minutes=15` and
+`GET /api/traffic?minutes=60`. Unsupported integer windows return HTTP 400 with an English error; invalid query syntax
+uses FastAPI's HTTP 422 response. This is an in-memory, process-local view of **recorded Decision attempts**, not all
+HTTP traffic. An attempted child forward that fails (including a transport/connection error) counts as a request and
+an error; its latency includes the failed attempt. UI polling, UI/gateway rejections before a child forward, Batch,
+benchmarks and private Inference tests do not contribute. Playground is attributed to `POST /api/decide`; gateway
+rows retain the public `POST` path (`/v1/systemone`, `/v1/basal`, `/v1/decisions` or `/decisions`) rather than the
+translated child path. MCP uses `CALL /mcp` (one invocation, not necessarily one HTTP request).
+
+```json
+{
+  "scope": "process",
+  "window_seconds": 900,
+  "bucket_seconds": 60,
+  "window_start": 1730000000.0,
+  "window_end": 1730000900.0,
+  "observed_since": 1729999900.0,
+  "requests": 3,
+  "errors": 1,
+  "input_tokens": 240,
+  "requests_per_s": 0.0033333333,
+  "input_tokens_per_s": 0.2666666667,
+  "avg_latency_ms": 120.0,
+  "p95_ms": 170.0,
+  "latency_sample_limit": 100,
+  "series": [
+    {
+      "start": 1730000880.0,
+      "requests": 1,
+      "errors": 0,
+      "input_tokens": 80,
+      "requests_per_s": 0.05,
+      "input_tokens_per_s": 4.0
+    }
+  ],
+  "endpoints": [
+    {
+      "endpoint": "/api/decide",
+      "method": "POST",
+      "requests": 1,
+      "errors": 0,
+      "input_tokens": 80,
+      "requests_per_s": 0.0011111111,
+      "input_tokens_per_s": 0.0888888889,
+      "avg_latency_ms": 80.0,
+      "p95_ms": 80.0
+    }
+  ]
+}
+```
+
+Timestamp and rate fields are JSON numbers; counters and `window_seconds`, `bucket_seconds`, and
+`latency_sample_limit` are integers. `avg_latency_ms` and `p95_ms` are numbers or `null` when no sample exists.
+`series` is ordered oldest to newest; its rows use Unix minute starts and may include zero-count minutes, but never
+complete minutes before observation began. Rates use the actual observed elapsed time, capped to the selected window,
+this process's `observed_since`, and the retained bucket span, not a model generation-speed measure. Latencies use
+request-weighted means and sampled p95: at most 100 latency values per model, endpoint and minute are retained; each
+returned aggregate uses at most 6000 samples. The percentile is explicitly approximate under high traffic.
+Only the latest 60 minute buckets are retained. The first/last bucket can cover a partial requested window because
+counters are bucketed by minute; a 60-minute query returns at most those 60 retained minute buckets.
+`input_tokens` is Engine-reported usage when present; missing usage contributes zero and is never estimated.
+
+`GET /api/stats` and `/v1/stats` keep their existing lifetime response shape and cross-process persistence. Deleting
+all stats or one model at `/api/stats` (or `/api/stats/{model_id}`) also clears matching rolling data in that app
+process only; it does not clear another process's in-memory window. Rolling telemetry is not persisted or merged.
+
+### MCP routing
+
+On the API-server gateway port, MCP `decide` and `decide_many` serve the model named in the tool's `model` argument, else the first
 loaded model. The engine's MCP server lists no models (`list_models` and `basal-mcp --model` arrive with the
 model-argument proposal upstream); until then the first loaded model answers every tool call.
 
