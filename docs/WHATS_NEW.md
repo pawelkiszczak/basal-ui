@@ -38,6 +38,9 @@
   value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
 - Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
   the option-order check. Results and per-path probability deltas are saved with the other benchmark results.
+- Engine 2.5 adds Cascades: combine ready basal models with escalation or weighted blending, optionally with a chat
+  fallback, behind one model name. Cascades are listed on the API server, and their answer attribution and
+  calibration status are shown in the Playground. [USAGE](USAGE.md#cascades) · [API](API.md#cascades)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

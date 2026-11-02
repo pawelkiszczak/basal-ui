@@ -77,6 +77,18 @@ def test_model_is_required_and_must_be_loaded_in_both_error_envelopes(fleet):
     assert fleet.calls == []
 
 
+def test_models_endpoint_marks_cascade_kind(fleet):
+    runner = Runner()
+    runner.state, runner.model, runner.ready_at = "ready", "tri", 1700000000.0
+    runner.models_entry = {"name": "tri", "kind": "cascade", "levels": []}
+    fleet.runners["tri"] = runner
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.get("/v1/models")
+    cascade = next(item for item in response.json()["data"] if item["id"] == "tri")
+    assert cascade["kind"] == "cascade"
+    assert next(item for item in response.json()["models"] if item["name"] == "tri")["kind"] == "cascade"
+
+
 def test_gateway_rejects_untrusted_host_on_forwarding_routes(fleet):
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         response = client.post("/v1/systemone", json={"model": "a/one"}, headers={"Host": "evil.example"})

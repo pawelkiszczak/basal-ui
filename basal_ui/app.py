@@ -772,6 +772,87 @@ def create_app(
             ],
         }
 
+    def require_router():
+        from .engine import feature, installed
+
+        if not feature("router"):
+            raise HTTPException(409, f"Cascades need engine 2.5 (installed: {installed()[0]})")
+
+    @app.get("/api/cascades")
+    def get_cascades():
+        require_router()
+        loaded = set(fleet.loaded_ids())
+        return {
+            "cascades": [
+                {
+                    **spec,
+                    "running": spec["name"] in loaded,
+                    "fallback": (
+                        {k: v for k, v in spec.get("fallback", {}).items() if k != "key"}
+                        if spec.get("fallback")
+                        else None
+                    ),
+                }
+                for spec in settings_mod.cascades()
+            ]
+        }
+
+    @app.post("/api/cascades", status_code=201)
+    def post_cascade(body: dict = Body(...)):
+        require_router()
+        try:
+            name = body.get("name")
+            variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+            if name in fleet.runners or any(variant.id == name for variant in variants):
+                raise ValueError("cascade name conflicts with a model id")
+            settings_mod.set_cascade(body)
+            return get_cascades()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/cascades/{name}")
+    def put_cascade(name: str, body: dict = Body(...)):
+        require_router()
+        payload = {**body, "name": name}
+        try:
+            previous = next((x for x in settings_mod.cascades() if x["name"] == name), None)
+            if previous is None:
+                raise KeyError(name)
+            return {"cascade": settings_mod.set_cascade(payload, replace=True)}
+        except KeyError as exc:
+            raise HTTPException(404, f"cascade {name!r} not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.delete("/api/cascades/{name}")
+    def delete_cascade(name: str):
+        require_router()
+        if name in fleet.runners:
+            raise HTTPException(409, "stop the Cascade before deleting it")
+        if not any(x["name"] == name for x in settings_mod.cascades()):
+            raise HTTPException(404, f"cascade {name!r} not found")
+        settings_mod.delete_cascade(name)
+        return get_cascades()
+
+    @app.post("/api/cascades/{name}/start", status_code=202)
+    def start_cascade(name: str):
+        require_router()
+        try:
+            return fleet.start_cascade(name)
+        except KeyError as exc:
+            raise HTTPException(404, f"cascade {name!r} not found") from exc
+        except RuntimeError as exc:
+            code = "CASCADE_MEMBER_NOT_LOADED" if "member" in str(exc) else "CASCADE_START_FAILED"
+            raise HTTPException(409, {"code": code, "detail": str(exc)}) from exc
+
+    @app.post("/api/cascades/{name}/stop")
+    def stop_cascade(name: str):
+        require_router()
+        try:
+            return fleet.stop_cascade(name)
+        except KeyError as exc:
+            raise HTTPException(404, f"cascade {name!r} is not running") from exc
+
     @app.get("/api/presets")
     def get_presets():
         return {"load": settings_mod.presets().get("load", {}), "request": settings_mod.presets().get("request", {})}

@@ -571,3 +571,15 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+## Cascades
+
+With Engine 2.5, a Cascade combines ready basal models behind one name. In Model manager → Library, create an
+escalation Cascade to retry uncertain decisions at the next loaded model, or a Blend to average probabilities using
+positive weights. A Cascade may optionally send remaining uncertain choice questions to an OpenAI-compatible chat
+endpoint. Its fallback API key is stored in the owner-only `decision_servers.json` file and is not returned by the API.
+
+Start and stop Cascades from the loaded-model list. They do not load their members, count against the memory budget,
+or start automatically after a restart; every member must already be ready. Unloading a member stops any Cascade
+that uses it. The Playground reports which level/model answered. Blend and fallback results are marked uncalibrated
+and must not be treated as automatable. Cascades are excluded from Calibration, Inspect, and Benchmarks; only
+escalation Cascades are available to Batch. Engine 2.4.1 hides this feature.

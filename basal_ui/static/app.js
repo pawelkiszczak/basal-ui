@@ -930,6 +930,7 @@ function decisionBase(answer,q) {
 // text decisions with the served option orders; a media answer ("text"), one fitted on other option orders or an act
 // question shape the calibration was not validated for ("unvalidated") and uncalibrated probabilities get no claim.
 function certificateGap(answer, entry) {
+  if(answer.calibrated===false)return t('this Cascade answer is not calibrated');
   if(entry?.calibration_warning)return `calibration warning: ${entry.calibration_warning}`;
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
@@ -969,7 +970,10 @@ function automatedChips(automated) {
 function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
+  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),answer.calibrated===false?'':automatedChips(answer.automated));
+  if(answer.answered_by)parts.push(`<span class="chip">${t('Answered by')} ${esc(answer.answered_by)}</span>`);
+  if(answer.level!=null)parts.push(`<span class="chip">${t('Cascade level')} ${esc(answer.level)}</span>`);
+  if(answer.model)parts.push(`<span class="chip">${t('Answer model')} ${esc(answer.model)}</span>`);
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
@@ -1407,21 +1411,58 @@ function renderLoadedRows(models) {
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
-    const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='cascade'?`<span class="badge">${t('Cascade')}</span>`:''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const health=m.health, load=m.kind==='cascade'?t('router process'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
-    const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
+    const actions=m.kind==='cascade'?`<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Stop cascade')}</button>`:`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
     return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
   }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`;
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
+  if(Date.now()-cascadeRefreshAt>3000){cascadeRefreshAt=Date.now();renderCascadeDefinitions();}
+}
+let cascadeRefreshAt=0;
+function setupCascadeUI() {
+  if($('#cascadePanel'))return;
+  $('#loadedModels').insertAdjacentHTML('beforebegin',`<section class="card" id="cascadePanel"><div class="section-head"><h3>${t('Cascades')}</h3><button type="button" id="newCascade">${t('New cascade')}</button></div><div id="cascadeRows"></div></section>`);
+  document.body.insertAdjacentHTML('beforeend',`<dialog id="cascadeDialog"><form method="dialog" id="cascadeForm"><h2>${t('New cascade')}</h2><label>${t('Name')}<input id="cascadeName" required pattern="[a-z0-9][a-z0-9-]{0,39}"></label><label>${t('Cascade kind')}<select id="cascadeKind"><option value="escalate">${t('Escalate')}</option><option value="blend">${t('Blend')}</option></select></label><label>${t('First model')}<select id="cascadeFirst"></select></label><label>${t('Second model')}<select id="cascadeSecond"></select></label><label id="cascadeBelowLabel">${t('Escalate below')}<input id="cascadeBelow" type="number" min="0.01" max="1" step="0.01" value="0.8"></label><label id="cascadeWeightsLabel">${t('Blend weights')}<input id="cascadeWeights" value="1,1"></label><details><summary>${t('LLM fallback (optional)')}</summary><label>${t('Fallback URL')}<input id="cascadeFallbackUrl" type="url" placeholder="https://host/v1"></label><label>${t('Fallback model')}<input id="cascadeFallbackModel"></label><label>${t('Fallback below')}<input id="cascadeFallbackBelow" type="number" min="0.01" max="1" step="0.01" value="0.5"></label><label>${t('Fallback timeout (seconds)')}<input id="cascadeFallbackTimeout" type="number" min="1" value="60"></label><label>${t('Fallback max tokens')}<input id="cascadeFallbackTokens" type="number" min="1" value="8192"></label><label>${t('Fallback API key')}<input id="cascadeFallbackKey" type="password" autocomplete="off"></label></details><div class="controls"><button type="button" id="cancelCascade">${t('Cancel')}</button><button type="submit" class="primary">${t('Create cascade')}</button></div><p id="cascadeError" class="error-box" hidden></p></form></dialog>`);
+  const dialog=$('#cascadeDialog');
+  $('#newCascade').onclick=()=>{
+    const members=readyModels().filter(m=>m.kind!=='cascade');
+    for(const id of ['#cascadeFirst','#cascadeSecond'])$(id).innerHTML=members.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('');
+    $('#cascadeSecond').value=members[1]?.id||members[0]?.id||'';
+    $('#cascadeError').hidden=true;dialog.showModal();
+  };
+  $('#cancelCascade').onclick=()=>dialog.close();
+  $('#cascadeKind').onchange=()=>{const blend=$('#cascadeKind').value==='blend';$('#cascadeBelowLabel').hidden=blend;$('#cascadeWeightsLabel').hidden=!blend;};
+  $('#cascadeForm').onsubmit=async event=>{
+    event.preventDefault();
+    const first=$('#cascadeFirst').value,second=$('#cascadeSecond').value,kind=$('#cascadeKind').value;
+    const levels=kind==='escalate'?[{model:first,below:Number($('#cascadeBelow').value)},{model:second}]:[{model:first},{model:second}];
+    const body={name:$('#cascadeName').value,kind,levels};
+    if(kind==='blend')body.weights=$('#cascadeWeights').value.split(',').map(Number);
+    const fallbackUrl=$('#cascadeFallbackUrl').value.trim();
+    if(fallbackUrl)body.fallback={url:fallbackUrl,model:$('#cascadeFallbackModel').value.trim(),below:Number($('#cascadeFallbackBelow').value),timeout:Number($('#cascadeFallbackTimeout').value),max_tokens:Number($('#cascadeFallbackTokens').value),key:$('#cascadeFallbackKey').value||null};
+    try{await api('/api/cascades',{method:'POST',body:JSON.stringify(body)});dialog.close();$('#cascadeForm').reset();await renderCascadeDefinitions();}
+    catch(error){$('#cascadeError').textContent=error.message;$('#cascadeError').hidden=false;}
+  };
+  renderCascadeDefinitions();
+}
+async function renderCascadeDefinitions() {
+  const target=$('#cascadeRows');if(!target)return;
+  try{
+    const data=await api('/api/cascades'),loaded=new Set((statusCache?.models||[]).filter(m=>m.kind==='cascade').map(m=>m.id));
+    target.innerHTML=data.cascades.length?data.cascades.map(c=>`<div class="model-row"><strong>${esc(c.name)}</strong><span class="badge">${t('Cascade')} · ${esc(c.kind)}</span><span>${esc(c.levels.map(x=>x.model).join(' → '))}</span><button type="button" data-cascade-action="${loaded.has(c.name)?'stop':'start'}" data-cascade="${esc(c.name)}">${loaded.has(c.name)?t('Stop cascade'):t('Start cascade')}</button><button type="button" data-cascade-delete="${esc(c.name)}">${t('Delete')}</button></div>`).join(''):`<p class="muted">${t('No Cascades defined.')}</p>`;
+    target.querySelectorAll('[data-cascade-action]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}/${button.dataset.cascadeAction}`,{method:'POST'});await refreshStatus();await renderCascadeDefinitions();}));
+    target.querySelectorAll('[data-cascade-delete]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}`,{method:'DELETE'});await renderCascadeDefinitions();}));
+  }catch(error){target.innerHTML=`<p class="muted">${esc(error.message)}</p>`;}
 }
 function renderPlaygroundModels(ready) {
-  const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media]));
+  const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media,m.kind]));
   if(signature!==playgroundSignature){
     playgroundSignature=signature;
-    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
   }
   select.value=selectedModel; select.disabled=!ready.length;
   $('#playgroundForm').disabled=!ready.length; $('#playgroundHint').hidden=Boolean(ready.length);
@@ -2052,8 +2093,8 @@ loadBatchPresets();
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
 function renderBatchState(job, ready) {
-  const select=$('#batchModel'), current=select.value, ids=ready.map(m=>m.id);
-  if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
+  const select=$('#batchModel'), current=select.value, allowed=ready.filter(m=>m.kind!=='cascade'||(m.cascade_kind==='escalate'&&!m.cascade_has_fallback)), ids=allowed.map(m=>m.id);
+  if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=allowed.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
   if(ids.includes(current))select.value=current; else if(ids.includes(selectedModel))select.value=selectedModel;
   const levels=modelEntry(select.value)?.early_exit||[], ee=$('#batchEarlyExit');
   if(JSON.stringify([...ee.options].map(o=>o.value))!==JSON.stringify(['',...levels]))ee.innerHTML=['',...levels].map(l=>`<option value="${esc(l)}">${l?`${t('early exit')} ${esc(l)}`:t('no early exit')}</option>`).join('');

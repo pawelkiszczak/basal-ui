@@ -134,7 +134,14 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             {
                 "object": "list",
                 "data": [
-                    {"id": e["id"], "object": "model", "created": e["created"], "owned_by": "basal"} for e in entries
+                    {
+                        "id": e["id"],
+                        "object": "model",
+                        "created": e["created"],
+                        "owned_by": "basal",
+                        **({"kind": "cascade"} if e["entry"] and e["entry"].get("kind") == "cascade" else {}),
+                    }
+                    for e in entries
                 ],
                 "models": [e["entry"] or {"name": e["id"]} for e in entries],
             }
