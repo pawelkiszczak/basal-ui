@@ -44,6 +44,7 @@ def instant_start(monkeypatch):
                 if not self.temporary:
                     settings.remember_loaded(assessment.variant.id, media)
                 self.state, self.media, self.ready_at = "ready", (["image", "audio"] if media else []), time.time()
+                self.last_used = time.monotonic()
                 self.serve_snapshot = {"log_decisions": "", "max_len": 4096, "calibration": None}
 
     monkeypatch.setattr(Runner, "_start", start)
@@ -879,15 +880,82 @@ def test_memory_routes_validate_and_report_the_hardware_budget(tmp_path):
     app, _ = app_for(tmp_path, [], hw=Hardware("cpu", "cpu", 16 * 1024**3, None, None, frozenset(), 5))
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/api/memory").json() == {
-            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3},
+            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3, "idle_unload_minutes": None},
             "hardware_budget_bytes": 16 * 1024**3,
             "available_bytes": 5,
         }
         assert client.put("/api/memory", json={"budget_bytes": 1024}).status_code == 400
         assert client.put("/api/memory", json={"reserve_bytes": -1}).status_code == 400
-        saved = client.put("/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}).json()
-        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}
+        for value in (0, -1, 1.5, "1"):
+            assert client.put("/api/memory", json={"idle_unload_minutes": value}).status_code == 400
+        saved = client.put(
+            "/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": 1}
+        ).json()
+        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": 1}
         assert client.get("/api/status").json()["memory"]["budget_bytes"] == 8 * 1024**3
+
+
+def test_idle_unload_requires_idle_health_and_records_status(tmp_path, monkeypatch, instant_start):
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *a, **kw: httpx.Response(
+            200, json={"status": "ok", "running": 0, "queued": 0}, request=httpx.Request("GET", "http://test")
+        ),
+    )
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.put("/api/memory", json={"idle_unload_minutes": 1}).status_code == 200
+        assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
+        wait_for(lambda: states(client) == {"mini": "ready"})
+        runner = fleet.runners[MINI.id]
+        ready = runner.last_used
+        runner.base_url = "http://test"
+        assert fleet.unload_idle(ready + 61) == [MINI.id]
+        status = client.get("/api/status").json()
+        assert status["models"] == []
+        assert status["idle_unloaded_at"][MINI.id]["minutes"] == 1
+        assert MINI.id in [entry["id"] for entry in settings.last_models()]
+        assert client.post("/api/decide", json={"model": MINI.id, "state": "x"}).status_code == 404
+        assert "unloaded after 1 idle minutes" in [line["text"] for line in fleet.logs[MINI.id].since()]
+
+
+def test_idle_unload_skips_busy_health_and_a_decision_resets_idle_clock(tmp_path, monkeypatch, instant_start):
+    response = httpx.Response(200, json={"answers": {}})
+    health = {"running": 1, "queued": 0}
+    monkeypatch.setattr(Runner, "decide", lambda self, body, path="/v1/systemone": response)
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *a, **kw: httpx.Response(
+            200, json={"status": "ok", **health}, request=httpx.Request("GET", "http://test")
+        ),
+    )
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": MINI.id})
+        wait_for(lambda: states(client) == {"mini": "ready"})
+        runner = fleet.runners[MINI.id]
+        ready = runner.last_used
+        runner.base_url = "http://test"
+        assert fleet.unload_idle(ready + 61) == []
+        assert fleet.runners[MINI.id] is runner
+        health.clear()
+        assert fleet.unload_idle(ready + 61) == []
+        health.update(running=0, queued=0)
+        fleet.decide(MINI.id, {"state": "x"})
+        assert runner.last_used > ready
+        assert fleet.unload_idle(ready + 60) == []
+        assert fleet.runners[MINI.id] is runner
+
+
+def test_idle_unload_worker_stops_cleanly_with_app_lifespan(tmp_path):
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1"):
+        worker = app.state.idle_thread
+        assert worker.name == "basal-ui-idle" and worker.is_alive()
+    assert not worker.is_alive()
 
 
 def test_rss_is_summed_per_process_group(monkeypatch):

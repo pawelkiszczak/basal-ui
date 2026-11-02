@@ -160,6 +160,7 @@ class Runner:
         self.command, self.progress, self.error, self.base_url = None, None, None, None
         self.media_requested, self.media = False, []
         self.est_memory_bytes, self.models_entry, self.ready_at = None, None, None
+        self.last_used = None
         self.loaded_path = None
         self.serve_snapshot = None  # the child settings the running basal-serve was started with
         self.extra_args, self.temporary, self.options = (), False, {}
@@ -409,6 +410,7 @@ class Runner:
                                 return
                             self.state, self.media = "ready", media_kinds
                             self.models_entry, self.ready_at = entry, time.time()
+                            self.last_used = time.monotonic()
                             if not self.temporary and self.remember:
                                 self.settings_mod.remember_loaded(v.id, media, self.options)
                         self.event("info", f"{v.id}: ready")
@@ -498,6 +500,7 @@ class Fleet:
         self.reserved: dict[str, int] = {}  # memory of models a job loads into basal-ui's own process
         self._lan_ip = None
         self.retiring: dict[Runner, int | None] = {}  # unloaded runners whose child is still being terminated
+        self.idle_unloaded_at = {}
         self._rss_cache = (0.0, {})
 
     def _check_addon_maintenance(self):
@@ -635,6 +638,7 @@ class Fleet:
             self.logs[model_id] = log = LogBuffer()  # most recent last; a reload starts a fresh log
             runner = self._runner(log)
             self.runners[model_id] = runner
+            self.idle_unloaded_at.pop(model_id, None)
             self._prune_logs()
             runner.load(assessment, media=media, options=options, **runner_options)
         if existing is not None:
@@ -737,13 +741,63 @@ class Fleet:
         with self.lock:
             memory = self._memory(sum(m["rss_bytes"] or 0 for m in models))
             inflight = list(self.inflight.values())
+            idle_unloaded_at = {model: dict(record) for model, record in self.idle_unloaded_at.items()}
         for m in models:  # what basal-ui is waiting on (Playground, API server, MCP, benchmark), oldest first
             m["inflight"] = [
                 {"source": source, "seconds": round(now - t0, 1)}
                 for model, source, t0 in sorted(inflight, key=lambda x: x[2])
                 if model == m["id"]
             ]
-        return {"models": models, "downloads": self.downloads.status(), "memory": memory, "jobs": self.jobs.states()}
+        return {
+            "models": models,
+            "downloads": self.downloads.status(),
+            "memory": memory,
+            "jobs": self.jobs.states(),
+            "idle_unloaded_at": idle_unloaded_at,
+        }
+
+    def unload_idle(self, now: float) -> list[str]:
+        """Unload ready, inactive children whose latest cached health counters confirm they are idle."""
+        minutes = self.settings_mod.memory_settings()["idle_unload_minutes"]
+        if minutes is None:
+            return []
+        with self.lock:
+            candidates = [
+                (model_id, runner, runner.gen, runner.base_url)
+                for model_id, runner in self.runners.items()
+                if not runner.temporary
+                and runner.state == "ready"
+                and runner.last_used is not None
+                and now - runner.last_used >= minutes * 60
+            ]
+        unloaded = []
+        for model_id, runner, gen, base_url in candidates:
+            if base_url is None:
+                continue
+            with runner.lock:
+                if runner.health_polling:
+                    continue
+                runner.health_polling = True
+            runner._poll_health(gen, base_url)
+            with self.lock:
+                minutes = self.settings_mod.memory_settings()["idle_unload_minutes"]
+                if (
+                    minutes is None
+                    or self.runners.get(model_id) is not runner
+                    or runner.temporary
+                    or runner.state != "ready"
+                    or runner.last_used is None
+                    or now - runner.last_used < minutes * 60
+                    or runner.health != {"reachable": True, "running": 0, "queued": 0}
+                    or runner in self.leases
+                    or any(entry[0] == model_id for entry in self.inflight.values())
+                ):
+                    continue
+                runner.log.append(f"unloaded after {minutes} idle minutes")
+                self.unload(model_id, forget=False)
+                self.idle_unloaded_at[model_id] = {"at": time.time(), "minutes": minutes}
+                unloaded.append(model_id)
+        return unloaded
 
     def _rss(self):
         """rss_by_pgid() at most every RSS_INTERVAL_S: the UI polls every second while a model loads."""
@@ -864,12 +918,15 @@ class Fleet:
     def answering(self, model_id, source):
         token = object()
         with self.lock:
+            runner = self.runners.get(model_id)
             self.inflight[token] = (model_id, source, time.monotonic())
         try:
             yield
         finally:
             with self.lock:
                 self.inflight.pop(token, None)
+                if self.runners.get(model_id) is runner and runner is not None:
+                    runner.last_used = time.monotonic()
 
     def decide(self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"):
         with self.lease(model_id) as runner, self.answering(model_id, source):

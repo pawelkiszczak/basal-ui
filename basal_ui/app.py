@@ -179,6 +179,15 @@ def create_app(
                 print(f"basal-ui: auto-load of {last['id']} skipped: {exc}", file=sys.stderr)
                 fleet.event("warn", f"auto-load of {last['id']} skipped: {exc}")
 
+    idle_stop = threading.Event()
+
+    def _idle_unload():
+        while not idle_stop.wait(30):
+            try:
+                fleet.unload_idle(time.monotonic())
+            except Exception as exc:  # keep the maintenance thread alive after a failed scan
+                fleet.event("error", f"idle unload failed: {exc}")
+
     @asynccontextmanager
     async def lifespan(_app):
         auto_load_thread = None
@@ -187,7 +196,13 @@ def create_app(
             auto_load_thread.start()
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
+        idle_stop.clear()
+        idle_thread = threading.Thread(target=_idle_unload, name="basal-ui-idle", daemon=True)
+        idle_thread.start()
+        app.state.idle_thread = idle_thread
         yield
+        idle_stop.set()
+        idle_thread.join()
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:

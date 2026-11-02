@@ -319,6 +319,14 @@ keep free; unload a model or raise the budget. The Manager Library bar shows eac
 estimates and the memory available now. On Apple Silicon, MLX and MPS allocations live in unified memory and may show
 only partly as resident memory; the estimate is what the budget check uses.
 
+**Unload idle models** is off by default. In **Settings → Memory & storage**, set **Unload idle models after
+(minutes)** to a whole number of at least 1; leave it empty to keep models loaded. A ready, non-temporary model is
+unloaded only after it has answered no Decision for that interval and its `basal-serve` reports no running or queued
+requests. This includes Decisions from the Playground, the API server and MCP. The timer runs every 30 seconds without
+a browser tab open. Idle-unloaded models remain remembered for auto-load on the next start, but are not automatically
+reloaded for a new request: the existing “model not loaded” response applies until you load the model again. The
+Library and Dashboard note the reason and time; the model log records the unload.
+
 ## Statistics and benchmarks
 
 ### Dashboard

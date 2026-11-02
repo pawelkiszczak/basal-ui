@@ -31,6 +31,9 @@
 - The API-server gateway exposes `/metrics` in Prometheus text format: basal-ui request/latency and recent endpoint
   traffic metrics, plus per-child Engine metrics on 2.5. Unavailable child metrics are skipped; API-key setups require
   an admin key. [API.md](API.md#several-models-behind-basal-ui)
+- **Idle model unloading** is optional under Settings → Memory & storage. Ready models with no Decisions and no running
+  or queued child work are unloaded after the chosen number of minutes while remaining remembered for auto-load.
+  The Library, Dashboard and model logs record why the model was unloaded. [USAGE.md](USAGE.md#memory-budget)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the
