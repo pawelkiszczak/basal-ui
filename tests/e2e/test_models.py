@@ -4,6 +4,7 @@ budget, statistics, history, logs, restart and unload."""
 import httpx
 import pytest
 
+from basal_ui.engine import feature
 from tests.e2e.support import CHOICE, free_port
 
 
@@ -88,7 +89,7 @@ def test_two_models_answer_behind_one_api_port_with_a_key(ui, text_model, second
             assert r.status_code == 200, r.text
             return r.json()["result"]
 
-        # basal-serve 2.4.1's MCP tools take no model argument: the API server answers with the first loaded model
+        # without `model` the API server answers with the first loaded model (2.4.1 and 2.5.0)
         answer = rpc(
             "tools/call",
             {
@@ -104,6 +105,28 @@ def test_two_models_answer_behind_one_api_port_with_a_key(ui, text_model, second
             r["source"] == "mcp"
             for r in ui.get("/api/history", params={"model": answer["structuredContent"]["model"]})["items"]
         )
+        tools = {t["name"]: t for t in rpc("tools/list", {})["tools"]}
+        if not feature("mcp_models"):  # engine 2.4.1: no model argument, no list_models
+            assert "list_models" not in tools
+            return
+        assert "model" in tools["decide"]["inputSchema"]["properties"]
+        listed = rpc("tools/call", {"name": "list_models", "arguments": {}})["structuredContent"]["models"]
+        assert set(listed) == {a, b}
+        other = next(m for m in (a, b) if m != answer["structuredContent"]["model"])
+        routed = rpc(
+            "tools/call",
+            {
+                "name": "decide",
+                "arguments": {
+                    "state": CHOICE["state"],
+                    "type": "noul",
+                    "question": "Czy to reklamacja?",
+                    "model": other,
+                },
+            },
+        )
+        assert not routed.get("isError") and routed["structuredContent"]["model"] == other, routed
+        assert any(r["source"] == "mcp" for r in ui.get("/api/history", params={"model": other})["items"])
 
 
 def test_memory_budget_refuses_a_load_that_does_not_fit(ui, text_model, second_model, hardware):
