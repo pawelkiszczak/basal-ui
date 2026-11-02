@@ -23,6 +23,9 @@
   why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
   ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
   `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- **Idle model unloading** is optional under Settings → Memory & storage. Ready models with no Decisions and no running
+  or queued child work are unloaded after the chosen number of minutes while remaining remembered for auto-load.
+  The Library, Dashboard and model logs record why the model was unloaded. [USAGE.md](USAGE.md#memory-budget)
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

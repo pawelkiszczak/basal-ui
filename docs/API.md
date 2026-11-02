@@ -42,6 +42,16 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Memory settings and idle-unload status
+
+`GET /api/memory` returns `settings` including `idle_unload_minutes` (`null` means disabled). `PUT /api/memory`
+accepts that setting as `null` or an integer of at least 1 alongside `budget_bytes` and `reserve_bytes`; invalid
+values return HTTP 400 with the validation detail.
+
+`GET /api/status` includes `idle_unloaded_at`, keyed by model id. Each value contains `at` (Unix timestamp in seconds)
+and `minutes` (the configured idle timeout used). The entry remains until that model is loaded again. Idle-unloaded
+models remain in the remembered-model list and are not reloaded automatically on request.
+
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:

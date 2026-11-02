@@ -66,7 +66,8 @@
     const queued = ready.every(model=>Number.isFinite(model.health?.queued)) ? ready.reduce((sum,model)=>sum+model.health.queued,0) : null;
     html(q('#trafficActivityCounts'),`<span>${t('Ready models')}: <b>${ready.length}</b></span><span>${t('In flight')}: <b>${inFlight}</b></span><span>${t('Queued')}: <b>${number(queued)}</b></span>`);
     const container=q('#trafficModels'), existing=new Map([...container.querySelectorAll('.traffic-model')].map(node=>[node.dataset.model,node]));
-    if(!models.length){html(container,`<p class="muted">${t('No model loaded')}</p>`);return;}
+    const idleNotes=Object.entries(state.status?.idle_unloaded_at||{});
+    if(!models.length&&!idleNotes.length){html(container,`<p class="muted">${t('No model loaded')}</p>`);return;}
     container.querySelectorAll(':scope > p').forEach(node=>node.remove());
     models.forEach((model,index)=>{
       let node=existing.get(model.id); existing.delete(model.id);
@@ -81,6 +82,13 @@
       text(node.querySelector('.traffic-model-requests'),number(state.stats?(usage?.requests??0):null));
       text(node.querySelector('.traffic-model-tokens'),number(state.stats?(usage?.input_tokens??0):null));
       if(container.children[index]!==node)container.insertBefore(node,container.children[index]||null);
+    });
+    container.querySelectorAll('.idle-unload-note').forEach(node=>node.remove());
+    idleNotes.forEach(([id,record])=>{
+      const note=document.createElement('p');note.className='muted idle-unload-note';
+      const time=Number(record.at), when=Number.isFinite(time)?new Date(time*1000).toLocaleString():'';
+      text(note,`${id} · ${t('Unloaded after {minutes} idle minutes',{minutes:record.minutes})}${when?` · ${when}`:''}`);
+      container.append(note);
     });
     existing.forEach(node=>node.remove());
   }
