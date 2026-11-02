@@ -56,7 +56,7 @@ BACKENDS = {
     "torch": (
         "PyTorch",
         ("torch",),
-        ("eager", "mps", "fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4"),
+        ("eager", "mps", "fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4", "int8"),
         "https://pytorch.org/get-started/locally/",
     ),
     "mlx": ("MLX", ("mlx", "mlx_lm"), ("mlx", "mlx-q8"), "https://ml-explore.github.io/mlx/build/html/install.html"),
