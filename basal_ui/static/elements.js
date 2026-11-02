@@ -77,7 +77,7 @@ function openElementsEditor(index) {
     oldCard?.remove();item.originalData=originalData;item.originalFile=item.originalFile||new File([originalBytes],item.file.name,{type:originalMime});const baseName=item.originalFile.name;const file=new File([Uint8Array.from(atob(data),x=>x.charCodeAt(0))],`${baseName.replace(/\.[^.]+$/,'')}-marked.png`,{type:'image/png'});item.data=data;item.file=file;URL.revokeObjectURL(item.url);item.url=URL.createObjectURL(file);
     item.elements={question,image:index,size:[width,height],boxes:Object.fromEntries(boxes.map((b,i)=>[String(i+1),b.rect.map(Math.round)])),labels:Object.fromEntries(boxes.map((b,i)=>[String(i+1),b.label.trim()]))};
     addQuestion(question,{type:'choice',instructions:oldModel?.instructions??t('Which element should be acted on next?'),criteria:Object.fromEntries(boxes.map((b,i)=>[String(i+1),optionOf(b,i)]))});
-    const card=[...document.querySelectorAll('.question')].find(q=>$('.q-name',q).value===question);card._elementOwner=index;card._elementItem=item;card.dataset.elementOwner=index;$('.q-type',card).disabled=true;const options=$('[data-f="criteria"]',card);options.disabled=true;const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');options.after(note);
+    const card=[...document.querySelectorAll('.question')].find(q=>$('.q-name',q).value===question);card._elementOwner=index;card._elementItem=item;card.dataset.elementOwner=index;$('.q-type',card).disabled=true;const options=$('[data-f="criteria"]',card);options.disabled=true;ChoiceEditor.setReadOnly(card);const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');(card.querySelector('.choice-editor')||options).after(note);
     card.querySelector('.q-name').addEventListener('input',e=>{item.elements.question=e.target.value;});renderSelectedMedia();syncRequest();dialog.close();
   };
   source.onload=()=>{width=canvas.width=source.naturalWidth;height=canvas.height=source.naturalHeight;canvas.style.aspectRatio=`${width}/${height}`;canvas.hidden=false;save.disabled=false;renderList();draw();};source.src=imageData();dialog.showModal();
@@ -124,7 +124,7 @@ function restoreElementMarks(records) {
     item.elements=elements;
     if(editingJson)continue;
     card._elementOwner=record.index;card._elementItem=item;card.dataset.elementOwner=record.index;$('.q-type',card).disabled=true;
-    const options=$('[data-f="criteria"]',card);if(options){options.disabled=true;const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');options.after(note);}
+    const options=$('[data-f="criteria"]',card);if(options){options.disabled=true;ChoiceEditor.setReadOnly(card);const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');(card.querySelector('.choice-editor')||options).after(note);}
     $('.q-name',card).addEventListener('input',e=>{item.elements.question=e.target.value;});
   }
   renderSelectedMedia();updateMediaEvidence();if(!editingJson)syncRequest();

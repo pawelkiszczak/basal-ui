@@ -31,6 +31,10 @@ def page(browser, ui, text_model):
 
 
 def navigate(page, name):
+    if name == "settings":
+        page.locator("#openSettings").click()
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        return
     destination = page.locator(f'.side-nav [data-view="{name}"]')
     if not destination.is_visible():
         disclosure = page.locator(".nav-tools")
@@ -53,6 +57,7 @@ def test_all_views_fit_responsive_widths_and_question_controls_stay_named(page, 
         "inspect",
         "api",
         "logs",
+        "settings",
     )
     page.wait_for_function(
         """() => document.querySelector('#trafficActivityCounts').textContent.trim() &&

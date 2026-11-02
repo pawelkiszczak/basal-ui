@@ -42,6 +42,29 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Batch path inspection
+
+`POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:
+
+```json
+{"path":"/Users/me/requests.jsonl","kind":"jsonl"}
+```
+
+`kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
+inspection request returns HTTP 200 even when the file is missing or unsuitable: inspect `ok` and `code`.
+Common facts are `path`, `kind`, `exists`, `is_file`, `is_dir`, `ok` and `code`.
+
+For JSONL input, the response reports byte size, non-empty line count and whether that count is capped. It
+inspects the first non-empty row for request/label shape, question types and a preview; it does **not** validate
+every request in the file. Scanning stops at 100,000 non-empty rows or 64 MiB; the first row must fit within 1 MiB.
+A blank prefix exhausting the scan limit is not reported as an empty file. Preview text is limited to 300 characters
+plus an ellipsis when truncated.
+
+For output, the response reports parent-directory existence, writability and whether an existing file would be
+overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
+Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
+as the other management routes; it is not a filesystem sandbox.
+
 ## Several models behind basal-ui
 
 basal-ui's API server ([USAGE.md](USAGE.md#api-server)) serves every model loaded in the app on one port and
@@ -142,9 +165,14 @@ process only; it does not clear another process's in-memory window. Rolling tele
 
 ### MCP routing
 
-On the API-server gateway port, MCP `decide` and `decide_many` serve the model named in the tool's `model` argument, else the first
-loaded model. The engine's MCP server lists no models (`list_models` and `basal-mcp --model` arrive with the
-model-argument proposal upstream); until then the first loaded model answers every tool call.
+With tested Engine 2.4.1, the streamable-HTTP MCP `decide` and `decide_many` tools answer with the **first loaded
+model**. Their schemas have no `model` argument or `list_models` tool. Use `GET /v1/models` for inventory and the
+System One/OpenAI Decisions routes for named-model routing. Playground refuses to generate an MCP example for
+a different selected model rather than silently changing its target.
+
+Use the running gateway's `/mcp` HTTP endpoint with an initialized MCP client. The stock Engine's `basal-mcp`
+stdio bridge accepts neither `--model` nor an API-key option and does not send the gateway's required `model`
+field; it is not a working stdio-to-gateway connection example.
 
 ## Errors and request IDs
 

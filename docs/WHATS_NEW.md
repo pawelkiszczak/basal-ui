@@ -26,6 +26,16 @@ No promotion to `stage`/`main` or PyPI publication was performed for that snapsh
 - Add **Backends → Engine add-ons** for explicit media/GGUF dependency installation through `uv`, with maintenance
   guards, logs, cancellation and restart guidance. Preserve the installed Engine and existing package versions;
   never fetch the unrelated PyPI `basal` package. System toolchains remain operator-managed.
+- Integrate the selected contributor-inspired Studio designs: Appearance A with Green/Orange skins, inline
+  Choice editor A, two-model comparison A, protocol-tabbed API examples B, categorized Settings C, Quick actions C,
+  Batch path guidance B and calibration/evidence explanation B. Comparisons make two real Decisions and show
+  per-model errors independently; unsupported protocol conversions are refused rather than losing request fields. Invalid
+  option-key drafts preserve cost columns through language changes, and editing raw JSON invalidates copied examples.
+  Path inspection is explicit, bounded and read-only; it previews the first request, not a full dataset validation.
+  Correct MCP examples to the tested Engine's HTTP-only gateway connection and first-loaded-model routing.
+  Ideas from [#9](https://github.com/pawelkiszczak/basal-ui/pull/9) and
+  [#11](https://github.com/pawelkiszczak/basal-ui/pull/11) are selectively adapted, not merged wholesale;
+  [contributors](../CONTRIBUTORS.md) are credited by GitHub nickname. Engine pins and version remain unchanged.
 
 - basal-ui is its own repository and package: import `basal_ui`, the `basal-ui` command, and `pip install basal-ui`
   after the first PyPI release. Until then, use the [source install](../README.md#install).

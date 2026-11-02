@@ -1367,6 +1367,16 @@ def create_app(
     def get_inspect():
         return inspector.state()
 
+    @app.post("/api/paths/check")
+    def check_path(body: dict = Body(...)):
+        """Return bounded, read-only facts about a path used by Batch."""
+        from . import paths
+
+        try:
+            return paths.check(body.get("path"), body.get("kind"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
         from . import batch

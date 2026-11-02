@@ -23,6 +23,7 @@ VIEWS = {
     "inspect": "Inspect",
     "api": "API server",
     "logs": "Logs",
+    "settings": "Settings",
 }
 MANAGER_TABS = ("library", "usage", "benchmarks", "calibration")
 WAIT = 120_000  # ms: a decision of a large model, a model start
@@ -61,6 +62,10 @@ def page(browser, ui, text_model):
 
 
 def view(page, name):
+    if name == "settings":
+        page.locator("#openSettings").click()
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        return
     destination = page.locator(f'.side-nav [data-view="{name}"]')
     if not destination.is_visible():
         disclosure = page.locator(".nav-tools")
@@ -307,7 +312,8 @@ def test_every_view_renders(page, text_model):
     sync_api.expect(page.locator("#footerState")).to_contain_text("ready")
 
 
-def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page):
+@pytest.mark.parametrize("skin", ["green", "orange"])
+def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page, skin):
     def low_contrast():
         return page.evaluate("""() => {
           const rgb = value => {
@@ -339,6 +345,7 @@ def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page):
           });
         }""")
 
+    page.evaluate("skin => StudioShell.applySkin(skin)", skin)
     for theme in ("light", "dark"):
         appearance = page.locator(".appearance-controls")
         choice = appearance.locator(f'[data-theme-choice="{theme}"]')
@@ -813,21 +820,34 @@ def test_edit_json_rebuilds_the_builder_and_keeps_invalid_json_open(page):
         "lang": "pl",
     }
     page.fill("#requestJson", json.dumps(request))
+    page.click("#generateRequestCode")
+    sync_api.expect(page.locator("#copyRequestCode")).to_be_enabled()
+    request["state"] = "changed after generating the API example"
+    page.fill("#requestJson", json.dumps(request))
+    sync_api.expect(page.locator("#copyRequestCode")).to_be_disabled()
     page.uncheck("#editJsonToggle")
     sync_api.expect(page.locator("#builder")).to_be_visible()
     assert page.evaluate("() => buildRequest()")["questions"] == request["questions"]
     assert page.evaluate("() => buildRequest().state") == request["state"]
 
 
-def test_the_builder_switches_types_and_edits_a_cost_matrix(page):
+@pytest.mark.parametrize("draft_key", ["", "lost"])
+def test_the_builder_switches_types_and_edits_a_cost_matrix(page, draft_key):
     view(page, "playground")
     page.evaluate("() => setRequest({state: 'Paczka nie dotarła.', questions: {}})")
     page.evaluate("() => addQuestion()")
     card = page.locator(".question").first
     card.locator(".q-type").select_option("act")
-    card.locator('[data-f="criteria"]').fill("late: opóźnienie\nlost: zaginięcie")
+    # Removing an option must not affect later outcomes restored from a language draft.
+    card.locator(".choice-editor-add").click()
+    card.locator(".choice-editor-key").fill("discarded")
+    card.locator(".choice-editor-remove").click()
+    for index, (key, description) in enumerate((("late", "opóźnienie"), ("lost", "zaginięcie"))):
+        card.locator(".choice-editor-add").click()
+        option = card.locator(".choice-editor-row").nth(index)
+        option.locator(".choice-editor-key").fill(key)
+        option.locator(".choice-editor-description").fill(description)
     card.locator('[data-cost-mode="matrix"]').click()
-    sync_api.expect(card.locator(".cost-table thead th")).to_have_text(["Action", "late", "lost", ""])
     card.locator(".add-action").click()
     row = card.locator(".cost-table tbody tr").last
     row.locator(".cost-action").fill("human")
@@ -835,16 +855,34 @@ def test_the_builder_switches_types_and_edits_a_cost_matrix(page):
         cell.fill("2")
     costs = page.evaluate("() => buildRequest().questions.question.costs")
     assert costs["human"] == {"late": 2, "lost": 2} and costs["defer"] == {"late": 1, "lost": 1}
-    cell = row.locator(".cost-cell").first
-    cell.fill("")
-    assert page.evaluate("() => document.querySelector('.question')._error") == "every cost cell needs a number"
+    card.locator(".choice-editor-key").first.fill("delayed")
     costs = page.evaluate("() => buildRequest().questions.question.costs")
-    assert "late" not in costs["human"]
-    sync_api.expect(card.locator(".q-error")).to_contain_text("every cost cell needs a number")
+    assert costs["human"] == {"delayed": 2, "lost": 2}
+    assert costs["defer"] == {"delayed": 1, "lost": 1}
+    card.locator(".choice-editor-key").first.fill(draft_key)
+    card.locator(".q-type").select_option("tool")
+    sync_api.expect(card.locator(".q-type")).to_have_value("act")
+    open_appearance_controls(page)
+    page.click('[data-lang-choice="pl"]')
+    sync_api.expect(page.locator("html")).to_have_attribute("lang", "pl")
+    sync_api.expect(card.locator(".choice-editor-row")).to_have_count(2)
+    card.locator(".choice-editor-key").first.fill("resumed")
+    costs = page.evaluate("() => buildRequest().questions.question.costs")
+    assert costs["human"] == {"resumed": 2, "lost": 2}
+    assert costs["defer"] == {"resumed": 1, "lost": 1}
+    forwarded = []
+    page.on("request", lambda request: forwarded.append(request) if request.url.endswith("/api/decide") else None)
+    row = card.locator(".cost-table tbody tr").last
+    row.locator(".cost-cell").first.fill("")
+    sync_api.expect(card.locator(".q-error")).to_be_visible()
+    page.click("#sendButton")
+    sync_api.expect(page.locator("#decideError")).to_be_visible()
+    assert not forwarded
     card.locator(".q-type").select_option("tool")
     card.locator('[data-f="tools"]').fill("not json")
     page.click("#sendButton")
-    sync_api.expect(page.locator("#decideError")).to_contain_text("tools must be a JSON array")
+    sync_api.expect(page.locator("#decideError")).to_be_visible()
+    assert not forwarded
 
 
 def test_safety_strip_and_inspect_button_on_a_decision(page, ui, text_model):

@@ -1,8 +1,8 @@
 """Refresh the README's screenshots and tour GIF (docs/images/) from a real basal-ui with a real model.
 
-Starts basal-ui on a fresh settings directory, loads Remek/basal-2.0-mini (it must be on disk: HF_HUB_OFFLINE=1),
-captures the Studio dashboard, Overview, Models, Playground, each Model manager tab and API server in Chromium (1280x800
-at 2x, the default light theme), then records a tour (Models, load the model in Model manager, ask a question in the
+Starts basal-ui on a fresh settings directory, loads Remek/basal-2.0-mini and a second downloaded runnable model
+(HF_HUB_OFFLINE=1), and captures the Studio views and selected request tools in Chromium (1440x1000 at 2x,
+the default light theme). It then records a tour (Models, load the model in Model manager, ask a question in the
 Playground) and converts it to a GIF with ffmpeg. `make screenshots`; needs the e2e extra, `playwright install chromium`
 and ffmpeg on PATH. Exits non-zero on any failure.
 """
@@ -47,6 +47,7 @@ SHOTS = (
     ("manager", "benchmarks", "model-benchmarks"),
     ("manager", "calibration", "model-calibration"),
     ("api", None, "api-server"),
+    ("settings", None, "settings"),
 )
 READY = "id => (statusCache?.models || []).some(m => m.id === id && m.state === 'ready')"
 
@@ -102,10 +103,13 @@ def open_page(context):
 
 
 def show(page, name, manager_tab=None):
-    destination = page.locator(f'.side-nav [data-view="{name}"]')
-    if not destination.is_visible():
-        page.locator(".nav-tools summary").click()
-    destination.click()
+    if name == "settings":
+        page.locator("#openSettings").click()
+    else:
+        destination = page.locator(f'.side-nav [data-view="{name}"]')
+        if not destination.is_visible():
+            page.locator(".nav-tools summary").click()
+        destination.click()
     if manager_tab:
         page.locator(f'[data-manager-tab="{manager_tab}"]').click()
     page.evaluate("window.scrollTo(0, 0)")
@@ -119,8 +123,8 @@ def ask(page):
     page.wait_for_selector("#results .chips.safety")
 
 
-def screenshots(browser):
-    context = browser.new_context(viewport={"width": 1280, "height": 800}, device_scale_factor=2)
+def screenshots(browser, second_model):
+    context = browser.new_context(viewport={"width": 1440, "height": 1000}, device_scale_factor=2)
     page = open_page(context)
     page.wait_for_function(READY, arg=MODEL)
     show(page, "playground")
@@ -129,6 +133,23 @@ def screenshots(browser):
         show(page, view, manager_tab)
         page.screenshot(path=str(OUT / f"{name}.png"))
         print(f"docs/images/{name}.png")
+    show(page, "batch")
+    page.fill("#batchInput", "basal_ui/examples/advanced.jsonl")
+    page.click("#checkBatchPaths")
+    page.wait_for_selector("#pathInspector pre")
+    page.screenshot(path=str(OUT / "batch.png"))
+    print("docs/images/batch.png")
+    show(page, "playground")
+    page.click("#generateRequestCode")
+    page.locator("#requestCode").screenshot(path=str(OUT / "api-examples.png"))
+    print("docs/images/api-examples.png")
+    selectors = page.locator("#decisionCompare .dt-model")
+    selectors.nth(0).select_option(MODEL)
+    selectors.nth(1).select_option(second_model)
+    page.click("#dt-run")
+    page.wait_for_function("() => document.querySelectorAll('#decisionCompare .dt-raw').length === 2")
+    page.locator("#decisionCompare").screenshot(path=str(OUT / "model-comparison.png"))
+    print("docs/images/model-comparison.png")
     context.close()
 
 
@@ -191,15 +212,25 @@ def main():
         try:
             api("POST", "/api/load", json={"id": MODEL})
             wait_ready(MODEL)
+            alternatives = [
+                model
+                for model in api("GET", "/api/models")["models"]
+                if model["id"] != MODEL and model["downloaded"] and model["runnable"]
+            ]
+            if not alternatives:
+                raise SystemExit("Model comparison screenshots need a second downloaded runnable model.")
+            second_model = min(alternatives, key=lambda model: model.get("weights_bytes") or float("inf"))["id"]
+            api("POST", "/api/load", json={"id": second_model})
+            wait_ready(second_model)
             api("PUT", "/api/serve", json={"enabled": True, "port": 8878, "require_key": True})
             api("POST", "/api/serve/restart")
             with sync_playwright() as p:
                 browser = p.chromium.launch()
                 try:
-                    screenshots(browser)
-                    api("POST", "/api/unload", json={"id": MODEL})
+                    screenshots(browser, second_model)
+                    api("POST", "/api/unload", json={})
                     deadline = time.monotonic() + 60
-                    while any(m["id"] == MODEL for m in api("GET", "/api/status")["models"]):
+                    while api("GET", "/api/status")["models"]:
                         if time.monotonic() > deadline:
                             raise SystemExit(f"{MODEL} did not unload within 60 s")
                         time.sleep(0.5)

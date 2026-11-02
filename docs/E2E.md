@@ -41,7 +41,7 @@ the hardware allows.
 | File | Feature group | Checks |
 |---|---|---|
 | `test_lifecycle.py` | start, auto-load, shutdown | a load with options is remembered; a new basal-ui on the same settings loads it again with them; Ctrl+C (SIGINT) leaves no `basal-serve` child |
-| `test_models.py` | several models, API server | two models behind one port with a required key: `/v1/models`, `MODEL_REQUIRED`, 401 / 404, request ids, OpenAI Decisions, `/v1/stats` closed to user keys, MCP `list_models` / `decide` when MCP is installed; statistics, history (API and MCP), key last-use; the memory budget refusing a load; restart onto a new child, logs, Download refusing a model on disk, unload |
+| `test_models.py` | several models, API server | two models behind one port with a required key: `/v1/models`, `MODEL_REQUIRED`, 401 / 404, request ids, OpenAI Decisions, `/v1/stats` closed to user keys, MCP tool discovery / `decide` when MCP is installed; statistics, history (API and MCP), key last-use; the memory budget refusing a load; restart onto a new child, logs, Download refusing a model on disk, unload |
 | `test_safety.py` | decision safety | the entry's `certified` thresholds and `context`; `act` with `max_error` deferred below the certified threshold (or without one); a state over the context truncated with consistent token counts; History's `deferred` / `truncated` flags |
 | `test_question_types.py` | every question type | each `advanced.jsonl` request (multi, act, tool, classify, verify, compress, extract) answers in its own shape: keys, sets, costs, verdicts, kept units and their offsets, extracted values and their spans; per-type statistics; `facts` and `lang`; evidence spans or its refusal |
 | `test_calibration.py` | custom calibration | task questions (classify) fitted with the engine in basal-ui's process and its memory released; a file of another model imported with basal-serve's warning and its report; a fit against a temporary uncalibrated child, its report and listing, the child's memory released; selecting the file: Restart to apply, `--calibration`, no calibration warning; back to the shipped file; cancel; refused inputs (with the problem line) |
@@ -55,11 +55,48 @@ the hardware allows.
 | `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Model manager section order and the two Models tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs, including real-model recording, browser Replay and resubmission preserving structured state and choice descriptions named `data`; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons (including unavailable older families), suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
 | `test_elements.py` | marked image elements (Chromium) | natural-pixel box coordinates despite display scaling; drawing, tiny-box rejection, movement, resizing, edge clamping, deletion/renumbering and the 26-box limit; labels, linked choice question, read-only options, clear/delete cleanup, original-image restore, marked PNG badge and re-edit; one-image restriction; clean decide payload and probability overlay; saved-request round trip; evidence disabled with media and re-enabled without it |
 | `test_activity.py` | history, calibration and logs polling (Chromium) | oldest-first history draining of more than one page per poll; the 500-row live-only limit and older-page pagination across idle polls; delayed calibration responses never replacing the selected model's controls; the Logs view clearing old lines when a buffer's generation changes |
-| `test_visual.py` | responsive presentation (Chromium) | all eleven views and every Manager tab fit 1440–390 px in both themes; loaded calibration tables scroll locally; phone header and question controls stay contained and named |
+| `test_visual.py` | responsive presentation (Chromium) | all twelve views and every Manager tab fit 1440–390 px in both themes; loaded calibration tables scroll locally; phone header and question controls stay contained and named |
 | `test_pages.py` | Studio Dashboard, Manager and shared loader (Chromium) | real Decision throughput/public endpoint attribution; shared lifetime usage/reset; unavailable Stats/status recovery; Manager routes; scroll/text selection across polling; downloaded-model loading across views; Saved revision preservation; retained attachments and unsupported-media refusal |
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Selected Studio features gate 2026-11-02
+
+Implemented on `feat/studio-feature-selections`, based on Studio commit `86c1322`. The approved preview is
+`prototype/pr-feature-choices` at `878282c`: Appearance A (both Green and Orange), Choice editor A, comparison A,
+API examples B, Settings C, command discovery C, path guidance B and calibration explanation B. Contributor
+ideas from PRs #9 and #11 were selectively adapted, not merged wholesale; see [CONTRIBUTORS.md](../CONTRIBUTORS.md).
+Version `0.1.0rc1`, Engine pins and the supported range are unchanged. This gate is not a release or branch promotion.
+
+| Local check | Observed result |
+|---|---|
+| `make lint` | Ruff lint and format checks passed; 87 files formatted |
+| `make test` | 362 passed, 3 skipped; 88% coverage |
+| Full offline real-model `make e2e ARGS='-q -rs --tb=short'` | 122 passed, 5 skipped |
+| Focused raw-JSON/example freshness and interrupted option-key/cost-draft checks | 3 passed; included in the full gate |
+| `make screenshots` | Thirteen real-inference PNGs and the tour GIF refreshed |
+| Generated API examples executed against the real gateway | System One curl, Python, OpenAI Decisions curl and initialized streamable-HTTP MCP all returned real answers |
+| Native two-model comparison | Both models answered the same frozen request; an actual unload race produced one successful result and one model-specific HTTP 404 |
+| Native Settings, commands and paths | Saved memory/default controls, preserved category drafts, keyboard command navigation, Unicode JSONL inspection and a real two-row Batch run with zero errors |
+| Native MCP configuration | Running endpoint configuration copied; disabling MCP and restarting disabled copying and showed setup guidance; MCP then restored |
+| Documentation links | 80 local file/heading links across 18 Markdown documents checked; no errors |
+
+The full gate used macOS/Apple Silicon, Python 3.13.11, Engine 2.4.1 and offline cached text/bf16 models with MLX.
+Contrast covers Green/Orange in light/dark themes; responsive checks include Settings at 1440/1280/1024/768/390 px.
+The language-draft regression removes an option, edits a cost matrix, leaves a blank or duplicate option key,
+switches language and completes the key without losing its costs. Invalid type changes are refused until the
+row is corrected. Editing raw request JSON disables stale generated examples.
+
+Explicit path inspection did not increment Decision traffic or write an output file. Only the subsequent Batch
+run wrote its requested output. The first-row preview is not a full dataset validation. Comparison calls do count
+as real Decisions; exporting code does not. Calibration explanations use the served model's facts and do not
+establish a new accuracy guarantee.
+
+Unit skips: Pillow is absent, and two adapter checks require Engine 2.5.1. E2E skips: thinking needs a cached 4.5B
+model plus vLLM, early exit needs CUDA/basal-1.0 bf16, and three context-policy cases need metadata absent from this
+Engine's `/v1/models`. Media draft/rendering checks are not new image/audio inference proof. Other hardware and
+encoders remain unverified by this gate. GitHub CI remains a separate merge gate.
 
 ## Studio refinement gate 2026-10-30
 

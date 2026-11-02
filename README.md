@@ -29,8 +29,9 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/models.png" width="900" alt="Models: suggested and all basal variants with what this machine can run">
 
-- a **Playground** for decisions, with a builder for every question type, evidence and calibrated confidence; images
-  and voice clips for basal-omni, with numbered elements marked on a screenshot.
+- a **Playground** with an inline choice editor, typed answers and a calibration/evidence rail. Compare the same
+  request on two loaded models, or copy System One curl, Python, OpenAI curl and MCP examples without silently
+  dropping unsupported fields. Images and voice clips support basal-omni, with numbered elements marked on a screenshot.
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground: a choice question answered with calibrated confidence">
 
@@ -42,12 +43,15 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 - **Backends → Engine add-ons**: explicitly install the current Engine's `media` or `gguf` dependencies with `uv`,
   logs and cancellation. Existing package versions and the Engine are preserved; stop models/jobs first and restart afterward.
   [Installation safety and prerequisites](docs/BACKENDS.md#installing-engine-add-ons).
-- **batch** inference over a JSONL file;
+- **Batch** inference over JSONL, with explicit read-only path checks and a first-request preview before running;
 - **Inspect**, which embeds `basal-viz` to show how a decision is made, layer by layer;
 - an **API server** with named API keys, CORS, request ids, typed errors, OpenAI Decisions translation and MCP — one
   port for every loaded model.
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/api-server.png" width="900" alt="API server: one port for every loaded model, keys and MCP">
+
+- categorized **Settings** for memory/storage, defaults and appearance; **Green** and **Orange** skins with
+  light/dark/system themes. A keyboard-accessible **Quick actions** rail helps discover commands without leaving the task.
 
 ## Install
 
@@ -114,7 +118,7 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | the browser app end to end |
 | [docs/API.md](docs/API.md) | basal-ui's API server: keys, CORS, errors, OpenAI Decisions, MCP, clients |
-| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [Studio refinement verification](docs/E2E.md#studio-refinement-gate-2026-10-30) |
+| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [selected Studio features verification](docs/E2E.md#selected-studio-features-gate-2026-11-02) |
 | [docs/BACKENDS.md](docs/BACKENDS.md) | Backend inventory, compatibility, isolated Inference tests and Engine add-on installation |
 | [docs/WHATS_NEW.md](docs/WHATS_NEW.md) | the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | dev setup, code style, tests, [branches and CI](CONTRIBUTING.md#branches-and-ci) (`dev` → `stage` → `main`), pull requests, the Engine-proposal pipeline, [releasing](CONTRIBUTING.md#releasing) |

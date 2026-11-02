@@ -89,11 +89,13 @@ starts CI; it is not a substitute for passing checks.
 ## Screenshots
 
 The README's screenshots and tour GIF (`docs/images/`) come from `make screenshots` (`scripts/screenshots.py`).
-It starts an isolated app, loads `Remek/basal-2.0-mini`, sends a real Decision, and captures Dashboard, Hardware,
-Models, Playground, all four Manager tabs and API server in Chromium before recording the tour. Counters and answers
-come from that run, not fixtures. Refresh these nine screenshots and the GIF after visible UI changes. First follow
-the [E2E environment setup](docs/E2E.md); the target does not install dependencies or change the Engine. It also needs
-that model on disk, Chromium (`uv run --no-sync playwright install chromium`) and `ffmpeg` on `PATH`.
+It starts an isolated app, loads cached `Remek/basal-2.0-mini` plus the smallest other downloaded runnable model,
+sends real Decisions, and captures Dashboard, Hardware, Models, Playground, all four Manager tabs, API server,
+Settings, Batch, API examples and model comparison before recording the tour. Counters and answers come from
+that run, not fixtures. Refresh these thirteen screenshots and the GIF after visible UI changes. First follow
+the [E2E environment setup](docs/E2E.md); the target does not install dependencies, download models or change
+the Engine. Both cached models must fit together. It also needs Chromium
+(`uv run --no-sync playwright install chromium`) and `ffmpeg` on `PATH`.
 
 ## Engine proposals
 

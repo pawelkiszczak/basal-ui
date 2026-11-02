@@ -42,6 +42,7 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
   document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
   document.querySelectorAll('.side-nav button').forEach(b=>{if(document.documentElement.dataset.theme==='dark')b.style.setProperty('color','#edf0e9','important');else b.style.removeProperty('color');});
+  document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
 document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);$('.appearance-controls details').open=false;});
@@ -527,12 +528,16 @@ function renderTypeFields(card, type, q) {
   const me=q.max_error, preset=me==null||Array.isArray(me)?'':[0.01,0.05].includes(Number(me))?String(Number(me)):'custom', maxErrorId=`question-field-${++questionFieldId}`;
   html+=`<div class="qf-row common-fields">${qSwitch('evidence',q.evidence===true,'Evidence spans','evidence-only')}<div class="qf max-error-only"><label for="${maxErrorId}">max_error</label><div class="controls">${qSelect('max_error',[['','none'],['0.01','0.01'],['0.05','0.05'],['custom','custom…']],preset).replace('<select ',`<select id="${maxErrorId}" `)}${qNum('max_error_custom',preset==='custom'?me:'','min="0" max="1" step="0.001"')}</div></div></div><div class="q-error reason wide" role="alert" hidden></div>`;
   $('.q-fields',card).innerHTML=html;
+  delete card._choiceEditor;
+  ChoiceEditor.mount(card,type,q);
   $('.q-instructions-input',card).placeholder=['tool',...TASK_TYPES].includes(type)?t('optional'):t('What should the model decide?');
   if(type==='act')renderCostMatrix(card);
   updateCardVisibility(card);
 }
 function actOutcomes(card) {
   if($('[data-f="yesno"]',card)?.checked)return ['true','false'];
+  const outcomes=ChoiceEditor.costOutcomes(card);
+  if(outcomes)return outcomes;
   return Object.keys(parseOptions($('[data-f="criteria"]',card)?.value||'','choice').criteria);
 }
 function readCostRows(card) {
@@ -545,6 +550,7 @@ function renderCostMatrix(card, force=false) {
   if(!force&&card._costOutcomes)card._costRows=readCostRows(card);  // forced callers set _costRows themselves
   card._costOutcomes=outcomes;
   table.innerHTML=`<thead><tr><th>${t('Action')}</th>${outcomes.map(o=>`<th>${esc(o)}</th>`).join('')}<th></th></tr></thead><tbody>${card._costRows.map((row,i)=>`<tr><td><input class="input cost-action" type="text" aria-label="${t('Action {number}',{number:i+1})}" value="${esc(row.action)}"></td>${outcomes.map(o=>`<td><input class="input cost-cell" type="number" step="any" aria-label="${t('{outcome} cost for {action}',{outcome:esc(o),action:esc(row.action)})}" data-outcome="${esc(o)}" value="${esc(row.costs[o]??'')}"></td>`).join('')}<td><button type="button" class="remove-action" data-row="${i}" aria-label="${t('Remove action {number}',{number:i+1})}">${t('Remove')}</button></td></tr>`).join('')}</tbody>`;
+  ChoiceEditor.costsRendered(card);
 }
 function setCostMode(card, mode) {
   if(card._costOutcomes)card._costRows=readCostRows(card);
@@ -602,7 +608,7 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     return [name,structuredClone(orig.q)];
   }
   const el=f=>$(`[data-f="${f}"]`,card), str=f=>(el(f)?.value??'').trim(), num=f=>str(f)===''?undefined:Number(str(f)), on=f=>Boolean(el(f)?.checked);
-  const q={type}, errors=[], set=(k,v)=>{if(v!==undefined&&v!==''&&!(Array.isArray(v)&&!v.length))q[k]=v;};
+  const q={type}, errors=ChoiceEditor.errors(card), editor=ChoiceEditor.read(card), set=(k,v)=>{if(v!==undefined&&v!==''&&!(Array.isArray(v)&&!v.length))q[k]=v;};
   const json=(f,check,message)=>{const text=str(f);if(!text){errors.push(t(message));return undefined;}try{const v=JSON.parse(text);if(check(v))return v;}catch{}errors.push(t(message));return undefined;};
   // a field whose text the user did not edit keeps the original's keys and values (none of them when it had none)
   const unedited=f=>orig!=null&&el(f)!=null&&el(f).value===orig.lines[f]&&(f!=='criteria'||type!=='act'||on('yesno')===orig.lines.yesno);
@@ -620,10 +626,20 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     set('fallback',str('fallback')); set('fallback_threshold',num('fallback_threshold'));
     set('exclusive',str('exclusive').split(',').map(x=>x.trim()).filter(Boolean));
   };
-  if(['choice','noul','score'].includes(type)){if(unedited('criteria'))keep('criteria','levels','option_keys');else Object.assign(q,parseOptions(str('criteria'),type));}
-  else if(type==='multi'){if(unedited('criteria'))keep('criteria','option_keys');else set('criteria',parseKeyedList(str('criteria'))); setOptions();}
+  if(['choice','noul','score'].includes(type)){
+    if(unedited('criteria')){keep('criteria','levels','option_keys');if(editor&&editor.option_keys!==(orig.q.option_keys??'show'))q.option_keys=editor.option_keys;}
+    else if(editor)Object.assign(q,editor);
+    else Object.assign(q,parseOptions(str('criteria'),type));
+  }
+  else if(type==='multi'){
+    if(unedited('criteria')){keep('criteria','option_keys');if(editor&&editor.option_keys!==(orig.q.option_keys??'show'))q.option_keys=editor.option_keys;}
+    else if(editor)Object.assign(q,editor);
+    else set('criteria',parseKeyedList(str('criteria')));
+    setOptions();
+  }
   else if(type==='act'){
-    if(unedited('criteria'))keep('criteria','base','option_keys');
+    if(unedited('criteria')){keep('criteria','base','option_keys');if(editor&&editor.option_keys!==(orig.q.option_keys??'show'))q.option_keys=editor.option_keys;}
+    else if(editor&&!on('yesno'))Object.assign(q,editor);
     else if(on('yesno')){const c=parseOptions(str('criteria'),'noul').criteria;if(c)q.criteria=c;else q.base='noul';}
     else Object.assign(q,parseOptions(str('criteria'),'choice'));
     if(card._costMode==='matrix'){
@@ -696,13 +712,17 @@ function buildRequest() {
     input.setCustomValidity(!name.trim()?t('Enter a question name.'):duplicate?t('Question names must be unique.'):'');
     if(invalid)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
     names.add(name);
-    const [,q]=parseQuestionCard(card);if(!invalid)questions[name]=q;
+    const [,q]=parseQuestionCard(card);
+    const rowErrors=ChoiceEditor.errors(card);
+    if(rowErrors.length)throw new Error(`${name}: ${rowErrors.join(' ')}`);
+    if(!invalid)questions[name]=q;
   }
   if([...document.querySelectorAll('.q-name')].some(input=>!input.checkValidity()))throw new Error(t('Question names must be non-blank and unique.'));
   const stateInput=$('#stateInput'), state=stateInput._requestState;
   return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields()};
 }
 function syncRequest(force=false, keys=['media','detail']) {
+  window.RequestCode.invalidate();
   const textarea = $('#requestJson');
   if ($('#editJsonToggle').checked && !force) {
     let request;
@@ -733,11 +753,18 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   card.addEventListener('change',e=>{
     if(e.target.matches('.q-type')){
+      if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
       card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
       renderTypeFields(card,next,{...current,type:next});
     } else {
-      if(e.target.matches('[data-f="yesno"]'))renderCostMatrix(card);
+      if(e.target.matches('[data-f="yesno"]')){
+        if(ChoiceEditor.errors(card).length){setChecked(e.target,!e.target.checked);syncRequest();return;}
+        const [,current]=parseQuestionCard(card,card._type);
+        if(e.target.checked){delete card._choiceEditor;card.querySelector('.choice-editor')?.remove();$('[data-f="criteria"]',card).closest('.qf').hidden=false;}
+        else ChoiceEditor.mount(card,'act',{...current,base:'choice'});
+        renderCostMatrix(card);
+      }
       updateCardVisibility(card);
     }
     syncRequest();
@@ -816,13 +843,14 @@ window.preparePlaygroundLanguageSwitch=()=>{
     ?stateInput._requestState.value:parseStructuredText(stateInput.value);
   const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default'};
   const names=cards.map(card=>$('.q-name',card).value);
-  const controls=cards.map(card=>[...card.querySelectorAll('input,select,textarea')].map(el=>el.type==='checkbox'?{checked:el.checked}:{value:el.value}));
+  const controls=cards.map(card=>[...card.querySelectorAll('input,select,textarea')].filter(el=>!el.closest('.choice-editor')).map(el=>el.type==='checkbox'?{checked:el.checked}:{value:el.value}));
+  const choiceRows=cards.map(card=>ChoiceEditor.snapshot(card));
   const costModes=cards.map(card=>card._costMode);
   const costRows=cards.map(card=>card._costMode==='matrix'?readCostRows(card):null);
   cards.forEach((card,i)=>{request.questions[`__language_draft_${i}`]=parseQuestionCard(card)[1];});
   const model=selectedModel||$('#playgroundModel').value;
   if(model)request.model=model;
-  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows}));
+  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows}));
 };
 function restorePlaygroundLanguageDraft(){
   const saved=sessionStorage.getItem(PLAYGROUND_DRAFT);if(!saved)return;
@@ -834,13 +862,14 @@ function restorePlaygroundLanguageDraft(){
       setRequest(draft.request);
       const cards=[...document.querySelectorAll('#questions .question')];
       cards.forEach((card,i)=>{
+        ChoiceEditor.restore(card,draft.choiceRows?.[i]);
         if(draft.costModes?.[i]==='matrix'&&$('.q-type',card).value==='act'){
           card._costMode='matrix';
           card._costRows=draft.costRows?.[i]||[];
           card._costOutcomes=null;
           renderCostMatrix(card,true);
         }
-        const controls=[...card.querySelectorAll('input,select,textarea')];
+        const controls=[...card.querySelectorAll('input,select,textarea')].filter(el=>!el.closest('.choice-editor'));
         (draft.controls?.[i]||[]).forEach((value,j)=>{
           const el=controls[j];if(!el)return;
           if('checked' in value)el.checked=value.checked;else el.value=value.value;
@@ -1033,10 +1062,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
-    if(!answer||typeof answer!=='object'){html+=`<article class="answer"><h3>${esc(name)}</h3><pre>${esc(JSON.stringify(answer,null,2))}</pre></article>`;continue;}
-    const type=answer.type||q.type||'unknown', view=RESULT_VIEWS[type];
-    const body=view?view(answer,q):answer.probabilities&&typeof answer.probabilities==='object'?decisionView(name,answer,q):`<pre>${esc(JSON.stringify(answer,null,2))}</pre>`;
-    html+=`<article class="answer"><h3><span>${esc(name)}</span><span class="chip">${esc(type)}</span>${answer.experimental?`<span class="badge experimental">${t('experimental')}</span>`:''}</h3>${safetyStrip(answer,q,entry)}${thinkBlock(answer)}${body}</article>`;
+    html+=DecisionTools.answerPanel(name,answer,q,entry);
   }
   const spans=typeof request.state==='string'?sourceSpans(answers,request):[];
   const u=data?.usage, mediaUsage=u?.media;
@@ -1086,7 +1112,10 @@ $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
 $('#stateInput').addEventListener('input',()=>{$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
-  if($('#editJsonToggle').checked){syncRequest(true);}
+  if($('#editJsonToggle').checked){
+    try {$('#requestJson').value=JSON.stringify(buildRequest(),null,2);showMediaError();}
+    catch(error){setChecked($('#editJsonToggle'),false);showMediaError(error.message);return;}
+  }
   else{
     let request;
     try{request=JSON.parse($('#requestJson').value);}
@@ -1123,9 +1152,8 @@ function renderConnect() {
   const endpoint=connectionEndpoint(), name=selectedModel||readyModels()[0]?.id||'model-id';
   const requireKey=serving?serving.require_key:settings.require_key, mcp=serving?serving.mcp:settings.mcp;
   const key=requireKey?'<your key>':null, auth=key?` -H 'Authorization: Bearer ${key}'`:'';
-  const keyArg=key?`, api_key="${key}"`:'';
-  const mcpHttp=mcp
-    ?JSON.stringify({mcpServers:{basal:{url:`${endpoint}/mcp`,...(key?{headers:{Authorization:`Bearer ${key}`}}:{})}}},null,2)+'\n\n'
+  const mcpHttp=serving?.running&&mcp
+    ?JSON.stringify({mcpServers:{basal:{url:`${endpoint}/mcp`,...(key?{headers:{Authorization:`Bearer ${key}`}}:{})}}},null,2)
     :'';
   const snippets={
     curl:`curl -X POST ${endpoint}/v1/systemone -H 'Content-Type: application/json'${auth} -d '{"model":"${name}","state":"...","questions":{"route":{"type":"choice","instructions":"Choose a route","criteria":{"sales":"sales","support":"support"}}}}'
@@ -1159,10 +1187,7 @@ decision = client.decisions.create(
       model: hosted_vllm/${name}
       api_base: ${endpoint}
       api_key: ${key||'local'}`,
-    mcp:mcpHttp+`# stdio bridge
-basal-mcp --url ${endpoint} --model ${name}${key?` --api-key ${key}`:''}
-
-The MCP server also provides list_models().`,
+    mcp:mcpHttp,
   };
   $('#connectCurl').textContent=snippets.curl;
   $('#connectPython').textContent=snippets.python;
@@ -1170,13 +1195,15 @@ The MCP server also provides list_models().`,
   $('#connectOpenai').textContent=snippets.openai;
   $('#connectLitellm').textContent=snippets.litellm;
   $('#connectMcp').textContent=snippets.mcp;
-  $('#mcpConnectHint').hidden=Boolean(mcp);
+  $('#mcpConnectHint').hidden=Boolean(mcpHttp);
+  $('#copyServeConnect').disabled=connectTab==='mcp'&&!mcpHttp;
   $('#runningServerNote').hidden=!statusCache?.serving?.restart_required;
   $('#connectTabs').querySelectorAll('[data-connect]').forEach(tab=>{
     const active=tab.dataset.connect===connectTab;
     tab.classList.toggle('active',active); tab.setAttribute('aria-selected',String(active));
   });
   document.querySelectorAll('[data-connect-panel]').forEach(panel=>{panel.hidden=panel.dataset.connectPanel!==connectTab;});
+  window.RequestCode.connectionChanged();
 }
 
 // the endpoint line of the API server card: where the API answers now, and whether saved settings await a restart
@@ -1224,7 +1251,7 @@ $('#saveServe').onclick=async()=>{
       enabled:$('#serveEnabled').checked,host:serveHost,port:Number($('#servePort').value),
       require_key:$('#serveRequireKey').checked,max_len:Number($('#serveMaxLen').value),
       cors_origins:$('#serveCors').value.split('\n').map(value=>value.trim()).filter(Boolean),
-      log_decisions:$('#serveLog').value,mcp:$('#serveMcp').checked,auto_load:$('#autoLoad').checked
+      log_decisions:$('#serveLog').value,mcp:$('#serveMcp').checked
     })});
     showServeError(''); await loadServe(); await refreshStatus();
     toast(statusCache?.serving?.restart_required?t('Settings saved — restart the server to apply'):t('Settings saved'));
@@ -1361,6 +1388,7 @@ function renderPlaygroundModels(ready) {
   $('#playgroundForm').disabled=!ready.length; $('#playgroundHint').hidden=Boolean(ready.length);
   setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
   setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
+  DecisionTools.refreshModels(ready);
 }
 function setPlaygroundMedia(kinds) {
   if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
@@ -2021,7 +2049,7 @@ function inspectDecision(request) {
   const frame=$('#vizFrame'), send=()=>frame.contentWindow.postMessage({request:handoff.body},location.origin);
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
-const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, MCP and the memory budget.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.']};
+const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, and MCP.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],settings:['12 / SETTINGS','Settings','Manage memory, storage, defaults, and appearance.']};
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
@@ -2034,6 +2062,7 @@ function showView(hash, updateHash=false) {
   $('.nav-tools').classList.toggle('active',secondary);
   $('.nav-tools').open=false;
   $('.appearance-controls details').open=false;
+  StudioShell.onView(name,arg);
   if(name!=='dashboard'){trafficGeneration++;trafficPending=false;}
   else if(!wasDashboard)refreshStatus();
   const target=`#${name}${arg?`/${arg}`:''}`;
