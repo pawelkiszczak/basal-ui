@@ -34,6 +34,16 @@ def available(variant, hw):
     return {m["mode"] for m in options.available_modes(variant, hw, catalog.assess(variant, hw)) if m["available"]}
 
 
+def probe(monkeypatch, **flags):
+    """The Engine capabilities basal_ui.options sees: the named probes as given, the others as installed."""
+    real = engine.feature
+    monkeypatch.setattr(options, "feature", lambda name: flags[name] if name in flags else real(name))
+
+
+PICO = Variant("pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True)
+APPLE = Hardware("apple", "Apple M4 Max", 64 * 1024**3, None, None, frozenset({"mps", "mlx"}))
+
+
 def test_defaults_emit_nothing_and_every_non_default_its_flag():
     assert options.args({}) == [] and options.args(dict(options.DEFAULTS)) == []
     flags = options.args(
@@ -194,8 +204,7 @@ def test_every_engine_switch_reaches_basal_serve_as_it_reads_it(tmp_path):
 
 
 def test_the_adapter_option_is_refused_and_explained_without_an_engine_that_takes_it(tmp_path, monkeypatch):
-    real = engine.feature
-    monkeypatch.setattr(engine, "feature", lambda name: False if name == "adapter" else real(name))  # engine 2.4.1
+    probe(monkeypatch, adapter=False)  # engine 2.4.1
     with pytest.raises(ValueError, match="load option adapter: LoRA adapters at load need basal engine 2.5.0"):
         options.validate({"adapter": str(tmp_path)})
     app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CPU)
@@ -362,10 +371,9 @@ def test_cuda_graph_modes_require_ampere_or_newer():
     options.check_combination(BF16, sm89, options.validate({"quant": "fp8"}, "fast"), "fast")
 
 
-def test_pico_modes_follow_basal_serve_refusals():
-    pico = Variant(
-        "pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True
-    )
+def test_pico_modes_follow_basal_serve_refusals(monkeypatch):
+    probe(monkeypatch, mlx_recurrent=False)
+    pico = PICO
     fla = Hardware("cuda", "NVIDIA H100", 80 * 1024**3, None, (9, 0), frozenset({"cuda", "vllm", "fla"}))
     modes = {m["mode"]: m for m in options.available_modes(pico, fla, catalog.assess(pico, fla))}
     assert {m for m, row in modes.items() if row["available"]} >= {"fast", "fast-nocompile", "eager", "vllm"}
@@ -396,6 +404,55 @@ def test_pico_modes_follow_basal_serve_refusals():
         else:
             options.check_combination(pico, fla, options.validate(chosen), "fast")
     options.check_combination(pico, fla, options.validate({"prefix_cache": True}), "eager")
+
+
+@pytest.mark.parametrize("mlx_recurrent", [True, False])
+def test_pico_serves_with_mlx_from_its_bf16_weights_with_engine_2_5(monkeypatch, mlx_recurrent):
+    probe(monkeypatch, mlx_recurrent=mlx_recurrent)
+    modes = {m["mode"]: m for m in options.available_modes(PICO, APPLE, catalog.assess(PICO, APPLE))}
+    assert [m for m, row in modes.items() if row["default"]] == ["eager"]  # basal-serve's default stays eager
+    assert modes["mps"]["reason"] == options.RECURRENT_REASON
+    plain = options.validate({"mode": "mlx"}, "eager")
+    if not mlx_recurrent:  # engine 2.4.1
+        assert modes["mlx"]["reason"] == modes["mlx-q8"]["reason"] == options.MLX_RECURRENT_REASON
+        assert modes["mlx"]["reason_code"] == "reason_mlx_recurrent"
+        with pytest.raises(ValueError, match="from basal engine 2.5.0 on"):
+            options.check_combination(PICO, APPLE, plain, "eager")
+        return
+    assert modes["mlx"]["available"] and modes["mlx"]["reason"] is None
+    assert modes["mlx-q8"]["reason"] == options.MLX_Q8_RECURRENT_REASON
+    assert modes["mlx-q8"]["reason_code"] == "reason_mlx_q8_recurrent"
+    options.check_combination(PICO, APPLE, plain, "eager")
+    for refused, match in (
+        ({"mode": "mlx-q8"}, "quantised MLX weights"),
+        ({"mode": "mlx", "quant": "q8"}, "quantised MLX weights"),
+        ({"mode": "mlx", "state_cache_gb": 1.0}, "keep attention keys and values only"),
+        ({"mode": "mlx", "prefix_cache": True}, "keep attention keys and values only"),
+        ({"mode": "mlx", "mlx_packed": True}, "MLX packed needs a Llama"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            options.check_combination(PICO, APPLE, options.validate(refused, "eager"), "eager")
+    # a quantised MLX export of a Qwen3.5 model: refused by the engine as well
+    pico_mlx = Variant(
+        "pico-mlx",
+        "Remek/basal-omni-pico-MLX-8bit",
+        "basal-omni",
+        "pico",
+        "MLX-8bit",
+        "MLX 8-bit",
+        None,
+        1,
+        True,
+        recurrent=True,
+    )
+    rows = {m["mode"]: m for m in options.available_modes(pico_mlx, APPLE, catalog.assess(pico_mlx, APPLE))}
+    assert rows["mlx"]["reason"] == options.MLX_Q8_RECURRENT_REASON
+    with pytest.raises(ValueError, match="quantised MLX weights"):
+        options.check_combination(pico_mlx, APPLE, options.validate({"mode": "mlx"}, "mlx"), "mlx")
+    # the CPU has no MLX: the device reason comes first
+    assert options.available_modes(PICO, CPU, catalog.assess(PICO, CPU))[0]["mode"] == "fast"
+    cpu = {m["mode"]: m for m in options.available_modes(PICO, CPU, catalog.assess(PICO, CPU))}
+    assert cpu["mlx"]["reason"] == options.OPTION_TEMPLATES["mode_mlx_device"]
 
 
 def test_thinking_needs_basal_2_0_4_5b_with_vllm_and_early_exit_needs_fast_exit():
