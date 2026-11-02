@@ -251,7 +251,8 @@ def _basal_calibrate(job, argv, writer):
 def name_snapshot(path, local_dir):
     """basal-calibrate 2.4.1 records `--model` as given: for a Hugging Face cache snapshot (how basal-ui passes a
     model) the file then names a local path, which basal-serve's calibration check does not match with the served repo
-    id. Record the snapshot as its repo id and commit, as basal-serve names the served model."""
+    id. Record the snapshot as its repo id and commit, as basal-serve names the served model (2.5.0 records them
+    itself, rkinas/basal#71: the file then no longer names the local path and is left as written)."""
     cal = json.loads(Path(path).read_text(encoding="utf-8"))
     fitted = cal.get("fitted_on")
     if not isinstance(fitted, dict) or fitted.get("model") != str(local_dir):

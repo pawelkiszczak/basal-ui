@@ -1152,7 +1152,7 @@ const PL = {
   "validated": "zatwierdzone",
   "variant": "wariant",
   "variants": "warianty",
-  "weights: served {label} ({model}), explained bf16 ({inspector})": "wagi: serwowany {label} ({model}), wyjaśniany bf16 ({inspector})",
+  "weights: served {label} ({model}), explained {explained} ({inspector})": "wagi: serwowany {label} ({model}), wyjaśniany {explained} ({inspector})",
   "with media": "z mediami",
   "without thinking": "bez rozumowania",
   "wrong": "błędnie",

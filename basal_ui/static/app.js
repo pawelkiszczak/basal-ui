@@ -2028,7 +2028,7 @@ function inspectHandoff(request) {
   tasks.forEach(n=>delete body.questions[n]);
   if(!Object.keys(body.questions||{}).length)return {blocked:t('basal-viz explains decision questions; this request has only task questions')};
   if(tasks.length)notes.push(t('{questions}: task questions are left out (basal-viz explains the decision questions)',{questions:tasks.join(', ')}));
-  if(st.model!==request.model)notes.push(t('weights: served {label} ({model}), explained bf16 ({inspector})',{label:sv.label,model:request.model,inspector:st.model}));
+  if(st.model!==request.model)notes.push(t('weights: served {label} ({model}), explained {explained} ({inspector})',{label:sv.label,model:request.model,explained:iv?.label||'bf16',inspector:st.model}));
   if(served?.mode&&served.mode!==st.mode)notes.push(t('engine: served {mode}, explained {inspector} on {device}',{mode:served.mode,inspector:st.mode,device:st.device}));
   const orders=served?.entry?.orders;
   if(orders!=null&&String(orders)!==String(st.orders))notes.push(t('option orders: served {orders}, explained {inspector}{match}',{orders,inspector:st.orders,match:['1','2'].includes(String(orders))?` (${t('start the inspector with {n} option {order} to match',{n:orders,order:String(orders)==='1'?t('order'):t('orders')})})`:''}));
