@@ -14,6 +14,7 @@ import base64
 import dataclasses
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -27,7 +28,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -158,7 +159,7 @@ def create_app(
 
     def _auto_load():
         try:
-            variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+            variants, _ = all_variants()
         except Exception as exc:  # the catalog is unavailable: nothing to load
             print(f"basal-ui: auto-load skipped: {exc}", file=sys.stderr)
             fleet.event("warn", f"auto-load skipped: {exc}")
@@ -278,8 +279,14 @@ def create_app(
     def index():
         return FileResponse(STATIC / "index.html")
 
+    def all_variants(cache_dir=None, refresh=False):
+        variants, source = catalog_fn(cache_dir=cache_dir or settings_mod.models_dir(), refresh=refresh)
+        if engine.feature("attach"):
+            variants = [*variants, *catalog.attached_variants(settings_mod.attached_models())]
+        return variants, source
+
     def find_variant(model_id):
-        variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, _ = all_variants()
         variant = next((v for v in variants if v.id == model_id), None)
         if variant is None:
             raise HTTPException(400, f"unknown model {model_id!r}")
@@ -370,6 +377,92 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         return get_memory()
 
+    @app.get("/api/attach")
+    def get_attach_options():
+        available = engine.feature("attach")
+        return {"available": available, "bases": list(catalog.ATTACHABLE) if available else []}
+
+    @app.post("/api/attach", status_code=202)
+    def post_attach(body: dict = Body(...)):
+        if not engine.feature("attach"):
+            raise HTTPException(400, "attached models need engine 2.5")
+        base, revision, fmt = body.get("base"), body.get("revision"), body.get("format", 1)
+        if base not in catalog.ATTACHABLE:
+            raise HTTPException(400, f"base must be one of {', '.join(catalog.ATTACHABLE)}")
+        if revision is not None and (not isinstance(revision, str) or not revision.strip() or "\0" in revision):
+            raise HTTPException(400, "revision must be a non-empty string or null")
+        if type(fmt) is not int or fmt not in (1, 2):
+            raise HTTPException(400, "format must be 1 or 2")
+        slug = base.lower().replace("/", "-")
+        model_id = f"attached/{slug}"
+        if any(record.get("id") == model_id for record in settings_mod.attached_models()):
+            raise HTTPException(409, f"attached model {model_id!r} already exists")
+        out_dir = settings_mod.models_dir() / "attached" / slug
+        if out_dir.exists():
+            raise HTTPException(409, f"attached model directory already exists: {out_dir}")
+        source = catalog.Variant(
+            base, base, "attached-base", "unknown", "bf16", "bf16", None, None, True, cache_revision=revision
+        )
+
+        def attach_job(job):
+            from .jobs import run_tool
+
+            fleet.download(source)
+            while fleet.downloads.alive(base):
+                job.check()
+                progress = fleet.downloads.status().get(base, {})
+                if progress.get("error"):
+                    raise RuntimeError(f"download failed: {progress['error']}")
+                time.sleep(0.1)
+            progress = fleet.downloads.status().get(base, {})
+            if progress.get("error"):
+                raise RuntimeError(f"download failed: {progress['error']}")
+            snapshot = catalog.is_downloaded(source, settings_mod.models_dir(), revision=revision)
+            if snapshot is None:
+                raise RuntimeError(f"downloaded base {base!r} is incomplete")
+            job.check()
+            try:
+                run_tool(job, "attach", [snapshot, "--out", out_dir, "--format", str(fmt)])
+                record = {
+                    "id": model_id,
+                    "base": base,
+                    "revision": revision,
+                    "out_dir": str(out_dir),
+                    "format": fmt,
+                    "created": int(time.time()),
+                }
+                settings_mod.add_attached(record)
+                return record
+            except BaseException:
+                if out_dir.exists():
+                    shutil.rmtree(out_dir)
+                raise
+
+        try:
+            return fleet.jobs.start("attach", model_id, f"Attach {base}", attach_job)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/api/attach/{model_id:path}")
+    def delete_attached(model_id: str):
+        if not engine.feature("attach"):
+            raise HTTPException(400, "attached models need engine 2.5")
+        with fleet.lock:
+            record = next((r for r in settings_mod.attached_models() if r.get("id") == model_id), None)
+            if record is None:
+                raise HTTPException(404, f"unknown attached model {model_id!r}")
+            runner = fleet.runners.get(model_id)
+            if runner is not None and runner.state != "idle":
+                raise HTTPException(409, "unload the attached model first")
+            out_dir = Path(record["out_dir"])
+            attached_root = (settings_mod.models_dir() / "attached").resolve()
+            if out_dir.parent.resolve() != attached_root:
+                raise HTTPException(409, "attached model directory is outside the models directory")
+            if out_dir.exists():
+                shutil.rmtree(out_dir)
+            settings_mod.remove_attached(model_id)
+        return {"deleted": model_id}
+
     @app.post("/api/restart", status_code=202)
     def restart_model(body: dict = Body(...)):
         model_id = body.get("id")
@@ -378,7 +471,7 @@ def create_app(
             raise HTTPException(404, f"model {model_id!r} is not loaded")
         if current["state"] in ("downloading", "starting"):
             raise HTTPException(409, "model is still loading")
-        variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, _ = all_variants()
         variant = next((v for v in variants if v.id == model_id), None)
         if variant is None:
             raise HTTPException(400, "loaded model is no longer available")
@@ -397,9 +490,7 @@ def create_app(
 
     from .backends import Manager as BackendManager
 
-    backend_manager = BackendManager(
-        fleet, lambda: catalog_fn(cache_dir=settings_mod.models_dir())[0], hardware_fn, settings_mod
-    )
+    backend_manager = BackendManager(fleet, lambda: all_variants()[0], hardware_fn, settings_mod)
     app.state.backends = backend_manager
 
     @app.get("/api/addons")
@@ -539,7 +630,7 @@ def create_app(
         available = {item["id"] for item in installed}
         if backend not in available:
             raise HTTPException(400, f"unknown or unavailable recommendation backend {backend!r}")
-        variants, source = catalog_fn(refresh=refresh, cache_dir=cache_dir)
+        variants, source = all_variants(refresh=refresh, cache_dir=cache_dir)
         baseline = [catalog.assess(v, current_hw) for v in variants]
         recommended = baseline
         if backend != "automatic":
@@ -624,12 +715,14 @@ def create_app(
             "weights_bytes",
             "experimental",
             "recurrent",
+            "local_dir",
         )
         on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in baseline}
         saved = settings_mod.load().get("load_options")  # once, not load_options() per row
         revisions = (
             {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
         )
+        selected_calibrations = settings_mod.calibration_selection()
         return {
             "source": source,
             "recommendation_backends": installed,
@@ -659,6 +752,11 @@ def create_app(
                     "downloaded": on_disk[a.variant.id] is not None,
                     "downloaded_bytes": on_disk[a.variant.id],
                     "revision": revisions.get(a.variant.id),
+                    "attached": a.variant.family == "attached",
+                    "uncalibrated": (
+                        a.variant.family == "attached"
+                        and not Path(selected_calibrations.get(a.variant.id, "")).is_file()
+                    ),
                     "inspect_reason": inspectable(a.variant, current_hw),
                 }
                 for a in baseline
@@ -791,7 +889,7 @@ def create_app(
         installed = ui_version()
         engine_status = engine.status()
         engine_latest, engine_error = updates.latest(updates.ENGINE_REPO) if enabled else (None, None)
-        variants, source = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, source = all_variants()
         # only the hub catalog is the whole catalog: the cache fallback would seed (or report) a partial list
         new_models = settings_mod.update_seen_ids(v.id for v in variants) if source == "hub" else []
         return {
@@ -817,7 +915,7 @@ def create_app(
 
     @app.post("/api/updates/seen")
     def mark_updates_seen():
-        variants, source = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, source = all_variants()
         if source == "hub":
             settings_mod.mark_models_seen(v.id for v in variants)
         return get_updates()

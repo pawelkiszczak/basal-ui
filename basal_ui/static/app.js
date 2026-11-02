@@ -103,6 +103,7 @@ function renderModels(data) {
   backendSelect.value=recommendationBackend;
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
+  renderAttachControl();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
@@ -200,9 +201,8 @@ function renderDiskModels() {
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.attached?`<span class="chip">${t('Attached')}</span>${m.uncalibrated?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
-  $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
   renderManagerSummary();
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
@@ -223,6 +223,31 @@ function renderModelLoader() {
   }).join(''):`<p class="muted">${t(inspecting?'Download a bf16 model first':'Nothing downloaded yet')}</p>`;
   if(container.innerHTML!==html)container.innerHTML=html;
 }
+async function renderAttachControl() {
+  const card=$('#attachCard');
+  try{
+    const data=await api('/api/attach');
+    card.hidden=!data.available;
+    $('#attachBase').innerHTML=(data.bases||[]).map(base=>`<option value="${esc(base)}">${esc(base)}</option>`).join('');
+  }catch{card.hidden=true;}
+}
+$('#attachModel').onclick=()=>act(async()=>{
+  const base=$('#attachBase').value;
+  await api('/api/attach',{method:'POST',body:JSON.stringify({base})});
+  toast(t('Attach job started'));
+  await refreshStatus();
+});
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.remove-attached');
+  if(!button)return;
+  act(async()=>{
+    const id=button.dataset.id;
+    if(!await confirmDialog({title:t('Remove attached model?'),description:t('{model} will be removed from disk.',{model:id}),confirmLabel:t('Remove'),destructive:true}))return;
+    await api(`/api/attach/${encodeURIComponent(id)}`,{method:'DELETE'});
+    toast(t('Attached model removed'));
+    await loadModels();
+  });
+});
 $('#openModelLoader').onclick=()=>{$('#modelLoaderDialog').showModal();renderModelLoader();};
 document.addEventListener('click',event=>{
   const button=event.target.closest('.use-loaded-model');if(!button)return;
@@ -1300,8 +1325,20 @@ function renderManagerSummary() {
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
+let lastAttachedJobRefresh=null;
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  const attachJob=s.jobs?.attach;
+  if(attachJob){
+    const progress=s.downloads?.[$('#attachBase').value];
+    $('#attachBase').disabled=attachJob.running;
+    $('#attachModel').disabled=attachJob.running;
+    $('#attachJob').textContent=attachJob.running?`${t('Attaching {model}',{model:attachJob.model})}${progress?` · ${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}`:''}`:attachJob.phase==='error'?t('Failed: {error}',{error:attachJob.error}):attachJob.phase==='done'?t('Attached model ready'):'';
+    if(!attachJob.running&&attachJob.phase==='done'&&lastAttachedJobRefresh!==attachJob.started){
+      lastAttachedJobRefresh=attachJob.started;
+      loadModels();
+    }
+  }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
@@ -1614,7 +1651,7 @@ function renderCalibrationFiles(id, d) {
     const sequence=++calibrationSequence, data=await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})});
     if(!calibrationCurrent(id,sequence))return;
     renderCalibrationFiles(id,data);
-    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus();
+    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus(); await loadModels();
   }));
   $('#calibrationFiles').querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
