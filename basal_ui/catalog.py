@@ -604,13 +604,19 @@ def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> li
 
 
 def _optional(name: str) -> bool:
-    """Files the default serving modes never read: the 4.5B's thinking-mode model (think/, a second full copy)."""
-    return name.startswith("think/")
+    """Files the default serving modes never read: the 4.5B's thinking-mode model (think/, a second full copy), and the
+    prepared start-up kernels of engine 2.5.0 (prepared/<key>/, one per GPU class and version: basal-serve's
+    --prepared auto fetches the one for this machine itself, prepared.fetch, and compiles as before without it)."""
+    return name.startswith(("think/", "prepared/"))
 
 
 def download_kwargs(v: Variant, revision: str | None = None) -> dict:
     """snapshot_download filters for one variant and optional pinned revision."""
-    kwargs = {"allow_patterns": [v.gguf_file, *_BASE_FILES]} if v.port == "GGUF" else {"ignore_patterns": ["think/*"]}
+    kwargs = (
+        {"allow_patterns": [v.gguf_file, *_BASE_FILES]}
+        if v.port == "GGUF"
+        else {"ignore_patterns": ["think/*", "prepared/*"]}
+    )
     revision = revision if revision is not None else v.cache_revision
     if revision is not None:
         kwargs["revision"] = revision

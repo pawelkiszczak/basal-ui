@@ -15,6 +15,9 @@
   (basal-viz `--mode mlx`). [USAGE.md](USAGE.md#inspect)
 - The LoRA adapter load option says it needs engine 2.5.0 (it shipped there, not in 2.5.1), and the API server keeps
   the `code` of a basal-serve error body (2.5.0) instead of deriving it from the status.
+- A model whose Hugging Face repository now ships engine 2.5.0's prepared start-up kernels (`prepared/<key>/`, e.g.
+  basal-2.0-mini since 2 November) is no longer reported as not downloaded: basal-ui neither downloads nor requires
+  them, and basal-serve's `--prepared auto` fetches the one for this GPU itself.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
