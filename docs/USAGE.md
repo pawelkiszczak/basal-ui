@@ -293,10 +293,13 @@ the facts for a newer value.
 
 **Inspect** embeds `basal-viz` ([in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SERVING.md#see-how-a-decision-is-made))
 for a downloaded bf16 PyTorch checkpoint of basal-1.0, basal-1.5, basal-2.0 or Gemma 4 basal-omni (not the recurrent
-basal-omni-pico; the MLX, GGUF, FP8 and NVFP4 ports cannot be read layer by layer). Gemma 4 basal-omni needs an engine
-whose basal-viz reads it (proposed upstream, [rkinas/basal#75](https://github.com/rkinas/basal/pull/75)); on other
-engines the Inspect list shows it disabled with that reason. **Start** loads its own model copy into basal-ui's
-process (MPS on Apple Silicon, CUDA on NVIDIA, else the CPU; its memory is counted in the budget until **Stop**), with
+basal-omni-pico; the GGUF, FP8 and NVFP4 ports cannot be read layer by layer). With Engine 2.5.0 on Apple Silicon with
+`basal[mlx]` it also reads the MLX ports of basal-1.0, basal-1.5 and basal-2.0 (basal-viz `--mode mlx`, the layers of
+the MLX engine that serves them); with Engine 2.4.1, on other machines and for MLX ports of basal-omni the Inspect list
+shows them disabled with the reason. Gemma 4 basal-omni needs an engine whose basal-viz reads it (Engine 2.5.0,
+[rkinas/basal#75](https://github.com/rkinas/basal/pull/75)); on 2.4.1 the Inspect list shows it disabled with that
+reason. **Start** loads its own model copy into basal-ui's process (MPS on Apple Silicon, MLX for an MLX port, CUDA on
+NVIDIA, else the CPU; its memory is counted in the budget until **Stop**), with
 the shipped calibration or one fitted in basal-ui and the model's own option orders or 1 or 2, and the page appears
 below. basal-viz reads text only; requests carrying media are refused. **Inspect this decision** in the Playground
 sends the current request there (with `facts` and `lang`) and lists what differs from the served decision: other

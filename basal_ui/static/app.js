@@ -1985,7 +1985,7 @@ function renderInspectModels() {
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
-  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz reads bf16 weights')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
+  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
   loadInspectCalibrations();

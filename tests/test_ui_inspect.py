@@ -15,6 +15,7 @@ from basal_ui.jobs import Cancelled, Job, LogBuffer
 from basal_ui.stats import Stats
 
 HW = Hardware("cpu", "cpu", 1024**4, None, None, frozenset())
+APPLE = Hardware("apple", "Apple M4 Max", 64 * 1024**3, None, None, frozenset({"mps", "mlx"}))
 BF16 = Variant("mini", "Remek/basal-2.0-mini", "basal-2.0", "mini", "bf16", "bf16", None, 100, False)
 MLX = Variant(
     "mini-mlx", "Remek/basal-2.0-mini-MLX-8bit", "basal-2.0", "mini", "MLX-8bit", "MLX 8-bit", None, 100, False
@@ -43,30 +44,40 @@ PICO = Variant("pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "b
 
 
 @pytest.mark.parametrize("viz_gemma4", [True, False])
-def test_inspect_eligibility_takes_omni_bf16_only_with_an_engine_that_reads_it(monkeypatch, viz_gemma4):
-    monkeypatch.setattr(inspect, "feature", lambda name: {"viz_gemma4": viz_gemma4}[name])
-    assert inspect.inspectable(BF16) is None
-    assert inspect.inspectable(OMNI_BF16) == (None if viz_gemma4 else inspect.OMNI_NEEDS_ENGINE)
-    assert inspect.inspectable(PICO) == inspect.NOT_INSPECTABLE
-    for variant in (OMNI_FP8, OMNI_GGUF, OMNI_MLX, MLX):
-        assert inspect.inspectable(variant) == inspect.NOT_INSPECTABLE
+@pytest.mark.parametrize("viz_mlx", [True, False])
+def test_inspect_eligibility_follows_the_engine_and_the_machine(monkeypatch, viz_gemma4, viz_mlx):
+    monkeypatch.setattr(inspect, "feature", lambda name: {"viz_gemma4": viz_gemma4, "viz_mlx": viz_mlx}[name])
+    for hw in (HW, APPLE):
+        assert inspect.inspectable(BF16, hw) is None
+        assert inspect.inspectable(OMNI_BF16, hw) == (None if viz_gemma4 else inspect.OMNI_NEEDS_ENGINE)
+        assert inspect.inspectable(PICO, hw) == inspect.NOT_INSPECTABLE
+        for variant in (OMNI_FP8, OMNI_GGUF, OMNI_MLX):  # basal-viz's MLX modes read Llama layers only
+            assert inspect.inspectable(variant, hw) == inspect.NOT_INSPECTABLE
+    # an MLX port of a Llama family: engine 2.5.0's basal-viz --mode mlx, on Apple Silicon with basal[mlx]
+    assert inspect.inspectable(MLX, APPLE) == (None if viz_mlx else inspect.MLX_NEEDS_ENGINE)
+    assert inspect.inspectable(MLX, HW) == (inspect.MLX_NEEDS_MAC if viz_mlx else inspect.MLX_NEEDS_ENGINE)
+    no_mlx = Hardware("apple", "Apple M1", 16 * 1024**3, None, None, frozenset({"mps"}))
+    assert inspect.inspectable(MLX, no_mlx) == (inspect.MLX_NEEDS_MAC if viz_mlx else inspect.MLX_NEEDS_ENGINE)
 
 
 def test_models_api_reports_why_a_variant_cannot_be_inspected(client):
     models = {m["id"]: m for m in client.get("/api/models").json()["models"]}
     assert models["mini"]["inspect_reason"] is None
-    assert models["mini-mlx"]["inspect_reason"] == models["pico"]["inspect_reason"] == inspect.NOT_INSPECTABLE
+    assert models["pico"]["inspect_reason"] == inspect.NOT_INSPECTABLE
+    assert models["mini-mlx"]["inspect_reason"] == inspect.inspectable(MLX, HW)  # the CPU: never None
+    assert models["mini-mlx"]["inspect_reason"] in (inspect.MLX_NEEDS_MAC, inspect.MLX_NEEDS_ENGINE)
     assert models["pico"]["recurrent"] is True
 
 
 class StubExplainer:
     def __init__(self, a):
         self.a = a
+        mlx = getattr(a, "mode", None) == "mlx"  # basal-viz: the MLX engine reports device "mlx", mode "mlx"
         self.info = {
             "model": "stub",
-            "device": a.device,
+            "device": "mlx" if mlx else a.device,
             "layers": 2,
-            "mode": "eager",
+            "mode": "mlx" if mlx else "eager",
             "orders": 2,
             "temperatures": {"choice": 1.1},
             "temperature_per_bucket": {},
@@ -87,41 +98,52 @@ class StubExplainer:
         return {"questions": [], "state": body["state"]}
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
+def make_client(tmp_path, monkeypatch, hw):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     monkeypatch.setattr(inspect, "Explainer", StubExplainer)
     monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
     fleet = Fleet(
         models_dir_fn=lambda: tmp_path,
-        platform_fn=lambda: "cpu",
+        platform_fn=lambda: hw.platform,
         settings_mod=settings,
-        hardware_fn=lambda: HW,
+        hardware_fn=lambda: hw,
         stats=Stats(tmp_path / "s.json"),
         history=History(tmp_path / "h.jsonl"),
     )
     app = create_app(
         catalog_fn=lambda **_: ([BF16, MLX, PICO], "test"),
-        hardware_fn=lambda: HW,
+        hardware_fn=lambda: hw,
         fleet=fleet,
         stats=fleet.stats,
         history=fleet.history,
     )
-    with TestClient(app, base_url="http://127.0.0.1") as c:
-        c.fleet = fleet
+    c = TestClient(app, base_url="http://127.0.0.1")
+    c.fleet = fleet
+    return c
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    with make_client(tmp_path, monkeypatch, HW) as c:
         yield c
+
+
+def wait_ready(client):
+    deadline = time.monotonic() + 5
+    while client.get("/api/inspect").json()["state"] != "ready" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return client.get("/api/inspect").json()
 
 
 def test_inspector_serves_basal_viz_for_a_bf16_model_and_stops(client):
     assert client.get("/viz/api/info").status_code == 503
     assert client.get("/viz/").status_code == 200  # the page itself
-    refused = client.post("/api/inspect", json={"id": "mini-mlx"})
+    refused = client.post("/api/inspect", json={"id": "pico"})
     assert refused.status_code == 400 and "bf16 PyTorch weights" in refused.json()["detail"]
+    refused = client.post("/api/inspect", json={"id": "mini-mlx"})  # an MLX port on the CPU
+    assert refused.status_code == 400 and refused.json()["detail"] == inspect.inspectable(MLX, HW)
     assert client.post("/api/inspect", json={"id": "mini"}).status_code == 202
-    deadline = time.monotonic() + 5
-    while client.get("/api/inspect").json()["state"] != "ready" and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert client.get("/api/inspect").json() == {
+    assert wait_ready(client) == {
         "model": "mini",
         "state": "ready",
         "error": None,
@@ -138,6 +160,36 @@ def test_inspector_serves_basal_viz_for_a_bf16_model_and_stops(client):
     assert client.fleet.reserved["inspect"] == catalog.assess(BF16, HW).est_memory_bytes
     assert client.delete("/api/inspect").json()["state"] == "idle"
     assert client.get("/viz/api/info").status_code == 503 and client.fleet.reserved == {}
+
+
+@pytest.mark.parametrize("viz_mlx", [True, False])
+def test_an_mlx_port_is_inspected_with_basal_viz_mlx_mode_on_apple_silicon(tmp_path, monkeypatch, viz_mlx):
+    monkeypatch.setattr(inspect, "feature", lambda name: viz_mlx if name == "viz_mlx" else True)
+    created = []
+
+    class Recording(StubExplainer):
+        def __init__(self, a):
+            created.append(a)
+            super().__init__(a)
+
+    with make_client(tmp_path, monkeypatch, APPLE) as c:
+        monkeypatch.setattr(inspect, "Explainer", Recording)
+        started = c.post("/api/inspect", json={"id": "mini-mlx"})
+        if not viz_mlx:  # engine 2.4.1: refused before anything is loaded or reserved
+            assert started.status_code == 400 and started.json()["detail"] == inspect.MLX_NEEDS_ENGINE
+            assert created == [] and c.fleet.reserved == {}
+            return
+        assert started.status_code == 202
+        state = wait_ready(c)
+        assert (state["model"], state["state"], state["mode"], state["device"]) == ("mini-mlx", "ready", "mlx", "mlx")
+        (a,) = created
+        assert (a.mode, a.device, a.model) == ("mlx", None, str(tmp_path))  # basal-viz refuses --device with mlx
+        assert c.fleet.reserved["inspect"] == catalog.assess(MLX, APPLE).est_memory_bytes
+        assert c.post("/api/inspect", json={"id": "mini"}).status_code == 202  # bf16: the PyTorch path on MPS
+        state = wait_ready(c)
+        assert (state["model"], state["mode"], state["device"]) == ("mini", "eager", "mps")
+        assert (created[-1].mode, created[-1].device) == (None, "mps")
+        assert c.delete("/api/inspect").json()["state"] == "idle"
 
 
 def test_stopping_during_explainer_construction_never_publishes_ready(client, monkeypatch):
