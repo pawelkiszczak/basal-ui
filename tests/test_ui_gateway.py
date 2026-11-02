@@ -176,7 +176,7 @@ def test_metrics_exports_baseline_and_scrapes_text_metrics_only(fleet, child):
         200,
         "text/plain; version=0.0.4",
         "# HELP basal_requests_total Requests\n# TYPE basal_requests_total counter\n"
-        'basal_requests_total 3\nbasal_requests_total{status="ok"} 4\n',
+        'basal_requests_total 3\nbasal_requests_total{status="ok"} 4\n# TYPE basal_up gauge\nbasal_up 1\n',
     )
     fleet.runners["a/one"].base_url = child.url
     fleet.runners["b/two"].base_url = child.url
@@ -200,6 +200,10 @@ def test_metrics_exports_baseline_and_scrapes_text_metrics_only(fleet, child):
     assert 'basal_ui_traffic_requests_total{endpoint="/v1/systemone",method="POST"} 1' in response.text
     assert response.text.count("# HELP basal_requests_total ") == 1
     assert response.text.count("# TYPE basal_requests_total counter") == 1
+    lines = response.text.splitlines()
+    family = [line for line in lines if "basal_requests_total" in line and "basal_ui_" not in line]
+    start = lines.index(family[0])
+    assert lines[start : start + len(family)] == family  # both children's samples in one contiguous family
 
 
 def test_metrics_skips_children_returning_404(fleet, child):
