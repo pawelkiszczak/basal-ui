@@ -1,21 +1,19 @@
-# 0.1.0rc1
+# 0.1.0
 
-Unreleased release candidate (planned tag `v0.1.0rc1`). The review fixes and contributor PRs
-[#4](https://github.com/pawelkiszczak/basal-ui/pull/4), [#5](https://github.com/pawelkiszczak/basal-ui/pull/5)
-and [#6](https://github.com/pawelkiszczak/basal-ui/pull/6) are merged
-on `dev`; [verification and remaining hardware limits](E2E.md#verified-dev-gate-2026-10-29) are recorded separately.
-No promotion to `stage`/`main` or PyPI publication was performed for that snapshot.
+Stable release, tag `v0.1.0`. Includes the review fixes and Studio redesign with the selected contributor-inspired
+interactions. [Verification and remaining hardware limits](E2E.md#selected-studio-features-gate-2026-11-02) are
+recorded separately; stable versioning does not certify untested hardware or model accuracy.
 
-- Prepare package version `0.1.0rc1` and PyPI trusted publishing. The GitHub `pypi` environment permits only `v*`
+- Publish package version `0.1.0` through PyPI trusted publishing. The GitHub `pypi` environment permits only `v*`
   tags and requires maintainer approval without an administrator bypass. Release tags must come from `main`;
-  release candidates become GitHub prereleases and are not marked Latest. [Release process](../CONTRIBUTING.md#releasing)
+  `v0.1.0` is a stable GitHub release, not a prerelease. [Release process](../CONTRIBUTING.md#releasing)
 
 - Apply the Studio layout throughout the app: Dashboard landing, primary task navigation, Tools and Appearance
   disclosures, paired Playground panels with Request settings, and responsive light/dark English/Polish views.
   Model manager separates Library, Usage by model, Benchmarks and Calibration. The new `/api/traffic?minutes=15|60`
   reports real process-local recorded Decision traffic, including input tokens/s, requests/s, latency, errors and
   public endpoint attribution. Lifetime `/api/stats` stays compatible and shared with Manager; reset scope is explicit.
-  No prototype/demo data or layout switcher ships. Engine range and package version are unchanged.
+  No prototype/demo data or layout switcher ships. The Engine range is unchanged.
 - Keep Dashboard chart/model/endpoint nodes stable during live updates so scrolling and selected endpoint text are
   preserved. Add a shared **Load downloaded model** action across views, including Dashboard, with supported
   text/media loads and **Use** for the current view without discarding its input. Playground attachments and
@@ -35,10 +33,10 @@ No promotion to `stage`/`main` or PyPI publication was performed for that snapsh
   Correct MCP examples to the tested Engine's HTTP-only gateway connection and first-loaded-model routing.
   Ideas from [#9](https://github.com/pawelkiszczak/basal-ui/pull/9) and
   [#11](https://github.com/pawelkiszczak/basal-ui/pull/11) are selectively adapted, not merged wholesale;
-  [contributors](../CONTRIBUTORS.md) are credited by GitHub nickname. Engine pins and version remain unchanged.
+  [contributors](../CONTRIBUTORS.md) are credited by GitHub nickname. Engine pins remain unchanged.
 
-- basal-ui is its own repository and package: import `basal_ui`, the `basal-ui` command, and `pip install basal-ui`
-  after the first PyPI release. Until then, use the [source install](../README.md#install).
+- basal-ui is its own repository and package: import `basal_ui`, use the `basal-ui` command, and install the
+  `basal-ui` distribution separately from the Engine. [Installation](../README.md#install)
 - It runs on upstream engine releases `>=2.4.1,<2.5` and refuses others, printing the install command, unless
   `BASAL_UI_ENGINE_UNCHECKED=1` is set (the top bar then shows an *experimental engine* badge with the version and
   commit). [README](../README.md#supported-engine-range)

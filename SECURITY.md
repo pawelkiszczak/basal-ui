@@ -3,8 +3,8 @@
 ## Supported versions
 
 Only the latest basal-ui release on PyPI receives security fixes.
-Release candidate `0.1.0rc1` is not yet published on PyPI; it is not a stable release. The
-[recorded development verification](docs/E2E.md#studio-refinement-gate-2026-10-30) is not a stable-release or cross-hardware security
+The stable release line is **0.1.0**; publication is performed by the approved tag workflow.
+The [recorded verification](docs/E2E.md#selected-studio-features-gate-2026-11-02) is not a cross-hardware security
 certification. Use [private reporting](#reporting-a-vulnerability) for development findings too.
 
 ## Reporting a vulnerability
