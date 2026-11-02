@@ -73,7 +73,7 @@ uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v
 
 ### PyPI package
 
-Once the release workflow has published `0.1.0`, install that exact stable version:
+Stable **[0.1.0 is available on PyPI](https://pypi.org/project/basal-ui/0.1.0/)**. Install that exact version:
 
 ```bash
 uv venv
@@ -118,13 +118,26 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | the browser app end to end |
 | [docs/API.md](docs/API.md) | basal-ui's API server: keys, CORS, errors, OpenAI Decisions, MCP, clients |
-| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [selected Studio features verification](docs/E2E.md#selected-studio-features-gate-2026-11-02) |
+| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [stable release verification](docs/E2E.md#stable-release-gate-2026-11-02) |
 | [docs/BACKENDS.md](docs/BACKENDS.md) | Backend inventory, compatibility, isolated Inference tests and Engine add-on installation |
 | [docs/WHATS_NEW.md](docs/WHATS_NEW.md) | the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | dev setup, code style, tests, [branches and CI](CONTRIBUTING.md#branches-and-ci) (`dev` → `stage` → `main`), pull requests, the Engine-proposal pipeline, [releasing](CONTRIBUTING.md#releasing) |
 | [CONTRIBUTORS.md](CONTRIBUTORS.md) | who built basal-ui and the work it stands on |
 | [SECURITY.md](SECURITY.md) | supported versions and private vulnerability reports |
 | [rkinas/basal](https://github.com/rkinas/basal) | the engine |
+
+## Contributors
+
+- **Paweł Kiszczak** — [@pawelkiszczak](https://github.com/pawelkiszczak), author and maintainer.
+- **Greg Brzezinka** — [@agentGreg](https://github.com/agentGreg), History fixes and E2E regressions.
+- **Konrad** — [@konraddzbik](https://github.com/konraddzbik), interaction, accessibility and Studio feature ideas.
+- **Marek Wolański** — [@marekwolansky](https://github.com/marekwolansky), Green/Orange skins and visual direction.
+- **Remigiusz Kinas** — [@rkinas](https://github.com/rkinas), the basal Engine and models.
+- **lukaspoloki** — [@lukaspoloki](https://github.com/lukaspoloki), the Engine's basal-viz inspector.
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for full attribution and the related pull requests, and
+[CONTRIBUTING.md](CONTRIBUTING.md) to contribute. Contributor proposals were selectively adapted where noted;
+credit does not imply that their complete PRs were merged.
 
 ## License
 
