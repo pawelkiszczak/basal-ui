@@ -80,7 +80,7 @@ DEFAULTS = {
     "think_log": "basal-think-vllm.log",
 }
 CHOICES = {
-    "quant": (None, "fp8", "nvfp4", "q8"),
+    "quant": (None, "fp8", "nvfp4", "q8"),  # --quant int8 is in basal-serve 2.5.0's choices, validate_quant refuses it
     "attn": ("auto", "fa2", "fa3", "fa4", "cudnn"),
     "gemma_attn": ("auto", "math", "flex", "fa3", "fa3+math"),
     "scheduler": ("auto", "on", "off"),
@@ -150,6 +150,7 @@ MODE_ORDER = (
     "fast-exit",
     "fp8",
     "nvfp4",
+    "int8",
     "eager",
     "vllm",
     "sglang",
@@ -287,6 +288,7 @@ def available_modes(v, hw, assessment) -> list[dict]:
         "fast-exit": graph or (None if v.family == "basal-1.0" else OPTION_TEMPLATES["mode_exit_heads"]),
         "fp8": graph or fp8_unavailable(hw),
         "nvfp4": graph or (None if cap >= (10, 0) and nvidia else OPTION_TEMPLATES["mode_nvfp4_blackwell"]),
+        "int8": graph or int8_unavailable(v, hw),
         "eager": None if v.port == "bf16" else OPTION_TEMPLATES["mode_eager_format"].format(port=v.port),
         "vllm": (
             OPTION_TEMPLATES["mode_vllm_install"]
@@ -346,7 +348,7 @@ def available_modes(v, hw, assessment) -> list[dict]:
     if v.recurrent:
         for m in ("fast", "fast-nocompile"):
             reasons[m] = reasons[m] or (None if "fla" in hw.engines else FLA_REASON)
-        for m in ("fp8", "nvfp4"):  # refused on every GPU: the model's own reason first
+        for m in ("fp8", "nvfp4", "int8"):  # refused on every GPU: the model's own reason first
             reasons[m] = gdn_refused(m, device=False)
         reasons["fast-exit"] = reasons["mps"] = RECURRENT_REASON
         if not feature("mlx_recurrent"):
@@ -354,6 +356,8 @@ def available_modes(v, hw, assessment) -> list[dict]:
         else:  # 2.5.0: MLX serves Qwen3.5 from its bf16 weights, in float32; quantised weights are refused
             reasons["mlx"] = reasons["mlx"] or (None if v.port == "bf16" else MLX_Q8_RECURRENT_REASON)
             reasons["mlx-q8"] = reasons["mlx"] or MLX_Q8_RECURRENT_REASON
+    if not feature("int8"):  # engine 2.4.1 has no --mode int8: that reason first
+        reasons["int8"] = OPTION_TEMPLATES["mode_int8_engine"]
     hardware_reason = _quantized_hardware_reason(v, hw)
     if hardware_reason:
         for mode in MODE_ORDER:
@@ -412,6 +416,9 @@ OPTION_TEMPLATES = {
     "mlx_packed_mode": "--mlx-packed needs --mode mlx or mlx-q8 without media",
     "mode_exit_heads": "exit heads ship with basal-1.0",
     "mode_nvfp4_blackwell": "NVFP4 needs a Blackwell GPU (capability 10.0+)",
+    "mode_int8_engine": "--mode int8 needs basal engine 2.5.0 or newer",
+    "mode_int8_model": "--mode int8 quantises the bf16 weights of basal-omni ultra at load (the model its accuracy gate passed on); use fast (bf16) for this model",
+    "mode_int8_hardware": "int8 matrix multiplies need compute capability 8.0+ (Ampere and newer); use fast (bf16) on this GPU",
     "mode_eager_format": "the eager engine reads bf16 weights, not {port}",
     "mode_vllm_install": "install basal[vllm] (own environment, docs/INSTALL.md)",
     "mode_vllm_hardware": "vLLM needs an NVIDIA GPU",
@@ -498,6 +505,17 @@ def fp8_unavailable(hw):
     return None
 
 
+def int8_unavailable(v, hw):
+    """Why --mode int8 / --quant int8 cannot serve this variant here, None when it can: basal-serve 2.5.0 quantises
+    basal-omni ultra's bf16 weights only (engine.omni_quant_refused, OMNI_QUANT_SHAPES) on compute capability 8.0+
+    (int8block.int8_refused)."""
+    if not (v.family.startswith("basal-omni") and v.tier == "ultra" and v.port == "bf16"):
+        return OPTION_TEMPLATES["mode_int8_model"]
+    if hw.platform == "cuda" and ((hw.cuda_capability or (0, 0)) < (8, 0) or "rocm" in hw.engines):
+        return OPTION_TEMPLATES["mode_int8_hardware"]
+    return None
+
+
 def check_combination(v, hw, options, default_mode, media=False):
     """ValueError for the experimental options this variant or machine cannot use (merged options)."""
     mode = options["mode"] or ("eager" if media else default_mode)
@@ -547,6 +565,10 @@ def check_combination(v, hw, options, default_mode, media=False):
             raise ValueError(OPTION_TEMPLATES["reason_mlx_recurrent_caches"])
     if quant == "fp8" and kind in ("graph", "exit"):
         reason = fp8_unavailable(hw)
+        if reason:
+            raise ValueError(reason)
+    if quant == "int8" and kind in ("graph", "exit"):
+        reason = int8_unavailable(v, hw)
         if reason:
             raise ValueError(reason)
     if mode == "mps" and options["device"] == "cuda":

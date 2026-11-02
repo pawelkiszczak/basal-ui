@@ -1,10 +1,11 @@
+import dataclasses
 import re
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from basal_ui import catalog, engine, options, settings
+from basal_ui import backends, catalog, engine, options, settings
 from basal_ui.app import create_app
 from basal_ui.catalog import Variant
 from basal_ui.fleet import Fleet
@@ -257,7 +258,7 @@ def test_available_modes_follow_the_hardware_and_the_variant():
     assert available(GGUF, gguf_cpu) == {"gguf", "ollama", "llamacpp"}
     cuda = available(BF16, CUDA)
     assert {"fast", "fast-nocompile", "fp8", "eager", "vllm", "sglang"} <= cuda
-    assert not cuda & {"tpu", "strix", "mlx", "nvfp4", "fast-exit"}
+    assert not cuda & {"tpu", "strix", "mlx", "nvfp4", "fast-exit", "int8"}
     reasons = {m["mode"]: m["reason"] for m in options.available_modes(BF16, CUDA, catalog.assess(BF16, CUDA))}
     assert reasons["fast-exit"] == "exit heads ship with basal-1.0" and "TPU" in reasons["tpu"]
     assert [m["mode"] for m in options.available_modes(BF16, CUDA, catalog.assess(BF16, CUDA)) if m["default"]] == [
@@ -369,6 +370,50 @@ def test_cuda_graph_modes_require_ampere_or_newer():
         options.check_combination(BF16, sm86, options.validate({"quant": "fp8"}, "fast"), "fast")
     sm89 = Hardware("cuda", "RTX 4090", 24 * 1024**3, None, (8, 9), frozenset({"cuda"}))
     options.check_combination(BF16, sm89, options.validate({"quant": "fp8"}, "fast"), "fast")
+
+
+ULTRA = Variant("ultra", "Remek/basal-omni-1.0-ultra", "basal-omni-1.0", "ultra", "bf16", "bf16", None, 100, True)
+
+
+@pytest.mark.parametrize("int8", [True, False])
+def test_int8_serves_basal_omni_ultra_on_ampere_or_newer_with_engine_2_5(monkeypatch, int8):
+    if int8 and not engine.feature("int8"):
+        pytest.skip("the installed engine has no --mode int8 (2.4.1)")
+    probe(monkeypatch, int8=int8)
+    sm86 = Hardware("cuda", "RTX 3090", 24 * 1024**3, None, (8, 6), frozenset({"cuda"}))
+
+    def row(variant, hw):
+        return next(m for m in options.available_modes(variant, hw, catalog.assess(variant, hw)) if m["mode"] == "int8")
+
+    if not int8:  # engine 2.4.1: no --mode int8, and that is the reason everywhere
+        for variant, hw in ((ULTRA, sm86), (ULTRA, CUDA), (BF16, CUDA), (PICO, CUDA), (BF16, CPU)):
+            assert row(variant, hw)["reason_code"] == "mode_int8_engine"
+        if "int8" not in options.MODES:  # the installed engine is 2.4.1: basal-serve's own mode list refuses it
+            with pytest.raises(ValueError, match="load option mode must be one of"):
+                options.validate({"mode": "int8"}, "fast")
+        return
+    assert row(ULTRA, sm86)["available"] and row(ULTRA, CUDA)["available"]  # Ampere and Hopper
+    # the CUDA graph engine's graphs and compile workspace count for int8 as for fp8 (catalog.GRAPH_ENGINE_MODES)
+    assert backends.estimate(ULTRA, CPU, "int8").est_memory_bytes == 120 + catalog.GRAPH_ENGINE_OVERHEAD
+    assert backends.estimate(ULTRA, CPU, "eager").est_memory_bytes == 120 + catalog.GIB
+    assert not row(ULTRA, sm86)["default"]  # never the default: fast (bf16) stays basal-serve's choice
+    options.check_combination(ULTRA, sm86, options.validate({"mode": "int8"}, "fast"), "fast")
+    with pytest.raises(ValueError, match="load option quant must be one of"):  # basal-serve refuses --quant int8
+        options.validate({"quant": "int8"}, "fast")
+    sm75 = Hardware("cuda", "old NVIDIA", 8 * 1024**3, None, (7, 5), frozenset({"cuda"}))
+    assert "8.0+" in row(ULTRA, sm75)["reason"]  # the CUDA graph engine's own Ampere floor
+    rocm = Hardware("cuda", "Radeon", 64 * 1024**3, None, (9, 4), frozenset({"cuda", "rocm"}))
+    assert row(ULTRA, rocm)["reason_code"] in ("mode_int8_hardware", "cuda_graph_gpu")
+    for variant in (BF16, PICO, dataclasses.replace(ULTRA, tier="max"), dataclasses.replace(ULTRA, port="FP8")):
+        assert not row(variant, CUDA)["available"], variant
+    assert row(BF16, CUDA)["reason_code"] == "mode_int8_model"
+    assert "Qwen3.5" in row(PICO, CUDA)["reason"]
+    with pytest.raises(ValueError, match="basal-omni ultra"):
+        options.check_combination(BF16, CUDA, options.validate({"mode": "int8"}, "fast"), "fast")
+    sm86_omni = options.validate({"mode": "int8"}, "fast")
+    with pytest.raises(ValueError, match=r"8\.0\+"):
+        options.check_combination(ULTRA, rocm, sm86_omni, "fast")
+    assert row(ULTRA, CPU)["reason"] == catalog.ASSESSMENT_TEMPLATES["cuda_graph_gpu"]
 
 
 def test_pico_modes_follow_basal_serve_refusals(monkeypatch):

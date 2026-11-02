@@ -29,7 +29,7 @@ GIB = 1024**3
 # The --mode values of the CUDA graph engine, and what it holds besides the weights: CUDA graphs and the compile
 # workspace (basal 2.3.3-2.3.5 after start-up in --mode fast: basal-2.0-mini 7.1-9.0 GB for 3.19 GB of weights,
 # 4.5B 14.4-15.2 GB for 9.51, basal-omni-1.0-mini 18.9 for 15.9; H100, RTX 4060 Ti 16 GB, RTX 4090)
-GRAPH_ENGINE_MODES = ("fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4")
+GRAPH_ENGINE_MODES = ("fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4", "int8")
 GRAPH_ENGINE_OVERHEAD = 4 * GIB
 ASSESSMENT_TEMPLATES = {
     "cuda_graph_gpu": "needs an NVIDIA GPU (the CUDA graph engine)",

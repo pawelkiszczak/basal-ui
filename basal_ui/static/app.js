@@ -1624,7 +1624,7 @@ function renderCalibrationFiles(id, d) {
   }));
 }
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
-const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4'];
+const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
 const OPTION_SECTIONS=[
   ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed']],
   ['Determinism & orders',['deterministic','orders','auto_tau','auto_band']],
