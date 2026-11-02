@@ -859,7 +859,18 @@ class Fleet:
             return fn()
 
     def _record(
-        self, model_id, body, path, source, status, data, latency_ms, endpoint=None, method="POST", record_traffic=True
+        self,
+        model_id,
+        body,
+        path,
+        source,
+        status,
+        data,
+        latency_ms,
+        endpoint=None,
+        method="POST",
+        record_traffic=True,
+        source_url=None,
     ):
         """Count and keep the decision; a failed write is logged, never turned into a failed answer."""
         if source == "benchmark":
@@ -871,6 +882,8 @@ class Fleet:
                 self.stats.record(model_id, data, latency_ms, ok=200 <= status < 300, endpoint=endpoint, method=method)
             if self.history is not None:
                 request = {"model": model_id, **body} if path == "/v1/systemone" else body
+                if source_url is not None:
+                    request["source_url"] = source_url
                 self.history.append(make_record(model_id, source, request, status, data, latency_ms))
         except OSError as exc:
             self.event("error", f"decision not recorded: {exc}")
@@ -928,7 +941,9 @@ class Fleet:
                 if self.runners.get(model_id) is runner and runner is not None:
                     runner.last_used = time.monotonic()
 
-    def decide(self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"):
+    def decide(
+        self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST", source_url=None
+    ):
         with self.lease(model_id) as runner, self.answering(model_id, source):
             t0 = time.perf_counter()
             try:
@@ -944,6 +959,7 @@ class Fleet:
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
+                    source_url=source_url,
                 )
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
@@ -958,6 +974,7 @@ class Fleet:
                 endpoint if inferred else None,
                 method,
                 inferred,
+                source_url=source_url,
             )
             return response
 

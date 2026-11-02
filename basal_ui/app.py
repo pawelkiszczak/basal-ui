@@ -1047,10 +1047,13 @@ def create_app(
     def decide(body: dict = Body(...)):  # sync: runs in the threadpool, a slow decision does not block the UI
         body = dict(body)
         model_id = body.pop("model", None)
+        source_url = body.pop("source_url", None)
+        if source_url is not None and not isinstance(source_url, str):
+            raise HTTPException(400, "source_url must be a string")
         if not isinstance(model_id, str) or not model_id:
             raise HTTPException(400, f"model is required; loaded: {fleet.loaded_ids()}")
         try:
-            r = fleet.decide(model_id, body, source="playground")
+            r = fleet.decide(model_id, body, source="playground", source_url=source_url)
         except KeyError as exc:
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
@@ -1598,6 +1601,18 @@ def create_app(
         from basal.presets import names
 
         return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+    @app.post("/api/fetch")
+    def fetch_url(body: dict = Body(...)):
+        """Fetch and reduce one public HTTP(S) document for the Playground state."""
+        from . import fetch as url_fetch
+
+        try:
+            return url_fetch.fetch(body.get("url"))
+        except url_fetch.FetchError as exc:
+            return JSONResponse(
+                {"detail": str(exc), "code": exc.code},
+                status_code=exc.status_code,
+            )
 
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):

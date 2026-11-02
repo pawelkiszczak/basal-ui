@@ -34,6 +34,9 @@
 - **Idle model unloading** is optional under Settings → Memory & storage. Ready models with no Decisions and no running
   or queued child work are unloaded after the chosen number of minutes while remaining remembered for auto-load.
   The Library, Dashboard and model logs record why the model was unloaded. [USAGE.md](USAGE.md#memory-budget)
+- Playground's **Fetch URL** loads a bounded, anonymous public HTTP(S) response into State for review, keeps JSON
+  structured and records the source URL with Playground Decisions in History and Replay. SSRF address checks apply
+  to DNS results and every redirect; see [API.md](API.md#fetching-a-url-into-playground-state).
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

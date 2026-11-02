@@ -46,6 +46,7 @@ does not match the active layout (or Saved layout when unloaded). `POST /api/cal
 shape. `POST /api/calibrate` fits against that active-or-saved layout; non-canonical layouts are passed to
 `basal-calibrate --layout`, and a request is refused with HTTP 400 when the installed Engine lacks that flag. The
 Calibration tab disables fitting and explains the limitation in that case.
+| `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
@@ -76,6 +77,21 @@ values return HTTP 400 with the validation detail.
 `GET /api/status` includes `idle_unloaded_at`, keyed by model id. Each value contains `at` (Unix timestamp in seconds)
 and `minutes` (the configured idle timeout used). The entry remains until that model is loaded again. Idle-unloaded
 models remain in the remembered-model list and are not reloaded automatically on request.
+### Fetching a URL into Playground state
+
+`POST /api/fetch` runs on the local UI port and accepts only absolute `http` or `https` URLs. It resolves the host
+before connecting and refuses any loopback, private, link-local, carrier-grade NAT, multicast, unspecified, reserved
+or cloud metadata address; all addresses returned for the host must be public. Each of at most three redirects is
+resolved and checked again. Requests send no cookies or credentials and do not follow redirects automatically.
+Responses stream up to 4 MiB; text is capped at 200,000 characters. HTML becomes readable text with a title, JSON
+remains a parsed object, and other `text/*` responses remain text; other content types return 415.
+
+The Playground carries the originally requested `source_url` as local request metadata. It is retained in the History
+request and restored as a read-only Replay note; `/api/decide` removes it before forwarding the Decision to the model.
+
+Every request and redirect connects only to an address that check accepted (the host is not resolved again for the
+socket), so a DNS answer that changes after the check cannot redirect the connection to a private address; HTTPS still
+verifies the certificate against the URL's hostname.
 
 ### Batch path inspection
 

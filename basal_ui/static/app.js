@@ -507,6 +507,7 @@ function criteriaText(q, type) {
 }
 function parseStructuredText(text) { const trimmed=text.trim(); if(trimmed.startsWith('{')||trimmed.startsWith('[')) { try{return JSON.parse(trimmed);}catch{}} return text; }
 let questionFieldId=0;
+let playgroundSourceUrl=null;
 const qField=(label,input,help='',cls='')=>{const id=`question-field-${++questionFieldId}`;return `<div class="qf${cls?` ${cls}`:''}"><label id="${id}-label" for="${id}">${t(label)}</label>${input.replace(/<(input|textarea|select)\b/,`<$1 id="${id}" aria-labelledby="${id}-label"`)}${help?`<small class="muted">${t(help)}</small>`:''}</div>`};
 const qNum=(f,v,attrs='')=>`<input class="input" type="number" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" ${attrs}>`;
 const qText=(f,v,ph='')=>`<input class="input" type="text" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" placeholder="${esc(t(ph))}">`;
@@ -744,7 +745,7 @@ function buildRequest() {
   }
   if([...document.querySelectorAll('.q-name')].some(input=>!input.checkValidity()))throw new Error(t('Question names must be non-blank and unique.'));
   const stateInput=$('#stateInput'), state=stateInput._requestState;
-  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields()};
+  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields(),...(playgroundSourceUrl?{source_url:playgroundSourceUrl}:{})};
 }
 function syncRequest(force=false, keys=['media','detail']) {
   window.RequestCode.invalidate();
@@ -813,7 +814,7 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
   };
   if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||req.state==null||
      !Object.hasOwn(req,'questions')||!req.questions||typeof req.questions!=='object'||Array.isArray(req.questions))return preserveJson();
-  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model']);
+  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model','source_url']);
   const media=Array.isArray(req.media)?req.media:[];
   let restored=[];
   try {
@@ -842,6 +843,9 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
     selectedModel=req.model;localStorage.setItem('basal-ui.model',selectedModel);$('#playgroundModel').value=selectedModel;
     const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);
   }
+  playgroundSourceUrl=typeof req.source_url==='string'?req.source_url:null;
+  const sourceNote=$('#playgroundSourceNote');if(sourceNote){sourceNote.textContent=playgroundSourceUrl?t('Source URL: {url}',{url:playgroundSourceUrl}):'';sourceNote.hidden=!playgroundSourceUrl;}
+  const fetchControl=$('#fetchUrlButton');if(fetchControl)fetchControl.hidden=Boolean(playgroundSourceUrl);
   const stateInput=$('#stateInput');
   stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state??'',null,2);
   stateInput._requestState={text:stateInput.value,value:structuredClone(req.state??'')};
@@ -1136,6 +1140,36 @@ $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
 $('#stateInput').addEventListener('input',()=>{$('#stateInput')._requestState=undefined;syncRequest();});
+const fetchStateLabel=$('label[for="stateInput"]'), fetchStateField=fetchStateLabel?.closest('.field');
+if(fetchStateField){
+  const fetchButton=document.createElement('button');fetchButton.type='button';fetchButton.id='fetchUrlButton';fetchButton.className='btn';fetchButton.textContent=t('Fetch URL');
+  fetchStateLabel.insertAdjacentElement('afterend',fetchButton);
+  const sourceNote=document.createElement('p');sourceNote.id='playgroundSourceNote';sourceNote.className='muted';sourceNote.hidden=true;
+  $('#stateInput').insertAdjacentElement('afterend',sourceNote);
+  const dialog=document.createElement('dialog');dialog.id='fetchUrlDialog';dialog.className='confirm-dialog';
+  dialog.innerHTML=`<form method="dialog"><h3>${t('Fetch URL')}</h3><label for="fetchUrlInput">${t('Public HTTP(S) URL')}</label><input id="fetchUrlInput" class="input" type="url" required placeholder="https://example.com"><div id="fetchUrlError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><button type="button" id="fetchUrlCancel">${t('Cancel')}</button><button type="submit" id="fetchUrlSubmit" class="primary">${t('Fetch')}</button></div></form>`;
+  document.body.append(dialog);
+  let fetchController=null;
+  fetchButton.onclick=()=>{dialog.showModal();$('#fetchUrlInput').focus();};
+  const closeFetch=()=>{fetchController?.abort();fetchController=null;dialog.close();};
+  $('#fetchUrlCancel').onclick=closeFetch;
+  dialog.addEventListener('cancel',()=>{fetchController?.abort();fetchController=null;});
+  dialog.querySelector('form').onsubmit=async event=>{
+    event.preventDefault();const url=$('#fetchUrlInput').value.trim(),submit=$('#fetchUrlSubmit'),error=$('#fetchUrlError');
+    if(!url)return;
+    fetchButton.disabled=true;fetchController=new AbortController();submit.disabled=true;submit.textContent=t('Fetching…');error.hidden=true;
+    try{
+      const result=await api('/api/fetch',{method:'POST',body:JSON.stringify({url}),signal:fetchController.signal});
+      playgroundSourceUrl=result.url;
+      const state=$('#stateInput');state.value=typeof result.state==='string'?result.state:JSON.stringify(result.state,null,2);
+      state.dispatchEvent(new Event('input',{bubbles:true}));state._requestState={text:state.value,value:structuredClone(result.state)};
+      sourceNote.textContent=t('Fetched {bytes} bytes · {contentType} · source URL: {sourceUrl} · final URL: {url}{truncated}',{bytes:result.bytes,contentType:result.content_type,sourceUrl:result.url,url:result.final_url,truncated:result.truncated?` · ${t('truncated')}`:''});
+      sourceNote.hidden=false;syncRequest();dialog.close();
+    }catch(e){
+      if(e.name!=='AbortError'){error.textContent=e.message;error.hidden=false;}
+    }finally{fetchController=null;fetchButton.disabled=false;submit.disabled=false;submit.textContent=t('Fetch');}
+  };
+}
 $('#editJsonToggle').addEventListener('change',()=>{
   if($('#editJsonToggle').checked){
     try {$('#requestJson').value=JSON.stringify(buildRequest(),null,2);showMediaError();}
@@ -1935,7 +1969,7 @@ async function toggleHistory(row) {
 }
 function historyDetailRow(x) {
   const tr=document.createElement('tr'); tr.className='history-detail';
-  tr.innerHTML=`<td colspan="7"><div class="history-panes"><div><strong>${t('Recorded request')}</strong><pre class="history-request"></pre></div><div><strong>${t('Response')}</strong><pre class="history-response"></pre></div></div><div class="controls"><button type="button" class="copy-request">${t('Copy request')}</button><button type="button" class="replay-request">${t('Replay in Playground')}</button></div><div class="history-replay-error error-box" role="alert" hidden></div></td>`;
+  tr.innerHTML=`<td colspan="7"><div class="history-panes"><div><strong>${t('Recorded request')}</strong><pre class="history-request"></pre></div><div><strong>${t('Response')}</strong><pre class="history-response"></pre></div></div>${x.request?.source_url?`<p class="muted">${t('Source URL: {url}',{url:esc(x.request.source_url)})}</p>`:''}<div class="controls"><button type="button" class="copy-request">${t('Copy request')}</button><button type="button" class="replay-request">${t('Replay in Playground')}</button></div><div class="history-replay-error error-box" role="alert" hidden></div></td>`;
   $('.history-request',tr).textContent=JSON.stringify(x.request,null,2);
   $('.history-response',tr).textContent=JSON.stringify(x.response,null,2);
   $('.copy-request',tr).onclick=()=>copyText(JSON.stringify(x.request,null,2),t('Request copied'));
