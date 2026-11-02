@@ -54,7 +54,7 @@ def test_playground_recording_adds_a_wav_attachment(recording_ui):
         page = context.new_page()
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
-        page.goto(ui.url + "/")
+        page.goto(ui.url + "/#playground")
         page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
         wav = page.evaluate(
             """async () => {
@@ -80,6 +80,14 @@ def test_playground_recording_adds_a_wav_attachment(recording_ui):
         page.select_option("#playgroundModel", model["id"])
         record = page.locator("#recordAudio")
         record.wait_for(state="visible")
+        microphone = page.evaluate(
+            """() => Promise.race([
+              navigator.mediaDevices.getUserMedia({audio: true}).then(s => {s.getTracks().forEach(t => t.stop()); return 'ok';},
+                e => e.name),
+              new Promise(resolve => setTimeout(() => resolve('timeout'), 5000))])"""
+        )
+        if microphone != "ok":  # macOS: headless Chromium's fake microphone may never start (no OS permission)
+            pytest.skip(f"Chromium's fake microphone did not start on this host ({microphone})")
         record.click()
         page.get_by_role("status").get_by_text("Recording ·", exact=False).wait_for()
         page.wait_for_timeout(750)
