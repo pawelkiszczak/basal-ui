@@ -12,7 +12,7 @@ from basal.gdn_graph import refused as gdn_refused
 from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
-from .catalog import _cuda_graph, _quantized_hardware_reason
+from .catalog import ATTACHED_MODE_REASON, _cuda_graph, _quantized_hardware_reason
 from .engine import feature, serve_flags
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
@@ -419,6 +419,10 @@ def available_modes(v, hw, assessment) -> list[dict]:
         for mode in MODE_ORDER:
             if mode not in ("ollama", "llamacpp"):
                 reasons[mode] = reasons[mode] or hardware_reason
+    if v.family == "attached":
+        for mode in MODE_ORDER:
+            if mode not in ("eager", "mps", "mlx", "mlx-q8", "fast"):
+                reasons[mode] = ATTACHED_MODE_REASON
     return [
         {
             "mode": m,
@@ -493,6 +497,7 @@ OPTION_TEMPLATES = {
     "mode_architecture": "Strix and TPU require a Llama-architecture model",
     "mode_mlx_q8": "{port} weights are quantised already (mlx-q8 quantises at load)",
     "mode_fp8_hardware": "FP8 matrix multiplies need compute capability 8.9+ (Ada, Hopper, Blackwell); use fast (bf16) on this GPU",
+    "mode_attached": "attached models serve in eager, mps, mlx or fast",
     "mode_vllm_media": "vLLM media serving needs an NVIDIA GPU with basal[vllm] (docs/OMNI.md)",
     "reason_recurrent": "recurrent-state layers (Gated DeltaNet, Qwen3.5): fast-exit and mps keep attention keys and values only and would answer wrongly; basal-serve refuses them. Use fast (CUDA), eager, vllm or gguf",
     "reason_mlx_recurrent": "MLX serves recurrent-state models (Qwen3.5) from basal engine 2.5.0 on; use eager on this engine",
