@@ -35,8 +35,9 @@
   or queued child work are unloaded after the chosen number of minutes while remaining remembered for auto-load.
   The Library, Dashboard and model logs record why the model was unloaded. [USAGE.md](USAGE.md#memory-budget)
 - Playground's **Fetch URL** loads a bounded, anonymous public HTTP(S) response into State for review, keeps JSON
-  structured and records the source URL with Playground Decisions in History and Replay. SSRF address checks apply
-  to DNS results and every redirect; see [API.md](API.md#fetching-a-url-into-playground-state).
+  structured and records the source URL with Playground Decisions in History and Replay. Every request and redirect
+  connects only to a checked public address (DNS rebinding cannot redirect it); see
+  [API.md](API.md#fetching-a-url-into-playground-state).
 - The Playground can record a microphone clip on models with audio input; it is converted to mono PCM WAV and attached
   within the existing 20 MiB media limit.
 - Settings → Defaults can import presets from a public URL; the response is limited to 1 MiB and must be JSON, then
@@ -52,12 +53,14 @@
 - Engine 2.5 adds Cascades: combine ready basal models with escalation or weighted blending, optionally with a chat
   fallback, behind one model name. Cascades are listed on the API server, and their answer attribution and
   calibration status are shown in the Playground. [USAGE](USAGE.md#cascades) · [API](API.md#cascades)
-- Playground tool questions can import selected definitions from an MCP streamable-HTTP server and merge by name; an optional bearer token is used only for that call. The question remembers its source URL, and a local BM25 shortlist ranks tools by the question's instructions. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it), [API.md](API.md#importing-mcp-tools-and-shortlisting)
+- Playground tool questions can import selected definitions from an MCP streamable-HTTP server and merge by name; an
+  optional bearer token is used only for that call. The question remembers its source URL, and a local BM25 shortlist
+  ranks tools by the question's instructions. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it),
+  [API.md](API.md#importing-mcp-tools-and-shortlisting)
 - Settings can attach external System One Decision servers as **Comparison models**. The Playground compares answers and
-  latency side by side, while Batch preflights every input line before running. Comparison answers are marked
-  uncalibrated; their servers and keys never appear on the API server or MCP. [USAGE](USAGE.md#comparison-models) ·
-  [API](API.md#local-app-management-api)
-
+  latency side by side, while Batch preflights every input line and reaches the server (with its model name and
+  key) through a private proxy. Comparison answers are marked uncalibrated; their servers and keys never appear on
+  the API server or MCP. [USAGE](USAGE.md#comparison-models) · [API](API.md#local-app-management-api)
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the
   feature is unavailable. [USAGE.md](USAGE.md#batch), [API.md](API.md#batch-presets)

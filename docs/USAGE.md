@@ -612,16 +612,19 @@ Machine-compatibility rules have fixture coverage. Real-model/browser verificati
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
 ## Cascades
 
-With Engine 2.5, a Cascade combines ready basal models behind one name. In Model manager → Library, create an
-escalation Cascade to retry uncertain decisions at the next loaded model, or a Blend to average probabilities using
-positive weights. A Cascade may optionally send remaining uncertain choice questions to an OpenAI-compatible chat
-endpoint. Its fallback API key is stored in the owner-only `decision_servers.json` file and is not returned by the API.
+With Engine 2.5, a Cascade combines ready basal models behind one name. In Model manager → Library → **New
+cascade**, list two or more levels in order (**Add level**): an escalation Cascade retries a decision whose top
+probability is under a level's **Escalate below** threshold at the next level; a Blend averages probabilities using
+one positive weight per level. A Cascade may optionally send remaining uncertain choice questions to an
+OpenAI-compatible chat endpoint. Its fallback API key is stored in the owner-only `decision_servers.json` file and is
+not returned by the API.
 
 Start and stop Cascades from the loaded-model list. They do not load their members, count against the memory budget,
 or start automatically after a restart; every member must already be ready. Unloading a member stops any Cascade
 that uses it. The Playground reports which level/model answered. Blend and fallback results are marked uncalibrated
 and must not be treated as automatable. Cascades are excluded from Calibration, Inspect, and Benchmarks; only
-escalation Cascades are available to Batch. Engine 2.4.1 hides this feature.
+escalation Cascades are available to Batch. On Engine 2.4.1 the Cascades panel shows why it is unavailable and
+**New cascade** is disabled.
 
 ## Comparison models
 
