@@ -5,6 +5,7 @@ import struct
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -1246,3 +1247,75 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_attach_route_downloads_attaches_and_lists_the_local_variant(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text('{"num_parameters": 4000000000}')
+    target_weights = snapshot / "model.safetensors"
+    target_weights.write_bytes(b"weights")
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: True)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, *args, **kwargs: snapshot)
+
+    def fake_run_tool(job, module, argv):
+        assert module == "attach"
+        assert argv[0] == snapshot and argv[-2:] == ["--format", "1"]
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "basal.json").write_text("{}")
+        (out / "config.json").symlink_to(snapshot / "config.json")
+        (out / "model.safetensors").symlink_to(target_weights)
+
+    monkeypatch.setattr(jobs, "run_tool", fake_run_tool)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "elsewhere/model"}).status_code == 400
+        response = client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"})
+        assert response.status_code == 202
+        job = fleet.jobs.get("attach")
+        job.thread.join(2)
+        assert not job.thread.is_alive() and job.phase == "done", job.error
+        variant = next(item for item in client.get("/api/models").json()["models"] if item["family"] == "attached")
+        assert variant["id"] == "attached/qwen-qwen3-4b"
+        assert variant["local_dir"] == str(models / "attached" / "qwen-qwen3-4b")
+        assert variant["tier"] == "4.0B" and variant["weights_bytes"] == len(b"weights")
+        assert variant["downloaded"] and variant["uncalibrated"] and variant["attached"]
+        assert variant["inspect_reason"] == "attached models cannot be inspected"
+        assert not any(item["id"] == variant["id"] for item in client.get("/api/models").json()["suggestions"])
+        loaded = SimpleNamespace(state="ready")
+        fleet.runners[variant["id"]] = loaded
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 409
+        del fleet.runners[variant["id"]]
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 200
+        assert not Path(variant["local_dir"]).exists() and target_weights.exists()
+        assert settings.attached_models() == []
+
+
+def test_attached_models_only_offer_supported_execution_modes():
+    from basal_ui import catalog, options
+
+    variant = Variant("attached/test", "Qwen/Qwen3-4B", "attached", "4.0B", "bf16", "bf16", None, 100, True)
+    modes = options.available_modes(variant, HW, catalog.assess(variant, HW))
+    available = {row["mode"] for row in modes if row["available"]}
+    allowed = {"eager", "mps", "mlx", "mlx-q8", "fast"}
+    assert available <= allowed
+    assert any(row["mode"] in allowed for row in modes)
+    refused = next(row for row in modes if row["mode"] == "vllm")
+    assert refused["reason"] == catalog.ATTACHED_MODE_REASON
+    assert refused["reason_code"] == "mode_attached"
+
+
+def test_attach_is_unavailable_without_the_engine_feature(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/attach").json() == {"available": False, "bases": []}
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 400
