@@ -40,13 +40,16 @@ def _error_args(e):
 
 
 def _child_error(response):
-    """(status, message, code) of a failed basal-serve reply ({"error": message} with its http_status)."""
+    """(status, message, code) of a failed basal-serve reply: {"error": message} with its http_status (2.4.1), plus
+    the engine's own "code" (2.5.0), which wins over the code derived from the status."""
     try:
-        message = response.json()["error"]
+        data = response.json()
+        message = data["error"]
     except (ValueError, KeyError, TypeError):
-        message = response.text
+        data, message = {}, response.text
     status = response.status_code
-    return status, str(message), STATUS_CODES.get(status, "UPSTREAM_ERROR")
+    code = data.get("code") if isinstance(data, dict) else None
+    return status, str(message), code if isinstance(code, str) and code else STATUS_CODES.get(status, "UPSTREAM_ERROR")
 
 
 def child_request(path, body):
