@@ -303,10 +303,14 @@ def test_gguf_launch_and_download_patterns():
     assert download_kwargs(v)["allow_patterns"][0] == v.gguf_file
 
 
-def test_thinking_model_is_neither_counted_nor_downloaded():
-    (v,) = _variants("Remek/basal-2.0-4.5B", {"model.safetensors": 9, "think/model.safetensors": 9, "basal.json": 1})
+def test_thinking_model_and_prepared_kernels_are_neither_counted_nor_downloaded():
+    """think/ is a second full model; prepared/<key>/ (engine 2.5.0) holds one GPU class's start-up kernels, which
+    basal-serve fetches itself. A snapshot without them is complete: huggingface_hub's local_files_only lookup raises
+    IncompleteSnapshotError for any file the filters keep and the cache lacks."""
+    files = {"model.safetensors": 9, "think/model.safetensors": 9, "prepared/abc/inductor.bin": 5, "basal.json": 1}
+    (v,) = _variants("Remek/basal-2.0-4.5B", files)
     assert v.weights_bytes == 9
-    assert download_kwargs(v) == {"ignore_patterns": ["think/*"]}
+    assert download_kwargs(v) == {"ignore_patterns": ["think/*", "prepared/*"]}
 
 
 def test_serving_mode_per_family_and_port():
