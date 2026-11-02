@@ -49,6 +49,9 @@
   `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
   not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
   value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
+- Engine 2.5 adds Cascades: combine ready basal models with escalation or weighted blending, optionally with a chat
+  fallback, behind one model name. Cascades are listed on the API server, and their answer attribution and
+  calibration status are shown in the Playground. [USAGE](USAGE.md#cascades) · [API](API.md#cascades)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

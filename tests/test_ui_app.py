@@ -1328,3 +1328,84 @@ def test_attach_is_unavailable_without_the_engine_feature(tmp_path, monkeypatch)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/api/attach").json() == {"available": False, "bases": []}
         assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 400
+
+
+def test_cascade_api_start_routes_models_and_stops_when_member_unloads(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui import fleet as fleet_module
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    app, fleet = app_for(tmp_path, [])
+
+    class ReadyMember:
+        def __init__(self, model, url):
+            self.model, self.base_url, self.state, self.process = model, url, "ready", None
+            self.est_memory_bytes, self.temporary, self.ready_at = 10, False, time.time()
+            self.models_entry, self.rss_bytes, self.pid = {"name": model}, None, None
+
+        def status(self):
+            return {"id": self.model, "state": self.state, "rss_bytes": None}
+
+        def detach(self):
+            self.state = "idle"
+            return None, self.est_memory_bytes
+
+    fleet.runners.update(
+        {
+            "a/one": ReadyMember("a/one", "http://127.0.0.1:8101"),
+            "b/two": ReadyMember("b/two", "http://127.0.0.1:8102"),
+        }
+    )
+    launched = []
+
+    class Process:
+        stdout = ()
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(fleet_module, "rss_by_pgid", lambda: {})
+    monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda argv, **kwargs: (launched.append(argv), Process())[1])
+    monkeypatch.setattr(fleet_module.httpx, "get", lambda *args, **kwargs: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(fleet_module.Runner, "_terminate", lambda proc: None)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+        assert client.post("/api/cascades", json=body).status_code == 201
+        assert client.post("/api/cascades/tri/start").status_code == 202
+        assert launched[0][-6:] == [
+            "--replicas",
+            "http://127.0.0.1:8101",
+            "--escalate",
+            "http://127.0.0.1:8102",
+            "--escalate-below",
+            "0.8",
+        ]
+        assert any(item["id"] == "tri" and item["entry"]["kind"] == "cascade" for item in fleet.model_entries())
+        client.post("/api/unload", json={"id": "a/one"})
+        assert "tri" not in fleet.runners
+
+
+def test_cascade_start_refuses_unloaded_member(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+        assert client.post("/api/cascades", json=body).status_code == 201
+        response = client.post("/api/cascades/tri/start")
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "CASCADE_MEMBER_NOT_LOADED"
+
+
+def test_cascade_routes_explain_engine_compatibility(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.get("/api/cascades")
+    assert response.status_code == 409
+    assert "need engine 2.5" in response.json()["detail"]
