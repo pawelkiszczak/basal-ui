@@ -26,6 +26,8 @@
 - **Calibration** fits for the model's Active or Saved prompt layout, labels every fitted/imported file with its layout
   and warns when the Selected calibration does not match the served layout. Non-canonical fits are disabled with a
   reason if the Engine lacks `basal-calibrate --layout`. [USAGE.md](USAGE.md#custom-calibration)
+- Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
+  the option-order check. Results and per-path probability deltas are saved with the other benchmark results.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

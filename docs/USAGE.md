@@ -366,6 +366,12 @@ three other measurements, one at a time:
   accuracy, load time, memory) and freed in turn. Its memory is counted in the budget while it runs (twice the
   estimate with `eager-fp32`); a mode that fails is listed with its error.
 
+- **Identity gate**: `basal-bench --identity` for a downloaded model, in fp32 or bf16. It uses saved attention, merge,
+  lean, tree and Gemma attention settings when non-default; the fast mode must be available for this model and
+  machine. Results list each prefix-reuse path's gate and maximum probability delta.
+- **Order check** (Engine 2.5): `basal-bench --order-check` measures option-order flips and averaged readouts.
+  The result is available only when the installed Engine exposes the check.
+
 The last 20 results per model stay in the stats file and are shown side by side. Benchmark requests are not counted
 in the statistics or the history.
 
