@@ -534,7 +534,9 @@ class CascadeRunner:
                 env["BASAL_FALLBACK_API_KEY"] = key
         self.command = argv
         try:
-            self.process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+            self.process = subprocess.Popen(  # its own session: terminate() signals the process group
+                argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, start_new_session=True
+            )
             threading.Thread(target=self._read_logs, daemon=True).start()
             deadline = time.monotonic() + START_TIMEOUT_S
             while time.monotonic() < deadline:
