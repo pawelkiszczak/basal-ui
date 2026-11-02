@@ -431,7 +431,7 @@ OPTION_TEMPLATES = {
     "reason_fla": "the CUDA graph engine runs Qwen3.5's Gated DeltaNet layers with flash-linear-attention: pip install flash-linear-attention (or serve with --mode eager)",
     "reason_long_lane": "--long-lane is not available for Qwen3.5 (Gated DeltaNet) models",
     "reason_gdn_quant": "--mode {quant} is not available for Qwen3.5 (Gated DeltaNet) models: the CUDA graph engine serves them in bf16 (--mode fast); --mode vllm runs their FP8 checkpoints",
-    "adapter_engine": "LoRA adapters at load need basal engine 2.5.1 or newer",
+    "adapter_engine": "LoRA adapters at load need basal engine 2.5.0 or newer",
 }
 RECURRENT_REASON = OPTION_TEMPLATES["reason_recurrent"]
 MLX_RECURRENT_REASON = OPTION_TEMPLATES["reason_mlx_recurrent"]

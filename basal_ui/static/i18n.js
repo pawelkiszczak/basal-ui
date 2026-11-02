@@ -857,7 +857,7 @@ const PL = {
   "calibration: the served temperatures differ from the inspector’s (choose the calibration the model is served with)": "kalibracja: temperatury serwowanego modelu różnią się od ustawień inspektora (wybierz kalibrację używaną przez serwer)",
   "call": "wywołanie",
   "certified {type} thresholds: 1% error ≥ {one}, 5% error ≥ {five}": "certyfikowane progi {type}: błąd 1% ≥ {one}, błąd 5% ≥ {five}",
-  "code:adapter_engine": "Adaptery LoRA przy ładowaniu wymagają silnika basal 2.5.1 lub nowszego",
+  "code:adapter_engine": "Adaptery LoRA przy ładowaniu wymagają silnika basal 2.5.0 lub nowszego",
   "code:addon_busy": "Operacje na modelach są niedostępne podczas instalacji dodatku Engine",
   "code:addon_gguf_machine": "Instalacja GGUF jest niedostępna na tym komputerze",
   "code:addon_install_refused": "Nie można zainstalować dodatku Engine: {message}",
