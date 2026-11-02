@@ -187,6 +187,32 @@ def test_every_engine_switch_reaches_basal_serve_as_it_reads_it(tmp_path):
         "think_max_len": 4096,
         "think_log": "t.log",
     }
+    engine_25 = {  # engine 2.5's flags: only what the installed basal-serve declares (validate refuses the rest)
+        "mlx_forward": "basal",
+        "mlx_compute": "bf16",
+        "order_average": 4,
+        "reread": 0.9,
+        "reread_combine": "second",
+        "reread_max_tokens": 1024,
+        "reread_image": 280,
+        "prepared": "off",
+        "global_attn": "triton",
+        "compile_scope": "layer",
+        "state_cache_bits": 8,
+        "fp8_scaling": "row",
+        "fp8_bf16_layers": 0,
+        "quant_load": "cpu",
+        "graph_memory_gb": 12.5,
+        "nvfp4_amax": "/a.json",
+        "nvfp4_scope": "mlp",
+        "rank_max_candidates": 50,
+    }
+    flags = engine.serve_flags()
+    chosen.update({k: v for k, v in engine_25.items() if "--" + k.replace("_", "-") in flags})
+    if "--vllm-overlap" in flags:  # the engine 2.5 on/off switches (argparse keeps them as strings)
+        switches = {"vllm_overlap": True, "state_cache_lock": True, "long_lane_gdn": True}
+        on_off = parser().parse_args(["--model", "m", *options.args(switches)])
+        assert {k: getattr(on_off, k) for k in switches} == {k: "on" for k in switches}
     if engine.feature("adapter"):
         ad = tmp_path / "ad"
         ad.mkdir()
@@ -211,9 +237,40 @@ def test_the_adapter_option_is_refused_and_explained_without_an_engine_that_take
     app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CPU)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         data = client.get("/api/models/options", params={"id": BF16.id}).json()
-        assert data["adapter_reason_code"] == "adapter_engine"
+        assert data["unavailable"]["adapter"] == "LoRA adapters at load need basal engine 2.5.0 or newer"
         refused = client.put("/api/models/options", json={"id": BF16.id, "options": {"adapter": str(tmp_path)}})
         assert refused.status_code == 400 and "2.5.0" in refused.json()["detail"]
+
+
+def test_engine_25_load_options_follow_the_installed_serve_flags(monkeypatch):
+    """A load option whose flag the installed basal-serve lacks is refused with the engine reason and listed
+    unavailable on the options route; its default never emits a flag. On 2.5 the values reach basal-serve."""
+    real = engine.serve_flags()
+    if "--reread" in real:
+        assert "reread" not in options.unavailable_options()
+        assert options.args({"reread": 0.9}) == ["--reread", "0.9"]
+    monkeypatch.setattr(options, "serve_flags", lambda: real - {"--reread"})  # an engine that lacks the flag (2.4.1)
+    assert options.unavailable_options()["reread"] == "needs basal engine 2.5.0 or newer"
+    with pytest.raises(ValueError, match="load option reread: needs basal engine 2.5.0 or newer"):
+        options.validate({"reread": 0.9})
+    assert options.args({"reread": None}) == []  # the default never needs the flag
+    app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CPU)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        data = client.get("/api/models/options", params={"id": BF16.id}).json()
+        assert data["unavailable"]["reread"] == "needs basal engine 2.5.0 or newer"
+        assert data["options"]["reread"] is None
+        refused = client.put("/api/models/options", json={"id": BF16.id, "options": {"reread": 0.9}})
+        assert refused.status_code == 400 and "needs basal engine 2.5.0" in refused.json()["detail"]
+
+
+def test_graph_memory_gb_sizes_the_graph_engine_estimate():
+    sized = catalog.assess(BF16, CUDA, {"graph_memory_gb": 8})
+    assert sized.est_memory_bytes == int(BF16.weights_bytes * 1.2) + 8 * catalog.GIB
+    assert sized.est_memory_bytes != catalog.assess(BF16, CUDA).est_memory_bytes  # the fixed 4 GiB overhead otherwise
+    # eager (the CPU default) has no graphs: the option changes nothing
+    assert (
+        catalog.assess(BF16, CPU, {"graph_memory_gb": 8}).est_memory_bytes == catalog.assess(BF16, CPU).est_memory_bytes
+    )
 
 
 @pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.0)")
@@ -435,6 +492,8 @@ def test_pico_modes_follow_basal_serve_refusals(monkeypatch):
     for refused in ({"long_lane": True}, {"quant": "fp8"}):  # refused by 2.4.1 and 2.5.0 alike
         with pytest.raises(ValueError, match=r"Qwen3\.5"):
             options.check_combination(pico, fla, options.validate(refused), "fast")
+    if "--long-lane-gdn" in engine.serve_flags():  # 2.5.1 serves the long lane with --long-lane-gdn on
+        options.check_combination(pico, fla, options.validate({"long_lane": True, "long_lane_gdn": True}), "fast")
     # basal-serve 2.4.1 refuses these in the graph engine, 2.5.0 serves them: basal-ui asks the engine (gdn_graph.refused)
     engine_rules = (
         ({"batches": "compact"}, {"batches": "compact"}),

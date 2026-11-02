@@ -1626,13 +1626,18 @@ function renderCalibrationFiles(id, d) {
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
 const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
 const OPTION_SECTIONS=[
-  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed']],
+  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed','prepared','compile_scope','graph_memory_gb']],
+  ['MLX',['mlx_forward','mlx_compute']],
   ['Determinism & orders',['deterministic','orders','auto_tau','auto_band']],
+  ['Readout',['order_average','reread','reread_combine','reread_max_tokens','reread_image']],
   ['Batching',['max_batch','wait_ms','batch_window_ms','soam']],
-  ['Caching',['state_cache_gb','prefix_cache']],
-  ['Scheduling',['scheduler','long_lane','long_tokens','long_share','long_slice_ms']],
+  ['Caching',['state_cache_gb','state_cache_lock','state_cache_bits','prefix_cache']],
+  ['Scheduling',['scheduler','long_lane','long_lane_gdn','long_tokens','long_share','long_slice_ms','rank_max_candidates']],
   ['Context',['layout','context_overflow','truncate_head','max_len']],
   ['Kernels (CUDA graph engine)',['gemma_attn','merge','lean','tree','batches','readout_layer','template_prefix','fp8_accum']],
+  ['Quantization',['fp8_scaling','fp8_bf16_layers','quant_load','nvfp4_amax','nvfp4_scope']],
+  ['vLLM',['vllm_overlap']],
+  ['Gemma 4',['global_attn']],
   ['Calibration',['strict_calibration']],
   ['Experimental',['think','think_tokens','think_python','think_url','think_calibration','think_model','think_adapter','think_memory','think_max_len','think_log','early_exit']],
 ];
@@ -1694,6 +1699,27 @@ const OPTION_FIELDS={
   think_max_len:{label:'vLLM context',kind:'num',attrs:'min="512" step="512"',think:true},
   think_log:{label:'vLLM log file',kind:'text',placeholder:'basal-think-vllm.log',think:true},
   early_exit:{label:'Early exit (default policy)',kind:'select',values:['off','0.999','0.995','0.99','0.98']},
+  prepared:{label:'Prepared kernels',kind:'text',placeholder:'auto, off or a directory',modes:GRAPH_MODES},
+  compile_scope:{label:'Compile scope',kind:'select',values:['model','layer'],modes:GRAPH_MODES},
+  graph_memory_gb:{label:'Graph memory (GiB)',kind:'num',attrs:'min="1" step="0.5"',placeholder:'free memory at start-up',modes:GRAPH_MODES},
+  mlx_forward:{label:'MLX forward',kind:'select',values:['mlx-lm','basal'],modes:['mlx','mlx-q8']},
+  mlx_compute:{label:'MLX compute',kind:'select',values:['auto','bf16'],modes:['mlx','mlx-q8']},
+  order_average:{label:'Average K option orders',kind:'num',attrs:'min="2" step="1"',placeholder:'off'},
+  reread:{label:'Reread uncertain answers below',kind:'num',attrs:'min="0.05" max="1" step="0.05"',placeholder:'off'},
+  reread_combine:{label:'Reread combination',kind:'select',values:['mean','second']},
+  reread_max_tokens:{label:'Reread requests up to (tokens)',kind:'num',attrs:'min="1" step="128"'},
+  reread_image:{label:'Reread images at (soft tokens)',kind:'num',attrs:'min="70" step="70"',placeholder:'off'},
+  state_cache_lock:{label:'State cache under the launch lock',kind:'bool'},
+  state_cache_bits:{label:'State cache precision',kind:'select',values:[[16,'16-bit'],[8,'8-bit (about 1.7x more states)']],numeric:true},
+  long_lane_gdn:{label:'Long-request lane on Qwen3.5 (opt-in)',kind:'bool'},
+  rank_max_candidates:{label:'Rank candidates per request',kind:'num',attrs:'min="1" step="500"'},
+  fp8_scaling:{label:'FP8 scaling',kind:'select',values:['auto','row','block'],modes:['fp8']},
+  fp8_bf16_layers:{label:'bf16 edge layers',kind:'num',attrs:'min="0" step="1"',modes:['fp8','nvfp4','int8']},
+  quant_load:{label:'Quantise from',kind:'select',values:[['gpu','GPU memory'],['cpu','host memory']],modes:['fp8','nvfp4','int8']},
+  nvfp4_amax:{label:'NVFP4 amax file',kind:'text',placeholder:'the model’s NVFP4_AMAX.json',modes:['nvfp4']},
+  nvfp4_scope:{label:'NVFP4 scope',kind:'select',values:['all','mlp'],modes:['nvfp4']},
+  vllm_overlap:{label:'Overlapping engine calls (opt-in)',kind:'bool',modes:['vllm']},
+  global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],modes:GRAPH_MODES},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
@@ -1749,9 +1775,14 @@ function updateOptionVisibility() {
   if(!think.model)notes.push(ts(think.reason,think.reason_code,think.reason_params));
   else if(!think.vllm)notes.push(t('vLLM is not installed in basal-ui’s environment: give the Python of one that has it, or the URL of a running think server.'));
   if(mode!=='fast-exit')notes.push(t('Early exit needs --mode fast-exit (the exit heads of basal-1.0, bf16 on a CUDA GPU).'));
-  // LoRA adapters at load: only with an engine that takes --adapter (basal-ui's feature probe)
-  const adapterBox=$('#opt-adapter'), adapterReason=optionsState.data.adapter_reason;
-  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); if(adapterReason){adapterBox.value='';adapterBox.title=ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params);}else adapterBox.title='';}
+  // engine-gated options (the adapter, the engine 2.5 switches): the installed basal-serve lacks the flag
+  for(const [key,reason] of Object.entries(optionsState.data.unavailable||{})){
+    const el=$(`#opt-${key}`);
+    if(!el)continue;
+    el.disabled=true;
+    el.title=t(reason);
+    if(el.type==='checkbox')el.checked=Boolean(optionsState.data.defaults[key]);else el.value=optionValue(optionsState.data.defaults[key]);
+  }
   $('#optExperimentalNote').textContent=notes.join(' ');
 }
 function collectOptions() {
@@ -1764,7 +1795,7 @@ function collectOptions() {
     if(f.kind==='bool')out[key]=el.checked;
     else if(f.kind==='percent')out[key]=Number(el.value)===Math.round(d.defaults[key]*100)?d.defaults[key]:Number(el.value)/100;
     else if(f.kind==='num')out[key]=el.value===''?d.defaults[key]:Number(el.value);
-    else if(f.kind==='select')out[key]=el.value===''?null:el.value;
+    else if(f.kind==='select')out[key]=el.value===''?null:(f.numeric?Number(el.value):el.value);
     else out[key]=el.value.trim()||d.defaults[key];
   }
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));

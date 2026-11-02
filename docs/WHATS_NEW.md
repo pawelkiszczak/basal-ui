@@ -23,6 +23,13 @@
   why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
   ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
   `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- Every engine 2.5 `basal-serve` load option is in Load options — the second read (`--reread` and its combine,
+  token and image controls), `--order-average`, `--prepared`, `--compile-scope`, `--graph-memory-gb` (which sizes the
+  fit estimate), `--mlx-forward` / `--mlx-compute`, the FP8 / NVFP4 quantisation switches, `--state-cache-lock` /
+  `--state-cache-bits`, `--long-lane-gdn` (without which the long lane stays refused for Qwen3.5),
+  `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
+  not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
+  value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
