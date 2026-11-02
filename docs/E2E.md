@@ -61,6 +61,45 @@ the hardware allows.
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
 
+## Stable release gate 2026-11-02
+
+Stable **[v0.1.0](https://github.com/pawelkiszczak/basal-ui/releases/tag/v0.1.0)** is published on
+[PyPI](https://pypi.org/project/basal-ui/0.1.0/). The selected implementation was merged through
+[#10](https://github.com/pawelkiszczak/basal-ui/pull/10) into `dev`,
+[#12](https://github.com/pawelkiszczak/basal-ui/pull/12) into `stage`, and
+[#13](https://github.com/pawelkiszczak/basal-ui/pull/13) into `main`.
+
+The fresh stage run tested commit `b7b7954ebdd222f935cb5fe810afa0b471a280a8`. Its Git tree exactly matched
+released main commit `43fea09a086add72010465677607fadd930de2ad`, which the annotated `v0.1.0` tag identifies.
+The [stage evidence](https://github.com/pawelkiszczak/basal-ui/pull/13#issuecomment-6576851940) was recorded
+before merging main. Later documentation-only commits do not move that tag or replace its published artifacts.
+
+| Release check | Observed result |
+|---|---|
+| Local lint, format and lock checks | Passed |
+| Local unit tests | 362 passed, 3 skipped; 88% coverage |
+| Fresh exact-stage real-model/Chromium E2E | 122 passed, 5 skipped in 305.33 seconds |
+| Protected promotion and post-merge main CI | Ubuntu/macOS × Python 3.10/3.13 with Engine 2.4.1 passed |
+| Stable wheel and sdist | Built; both passed `twine check` |
+| Stable packaged-app HTTP smoke | Started with Engine 2.4.1, served all 18 referenced static assets, reported installed version 0.1.0 |
+| Publish version classification | `v0.1.0` produced `prerelease=false`; the RC1 tag was rejected |
+| Protected publication workflow | Build, approved PyPI upload and stable GitHub release completed successfully |
+
+The E2E host was macOS/Apple Silicon (arm64), Python 3.13.11, Engine 2.4.1 with MLX, cached
+`Remek/basal-2.0-mini-MLX-8bit` and `Remek/basal-2.0-mini` (bf16), and Chromium. No models were downloaded.
+The prepared dev/MCP/E2E/MLX environment was reused without dependency synchronization. A temporary install
+of the stable wheel supplied distribution metadata through `PYTHONPATH`; source import from the stage worktree
+and installed metadata `0.1.0` were verified before `HF_HUB_OFFLINE=1 make e2e ARGS='-q -rs --tb=short'`.
+
+The three unit skips were missing Pillow and two adapter checks requiring Engine 2.5.1. The five E2E skips
+were thinking without cached 4.5B/vLLM, early exit without CUDA/basal-1.0 bf16, and three context-policy cases
+whose required metadata this Engine does not report. This is not additional hardware, encoder or model-accuracy
+certification. Historical RC1 records below intentionally retain their original version and scope.
+
+[Post-merge main CI](https://github.com/pawelkiszczak/basal-ui/actions/runs/41442990431) and the
+[completed publication workflow](https://github.com/pawelkiszczak/basal-ui/actions/runs/41443483539) provide
+the remote release evidence.
+
 ## Selected Studio features gate 2026-11-02
 
 Implemented on `feat/studio-feature-selections`, based on Studio commit `86c1322`. The approved preview is
