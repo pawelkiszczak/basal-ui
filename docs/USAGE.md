@@ -144,6 +144,7 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   them), or the raw JSON request (which carries `"model"`). **Request settings** contains `facts`, `lang`, Edit JSON,
   and supported Thinking / early-exit controls, keeping the model and example selectors visible in the toolbar. Question names must be
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
+  For `tool` questions, **Import from MCP server** fetches a server's `tools/list`, lets you select definitions, and merges them by name; the source URL is kept with the request while an entered bearer token is used only for the import. **Shortlist to K for this question** ranks the tools against the question's instructions. The Engine recommends at most 50 tools and accepts up to 255. Non-loopback servers use the same SSRF protection as Fetch URL; loopback MCP servers are allowed. [API details](API.md#importing-mcp-tools-and-shortlisting).
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
   and must be attached again. **Fetch URL** beside State opens a dialog for a public HTTP(S) address. The app fetches
   anonymously and fills the state for review; it does not send the page until you submit the Decision. HTML is reduced
