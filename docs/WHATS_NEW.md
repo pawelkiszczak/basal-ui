@@ -53,6 +53,10 @@
   fallback, behind one model name. Cascades are listed on the API server, and their answer attribution and
   calibration status are shown in the Playground. [USAGE](USAGE.md#cascades) · [API](API.md#cascades)
 - Playground tool questions can import selected definitions from an MCP streamable-HTTP server and merge by name; an optional bearer token is used only for that call. The question remembers its source URL, and a local BM25 shortlist ranks tools by the question's instructions. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it), [API.md](API.md#importing-mcp-tools-and-shortlisting)
+- Settings can attach external System One Decision servers as **Comparison models**. The Playground compares answers and
+  latency side by side, while Batch preflights every input line before running. Comparison answers are marked
+  uncalibrated; their servers and keys never appear on the API server or MCP. [USAGE](USAGE.md#comparison-models) ·
+  [API](API.md#local-app-management-api)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

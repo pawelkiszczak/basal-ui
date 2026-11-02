@@ -1045,7 +1045,7 @@ function decisionBase(answer,q) {
 // text decisions with the served option orders; a media answer ("text"), one fitted on other option orders or an act
 // question shape the calibration was not validated for ("unvalidated") and uncalibrated probabilities get no claim.
 function certificateGap(answer, entry) {
-  if(answer.calibrated===false)return t('this Cascade answer is not calibrated');
+  if(answer.calibrated===false)return t(entry?.kind==='comparison'?'this comparison answer is not calibrated':'this Cascade answer is not calibrated');
   if(entry?.calibration_warning)return `calibration warning: ${entry.calibration_warning}`;
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
@@ -1220,6 +1220,16 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
+function renderComparedResults(data, request) {
+  const column=(slot)=>{
+    const answers=slot.response?.answers||{}, entry=modelEntry(slot.model);
+    const panels=Object.entries(answers).map(([name,answer])=>DecisionTools.answerPanel(name,answer,request.questions?.[name]||{},entry)).join('');
+    const error=slot.error||slot.response?.error;
+    return `<section class="comparison-answer"><div class="section-head"><strong>${esc(slot.model)}</strong><span>${t('Latency')}: ${num(slot.latency_ms,0)} ms</span></div>${slot.model.includes('/')&&entry?.kind==='comparison'?`<p class="muted">${t('Not calibrated')}</p>`:''}${error?`<div class="error-box">${esc(error)}</div>`:panels||`<div class="empty">${t('No answers returned.')}</div>`}</section>`;
+  };
+  $('#results').innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">${column(data.primary)}${column(data.comparison)}</div>`;
+  $('#rawResponse').textContent=JSON.stringify(data,null,2);$('#rawDetails').hidden=false;
+}
 function showDecideError(message) { $('#decideError').textContent=message; $('#decideError').hidden=false; }
 async function sendDecision() {
   $('#decideError').hidden=true; $('#results').innerHTML='';
@@ -1239,7 +1249,15 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
+  try {
+    if(selectedComparisonModel){
+      const response=await api('/api/compare',{method:'POST',body:JSON.stringify({...request,compare_model:selectedComparisonModel})});
+      renderComparedResults(response,request);
+    }else{
+      const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)});
+      renderResults(response,request,mediaSnapshot);
+    }
+  }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
 }
@@ -1521,7 +1539,7 @@ async function copyText(text, success=t('Copied to clipboard')) {
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
-let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
+let selectedModel=localStorage.getItem('basal-ui.model')||'', selectedComparisonModel=localStorage.getItem('basal-ui.comparison-model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
@@ -1559,7 +1577,8 @@ function renderStatus(s) {
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   rowsSignature=signature;
-  if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
+  const primaryReady=ready.filter(m=>m.kind!=='comparison');
+  if(!primaryReady.some(m=>m.id===selectedModel))selectedModel=primaryReady[0]?.id||'';
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
@@ -1623,10 +1642,10 @@ function renderLoadedRows(models) {
   $('#loadedModels').innerHTML=notices+(models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='cascade'?`<span class="badge">${t('Cascade')}</span>`:''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
-    const health=m.health, load=m.kind==='cascade'?t('router process'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='cascade'?`<span class="badge">${t('Cascade')}</span>`:m.kind==='comparison'?`<span class="badge">${t('Comparison')}</span>`:''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const health=m.health, load=m.kind==='comparison'?t('Decision server'):m.kind==='cascade'?t('router process'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
-    const actions=m.kind==='cascade'?`<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Stop cascade')}</button>`:`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
+    const actions=m.kind==='comparison'?'':m.kind==='cascade'?`<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Stop cascade')}</button>`:`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
     return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
   }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`);
@@ -1671,16 +1690,24 @@ async function renderCascadeDefinitions() {
   }catch(error){target.innerHTML=`<p class="muted">${esc(error.message)}</p>`;}
 }
 function renderPlaygroundModels(ready) {
-  const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media,m.kind]));
+  const primary=ready.filter(m=>m.kind!=='comparison'), comparisons=ready.filter(m=>m.kind==='comparison');
+  const select=$('#playgroundModel');
+  if(!$('#playgroundCompareModel'))select.insertAdjacentHTML('afterend',`<select class="select" id="playgroundCompareModel" aria-label="${esc(t('Compare with'))}"><option value="">${t('No comparison')}</option></select>`);
+  const second=$('#playgroundCompareModel'),signature=JSON.stringify([primary.map(m=>[m.id,m.kind]),comparisons.map(m=>m.id)]);
+  if(!second.dataset.bound){second.dataset.bound='1';second.onchange=()=>{selectedComparisonModel=second.value;localStorage.setItem('basal-ui.comparison-model',selectedComparisonModel);};}
   if(signature!==playgroundSignature){
     playgroundSignature=signature;
-    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    select.innerHTML=primary.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    second.innerHTML=`<option value="">${t('No comparison')}</option>`+comparisons.map(m=>`<option value="${esc(m.id)}">${esc(m.id)} · ${t('Comparison')}</option>`).join('');
   }
-  select.value=selectedModel; select.disabled=!ready.length;
-  $('#playgroundForm').disabled=!ready.length; $('#playgroundHint').hidden=Boolean(ready.length);
-  setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
-  setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
-  DecisionTools.refreshModels(ready);
+  if(!primary.some(m=>m.id===selectedModel))selectedModel=primary[0]?.id||'';
+  select.value=selectedModel; select.disabled=!primary.length;
+  if(!comparisons.some(m=>m.id===selectedComparisonModel))selectedComparisonModel='';
+  second.value=selectedComparisonModel;
+  $('#playgroundForm').disabled=!primary.length; $('#playgroundHint').hidden=Boolean(primary.length);
+  setPlaygroundMedia(primary.find(m=>m.id===selectedModel)?.media||[]);
+  setPlaygroundExperimental(primary.find(m=>m.id===selectedModel));
+  DecisionTools.refreshModels(primary);
 }
 function setPlaygroundMedia(kinds) {
   if(JSON.stringify(kinds)===JSON.stringify(loadedMedia)){recordingButton().hidden=!kinds.includes('audio');return;}
@@ -2325,7 +2352,7 @@ $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
 function renderBatchState(job, ready) {
   const select=$('#batchModel'), current=select.value, allowed=ready.filter(m=>m.kind!=='cascade'||(m.cascade_kind==='escalate'&&!m.cascade_has_fallback)), ids=allowed.map(m=>m.id);
-  if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=allowed.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
+  if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=allowed.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:m.kind==='comparison'?` · ${t('Comparison')}`:''}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
   if(ids.includes(current))select.value=current; else if(ids.includes(selectedModel))select.value=selectedModel;
   const levels=modelEntry(select.value)?.early_exit||[], ee=$('#batchEarlyExit');
   if(JSON.stringify([...ee.options].map(o=>o.value))!==JSON.stringify(['',...levels]))ee.innerHTML=['',...levels].map(l=>`<option value="${esc(l)}">${l?`${t('early exit')} ${esc(l)}`:t('no early exit')}</option>`).join('');
@@ -2492,6 +2519,33 @@ selectManagerTab(new URLSearchParams(location.search).get('managerTab')||localSt
 function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
 $('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
 selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
+function updateDecisionServerConsent(){
+  const input=$('#decisionServerUrl'),field=$('#decisionServerConsentField');
+  let host='';
+  try{host=new URL(input.value).hostname;}catch{}
+  const local=host==='localhost'||host==='127.0.0.1'||host==='::1'||host.startsWith('127.');
+  field.hidden=!host||local;
+  field.lastChild.textContent=host?` ${t('I consent to sending request data to {host}',{host})}`:t('I consent to sending request data to this host');
+}
+async function loadDecisionServers(){
+  try{
+    const data=await api('/api/decision-servers'),list=$('#decisionServerList');
+    list.innerHTML=data.servers.length?data.servers.map(server=>`<div class="disk-row"><div class="disk-info"><strong>${esc(server.name)}</strong> <span class="badge">${esc(server.state)}</span><div class="muted">${esc(server.url)}</div><div class="muted">${(server.models||[]).map(model=>esc(model.id||model.name)).join(', ')||t('No models reported')}</div></div><button type="button" data-delete-decision-server="${esc(server.id)}">${t('Delete')}</button></div>`).join(''):`<p class="muted">${t('No Decision servers attached.')}</p>`;
+    list.querySelectorAll('[data-delete-decision-server]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/decision-servers/${encodeURIComponent(button.dataset.deleteDecisionServer)}`,{method:'DELETE'});await Promise.all([loadDecisionServers(),refreshStatus()]);}));
+  }catch(error){$('#decisionServerError').textContent=error.message;$('#decisionServerError').hidden=false;}
+}
+$('#decisionServerUrl').addEventListener('input',updateDecisionServerConsent);
+$('#addDecisionServer').onclick=()=>act(async()=>{
+  const name=$('#decisionServerName').value.trim(),url=$('#decisionServerUrl').value.trim(),key=$('#decisionServerKey').value,consent=$('#decisionServerConsent').checked;
+  $('#decisionServerError').hidden=true;
+  const body={name,url,...(key?{key}:{}),consent};
+  await api('/api/decision-servers',{method:'POST',body:JSON.stringify(body)});
+  $('#decisionServerKey').value='';$('#decisionServerName').value='';$('#decisionServerUrl').value='';$('#decisionServerConsent').checked=false;updateDecisionServerConsent();
+  await Promise.all([loadDecisionServers(),refreshStatus()]);
+});
+loadDecisionServers();
+updateDecisionServerConsent();
+
 async function loadMemorySettings(){
   try{
     const d=await api('/api/memory'), budget=$('input#memoryBudget');

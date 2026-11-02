@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import base64
 import dataclasses
+import ipaddress
 import json
 import math
 import os
@@ -122,6 +123,9 @@ def create_app(
         stats=stats,
         history=history,
     )
+
+    for record in settings_mod.decision_servers():
+        fleet.attach_decision_server(record)
     gateway = gateway or Gateway(fleet, settings_mod, stats)
     from . import batch
     from .schedules import Schedules
@@ -565,6 +569,8 @@ def create_app(
         current = next((m for m in fleet.status()["models"] if m["id"] == model_id), None)
         if current is None:
             raise HTTPException(404, f"model {model_id!r} is not loaded")
+        if current.get("kind") == "comparison":
+            raise HTTPException(400, "Comparison models cannot be restarted")
         if current["state"] in ("downloading", "starting"):
             raise HTTPException(409, "model is still loading")
         variants, _ = all_variants()
@@ -858,6 +864,64 @@ def create_app(
                 for a in baseline
             ],
         }
+
+    def decision_server_response():
+        return {
+            "servers": [
+                {
+                    **record,
+                    "state": fleet.decision_servers.get(record["id"], {}).get("state", "unavailable"),
+                    "models": [
+                        runner.models_entry
+                        for runner in fleet.runners.values()
+                        if getattr(runner, "server", {}).get("id") == record["id"]
+                    ],
+                }
+                for record in settings_mod.decision_servers()
+            ]
+        }
+
+    @app.get("/api/decision-servers")
+    def get_decision_servers():
+        return decision_server_response()
+
+    @app.post("/api/decision-servers", status_code=201)
+    def post_decision_server(body: dict = Body(...)):
+        try:
+            parsed = urlsplit(body.get("url", "").strip())
+            host = parsed.hostname or ""
+            if not host:
+                raise ValueError("url must be an http(s) URL")
+            try:
+                address = ipaddress.ip_address(host)
+                local = address.is_loopback or address.is_link_local
+            except ValueError:
+                local = host.lower() == "localhost"
+            consent = body.get("consent", False)
+            if not local and consent is not True:
+                raise HTTPException(
+                    400, {"code": "CONSENT_REQUIRED", "detail": f"Consent is required to send requests to {host}"}
+                )
+            record = settings_mod.add_decision_server(body.get("name"), body.get("url"), consent)
+            key = body.get("key")
+            if key is not None and (not isinstance(key, str) or not key.strip()):
+                settings_mod.remove_decision_server(record["id"])
+                raise ValueError("key must be a non-empty string")
+            if key:
+                settings_mod.set_secret(record["id"], key)
+            fleet.attach_decision_server(record)
+        except HTTPException:
+            raise
+        except (ValueError, AttributeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return decision_server_response()
+
+    @app.delete("/api/decision-servers/{server_id}")
+    def delete_decision_server(server_id: str):
+        if not settings_mod.remove_decision_server(server_id):
+            raise HTTPException(404, f"Decision server {server_id!r} not found")
+        fleet.remove_decision_server(server_id)
+        return decision_server_response()
 
     def require_router():
         from .engine import feature, installed
@@ -1259,6 +1323,45 @@ def create_app(
             headers={k: r.headers[k] for k in ("x-request-id", "x-typesafe-request-id") if k in r.headers},
             media_type=r.headers.get("content-type", "application/json"),
         )
+
+    @app.post("/api/compare")
+    def compare_decisions(body: dict = Body(...)):
+        payload = dict(body)
+        model_id, comparison_id = payload.pop("model", None), payload.pop("compare_model", None)
+        source_url = payload.pop("source_url", None)
+        if not isinstance(model_id, str) or not isinstance(comparison_id, str):
+            raise HTTPException(400, "model and compare_model are required")
+        comparison = fleet.runners.get(comparison_id)
+        if comparison is None or getattr(comparison, "models_entry", {}).get("kind") != "comparison":
+            raise HTTPException(400, "compare_model must be a Comparison model")
+        from .compat import comparison_request
+
+        refusal = comparison_request(payload, comparison.image_input)
+        if refusal is not None:
+            return refusal
+
+        def answer(model):
+            started = time.perf_counter()
+            try:
+                response = fleet.decide(model, payload, source="playground", source_url=source_url)
+                try:
+                    data = response.json()
+                except ValueError:
+                    data = {"error": response.text}
+                return {
+                    "model": model,
+                    "response": data,
+                    "status": response.status_code,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+            except (KeyError, RuntimeError, httpx.HTTPError) as exc:
+                return {
+                    "model": model,
+                    "error": str(exc),
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+
+        return {"primary": answer(model_id), "comparison": answer(comparison_id)}
 
     @app.get("/api/stats")
     def get_stats():
@@ -2053,6 +2156,23 @@ def create_app(
                 )
         if not lines:
             raise HTTPException(400, f"{source} has no lines")
+        comparison_runner = fleet.runners.get(model_id)
+        if getattr(comparison_runner, "models_entry", {}).get("kind") == "comparison":
+            from basal.run import to_request
+
+            from .compat import comparison_request
+
+            for n, line in enumerate(lines, 1):
+                item = json.loads(line)
+                try:
+                    request = to_request(item, None, preset, lang)
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise HTTPException(400, f"{source.name}: line {n}: {exc}") from exc
+                refusal = comparison_request(request, comparison_runner.image_input)
+                if refusal is not None:
+                    detail = json.loads(refusal.body)["error"]
+                    raise HTTPException(400, f"{source.name}: line {n}: {detail}")
+
         out = Path(body["output"]).expanduser() if body.get("output") else batch.default_output(source)
         if out.resolve() == source.resolve():
             raise HTTPException(400, "output must not be the input file")
