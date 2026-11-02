@@ -252,7 +252,7 @@ def long_state(tokens):
 
 def context_of(entry):
     """The context policy a child reports in GET /v1/models; the test is skipped on an engine that reports none
-    (basal 2.4.1; proposed upstream with the certified thresholds)."""
+    (basal 2.4.1; 2.5.0 reports it with the certified thresholds)."""
     if "context" not in (entry or {}):
         pytest.skip("the engine's GET /v1/models reports no context policy")
     return entry["context"]

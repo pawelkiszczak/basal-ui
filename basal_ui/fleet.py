@@ -395,6 +395,7 @@ class Runner:
                     if httpx.get(self.base_url + "/health", timeout=1).status_code == 200:
                         entry, media_kinds = self._models_entry(media)
                         if entry is not None and "certified" not in entry:  # basal-serve 2.4.1 does not report them
+                            # (2.5.0 does, from the calibration it applies; absent on a calibration mismatch: {})
                             from .calibration import served_certified
 
                             entry = {

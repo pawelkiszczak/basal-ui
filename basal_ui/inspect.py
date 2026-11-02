@@ -21,7 +21,7 @@ VIZ_PAGE = Path(__file__).parent / "static" / "viz.html"
 
 def explained(body):
     """The request basal-viz explains: with "facts": "auto" its state carries the computed facts, as basal-serve reads
-    it (basal-viz 2.4.1 explains the state without them)."""
+    it (basal-viz 2.4.1 explains the state without them; 2.5.0 injects them itself, so the request goes with "off")."""
     if not isinstance(body, dict) or body.get("facts") != "auto":
         return body
     state = body.get("state")

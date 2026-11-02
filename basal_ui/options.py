@@ -15,7 +15,8 @@ from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, valid
 from .catalog import _cuda_graph, _quantized_hardware_reason
 from .engine import feature
 
-# basal-omni-pico and other Qwen3.5 models (Variant.recurrent), basal-serve 2.4 (engine.recurrent_refused, gdn_graph)
+# basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
+# gdn_graph.refused; 2.5.0 lifted the 2.4 refusals of the caches, compact rows and --lean), MLX from 2.5.0 ("mlx_recurrent")
 
 DEFAULTS = {
     "mode": None,
