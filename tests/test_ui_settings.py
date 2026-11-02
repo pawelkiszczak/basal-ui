@@ -304,3 +304,22 @@ def test_the_first_catalog_check_reports_no_new_models_then_only_new_ones(tmp_pa
     assert settings.update_seen_ids(["a", "b", "c"]) == ["c"]
     settings.mark_models_seen(["c"])
     assert settings.update_seen_ids(["a", "b", "c"]) == []
+
+
+def test_cascades_validate_shape_and_store_secrets_owner_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    base = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+    with pytest.raises(ValueError, match="at least two"):
+        settings.set_cascade({**base, "levels": [{"model": "a/one", "below": 0.8}]})
+    with pytest.raises(ValueError, match="blend weights"):
+        settings.set_cascade({**base, "kind": "blend", "weights": [1]})
+    spec = settings.set_cascade(
+        {**base, "fallback": {"url": "https://example.test/v1", "model": "chat", "key": "secret"}}
+    )
+    assert spec["levels"] == base["levels"]
+    assert "key" not in spec["fallback"]
+    assert settings.get_secret("cascade:tri") == "secret"
+    assert settings.secrets_path().stat().st_mode & 0o777 == 0o600
+    assert "secret" not in json.dumps(settings.cascades())
+    settings.set_secret("cascade:tri", None)
+    assert settings.get_secret("cascade:tri") is None
