@@ -28,6 +28,9 @@
   reason if the Engine lacks `basal-calibrate --layout`. [USAGE.md](USAGE.md#custom-calibration)
 - Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
   the option-order check. Results and per-path probability deltas are saved with the other benchmark results.
+- The API-server gateway exposes `/metrics` in Prometheus text format: basal-ui request/latency and recent endpoint
+  traffic metrics, plus per-child Engine metrics on 2.5. Unavailable child metrics are skipped; API-key setups require
+  an admin key. [API.md](API.md#several-models-behind-basal-ui)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

@@ -171,6 +171,52 @@ def test_models_list_in_basal_and_openai_shapes(fleet):
         assert client.get("/health").json() == {"status": "ok", "models": ["a/one"]}
 
 
+def test_metrics_exports_baseline_and_scrapes_text_metrics_only(fleet, child):
+    child.metrics_reply = (
+        200,
+        "text/plain; version=0.0.4",
+        "# HELP basal_requests_total Requests\n# TYPE basal_requests_total counter\n"
+        'basal_requests_total 3\nbasal_requests_total{status="ok"} 4\n# TYPE basal_up gauge\nbasal_up 1\n',
+    )
+    fleet.runners["a/one"].base_url = child.url
+    fleet.runners["b/two"].base_url = child.url
+    fleet.stats.record(
+        "a/one",
+        {"answers": {"q": {"type": "choice"}}, "usage": {"input_tokens": 5}},
+        125.0,
+        endpoint="/v1/systemone",
+    )
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
+    assert 'basal_requests_total{model="a/one"} 3' in response.text
+    assert 'basal_requests_total{status="ok",model="a/one"} 4' in response.text
+    assert 'basal_requests_total{model="b/two"} 3' in response.text
+    assert 'basal_ui_requests_total{model="a/one"} 1' in response.text
+    assert 'basal_ui_questions_total{model="a/one"} 1' in response.text
+    assert 'basal_ui_input_tokens_total{model="a/one"} 5' in response.text
+    assert 'basal_ui_traffic_requests_total{endpoint="/v1/systemone",method="POST"} 1' in response.text
+    assert response.text.count("# HELP basal_requests_total ") == 1
+    assert response.text.count("# TYPE basal_requests_total counter") == 1
+    lines = response.text.splitlines()
+    family = [line for line in lines if "basal_requests_total" in line and "basal_ui_" not in line]
+    start = lines.index(family[0])
+    assert lines[start : start + len(family)] == family  # both children's samples in one contiguous family
+
+
+def test_metrics_skips_children_returning_404(fleet, child):
+    fleet.runners["a/one"].base_url = child.url
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "basal_ui_models_loaded 2" in response.text
+    assert "basal_ui_" in response.text
+    assert "basal_requests_total" not in response.text
+
+
 def test_keys_guard_every_route_and_stats_need_the_admin_key(fleet, tmp_path):
     keys_file = tmp_path / "keys.json"
     keys_file.write_text(
@@ -191,6 +237,7 @@ def test_keys_guard_every_route_and_stats_need_the_admin_key(fleet, tmp_path):
         user = {"Authorization": "Bearer user-secret"}
         assert client.post("/v1/systemone", json={"model": "a/one", "state": "s"}, headers=user).status_code == 200
         assert client.get("/v1/stats", headers=user).status_code == 403
+        assert client.get("/metrics", headers=user).status_code == 403
         stats = client.get("/v1/stats", headers={"X-API-Key": "admin-secret"})
         assert stats.status_code == 200 and stats.json()["models"]["a/one"]["requests"] == 2
         preflight = client.options(
