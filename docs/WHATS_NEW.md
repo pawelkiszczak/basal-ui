@@ -23,6 +23,9 @@
   why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
   ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
   `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- The API-server gateway exposes `/metrics` in Prometheus text format: basal-ui request/latency and recent endpoint
+  traffic metrics, plus per-child Engine metrics on 2.5. Unavailable child metrics are skipped; API-key setups require
+  an admin key. [API.md](API.md#several-models-behind-basal-ui)
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

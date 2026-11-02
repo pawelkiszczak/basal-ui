@@ -95,6 +95,26 @@ paths, like basal-serve's own errors.
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
+`GET /metrics` exposes Prometheus text format 0.0.4 on the API-server port. It reports basal-ui's lifetime per-model
+request, question, error and input-token counters plus latency quantiles/average; request and error counts by endpoint
+and method over the last 15 minutes; and the number of ready models. Ready Engine children are scraped concurrently
+with a 2-second timeout. Their `text/plain` samples are included with a `model` label; children that return 404,
+another status or another media type are skipped. Engine 2.4.1 therefore exports only basal-ui metrics. The route is
+open when API keys are disabled and requires an admin key when they are enabled (user keys receive 403).
+
+Store a basal-ui admin key (for example, in `/etc/prometheus/basal-ui-admin-key`) and reference it from Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: basal-ui
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/basal-ui-admin-key
+```
+
 ### Recent Decision traffic
 
 The local UI app (not the API-server gateway) exposes `GET /api/traffic?minutes=15` and

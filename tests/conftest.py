@@ -13,6 +13,18 @@ def child():
     gate.set()
 
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/metrics":
+                self.send_error(404)
+                return
+            status, content_type, body = server.metrics_reply
+            payload = body.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
         def do_POST(self):
             seen.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
             gate.wait(30)
@@ -32,6 +44,7 @@ def child():
         "answers": {"q": {"type": "choice", "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.8}},
         "usage": {"latency_ms": 1.5},
     }
+    server.metrics_reply = (404, "text/plain", "")
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server
     gate.set()
