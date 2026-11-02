@@ -133,7 +133,7 @@ def test_shipped_calibration_resolution_uses_preset_and_layout(tmp_path):
     expected = model / "CALIBRATION.vllm.custom.qfirst.json"
     expected.write_text("{}")
     assert calibration.shipped_file(model, "vllm", "custom", layout="qfirst") == expected
-    if engine.feature("adapter"):  # an adapter's own file comes first (engine 2.5.1)
+    if engine.feature("adapter"):  # an adapter's own file comes first (engine 2.5.0)
         adapter = tmp_path / "adapter"
         adapter.mkdir()
         own = adapter / "CALIBRATION.vllm.custom.qfirst.json"
@@ -188,7 +188,7 @@ def make_app(tmp_path, hw=HW):
     )
 
 
-@pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.1)")
+@pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.0)")
 def test_shipped_calibration_context_prefers_running_options_to_saved_options(tmp_path, config):
     adapter = tmp_path / "adapter"
     adapter.mkdir()

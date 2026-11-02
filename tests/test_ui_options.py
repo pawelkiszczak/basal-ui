@@ -193,19 +193,20 @@ def test_every_engine_switch_reaches_basal_serve_as_it_reads_it(tmp_path):
     assert {k: getattr(defaults, k) for k in chosen} == {k: options.DEFAULTS[k] for k in chosen}
 
 
-@pytest.mark.skipif(engine.feature("adapter"), reason="the engine takes --adapter")
-def test_the_adapter_option_is_refused_and_explained_without_an_engine_that_takes_it(tmp_path):
-    with pytest.raises(ValueError, match="load option adapter: LoRA adapters at load need basal engine 2.5.1"):
+def test_the_adapter_option_is_refused_and_explained_without_an_engine_that_takes_it(tmp_path, monkeypatch):
+    real = engine.feature
+    monkeypatch.setattr(engine, "feature", lambda name: False if name == "adapter" else real(name))  # engine 2.4.1
+    with pytest.raises(ValueError, match="load option adapter: LoRA adapters at load need basal engine 2.5.0"):
         options.validate({"adapter": str(tmp_path)})
     app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CPU)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         data = client.get("/api/models/options", params={"id": BF16.id}).json()
         assert data["adapter_reason_code"] == "adapter_engine"
         refused = client.put("/api/models/options", json={"id": BF16.id, "options": {"adapter": str(tmp_path)}})
-        assert refused.status_code == 400 and "2.5.1" in refused.json()["detail"]
+        assert refused.status_code == 400 and "2.5.0" in refused.json()["detail"]
 
 
-@pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.1)")
+@pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.0)")
 def test_an_adapter_that_basal_serve_would_refuse_is_refused_before_loading(tmp_path):
     with pytest.raises(ValueError, match="load option adapter: --adapter nowhere: no adapter_config.json"):
         options.validate({"adapter": str(tmp_path / "nowhere")})
