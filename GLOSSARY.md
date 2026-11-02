@@ -40,6 +40,22 @@ Whether a model's architecture and format can run with a backend and execution m
 **Inference test**:
 An explicit, isolated check of one downloaded model, revision and execution mode using a fixed short decision. Passing is not a general accuracy or performance certification.
 
+**Decision server**:
+Any process or service that answers System One requests for one or more models. The Engine's `basal-serve` is one kind; llama.cpp, Ollama, vLLM, SGLang or a hosted API are others.
+_Avoid_: engine, backend, provider, endpoint
+
+**Comparison model**:
+A model answered by a Decision server other than the Engine, used only to compare its Decisions against a basal model's. Never recommended, calibrated, inspected or benchmarked by basal-ui.
+_Avoid_: external model, remote model
+
+**Attached model**:
+A model not trained on basal that the Engine serves as a decision model through `basal-attach`; uncalibrated until a calibration is fitted on labelled requests.
+_Avoid_: custom model, chat model
+
+**Cascade**:
+An ordered set of loaded models behind one name; a question whose top probability is under a level's threshold is asked again of the next level. Its answers name the level and model that answered.
+_Avoid_: router, escalation chain
+
 **Engine**:
 The upstream basal distribution (library and command-line tools) that basal-ui wraps.
 _Avoid_: backend, core, fork

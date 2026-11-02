@@ -151,7 +151,8 @@ def systemone_media(body):
 
 def validate_systemone(body):
     """Shape checks of a System One request before it reaches basal-serve, including the values basal-serve 2.4.1
-    answers with a 500 from inside the engine (a non-numeric max_error, set bounds that are not integers)."""
+    answers with a 500 from inside the engine (a non-numeric max_error, set bounds that are not integers); 2.5 refuses
+    them itself, and the gateway keeps owning the external contract either way (ADR 0003)."""
     questions = body.get("questions")
     if not isinstance(questions, dict) or not questions:
         raise ValueError("questions must be a non-empty object")
