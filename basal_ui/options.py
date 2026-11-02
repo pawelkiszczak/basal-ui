@@ -13,6 +13,7 @@ from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
 from .catalog import _cuda_graph, _quantized_hardware_reason
+from .engine import feature
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent), basal-serve 2.4 (engine.recurrent_refused, gdn_graph)
 
@@ -348,7 +349,11 @@ def available_modes(v, hw, assessment) -> list[dict]:
         for m in ("fp8", "nvfp4"):  # refused on every GPU: the model's own reason first
             reasons[m] = gdn_refused(m, device=False)
         reasons["fast-exit"] = reasons["mps"] = RECURRENT_REASON
-        reasons["mlx"] = reasons["mlx-q8"] = MLX_RECURRENT_REASON
+        if not feature("mlx_recurrent"):
+            reasons["mlx"] = reasons["mlx-q8"] = MLX_RECURRENT_REASON
+        else:  # 2.5.0: MLX serves Qwen3.5 from its bf16 weights, in float32; quantised weights are refused
+            reasons["mlx"] = reasons["mlx"] or (None if v.port == "bf16" else MLX_Q8_RECURRENT_REASON)
+            reasons["mlx-q8"] = reasons["mlx"] or MLX_Q8_RECURRENT_REASON
     hardware_reason = _quantized_hardware_reason(v, hw)
     if hardware_reason:
         for mode in MODE_ORDER:
@@ -427,7 +432,9 @@ OPTION_TEMPLATES = {
     "mode_fp8_hardware": "FP8 matrix multiplies need compute capability 8.9+ (Ada, Hopper, Blackwell); use fast (bf16) on this GPU",
     "mode_vllm_media": "vLLM media serving needs an NVIDIA GPU with basal[vllm] (docs/OMNI.md)",
     "reason_recurrent": "recurrent-state layers (Gated DeltaNet, Qwen3.5): fast-exit and mps keep attention keys and values only and would answer wrongly; basal-serve refuses them. Use fast (CUDA), eager, vllm or gguf",
-    "reason_mlx_recurrent": "MLX is not checked on recurrent-state models (Qwen3.5): use eager",
+    "reason_mlx_recurrent": "MLX serves recurrent-state models (Qwen3.5) from basal engine 2.5.0 on; use eager on this engine",
+    "reason_mlx_q8_recurrent": "quantised MLX weights are not checked for Qwen3.5 (Gated DeltaNet) models; serve the bf16 weights with mlx",
+    "reason_mlx_recurrent_caches": "--state-cache-gb / --prefix-cache on --mode mlx keep attention keys and values only, not the recurrent states of Qwen3.5 (Gated DeltaNet) models; serve it without them",
     "reason_fla": "the CUDA graph engine runs Qwen3.5's Gated DeltaNet layers with flash-linear-attention: pip install flash-linear-attention (or serve with --mode eager)",
     "reason_long_lane": "--long-lane is not available for Qwen3.5 (Gated DeltaNet) models",
     "reason_gdn_quant": "--mode {quant} is not available for Qwen3.5 (Gated DeltaNet) models: the CUDA graph engine serves them in bf16 (--mode fast); --mode vllm runs their FP8 checkpoints",
@@ -435,6 +442,7 @@ OPTION_TEMPLATES = {
 }
 RECURRENT_REASON = OPTION_TEMPLATES["reason_recurrent"]
 MLX_RECURRENT_REASON = OPTION_TEMPLATES["reason_mlx_recurrent"]
+MLX_Q8_RECURRENT_REASON = OPTION_TEMPLATES["reason_mlx_q8_recurrent"]
 FLA_REASON = OPTION_TEMPLATES["reason_fla"]
 THINK_REASON = OPTION_TEMPLATES["think_unavailable"]
 
@@ -479,8 +487,6 @@ def mlx_packed_unavailable(v, hw):
 
 def adapter_unavailable():
     """Why the adapter load option cannot be used, None when the engine takes --adapter (feature probe)."""
-    from .engine import feature
-
     return None if feature("adapter") else OPTION_TEMPLATES["adapter_engine"]
 
 
@@ -532,6 +538,13 @@ def check_combination(v, hw, options, default_mode, media=False):
             reason = "--long-lane is not available for Qwen3.5 (Gated DeltaNet) models"
         if reason:
             raise ValueError(reason)
+    if v.recurrent and kind == "mlx":  # basal/engine.py MLXBackend (2.5.0): Qwen3.5 in bf16, without the caches
+        if not feature("mlx_recurrent"):
+            raise ValueError(MLX_RECURRENT_REASON)
+        if quant == "q8" or v.port != "bf16":
+            raise ValueError(MLX_Q8_RECURRENT_REASON)
+        if options["state_cache_gb"] or options["prefix_cache"]:
+            raise ValueError(OPTION_TEMPLATES["reason_mlx_recurrent_caches"])
     if quant == "fp8" and kind in ("graph", "exit"):
         reason = fp8_unavailable(hw)
         if reason:

@@ -120,7 +120,8 @@ MEDIA_KINDS = {
 }
 # Models with recurrent-state layers (Qwen3.5: Gated DeltaNet and attention layers), text only. basal-serve 2.4 serves
 # them in --mode fast / fast-nocompile on CUDA with flash-linear-attention (gdn_graph.GDNGraphBackend), refuses
-# fast-exit, fp8, nvfp4 and mps, and defaults to fast on Hopper with fla, eager elsewhere; mlx is not checked on them
+# fast-exit, fp8, nvfp4 and mps, and defaults to fast on Hopper with fla, eager elsewhere; 2.4.1's mlx is not checked on
+# them, 2.5.0's --mode mlx serves them from bf16 weights (basal/engine.py MLXBackend; basal_ui.options, "mlx_recurrent")
 # (basal/server.py:default_mode, basal/gdn_graph.py:refused, default_fast).
 RECURRENT_MODELS = {("basal-omni", "pico")}
 
