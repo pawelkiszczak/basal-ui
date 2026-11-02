@@ -57,6 +57,10 @@
 - Model manager can attach `Qwen/Qwen3-4B` with Engine 2.5's `basal-attach`; it appears as an **Attached** model,
   serves in supported modes, and remains marked uncalibrated until a Selected calibration is fitted. It can be removed
   when unloaded; Attached models are excluded from suggestions and Inspect. [USAGE.md](USAGE.md#attached-models)
+- Model manager → Calibration can fine-tune a downloaded bf16 basal or Attached model with Engine 2.5's
+  `basal-finetune`; the cancellable job reserves memory, reports held-out accuracy and exposes its LoRA adapter in
+  Load options. Install the `finetune` (`peft`) add-on from Backends first. [USAGE.md](USAGE.md#fine-tune),
+  [API.md](API.md#fine-tuning)
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
   evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.

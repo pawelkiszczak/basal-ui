@@ -41,7 +41,11 @@ def manager(hw=None, extras=frozenset({"media", "gguf"})):
     fleet = Fleet()
     hardware = hw or SimpleNamespace(platform="cpu", engines=frozenset())
     engine_info = lambda: ("2.4.1", SOURCE, extras)
-    requirements = lambda extra: ("pillow>=10",) if extra == "media" else ("llama-cpp-python>=0.3",)
+    requirements = lambda extra: {
+        "media": ("pillow>=10",),
+        "gguf": ("llama-cpp-python>=0.3",),
+        "finetune": ("peft>=0.17",),
+    }[extra]
     return addons.AddonManager(fleet, lambda: hardware, engine_info, lambda: ["uv"], requirements)
 
 
@@ -140,11 +144,21 @@ def test_inventory_lists_only_declared_and_machine_supported_extras(monkeypatch)
     monkeypatch.setattr(addons, "_extra_installed", lambda extra: False)
     subject = manager(SimpleNamespace(platform="rocm", engines=frozenset({"rocm"})), {"media", "gguf"})
     data = subject.inventory()
-    media, gguf = data["extras"]
+    media, gguf, _ = data["extras"]
     assert media["compatible"] is True
     assert gguf["compatible"] is False
     assert gguf["installed"] is False
     assert data["environment"]["python"] == addons.sys.executable
+
+
+def test_finetune_is_allowlisted_with_engine_declared_requirement(monkeypatch):
+    monkeypatch.setattr(addons, "_extra_installed", lambda extra: False)
+    subject = manager(extras={"finetune"})
+    item = next(item for item in subject.inventory()["extras"] if item["id"] == "finetune")
+    assert item["id"] == "finetune"
+    assert item["compatible"] is True
+    assert item["requirements"] == ["peft>=0.17"]
+    assert addons.ADDON_MODULES["finetune"] == ("peft",)
 
 
 def test_install_requires_explicit_confirmation_and_refuses_active_models(monkeypatch):

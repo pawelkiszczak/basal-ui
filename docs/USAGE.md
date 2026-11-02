@@ -20,6 +20,17 @@ The Calibration tab works on the attached directory as for other models. An Atta
 Library only when it is unloaded; only the attachment directory and its links are removed, not the linked base
 weights. Engine 2.4.1 hides attachment controls because it has no `basal-attach`.
 
+## Fine-tune
+
+With Engine 2.5 and the `peft` add-on installed, Model manager → Calibration offers **Fine-tune** for downloaded
+bf16 basal and Attached models. Select the labelled JSONL, choose an output name and set epochs, learning rate, LoRA
+rank/alpha, held-out fraction, maximum prompt length, optional maximum steps and gradient checkpointing. The run is a
+cancellable job with logs and reserves twice the model's estimated memory. Its output is placed under
+`<models_dir>/adapters/<model-id>/<name>/`; the Load options `adapter` field offers the produced `lora/` directory.
+The panel reports held-out top-1 accuracy before and after training; calibrate the merged output on its generated
+`heldout.jsonl` before using automated decisions. **Tested on Apple Silicon with basal-omni-pico; other GPUs are
+untested.** Engine 2.4.1 hides/refuses this feature.
+
 Install from the [README's source instructions](../README.md#install) until the first PyPI release. From that checkout:
 
 ```bash
