@@ -47,6 +47,8 @@ shape. `POST /api/calibrate` fits against that active-or-saved layout; non-canon
 `basal-calibrate --layout`, and a request is refused with HTTP 400 when the installed Engine lacks that flag. The
 Calibration tab disables fitting and explains the limitation in that case.
 | `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
+| `POST /api/mcp/tools` | `{"url":"http://localhost:8000/mcp","token":"optional"}` initializes streamable-HTTP MCP and returns tool definitions as `{"tools":[{"name":"get_weather","description":"...","inputSchema":{...}}]}`. Loopback MCP servers are allowed; other destinations use the Fetch URL address guard and pinned connection. A JSON-RPC/server failure is 502; unsafe addresses are 400. |
+| `POST /api/tools/shortlist` | `{"tools":[...],"query":"...","k":40}` ranks tools by BM25 and returns the selected `tools`; `k` must be an integer from 1 to 255. |
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
@@ -92,6 +94,19 @@ request and restored as a read-only Replay note; `/api/decide` removes it before
 Every request and redirect connects only to an address that check accepted (the host is not resolved again for the
 socket), so a DNS answer that changes after the check cannot redirect the connection to a private address; HTTPS still
 verifies the certificate against the URL's hostname.
+
+### Importing MCP tools and shortlisting
+
+`POST /api/mcp/tools` uses MCP streamable HTTP: it initializes the session, follows `tools/list` cursors for at most 20
+pages, and accepts JSON or server-sent-event responses. Replies are capped at 4 MiB and requests time out after 10 s.
+An optional bearer token is used only for that request. Local loopback services (127/8, `::1`, and `localhost`) are
+allowed; non-loopback hosts use the same address guard and DNS-pinned transport as `/api/fetch`. Redirects are not
+followed.
+
+The Playground stores the imported source URL as question metadata so the picker can refresh it; it removes that
+metadata before forwarding a Decision. Imported definitions are merged by `name`. `POST /api/tools/shortlist` runs
+local BM25 over tool names and descriptions using the question's instructions as the query; it adds no dependencies.
+The picker warns above 50 tools and refuses a selection over 255.
 
 ### Batch path inspection
 

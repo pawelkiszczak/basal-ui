@@ -647,6 +647,7 @@ function renderTypeFields(card, type, q) {
   else if(type==='tool'){
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
+      +`<div class="controls"><button type="button" class="btn import-mcp">${t('Import from MCP server')}</button><button type="button" class="btn shortlist-tools">${t('Shortlist to K for this question')}</button></div>${q.mcp_url?`<small class="muted">${t('MCP source: {url}',{url:esc(q.mcp_url)})}</small>`:''}`
       +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
@@ -905,6 +906,8 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
     else if(b.dataset.costMode){setCostMode(card,b.dataset.costMode);syncRequest();}
     else if(b.matches('.add-action')){card._costRows=readCostRows(card);card._costRows.push({action:'',costs:{}});renderCostMatrix(card,true);syncRequest();}
     else if(b.matches('.remove-action')){card._costRows=readCostRows(card);card._costRows.splice(Number(b.dataset.row),1);renderCostMatrix(card,true);syncRequest();}
+    else if(b.matches('.import-mcp'))openMcpImport(card);
+    else if(b.matches('.shortlist-tools'))shortlistQuestionTools(card);
   });
   $('#questions').append(card); updateMediaEvidence(); syncRequest();
 }
@@ -1273,6 +1276,67 @@ if(fetchStateField){
       if(e.name!=='AbortError'){error.textContent=e.message;error.hidden=false;}
     }finally{fetchController=null;fetchButton.disabled=false;submit.disabled=false;submit.textContent=t('Fetch');}
   };
+}
+const mcpImportDialog=document.createElement('dialog');
+mcpImportDialog.id='mcpImportDialog';mcpImportDialog.className='confirm-dialog';
+mcpImportDialog.innerHTML=`<form method="dialog"><h3>${t('Import from MCP server')}</h3><label for="mcpImportUrl">${t('MCP server URL')}</label><input id="mcpImportUrl" class="input" type="url" required placeholder="http://localhost:8000/mcp"><label for="mcpImportToken">${t('Bearer token (not saved)')}</label><input id="mcpImportToken" class="input" type="password" autocomplete="off"><div class="controls"><button type="button" id="mcpImportFetch">${t('Load tools')}</button><button type="button" id="mcpSelectAll">${t('Select all')}</button><button type="button" id="mcpSelectNone">${t('Select none')}</button></div><p id="mcpImportCount" class="muted"></p><div id="mcpImportError" class="error-box" role="alert" hidden></div><div id="mcpImportTools" class="mcp-import-tools"></div><div class="dialog-actions"><button type="button" id="mcpImportCancel">${t('Cancel')}</button><button type="button" id="mcpImportApply" class="primary" disabled>${t('Import selected')}</button></div></form>`;
+document.body.append(mcpImportDialog);
+mcpImportDialog.querySelector('form').addEventListener('submit',event=>{event.preventDefault();$('#mcpImportFetch').click();});
+let mcpImportCard=null,mcpImportTools=[];
+function selectedMcpTools(){return [...mcpImportDialog.querySelectorAll('[data-mcp-tool]:checked')].map(input=>mcpImportTools[Number(input.dataset.mcpTool)]);}
+function renderMcpImportCount(){
+  const count=selectedMcpTools().length,note=$('#mcpImportCount');
+  note.textContent=count>255?t('The Engine accepts at most 255 tools.'):count>50?t('{count} tools selected; the Engine recommends shortlisting to 50.',{count}):t('{count} tools selected.',{count});
+  $('#mcpImportApply').disabled=count===0||count>255;
+}
+function openMcpImport(card){
+  mcpImportCard=card;$('#mcpImportUrl').value=card._extra.mcp_url||'';
+  $('#mcpImportToken').value='';$('#mcpImportTools').replaceChildren();mcpImportTools=[];
+  $('#mcpImportError').hidden=true;$('#mcpImportCount').textContent='';
+  mcpImportDialog.showModal();$('#mcpImportUrl').focus();
+}
+$('#mcpImportCancel').onclick=()=>mcpImportDialog.close();
+mcpImportDialog.addEventListener('cancel',()=>{$('#mcpImportToken').value='';});
+mcpImportDialog.addEventListener('close',()=>{$('#mcpImportToken').value='';});
+$('#mcpSelectAll').onclick=()=>{mcpImportDialog.querySelectorAll('[data-mcp-tool]').forEach(input=>input.checked=true);renderMcpImportCount();};
+$('#mcpSelectNone').onclick=()=>{mcpImportDialog.querySelectorAll('[data-mcp-tool]').forEach(input=>input.checked=false);renderMcpImportCount();};
+mcpImportDialog.addEventListener('change',event=>{if(event.target.matches('[data-mcp-tool]'))renderMcpImportCount();});
+$('#mcpImportUrl').addEventListener('input',()=>{mcpImportTools=[];$('#mcpImportTools').replaceChildren();$('#mcpImportCount').textContent='';$('#mcpImportApply').disabled=true;});
+$('#mcpImportFetch').onclick=async()=>{
+  const url=$('#mcpImportUrl').value.trim(),token=$('#mcpImportToken').value,button=$('#mcpImportFetch'),error=$('#mcpImportError');
+  if(!url)return;
+  button.disabled=true;button.textContent=t('Loading…');error.hidden=true;
+  mcpImportTools=[];$('#mcpImportTools').replaceChildren();$('#mcpImportCount').textContent='';$('#mcpImportApply').disabled=true;
+  try{
+    const result=await api('/api/mcp/tools',{method:'POST',body:JSON.stringify({url,...(token?{token}:{})})});
+    mcpImportTools=result.tools||[];
+    $('#mcpImportTools').innerHTML=mcpImportTools.map((tool,index)=>`<label class="mcp-import-tool"><input type="checkbox" data-mcp-tool="${index}" checked><span><strong>${esc(tool.name)}</strong>${tool.description?`<small>${esc(tool.description)}</small>`:''}</span></label>`).join('');
+    renderMcpImportCount();
+  }catch(e){error.textContent=e.message;error.hidden=false;}
+  finally{button.disabled=false;button.textContent=t('Load tools');$('#mcpImportToken').value='';}
+};
+$('#mcpImportApply').onclick=()=>{
+  const card=mcpImportCard;if(!card)return;
+  const selected=selectedMcpTools(),field=$('[data-f="tools"]',card);let current=[];
+  try{current=field.value.trim()?JSON.parse(field.value):[];}catch{toast(t('Fix the tools JSON before importing.'),'error');return;}
+  if(!Array.isArray(current)){toast(t('Tools must be a JSON array.'),'error');return;}
+  if(current.length+selected.filter(tool=>!current.some(existing=>existing?.name===tool.name)).length>255){toast(t('The Engine accepts at most 255 tools.'),'error');return;}
+  const byName=new Map(current.map(tool=>[tool?.name,tool]));
+  selected.forEach(tool=>byName.set(tool.name,{name:tool.name,description:tool.description||'',inputSchema:tool.inputSchema||{}}));
+  field.value=JSON.stringify([...byName.values()],null,2);card._extra.mcp_url=$('#mcpImportUrl').value.trim();
+  mcpImportDialog.close();$('#mcpImportToken').value='';renderTypeFields(card,'tool',parseQuestionCard(card,'tool')[1]);syncRequest();
+};
+async function shortlistQuestionTools(card){
+  const field=$('[data-f="tools"]',card);let tools;
+  try{tools=JSON.parse(field.value);}catch{toast(t('Fix the tools JSON before shortlisting.'),'error');return;}
+  if(!Array.isArray(tools)){toast(t('Tools must be a JSON array.'),'error');return;}
+  const requested=window.prompt(t('Shortlist size (1–255)'), '40');if(requested===null)return;
+  const k=Number(requested);
+  if(!Number.isInteger(k)||k<1||k>255){toast(t('Enter a whole number from 1 to 255.'),'error');return;}
+  try{
+    const result=await api('/api/tools/shortlist',{method:'POST',body:JSON.stringify({tools,query:$('.q-instructions-input',card).value,k})});
+    field.value=JSON.stringify(result.tools,null,2);syncRequest();
+  }catch(error){toast(error.message,'error');}
 }
 $('#editJsonToggle').addEventListener('change',()=>{
   if($('#editJsonToggle').checked){

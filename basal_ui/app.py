@@ -1048,6 +1048,11 @@ def create_app(
         body = dict(body)
         model_id = body.pop("model", None)
         source_url = body.pop("source_url", None)
+        questions = body.get("questions")
+        if isinstance(questions, dict):
+            for question in questions.values():
+                if isinstance(question, dict):
+                    question.pop("mcp_url", None)
         if source_url is not None and not isinstance(source_url, str):
             raise HTTPException(400, "source_url must be a string")
         if not isinstance(model_id, str) or not model_id:
@@ -1601,6 +1606,36 @@ def create_app(
         from basal.presets import names
 
         return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+
+    @app.post("/api/mcp/tools")
+    def import_mcp_tools(body: dict = Body(...)):
+        from .mcp_import import list_tools
+
+        url, token = body.get("url"), body.get("token")
+        if not isinstance(url, str) or not url:
+            raise HTTPException(400, "url must be a non-empty string")
+        if token is not None and not isinstance(token, str):
+            raise HTTPException(400, "token must be a string")
+        try:
+            return {"tools": list_tools(url, token)}
+        except ValueError as exc:
+            raise HTTPException(getattr(exc, "status_code", 400), str(exc)) from exc
+
+    @app.post("/api/tools/shortlist")
+    def shortlist_tools(body: dict = Body(...)):
+        from .mcp_import import shortlist
+
+        tools, query, k = body.get("tools"), body.get("query"), body.get("k", 40)
+        if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
+            raise HTTPException(400, "tools must be an array of objects")
+        if not isinstance(query, str):
+            raise HTTPException(400, "query must be a string")
+        if type(k) is not int or not 1 <= k <= 255:
+            raise HTTPException(400, "k must be an integer between 1 and 255")
+        try:
+            return {"tools": shortlist(tools, query, k)}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/fetch")
     def fetch_url(body: dict = Body(...)):
