@@ -1601,6 +1601,7 @@ def create_app(
         from basal.presets import names
 
         return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+
     @app.post("/api/fetch")
     def fetch_url(body: dict = Body(...)):
         """Fetch and reduce one public HTTP(S) document for the Playground state."""
