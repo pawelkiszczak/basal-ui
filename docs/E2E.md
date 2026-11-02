@@ -10,7 +10,7 @@ They are skipped unless `BASAL_E2E=1`, so `pytest` stays fast.
 
 ```bash
 uv sync --group dev --extra mcp --extra e2e      # the dev group pins the engine release basal-ui is tested with
-uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
+uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
 uv run --no-sync playwright install chromium     # once: the page tests drive Chromium
 BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what this machine skipped and why
 ```
@@ -28,6 +28,8 @@ or another Engine backend. Keep subsequent test commands `--no-sync` so the prep
 | `text_model` | the smallest downloaded, runnable text model, basal-2.0 first (`BASAL_E2E_MODEL`) | almost everything |
 | `second_model` | another one (`BASAL_E2E_SECOND_MODEL`) | several models on one API port, memory budget, restart |
 | `bf16_model` | bf16 PyTorch weights of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_BF16_MODEL`) | Inspect, mode comparison |
+| `mlx_model` | an MLX port of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_MLX_MODEL`) | Inspect with basal-viz `--mode mlx` (engine 2.5.0, Apple Silicon) |
+| `pico_model` | basal-omni-pico in bf16 (`BASAL_E2E_PICO_MODEL`) | basal-omni-pico with `--mode mlx` (engine 2.5.0, Apple Silicon) |
 
 A fixture with no model on disk skips its tests; `BASAL_E2E_DOWNLOAD=1` downloads `Remek/basal-2.0-mini` (bf16,
 3.2 GB: runnable on CUDA, Apple Silicon and the CPU) through basal-ui's Download button instead. Other variables:
@@ -60,6 +62,32 @@ the hardware allows.
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Engine 2.5.0 gate 2026-11-02
+
+Branch `pawelkiszczak/update-2.5` (engine range `>=2.4.1,<2.6`, pin 2.5.0), the same tree run on both tested engine
+releases. A development verification record, not a release.
+
+Host: Apple M4 Max (arm64), macOS 27.0.1, Python 3.13.11, MLX 0.32.4, Chromium (Playwright 1.64.1), the engine with
+its MLX extra. Cached `Remek/basal-2.0-mini-MLX-8bit` (`text_model`, `mlx_model`), `Remek/basal-2.0-mini` bf16
+(`second_model`, `bf16_model`) and `Remek/basal-omni-pico` (`pico_model`; its 2 November snapshot was fetched once).
+Run offline (`HF_HUB_OFFLINE=1`).
+
+| Check | Engine 2.5.0 | Engine 2.4.1 |
+|---|---|---|
+| Full e2e (`make e2e`) | 129 passed, 2 skipped | 124 passed, 7 skipped |
+| Unit suite (`make test`) | 385 passed, 1 skipped | 381 passed, 5 skipped |
+| Feature probes on (`engine.FEATURES`) | 6 / 6 | 0 / 6 |
+| Unit coverage, both runs combined (`--cov-branch`) | 86.17% (baseline at `caf98d9`: 85.88%); no uncovered line or branch among the changed lines of `basal_ui/` | |
+
+Skips on 2.5.0: thinking (needs basal-2.0 4.5B and vLLM) and early exit (basal-1.0 bf16 on CUDA). On 2.4.1 also, by
+design: the three context-policy checks (its `GET /v1/models` reports no context), Inspect of an MLX port (no MLX modes
+in its basal-viz) and basal-omni-pico on `--mode mlx` (its MLX engine does not serve Qwen3.5). New on 2.5.0 and passing:
+MCP `list_models` and `model` routing behind one API port, the Playground's MCP example for the selected model,
+basal-viz `--mode mlx` on `basal-2.0-mini-MLX-8bit` (device `mlx`), basal-omni-pico loaded with `--mode mlx` and
+answering, the `int8` row with its reason, the context and certified-threshold checks against the child's own values.
+The first 2.5.0 run failed one page test that counted 16 modes (17 with `int8`); it now counts `MODE_ORDER`.
+Not validated here: `--mode int8` on an NVIDIA GPU (unit tests only), NVIDIA/Strix/TPU hardware.
 
 ## Stable release gate 2026-11-02
 

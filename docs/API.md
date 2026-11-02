@@ -165,14 +165,18 @@ process only; it does not clear another process's in-memory window. Rolling tele
 
 ### MCP routing
 
-With tested Engine 2.4.1, the streamable-HTTP MCP `decide` and `decide_many` tools answer with the **first loaded
-model**. Their schemas have no `model` argument or `list_models` tool. Use `GET /v1/models` for inventory and the
-System One/OpenAI Decisions routes for named-model routing. Playground refuses to generate an MCP example for
-a different selected model rather than silently changing its target.
+With Engine 2.5.0 the streamable-HTTP MCP `decide` and `decide_many` tools take an optional `model` argument and a
+`list_models` tool returns `{"models": [...]}`, the ids of the loaded models. Without `model` they answer with the
+**first loaded model**. With Engine 2.4.1 their schemas have neither: they always answer with the first loaded model;
+use `GET /v1/models` for inventory and the System One/OpenAI Decisions routes for named-model routing. On 2.4.1
+Playground refuses to generate an MCP example for a different selected model rather than silently changing its target;
+on 2.5.0 the example passes the selected model as `model`. `GET /api/status` reports which applies as
+`serving.mcp_models`.
 
-Use the running gateway's `/mcp` HTTP endpoint with an initialized MCP client. The stock Engine's `basal-mcp`
-stdio bridge accepts neither `--model` nor an API-key option and does not send the gateway's required `model`
-field; it is not a working stdio-to-gateway connection example.
+Use the running gateway's `/mcp` HTTP endpoint with an initialized MCP client. With Engine 2.5.0 the Engine's stdio
+bridge reaches the gateway too: `basal-mcp --url http://HOST:PORT --model MODEL_ID [--api-key KEY]` sends `model` and
+the bearer key with every request. The 2.4.1 `basal-mcp` accepts neither `--model` nor an API-key option and does not
+send the gateway's required `model` field.
 
 ## Errors and request IDs
 

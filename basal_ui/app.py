@@ -659,7 +659,7 @@ def create_app(
                     "downloaded": on_disk[a.variant.id] is not None,
                     "downloaded_bytes": on_disk[a.variant.id],
                     "revision": revisions.get(a.variant.id),
-                    "inspect_reason": inspectable(a.variant),
+                    "inspect_reason": inspectable(a.variant, current_hw),
                 }
                 for a in baseline
             ],
@@ -1321,7 +1321,8 @@ def create_app(
         from . import calibration
 
         variant = find_variant(body.get("id"))
-        reason = inspectable(variant)
+        current = hw()
+        reason = inspectable(variant, current)
         if reason:
             raise HTTPException(400, reason)
         local_dir = downloaded(variant)
@@ -1335,7 +1336,6 @@ def create_app(
         if job is not None and job.running:
             raise HTTPException(409, "the inspector is loading a model")
         inspector.stop()
-        current = hw()
         try:
             fleet.reserve("inspect", catalog.assess(variant, current).est_memory_bytes)
         except RuntimeError as exc:

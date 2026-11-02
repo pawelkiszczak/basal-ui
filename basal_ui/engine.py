@@ -2,6 +2,7 @@
 
 import importlib.metadata
 import importlib.util
+import inspect
 import json
 import os
 
@@ -9,8 +10,9 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 ENGINE_REPO = "rkinas/basal"
-TESTED_RELEASES = ("2.4.1",)  # every release basal-ui is tested with; CI runs each; the last is the pin
-SUPPORTED_RANGE = ">=2.4.1,<2.5"  # bump with TESTED_RELEASES
+# every release basal-ui is tested with; CI runs each; the last is the pin
+TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1")
+SUPPORTED_RANGE = ">=2.4.1,<2.6"  # bump with TESTED_RELEASES
 SUPPORTED = SpecifierSet(SUPPORTED_RANGE)
 UNCHECKED_ENV = "BASAL_UI_ENGINE_UNCHECKED"
 PINNED_RELEASE = TESTED_RELEASES[-1]
@@ -73,10 +75,30 @@ def check():
     return out
 
 
+def _parameter(module, attribute, name):
+    """Whether the callable `attribute` of the Engine module `module` (dotted path inside it) takes parameter `name`;
+    False when the module cannot be imported here (an optional dependency of the Engine is missing)."""
+    try:
+        target = importlib.import_module(module)
+        for part in attribute.split("."):
+            target = getattr(target, part)
+    except (ImportError, AttributeError):
+        return False
+    return name in inspect.signature(target).parameters
+
+
 FEATURES = {
-    "adapter": lambda: _spec("basal.adapter") is not None,  # --adapter (rkinas/basal#52, 2.5.1)
+    "adapter": lambda: _spec("basal.adapter") is not None,  # --adapter (rkinas/basal#52, 2.5.0)
     # basal-viz reads Gemma 4 basal-omni (rkinas/basal#75); basal_ui.inspect imports basal.viz anyway
     "viz_gemma4": lambda: hasattr(importlib.import_module("basal.viz"), "is_gemma4"),
+    # MCP tools with a `model` argument and list_models (rkinas/basal#66, 2.5.0: basal.mcp_server.http(models=))
+    "mcp_models": lambda: _parameter("basal.mcp_server", "http", "models"),
+    # --mode mlx serves Qwen3.5 (basal-omni-pico) from bf16 weights (2.5.0: MLXBackend(compute=), --mlx-compute)
+    "mlx_recurrent": lambda: _parameter("basal.engine", "MLXBackend.__init__", "compute"),
+    # --mode int8: block-scaled int8 in the CUDA graph engine (2.5.0: basal/server.py MODES, basal/int8block.py)
+    "int8": lambda: "int8" in importlib.import_module("basal.server").MODES,
+    # basal-viz --mode mlx / mlx-q8 reads the MLX engine's layers (2.5.0: basal/viz.py mlx_lens)
+    "viz_mlx": lambda: hasattr(importlib.import_module("basal.viz"), "mlx_lens"),
 }
 
 

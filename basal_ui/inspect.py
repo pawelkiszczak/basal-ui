@@ -21,7 +21,7 @@ VIZ_PAGE = Path(__file__).parent / "static" / "viz.html"
 
 def explained(body):
     """The request basal-viz explains: with "facts": "auto" its state carries the computed facts, as basal-serve reads
-    it (basal-viz 2.4.1 explains the state without them)."""
+    it (basal-viz 2.4.1 explains the state without them; 2.5.0 injects them itself, so the request goes with "off")."""
     if not isinstance(body, dict) or body.get("facts") != "auto":
         return body
     state = body.get("state")
@@ -72,19 +72,36 @@ def inspect_app(explainer_fn, examples_fn, lifespan=None):
 
 
 NOT_INSPECTABLE = (
-    "basal-viz reads the bf16 PyTorch weights of basal-1.0, basal-1.5, basal-2.0 and basal-omni; "
-    "download the bf16 variant"
+    "basal-viz reads the bf16 PyTorch weights of basal-1.0, basal-1.5, basal-2.0 and basal-omni, and the MLX ports of "
+    "basal-1.0, basal-1.5 and basal-2.0 on Apple Silicon; download one of those variants"
 )
 OMNI_NEEDS_ENGINE = (
     "Gemma 4 basal-omni needs an engine whose basal-viz reads it (proposed upstream: "
     "rkinas/basal#75); this engine's basal-viz reads basal-1.0, basal-1.5 and basal-2.0"
 )
+MLX_NEEDS_ENGINE = (
+    "basal-viz reads MLX ports from basal engine 2.5.0 on (--mode mlx); this engine's basal-viz reads bf16 PyTorch "
+    "weights"
+)
+MLX_NEEDS_MAC = "basal-viz reads MLX ports on Apple Silicon with basal[mlx]"
+LLAMA_FAMILIES = ("basal-1.0", "basal-1.5", "basal-2.0")  # basal/viz.py: MLX modes read Llama-architecture layers
 
 
-def inspectable(variant) -> str | None:
-    """None when basal-viz can read the bf16 PyTorch variant, else why not (other ports, the recurrent basal-omni-pico,
-    Gemma 4 basal-omni on an engine whose basal-viz does not read it)."""
-    if variant.port != "bf16" or variant.recurrent:
+def inspectable(variant, hw) -> str | None:
+    """None when basal-viz can read the variant on this machine, else why not: bf16 PyTorch weights (Gemma 4
+    basal-omni only with an engine whose basal-viz reads it), MLX ports of the Llama families on Apple Silicon with an
+    engine whose basal-viz has the MLX modes (2.5.0); never the recurrent basal-omni-pico or other ports."""
+    if variant.recurrent:
+        return NOT_INSPECTABLE
+    if variant.port.startswith("MLX"):
+        if variant.experimental or variant.family not in LLAMA_FAMILIES:
+            return NOT_INSPECTABLE
+        if not feature("viz_mlx"):
+            return MLX_NEEDS_ENGINE
+        if hw.platform != "apple" or "mlx" not in hw.engines:
+            return MLX_NEEDS_MAC
+        return None
+    if variant.port != "bf16":
         return NOT_INSPECTABLE
     if variant.experimental and not variant.family.startswith("basal-omni"):
         return NOT_INSPECTABLE
@@ -130,10 +147,16 @@ class Inspector:
         job.progress("loading model")
         if job.cancel.is_set():
             raise Cancelled()
+        mlx = variant.port.startswith("MLX")  # basal-viz --mode mlx: the MLX engine's layers, on the Mac's GPU
         try:
             ex = Explainer(
                 SimpleNamespace(
-                    model=str(local_dir), dtype="bfloat16", device=device(hw), orders=orders, calibration=calibration
+                    model=str(local_dir),
+                    mode="mlx" if mlx else None,
+                    dtype="bfloat16",
+                    device=None if mlx else device(hw),
+                    orders=orders,
+                    calibration=calibration,
                 )
             )
         except BaseException as exc:

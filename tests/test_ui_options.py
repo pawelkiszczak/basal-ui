@@ -1,10 +1,11 @@
+import dataclasses
 import re
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from basal_ui import catalog, engine, options, settings
+from basal_ui import backends, catalog, engine, options, settings
 from basal_ui.app import create_app
 from basal_ui.catalog import Variant
 from basal_ui.fleet import Fleet
@@ -32,6 +33,16 @@ def wait_for(condition, timeout=3):
 
 def available(variant, hw):
     return {m["mode"] for m in options.available_modes(variant, hw, catalog.assess(variant, hw)) if m["available"]}
+
+
+def probe(monkeypatch, **flags):
+    """The Engine capabilities basal_ui.options sees: the named probes as given, the others as installed."""
+    real = engine.feature
+    monkeypatch.setattr(options, "feature", lambda name: flags[name] if name in flags else real(name))
+
+
+PICO = Variant("pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True)
+APPLE = Hardware("apple", "Apple M4 Max", 64 * 1024**3, None, None, frozenset({"mps", "mlx"}))
 
 
 def test_defaults_emit_nothing_and_every_non_default_its_flag():
@@ -193,19 +204,19 @@ def test_every_engine_switch_reaches_basal_serve_as_it_reads_it(tmp_path):
     assert {k: getattr(defaults, k) for k in chosen} == {k: options.DEFAULTS[k] for k in chosen}
 
 
-@pytest.mark.skipif(engine.feature("adapter"), reason="the engine takes --adapter")
-def test_the_adapter_option_is_refused_and_explained_without_an_engine_that_takes_it(tmp_path):
-    with pytest.raises(ValueError, match="load option adapter: LoRA adapters at load need basal engine 2.5.1"):
+def test_the_adapter_option_is_refused_and_explained_without_an_engine_that_takes_it(tmp_path, monkeypatch):
+    probe(monkeypatch, adapter=False)  # engine 2.4.1
+    with pytest.raises(ValueError, match="load option adapter: LoRA adapters at load need basal engine 2.5.0"):
         options.validate({"adapter": str(tmp_path)})
     app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CPU)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         data = client.get("/api/models/options", params={"id": BF16.id}).json()
         assert data["adapter_reason_code"] == "adapter_engine"
         refused = client.put("/api/models/options", json={"id": BF16.id, "options": {"adapter": str(tmp_path)}})
-        assert refused.status_code == 400 and "2.5.1" in refused.json()["detail"]
+        assert refused.status_code == 400 and "2.5.0" in refused.json()["detail"]
 
 
-@pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.1)")
+@pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.0)")
 def test_an_adapter_that_basal_serve_would_refuse_is_refused_before_loading(tmp_path):
     with pytest.raises(ValueError, match="load option adapter: --adapter nowhere: no adapter_config.json"):
         options.validate({"adapter": str(tmp_path / "nowhere")})
@@ -247,7 +258,7 @@ def test_available_modes_follow_the_hardware_and_the_variant():
     assert available(GGUF, gguf_cpu) == {"gguf", "ollama", "llamacpp"}
     cuda = available(BF16, CUDA)
     assert {"fast", "fast-nocompile", "fp8", "eager", "vllm", "sglang"} <= cuda
-    assert not cuda & {"tpu", "strix", "mlx", "nvfp4", "fast-exit"}
+    assert not cuda & {"tpu", "strix", "mlx", "nvfp4", "fast-exit", "int8"}
     reasons = {m["mode"]: m["reason"] for m in options.available_modes(BF16, CUDA, catalog.assess(BF16, CUDA))}
     assert reasons["fast-exit"] == "exit heads ship with basal-1.0" and "TPU" in reasons["tpu"]
     assert [m["mode"] for m in options.available_modes(BF16, CUDA, catalog.assess(BF16, CUDA)) if m["default"]] == [
@@ -361,10 +372,53 @@ def test_cuda_graph_modes_require_ampere_or_newer():
     options.check_combination(BF16, sm89, options.validate({"quant": "fp8"}, "fast"), "fast")
 
 
-def test_pico_modes_follow_basal_serve_2_4_refusals():
-    pico = Variant(
-        "pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True
-    )
+ULTRA = Variant("ultra", "Remek/basal-omni-1.0-ultra", "basal-omni-1.0", "ultra", "bf16", "bf16", None, 100, True)
+
+
+@pytest.mark.parametrize("int8", [True, False])
+def test_int8_serves_basal_omni_ultra_on_ampere_or_newer_with_engine_2_5(monkeypatch, int8):
+    if int8 and not engine.feature("int8"):
+        pytest.skip("the installed engine has no --mode int8 (2.4.1)")
+    probe(monkeypatch, int8=int8)
+    sm86 = Hardware("cuda", "RTX 3090", 24 * 1024**3, None, (8, 6), frozenset({"cuda"}))
+
+    def row(variant, hw):
+        return next(m for m in options.available_modes(variant, hw, catalog.assess(variant, hw)) if m["mode"] == "int8")
+
+    if not int8:  # engine 2.4.1: no --mode int8, and that is the reason everywhere
+        for variant, hw in ((ULTRA, sm86), (ULTRA, CUDA), (BF16, CUDA), (PICO, CUDA), (BF16, CPU)):
+            assert row(variant, hw)["reason_code"] == "mode_int8_engine"
+        if "int8" not in options.MODES:  # the installed engine is 2.4.1: basal-serve's own mode list refuses it
+            with pytest.raises(ValueError, match="load option mode must be one of"):
+                options.validate({"mode": "int8"}, "fast")
+        return
+    assert row(ULTRA, sm86)["available"] and row(ULTRA, CUDA)["available"]  # Ampere and Hopper
+    # the CUDA graph engine's graphs and compile workspace count for int8 as for fp8 (catalog.GRAPH_ENGINE_MODES)
+    assert backends.estimate(ULTRA, CPU, "int8").est_memory_bytes == 120 + catalog.GRAPH_ENGINE_OVERHEAD
+    assert backends.estimate(ULTRA, CPU, "eager").est_memory_bytes == 120 + catalog.GIB
+    assert not row(ULTRA, sm86)["default"]  # never the default: fast (bf16) stays basal-serve's choice
+    options.check_combination(ULTRA, sm86, options.validate({"mode": "int8"}, "fast"), "fast")
+    with pytest.raises(ValueError, match="load option quant must be one of"):  # basal-serve refuses --quant int8
+        options.validate({"quant": "int8"}, "fast")
+    sm75 = Hardware("cuda", "old NVIDIA", 8 * 1024**3, None, (7, 5), frozenset({"cuda"}))
+    assert "8.0+" in row(ULTRA, sm75)["reason"]  # the CUDA graph engine's own Ampere floor
+    rocm = Hardware("cuda", "Radeon", 64 * 1024**3, None, (9, 4), frozenset({"cuda", "rocm"}))
+    assert row(ULTRA, rocm)["reason_code"] in ("mode_int8_hardware", "cuda_graph_gpu")
+    for variant in (BF16, PICO, dataclasses.replace(ULTRA, tier="max"), dataclasses.replace(ULTRA, port="FP8")):
+        assert not row(variant, CUDA)["available"], variant
+    assert row(BF16, CUDA)["reason_code"] == "mode_int8_model"
+    assert "Qwen3.5" in row(PICO, CUDA)["reason"]
+    with pytest.raises(ValueError, match="basal-omni ultra"):
+        options.check_combination(BF16, CUDA, options.validate({"mode": "int8"}, "fast"), "fast")
+    sm86_omni = options.validate({"mode": "int8"}, "fast")
+    with pytest.raises(ValueError, match=r"8\.0\+"):
+        options.check_combination(ULTRA, rocm, sm86_omni, "fast")
+    assert row(ULTRA, CPU)["reason"] == catalog.ASSESSMENT_TEMPLATES["cuda_graph_gpu"]
+
+
+def test_pico_modes_follow_basal_serve_refusals(monkeypatch):
+    probe(monkeypatch, mlx_recurrent=False)
+    pico = PICO
     fla = Hardware("cuda", "NVIDIA H100", 80 * 1024**3, None, (9, 0), frozenset({"cuda", "vllm", "fla"}))
     modes = {m["mode"]: m for m in options.available_modes(pico, fla, catalog.assess(pico, fla))}
     assert {m for m, row in modes.items() if row["available"]} >= {"fast", "fast-nocompile", "eager", "vllm"}
@@ -378,17 +432,72 @@ def test_pico_modes_follow_basal_serve_2_4_refusals():
     assert no_fla["fast"]["reason"] == no_fla["fast-nocompile"]["reason"] == options.FLA_REASON
     assert [m for m, row in no_fla.items() if row["default"]] == ["eager"]
     options.check_combination(pico, fla, options.validate({}, "fast"), "fast")
-    for refused in (
-        {"batches": "compact"},
-        {"prefix_cache": True},
-        {"state_cache_gb": 1.0},
-        {"long_lane": True},
-        {"lean": "on"},
-        {"quant": "fp8"},
-    ):
+    for refused in ({"long_lane": True}, {"quant": "fp8"}):  # refused by 2.4.1 and 2.5.0 alike
         with pytest.raises(ValueError, match=r"Qwen3\.5"):
             options.check_combination(pico, fla, options.validate(refused), "fast")
+    # basal-serve 2.4.1 refuses these in the graph engine, 2.5.0 serves them: basal-ui asks the engine (gdn_graph.refused)
+    engine_rules = (
+        ({"batches": "compact"}, {"batches": "compact"}),
+        ({"prefix_cache": True}, {"prefix": True}),
+        ({"state_cache_gb": 1.0}, {"state_cache_gb": 1.0}),
+        ({"lean": "on"}, {"lean": True}),
+    )
+    for chosen, rule in engine_rules:
+        if options.gdn_refused(None, device=False, **rule):
+            with pytest.raises(ValueError, match=r"Qwen3\.5"):
+                options.check_combination(pico, fla, options.validate(chosen), "fast")
+        else:
+            options.check_combination(pico, fla, options.validate(chosen), "fast")
     options.check_combination(pico, fla, options.validate({"prefix_cache": True}), "eager")
+
+
+@pytest.mark.parametrize("mlx_recurrent", [True, False])
+def test_pico_serves_with_mlx_from_its_bf16_weights_with_engine_2_5(monkeypatch, mlx_recurrent):
+    probe(monkeypatch, mlx_recurrent=mlx_recurrent)
+    modes = {m["mode"]: m for m in options.available_modes(PICO, APPLE, catalog.assess(PICO, APPLE))}
+    assert [m for m, row in modes.items() if row["default"]] == ["eager"]  # basal-serve's default stays eager
+    assert modes["mps"]["reason"] == options.RECURRENT_REASON
+    plain = options.validate({"mode": "mlx"}, "eager")
+    if not mlx_recurrent:  # engine 2.4.1
+        assert modes["mlx"]["reason"] == modes["mlx-q8"]["reason"] == options.MLX_RECURRENT_REASON
+        assert modes["mlx"]["reason_code"] == "reason_mlx_recurrent"
+        with pytest.raises(ValueError, match="from basal engine 2.5.0 on"):
+            options.check_combination(PICO, APPLE, plain, "eager")
+        return
+    assert modes["mlx"]["available"] and modes["mlx"]["reason"] is None
+    assert modes["mlx-q8"]["reason"] == options.MLX_Q8_RECURRENT_REASON
+    assert modes["mlx-q8"]["reason_code"] == "reason_mlx_q8_recurrent"
+    options.check_combination(PICO, APPLE, plain, "eager")
+    for refused, match in (
+        ({"mode": "mlx-q8"}, "quantised MLX weights"),
+        ({"mode": "mlx", "quant": "q8"}, "quantised MLX weights"),
+        ({"mode": "mlx", "state_cache_gb": 1.0}, "keep attention keys and values only"),
+        ({"mode": "mlx", "prefix_cache": True}, "keep attention keys and values only"),
+        ({"mode": "mlx", "mlx_packed": True}, "MLX packed needs a Llama"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            options.check_combination(PICO, APPLE, options.validate(refused, "eager"), "eager")
+    # a quantised MLX export of a Qwen3.5 model: refused by the engine as well
+    pico_mlx = Variant(
+        "pico-mlx",
+        "Remek/basal-omni-pico-MLX-8bit",
+        "basal-omni",
+        "pico",
+        "MLX-8bit",
+        "MLX 8-bit",
+        None,
+        1,
+        True,
+        recurrent=True,
+    )
+    rows = {m["mode"]: m for m in options.available_modes(pico_mlx, APPLE, catalog.assess(pico_mlx, APPLE))}
+    assert rows["mlx"]["reason"] == options.MLX_Q8_RECURRENT_REASON
+    with pytest.raises(ValueError, match="quantised MLX weights"):
+        options.check_combination(pico_mlx, APPLE, options.validate({"mode": "mlx"}, "mlx"), "mlx")
+    # the CPU has no MLX: the device reason comes first
+    assert options.available_modes(PICO, CPU, catalog.assess(PICO, CPU))[0]["mode"] == "fast"
+    cpu = {m["mode"]: m for m in options.available_modes(PICO, CPU, catalog.assess(PICO, CPU))}
+    assert cpu["mlx"]["reason"] == options.OPTION_TEMPLATES["mode_mlx_device"]
 
 
 def test_thinking_needs_basal_2_0_4_5b_with_vllm_and_early_exit_needs_fast_exit():

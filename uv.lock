@@ -77,8 +77,8 @@ wheels = [
 
 [[package]]
 name = "basal"
-version = "2.4.1"
-source = { url = "https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" }
+version = "2.5.1"
+source = { url = "https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz" }
 dependencies = [
     { name = "accelerate" },
     { name = "httpx" },
@@ -91,7 +91,7 @@ dependencies = [
     { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-sdist = { hash = "sha256:22403e3128d2239b2964fe7a50c54264de0f7ce66ee1b9e20e0e50b31d71367f" }
+sdist = { hash = "sha256:965e888e5a68995b2df23fb7e29da3bde2082d7b37f0d078721e3e10f437bc80" }
 
 [package.metadata]
 requires-dist = [
@@ -108,9 +108,11 @@ requires-dist = [
     { name = "mlx", marker = "python_full_version >= '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'test'", specifier = ">=0.32" },
     { name = "mlx-lm", marker = "python_full_version >= '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = ">=0.32" },
     { name = "mlx-lm", marker = "python_full_version >= '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'test'", specifier = ">=0.32" },
+    { name = "peft", marker = "extra == 'finetune'", specifier = ">=0.17" },
     { name = "pillow", marker = "extra == 'media'" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "safetensors", specifier = ">=0.6" },
+    { name = "scikit-learn", marker = "extra == 'navigate'", specifier = ">=1.3" },
     { name = "scipy", marker = "extra == 'media'" },
     { name = "soundfile", marker = "extra == 'media'" },
     { name = "starlette", specifier = ">=0.47" },
@@ -122,7 +124,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35" },
     { name = "vllm", marker = "extra == 'vllm'", specifier = ">=0.11" },
 ]
-provides-extras = ["fp8", "nvfp4", "vllm", "mlx", "media", "gguf", "gguf-export", "mcp", "tpu", "test"]
+provides-extras = ["fp8", "nvfp4", "vllm", "mlx", "media", "gguf", "gguf-export", "mcp", "finetune", "navigate", "tpu", "test"]
 
 [[package]]
 name = "basal-ui"
@@ -173,7 +175,7 @@ provides-extras = ["mcp", "e2e"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "basal", url = "https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" },
+    { name = "basal", url = "https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz" },
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "pytest" },
     { name = "pytest-cov", specifier = ">=7.1.0" },

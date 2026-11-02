@@ -65,12 +65,14 @@ window.RequestCode = (() => {
   const mcpAvailable = () => Boolean(serveData?.mcp_available && statusCache?.serving?.running && statusCache.serving.mcp);
   function toolCall(body) {
     if (!mcpAvailable()) throw new Error(t('Start the API server with MCP enabled to use this example.'));
+    const routes = Boolean(statusCache.serving.mcp_models);  // engine 2.5.0: the tools take `model`
     const first = statusCache.serving.models?.[0];
-    if (body.model !== first) throw new Error(t('MCP routes to {model}, not the selected model. Use System One to target the selected model.', {model:first || t('No model loaded')}));
+    if (!routes && body.model !== first) throw new Error(t('MCP routes to {model}, not the selected model. Use System One to target the selected model.', {model:first || t('No model loaded')}));
     const extra = Object.keys(body).filter(key => !['model','state','questions','lang','facts'].includes(key));
     if (extra.length) refuse(extra);
     const args = {state:body.state,questions:body.questions};
     for (const key of ['lang','facts']) if (key in body) args[key] = body[key];
+    if (routes) args.model = body.model;
     return {jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'decide_many',arguments:args}};
   }
   function invalidate() {
@@ -111,7 +113,9 @@ window.RequestCode = (() => {
       let note = statusCache?.serving?.running ? t('Uses the running API server configuration.') : t('Start the API server before running this example.');
       if (format === 'mcp') {
         snippet = JSON.stringify(toolCall(body),null,2);
-        note = t('Send this tools/call through an initialized MCP client at {url}. The gateway selects the first loaded model.', {url:`${endpoint}/mcp`});
+        note = statusCache.serving.mcp_models
+          ? t('Send this tools/call through an initialized MCP client at {url}. list_models names the loaded models; model selects one.', {url:`${endpoint}/mcp`})
+          : t('Send this tools/call through an initialized MCP client at {url}. The gateway selects the first loaded model.', {url:`${endpoint}/mcp`});
       } else if (format === 'python') {
         snippet = `${key ? 'import os\n' : ''}import httpx\n\nresponse = httpx.post(\n    ${JSON.stringify(endpoint + '/v1/systemone')},\n    json=${python(body,'    ')},${key ? '\n    headers={"Authorization": "Bearer " + os.environ["BASAL_API_KEY"]},' : ''}\n    timeout=120,\n)\nresponse.raise_for_status()\nprint(response.json())`;
       } else {

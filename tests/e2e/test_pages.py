@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.support import CHOICE, EXAMPLES, UI, advanced_requests
+from basal_ui.engine import feature
+from basal_ui.options import MODE_ORDER
+from tests.e2e.support import CHOICE, EXAMPLES, UI, advanced_requests, free_port
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="install basal[e2e] and run: playwright install chromium")
 
@@ -906,7 +908,7 @@ def test_the_load_options_dialog_lists_the_modes(page, text_model):
     sync_api.expect(page.locator("#optionsApply")).to_have_text("Restart")
     sync_api.expect(page.locator("#optionsSetupNote")).to_be_hidden()
     sync_api.expect(dialog.locator(f'input[name="optMode"][value="{text_model["mode"]}"]')).to_be_checked()
-    assert dialog.locator('input[name="optMode"]').count() == 16
+    assert dialog.locator('input[name="optMode"]').count() == len(MODE_ORDER)  # every basal-serve mode, int8 included
     assert dialog.locator('input[name="optMode"][disabled]').count() >= 1
     sync_api.expect(dialog.locator("#optExperimentalNote")).not_to_be_empty()
     for key, modes in (("gemma_attn", "fast"), ("eager_attn", "eager"), ("merge", "fast"), ("ple_offload", "eager")):
@@ -1738,3 +1740,38 @@ def test_loading_from_batch_preserves_the_hidden_playground_media_draft(
         assert posted == []  # Preserved media must not be sent to a model without image support.
     finally:
         context.close()
+
+
+def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(page, ui, text_model, second_model):
+    """Engine 2.5.0: the MCP tools take `model`, so the example names the selected model; 2.4.1: the gateway answers
+    with the first loaded model, so an example for another one is refused."""
+    if not ui.get("/api/serve")["mcp_available"]:
+        pytest.skip("the API server's MCP needs basal-ui[mcp]")
+    ui.load(second_model["id"])
+    ui.put("/api/serve", {"enabled": True, "port": free_port(), "mcp": True})
+    ui.post("/api/serve/restart")
+    try:
+        page.reload()
+        page.wait_for_function(
+            "() => statusCache?.serving?.running && statusCache.serving.mcp && statusCache.serving.models.length > 1"
+        )
+        first = ui.status()["serving"]["models"][0]
+        other = second_model["id"] if first != second_model["id"] else text_model["id"]
+        view(page, "playground")
+        page.select_option("#playgroundModel", other)
+        page.evaluate("r => setRequest(r)", CHOICE)
+        page.click("#request-code-mcp")
+        page.click("#generateRequestCode")
+        note = page.locator("#requestCodeNote")
+        if feature("mcp_models"):
+            sync_api.expect(note).not_to_have_class(re.compile("error-box"))
+            call = json.loads(page.locator("#requestCodeText").text_content())
+            assert call["params"]["name"] == "decide_many" and call["params"]["arguments"]["model"] == other
+            sync_api.expect(note).to_contain_text("list_models")
+        else:
+            sync_api.expect(note).to_have_class(re.compile("error-box"))
+            sync_api.expect(note).to_contain_text("MCP routes to")
+    finally:
+        ui.put("/api/serve", {"enabled": False, "mcp": False})
+        ui.post("/api/serve/restart")
+        ui.unload(second_model["id"])

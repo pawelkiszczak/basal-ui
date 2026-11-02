@@ -70,3 +70,26 @@ def bf16_model(ui):
         "no bf16 text model is downloaded",
         prefer=lambda m: m["family"] != "basal-2.0",
     )
+
+
+@pytest.fixture(scope="session")
+def mlx_model(ui):
+    """An MLX port of a Llama family (basal-1.x / basal-2.0): engine 2.5.0's basal-viz reads its layers on a Mac."""
+    return pick(
+        ui,
+        "BASAL_E2E_MLX_MODEL",
+        lambda m: m["port"].startswith("MLX") and m["family"] in ("basal-2.0", "basal-1.5", "basal-1.0"),
+        "no MLX port of basal-1.x or basal-2.0 is downloaded",
+        prefer=lambda m: m["family"] != "basal-2.0",
+    )
+
+
+@pytest.fixture(scope="session")
+def pico_model(ui):
+    """basal-omni-pico in bf16 (Qwen3.5, recurrent state): engine 2.5.0 serves it with --mode mlx."""
+    return pick(
+        ui,
+        "BASAL_E2E_PICO_MODEL",
+        lambda m: m["recurrent"] and m["port"] == "bf16",
+        "basal-omni-pico (bf16) is not downloaded",
+    )

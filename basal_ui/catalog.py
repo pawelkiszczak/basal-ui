@@ -29,7 +29,7 @@ GIB = 1024**3
 # The --mode values of the CUDA graph engine, and what it holds besides the weights: CUDA graphs and the compile
 # workspace (basal 2.3.3-2.3.5 after start-up in --mode fast: basal-2.0-mini 7.1-9.0 GB for 3.19 GB of weights,
 # 4.5B 14.4-15.2 GB for 9.51, basal-omni-1.0-mini 18.9 for 15.9; H100, RTX 4060 Ti 16 GB, RTX 4090)
-GRAPH_ENGINE_MODES = ("fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4")
+GRAPH_ENGINE_MODES = ("fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4", "int8")
 GRAPH_ENGINE_OVERHEAD = 4 * GIB
 ASSESSMENT_TEMPLATES = {
     "cuda_graph_gpu": "needs an NVIDIA GPU (the CUDA graph engine)",
@@ -120,7 +120,8 @@ MEDIA_KINDS = {
 }
 # Models with recurrent-state layers (Qwen3.5: Gated DeltaNet and attention layers), text only. basal-serve 2.4 serves
 # them in --mode fast / fast-nocompile on CUDA with flash-linear-attention (gdn_graph.GDNGraphBackend), refuses
-# fast-exit, fp8, nvfp4 and mps, and defaults to fast on Hopper with fla, eager elsewhere; mlx is not checked on them
+# fast-exit, fp8, nvfp4 and mps, and defaults to fast on Hopper with fla, eager elsewhere; 2.4.1's mlx is not checked on
+# them, 2.5.0's --mode mlx serves them from bf16 weights (basal/engine.py MLXBackend; basal_ui.options, "mlx_recurrent")
 # (basal/server.py:default_mode, basal/gdn_graph.py:refused, default_fast).
 RECURRENT_MODELS = {("basal-omni", "pico")}
 
@@ -607,6 +608,13 @@ def _optional(name: str) -> bool:
     return name.startswith("think/")
 
 
+# engine 2.5's prepared start-up kernels (prepared/<key>/, one per GPU class and engine version). basal-ui downloads them
+# with the model: it passes basal-serve the snapshot directory, where --prepared auto finds them (prepared.locate); the
+# engine fetches them itself only for a Hugging Face id. A snapshot without them (downloaded before the repository
+# shipped them) is still complete: without kernels for its GPU, basal-serve compiles as on a cold start.
+PREPARED = "prepared/*"
+
+
 def download_kwargs(v: Variant, revision: str | None = None) -> dict:
     """snapshot_download filters for one variant and optional pinned revision."""
     kwargs = {"allow_patterns": [v.gguf_file, *_BASE_FILES]} if v.port == "GGUF" else {"ignore_patterns": ["think/*"]}
@@ -645,10 +653,11 @@ def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> P
     """The local snapshot directory if the weights and any required base metadata are cached."""
     from huggingface_hub import snapshot_download
 
+    kwargs = download_kwargs(v, revision)
+    if "ignore_patterns" in kwargs:  # huggingface_hub: any kept file missing makes the snapshot incomplete
+        kwargs["ignore_patterns"] = [*kwargs["ignore_patterns"], PREPARED]
     try:
-        path = Path(
-            snapshot_download(v.repo, cache_dir=cache_dir, local_files_only=True, **download_kwargs(v, revision))
-        )
+        path = Path(snapshot_download(v.repo, cache_dir=cache_dir, local_files_only=True, **kwargs))
     except Exception:  # noqa: BLE001 — an absent or partial snapshot is not downloaded
         return None
     weights = _cached_weight_paths(path, v.port, v.gguf_file)

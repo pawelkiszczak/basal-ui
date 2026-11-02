@@ -1624,7 +1624,7 @@ function renderCalibrationFiles(id, d) {
   }));
 }
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
-const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4'];
+const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
 const OPTION_SECTIONS=[
   ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed']],
   ['Determinism & orders',['deterministic','orders','auto_tau','auto_band']],
@@ -1985,7 +1985,7 @@ function renderInspectModels() {
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
-  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz reads bf16 weights')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
+  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
   loadInspectCalibrations();
@@ -2028,7 +2028,7 @@ function inspectHandoff(request) {
   tasks.forEach(n=>delete body.questions[n]);
   if(!Object.keys(body.questions||{}).length)return {blocked:t('basal-viz explains decision questions; this request has only task questions')};
   if(tasks.length)notes.push(t('{questions}: task questions are left out (basal-viz explains the decision questions)',{questions:tasks.join(', ')}));
-  if(st.model!==request.model)notes.push(t('weights: served {label} ({model}), explained bf16 ({inspector})',{label:sv.label,model:request.model,inspector:st.model}));
+  if(st.model!==request.model)notes.push(t('weights: served {label} ({model}), explained {explained} ({inspector})',{label:sv.label,model:request.model,explained:iv?.label||'bf16',inspector:st.model}));
   if(served?.mode&&served.mode!==st.mode)notes.push(t('engine: served {mode}, explained {inspector} on {device}',{mode:served.mode,inspector:st.mode,device:st.device}));
   const orders=served?.entry?.orders;
   if(orders!=null&&String(orders)!==String(st.orders))notes.push(t('option orders: served {orders}, explained {inspector}{match}',{orders,inspector:st.orders,match:['1','2'].includes(String(orders))?` (${t('start the inspector with {n} option {order} to match',{n:orders,order:String(orders)==='1'?t('order'):t('orders')})})`:''}));

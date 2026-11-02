@@ -102,7 +102,7 @@ After `make engine`, running `make install` restores the pinned Engine.
 - **Gotchas:**
   - `hardware._static` is cached; call `.cache_clear()` around tests that monkeypatch hardware detection.
   - Stateful tests must shut down the fleet explicitly and wait on events, following `tests/test_ui_backends.py` and `tests/test_ui_app.py`.
-- **E2E** (`tests/e2e/`, marker `e2e`): skipped unless `BASAL_E2E=1`. Uses real models, real `basal-serve`, and Chromium. Configure with `BASAL_E2E_MODEL`, `BASAL_E2E_SECOND_MODEL`, `BASAL_E2E_BF16_MODEL`, `BASAL_E2E_MODELS_DIR`, `BASAL_E2E_LOAD_TIMEOUT`, `BASAL_E2E_DOWNLOAD=1`. Behavior that needs specific hardware or a real browser belongs here and must skip with a reason when the hardware is missing (ADR 0002).
+- **E2E** (`tests/e2e/`, marker `e2e`): skipped unless `BASAL_E2E=1`. Uses real models, real `basal-serve`, and Chromium. Configure with `BASAL_E2E_MODEL`, `BASAL_E2E_SECOND_MODEL`, `BASAL_E2E_BF16_MODEL`, `BASAL_E2E_MLX_MODEL`, `BASAL_E2E_PICO_MODEL`, `BASAL_E2E_MODELS_DIR`, `BASAL_E2E_LOAD_TIMEOUT`, `BASAL_E2E_DOWNLOAD=1`. Behavior that needs specific hardware or a real browser belongs here and must skip with a reason when the hardware is missing (ADR 0002).
   - Setup: `uv sync --group dev --extra mcp --extra e2e && uv run --no-sync playwright install chromium`.
   - For setup, exercised regressions and dated hardware/skip evidence, use `docs/E2E.md`; a green unit-only CI run is not the real-model gate.
 - **CI** runs Ubuntu/macOS × Python 3.10/3.13 × each `TESTED_RELEASES` entry, executing `ruff check .`, `ruff format --check .` and the unit tests. E2E is not run in CI.

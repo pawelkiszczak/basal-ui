@@ -304,9 +304,10 @@ def test_gguf_launch_and_download_patterns():
 
 
 def test_thinking_model_is_neither_counted_nor_downloaded():
-    (v,) = _variants("Remek/basal-2.0-4.5B", {"model.safetensors": 9, "think/model.safetensors": 9, "basal.json": 1})
+    files = {"model.safetensors": 9, "think/model.safetensors": 9, "prepared/abc/inductor.bin": 5, "basal.json": 1}
+    (v,) = _variants("Remek/basal-2.0-4.5B", files)
     assert v.weights_bytes == 9
-    assert download_kwargs(v) == {"ignore_patterns": ["think/*"]}
+    assert download_kwargs(v) == {"ignore_patterns": ["think/*"]}  # prepared/ comes along: basal-serve finds it there
 
 
 def test_serving_mode_per_family_and_port():
