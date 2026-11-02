@@ -237,7 +237,22 @@ policy** (truncate the middle of the state, or refuse with 422; the share kept f
 CUDA graph engine's kernel switches (`--gemma-attn`, `--merge`, `--lean`, `--tree`, `--batches`, `--readout-layer`,
 `--template-prefix`, `--fp8-accum`), `--strict-calibration` and a **revision** (a commit, tag or branch of the
 repository: downloaded and served as that snapshot, which calibration and Inspect then read too; a **revision** chip
-marks the model in the catalog and on its loaded row). Each field shows only for the modes that read it. **Presets**
+marks the model in the catalog and on its loaded row). Each field shows only for the modes that read it.
+
+With engine 2.5 the dialog also offers the second read of uncertain answers (`--reread`, `--reread-combine`,
+`--reread-max-tokens`, `--reread-image`) and K-order averaging (`--order-average`), the prepared start-up kernels
+(`--prepared auto`, `off` or a directory), compile scope and graph memory sizing (`--compile-scope`,
+`--graph-memory-gb`, whose value replaces the fixed graph-engine overhead in the fit estimate), the MLX forward and
+compute (`--mlx-forward`, `--mlx-compute`), the FP8 / NVFP4 quantisation switches (`--fp8-scaling`,
+`--fp8-bf16-layers`, `--quant-load`, `--nvfp4-amax`, `--nvfp4-scope`), state-cache locking and precision
+(`--state-cache-lock`, `--state-cache-bits`), the long-request lane for Qwen3.5 models (`--long-lane-gdn`, without
+which `--long-lane` is refused for them), rank candidates (`--rank-max-candidates`), vLLM's overlapping engine calls
+(`--vllm-overlap`) and the Gemma 4 global attention kernel (`--global-attn`). On engine 2.4.1 each of these is greyed
+out with "needs basal engine 2.5.0 or newer", and a saved non-default value is refused with that reason instead of
+reaching a basal-serve that would not know the flag; the defaults emit nothing, so a configuration saved on 2.4.1
+loads unchanged.
+
+**Presets**
 save a set of options under a name to apply to any model; the Playground saves requests the same way (**Saved
 requests** in the examples list), and both export to and import from one `presets.json`. In Settings → Defaults, **Import
 from URL** fetches and merges a public JSON presets file (up to 1 MiB), using the same validation and merge rules as

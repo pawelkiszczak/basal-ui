@@ -42,6 +42,13 @@
 - Settings → Defaults can import presets from a public URL; the response is limited to 1 MiB and must be JSON, then
   merges with existing presets using the same rules as file import. [USAGE.md](USAGE.md#load-options),
   [API.md](API.md#local-app-management-api)
+- Every engine 2.5 `basal-serve` load option is in Load options — the second read (`--reread` and its combine,
+  token and image controls), `--order-average`, `--prepared`, `--compile-scope`, `--graph-memory-gb` (which sizes the
+  fit estimate), `--mlx-forward` / `--mlx-compute`, the FP8 / NVFP4 quantisation switches, `--state-cache-lock` /
+  `--state-cache-bits`, `--long-lane-gdn` (without which the long lane stays refused for Qwen3.5),
+  `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
+  not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
+  value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the
