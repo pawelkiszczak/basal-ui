@@ -45,6 +45,7 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 The attach job and download progress appear in `GET /api/status` under `jobs["attach"]` and `downloads[base]`;
 its log is available at `GET /api/logs?source=job%3Aattach`. The generated model is listed by `GET /api/models`
 and can be loaded and calibrated like other catalog entries.
+| `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
@@ -65,6 +66,21 @@ These privileged local routes retain the UI's Host/Origin protections; loopback 
 default and is inferred by `basal-run` from each state's language; explicit `pl` or `en` passes `--lang`. With a
 preset selected, JSONL lines containing only `state` are accepted and basal-run supplies that preset's questions.
 Unknown presets or unsupported language values return HTTP 400.
+### Fetching a URL into Playground state
+
+`POST /api/fetch` runs on the local UI port and accepts only absolute `http` or `https` URLs. It resolves the host
+before connecting and refuses any loopback, private, link-local, carrier-grade NAT, multicast, unspecified, reserved
+or cloud metadata address; all addresses returned for the host must be public. Each of at most three redirects is
+resolved and checked again. Requests send no cookies or credentials and do not follow redirects automatically.
+Responses stream up to 4 MiB; text is capped at 200,000 characters. HTML becomes readable text with a title, JSON
+remains a parsed object, and other `text/*` responses remain text; other content types return 415.
+
+The Playground carries the originally requested `source_url` as local request metadata. It is retained in the History
+request and restored as a read-only Replay note; `/api/decide` removes it before forwarding the Decision to the model.
+
+Every request and redirect connects only to an address that check accepted (the host is not resolved again for the
+socket), so a DNS answer that changes after the check cannot redirect the connection to a private address; HTTPS still
+verifies the certificate against the URL's hostname.
 
 ### Batch path inspection
 
