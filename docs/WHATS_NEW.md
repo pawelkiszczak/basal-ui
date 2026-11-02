@@ -23,6 +23,9 @@
   why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
   ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
   `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- **Calibration** fits for the model's Active or Saved prompt layout, labels every fitted/imported file with its layout
+  and warns when the Selected calibration does not match the served layout. Non-canonical fits are disabled with a
+  reason if the Engine lacks `basal-calibrate --layout`. [USAGE.md](USAGE.md#custom-calibration)
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

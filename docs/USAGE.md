@@ -380,9 +380,13 @@ questions (`classify`, `verify`, `extract` with `gold`) are certified on the ans
 is reserved in the budget until it ends; Cancel takes effect when it finishes). Every problem of the input is reported
 with its line before a model is loaded. The job's output is under **Logs → job:calibrate**. The files go to
 `calibrations/<org>--<model>/` next to the settings file, each with its report (`.report.txt`); the table compares them
-with the shipped file (decisions per type, certified thresholds of the types and tasks, automation on CERT).
+with the shipped file (decisions per type, certified thresholds of the types and tasks, automation on CERT). Fits use
+the model's active layout when loaded, or its saved layout for the next start; canonical fits omit `--layout`.
+The table labels every file's layout, and a warning appears if the Selected calibration differs from the served layout.
+On an Engine without `basal-calibrate --layout`, non-canonical fitting is disabled with its reason.
 **Import** copies a file fitted elsewhere (with its report next to it) into the list; one fitted on another model or
-revision shows basal-serve's warning. **Use** selects one for the model: basal-ui then starts its `basal-serve` with
+revision shows basal-serve's warning.
+**Use** selects one for the model: basal-ui then starts its `basal-serve` with
 `--calibration FILE`, and a loaded model shows **Restart to apply**. **Advanced** passes basal-calibrate's own
 controls: `--strict` with a `--reference`, `--min-per-type`, `--min-blend`, `--min-family`, `--min-per-set`,
 `--concurrency`, the file to compare with (shipped, none: `--no-calibration`, or a path; a path and a `--reference`

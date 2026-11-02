@@ -33,6 +33,13 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 | `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
 | `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
 
+`GET /api/calibrations?id=<model>` lists fitted/imported files with their `layout` (missing metadata means
+`canonical`), the Shipped calibration context, the current fit `layout`, and `layout_mismatch` when the Selected file
+does not match the active layout (or Saved layout when unloaded). `POST /api/calibrations/select` returns the same
+shape. `POST /api/calibrate` fits against that active-or-saved layout; non-canonical layouts are passed to
+`basal-calibrate --layout`, and a request is refused with HTTP 400 when the installed Engine lacks that flag. The
+Calibration tab disables fitting and explains the limitation in that case.
+
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
 `result: {"restart_required":true,"extra":"media","engine_version":"..."}`. While installation is active,

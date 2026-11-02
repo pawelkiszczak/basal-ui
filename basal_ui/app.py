@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -1199,7 +1199,16 @@ def create_app(
             assessment, options = catalog.assess(variant, hw()), {}
         else:
             try:
-                assessment, options = prepare(variant, False, settings_mod.load_options(variant.id))
+                with fleet.lock:
+                    active_runner = fleet.runners.get(variant.id)
+                active = active_runner is not None and active_runner.status()["state"] == "ready"
+                saved_options = active_runner.options if active else settings_mod.load_options(variant.id)
+                assessment, options = prepare(variant, False, saved_options)
+                from basal.prompt import model_layout
+
+                fit_layout = options.get("layout") or model_layout(local_dir)
+                if fit_layout != "canonical" and "--layout" not in engine.calibrate_flags():
+                    raise HTTPException(400, "code:calibration_layout_unavailable")
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
@@ -1264,9 +1273,22 @@ def create_app(
                     shipped["error"] = str(exc)
             except (OSError, ValueError, KeyError) as exc:
                 shipped = {"error": str(exc)}
+        files = calibration.listing(variant.id, settings_mod, local_dir)
+        selected = settings_mod.calibration_selection().get(variant.id)
+        active_layout = (shipped or {}).get("context", {}).get("layout", "canonical")
+        selected_entry = next((f for f in files if selected and f["file"] == selected), None)
+        selected_layout = selected_entry.get("layout", "canonical") if selected_entry else "canonical"
+        mismatch = active_layout if selected and selected_layout != active_layout else None
+        layout_supported = "--layout" in engine.calibrate_flags()
         return {
-            "selected": settings_mod.calibration_selection().get(variant.id),
-            "files": calibration.listing(variant.id, settings_mod, local_dir),
+            "selected": selected,
+            "layout": active_layout,
+            "layout_supported": layout_supported,
+            "layout_reason": None
+            if active_layout == "canonical" or layout_supported
+            else "code:calibration_layout_unavailable",
+            "layout_mismatch": mismatch,
+            "files": files,
             "shipped": shipped,
         }
 

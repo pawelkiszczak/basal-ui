@@ -15,6 +15,7 @@ from pathlib import Path
 
 from basal.server import MODES, calibration_file, calibration_mismatch, certified, model_identity
 
+from . import engine
 from .hardware import free_engine_memory
 
 READY_POLL_S = 0.5
@@ -76,9 +77,11 @@ def summary(path, local_dir=None) -> dict:
     cal = json.loads(Path(path).read_text(encoding="utf-8"))
     report_path = Path(path).with_suffix(".report.txt")
     warnings = report_warnings(report_path.read_text(encoding="utf-8")) if report_path.exists() else []
+    fitted_on = cal.get("fitted_on")
     out = {
         "warnings": warnings,
-        "fitted_on": cal.get("fitted_on"),
+        "fitted_on": fitted_on,
+        "layout": fitted_on.get("layout", "canonical") if isinstance(fitted_on, dict) else "canonical",
         "gates": cal.get("gates"),
         "thresholds": certified_table(cal),
         "task_thresholds": cal.get("task_thresholds") or {},
@@ -220,7 +223,7 @@ def engine_flags(flags) -> list[str]:
     out, keep = [], False
     for token in flags:
         if token.startswith("--"):
-            keep = token in known and token != "--model"
+            keep = token in known and token not in {"--model", "--layout"}
         if keep:
             out.append(token)
     return out
@@ -277,11 +280,18 @@ def run_calibration(
     advanced=None,
 ):
     """Run basal-calibrate, either against a private child or an in-process engine."""
+    from basal.prompt import model_layout
+
     writer = _Lines(job.log)
     advanced = advanced or {}
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     rows_path = Path(out_path).with_suffix(".rows.jsonl")
+    layout = (options or {}).get("layout") or model_layout(local_dir)
     common = ["--model", str(local_dir), "--out", str(out_path), "--targets", ",".join(targets)]
+    if layout != "canonical":
+        if "--layout" not in engine.calibrate_flags():
+            raise ValueError(f"calibration layout {layout!r} requires an Engine with basal-calibrate --layout")
+        common += ["--layout", layout]
     for key, flag in (
         ("min_per_type", "--min-per-type"),
         ("min_blend", "--min-blend"),

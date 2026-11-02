@@ -56,6 +56,9 @@ def wait_job(client, kind="calibrate"):
 
 def test_calibrate_fits_against_a_temporary_child_lists_and_selects_the_file(tmp_path, monkeypatch, config):
     release, calls = threading.Event(), []
+    from basal.prompt import LAYOUTS
+
+    layout = next(layout for layout in LAYOUTS if layout != "canonical")
 
     def fake_main(argv):
         calls.append(argv)
@@ -63,7 +66,7 @@ def test_calibrate_fits_against_a_temporary_child_lists_and_selects_the_file(tmp
         print("report line")
         out = argv[argv.index("--out") + 1]
         with open(out, "w") as f:
-            json.dump(FITTED, f)
+            json.dump({**FITTED, "fitted_on": {**FITTED["fitted_on"], "layout": layout}}, f)
 
     monkeypatch.setattr(calibrate, "main", fake_main)
     fleet = Fleet(
@@ -84,7 +87,7 @@ def test_calibrate_fits_against_a_temporary_child_lists_and_selects_the_file(tmp
     labelled = tmp_path / "labelled.jsonl"
     labelled.write_text('{"state": "s", "question": "q?", "options": ["a", "b"], "gold": 0}\n')
     with TestClient(app, base_url="http://127.0.0.1") as client:
-        assert client.post("/api/load", json={"id": "mini"}).status_code == 202
+        assert client.post("/api/load", json={"id": "mini", "options": {"layout": layout}}).status_code == 202
         missing = client.post("/api/calibrate", json={"id": "mini", "input": str(tmp_path / "none.jsonl")})
         assert missing.status_code == 400 and "cannot read" in missing.json()["detail"]
         assert client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)}).status_code == 202
@@ -100,6 +103,7 @@ def test_calibrate_fits_against_a_temporary_child_lists_and_selects_the_file(tmp
         job = wait_job(client)
         assert job["phase"] == "done", job["error"]
         assert calls[0][calls[0].index("--url") + 1] == "http://127.0.0.1:1"
+        assert calls[0][calls[0].index("--layout") + 1] == layout
         assert calls[0][calls[0].index("--model") + 1] == str(config)
         result = job["result"]
         assert result["report"] == "report line" and result["thresholds"] == {"0.05": {"choice": 0.93}}
@@ -107,6 +111,7 @@ def test_calibrate_fits_against_a_temporary_child_lists_and_selects_the_file(tmp
 
         listing = client.get("/api/calibrations", params={"id": "mini"}).json()
         assert listing["selected"] is None and [f["file"] for f in listing["files"]] == [result["file"]]
+        assert listing["files"][0]["layout"] == layout
         assert listing["shipped"]["file"] == str(config / "CALIBRATION.json")
         report = client.get("/api/calibrations/report", params={"id": "mini", "file": result["file"]})
         assert report.json() == {"report": "report line\n"}
@@ -115,13 +120,14 @@ def test_calibrate_fits_against_a_temporary_child_lists_and_selects_the_file(tmp
 
         runner = fleet.runners["mini"]
         assert runner.status()["restart_required"] is False
-        assert (
-            client.post("/api/calibrations/select", json={"id": "mini", "file": result["file"]}).json()["selected"]
-            == result["file"]
-        )
+        canonical = settings.calibrations_dir("mini") / "canonical.json"
+        canonical.write_text(json.dumps(FITTED))
+        selected = client.post("/api/calibrations/select", json={"id": "mini", "file": str(canonical)}).json()
+        assert selected["selected"] == str(canonical)
+        assert selected["layout_mismatch"] == layout
         assert runner.status()["restart_required"] is True  # the running child has the shipped calibration
         command = runner._build_command(MINI, config, catalog.assess(MINI, HW), False, 1, settings.serve_settings())
-        assert command[command.index("--calibration") + 1] == result["file"]
+        assert command[command.index("--calibration") + 1] == str(canonical)
         client.post("/api/calibrations/select", json={"id": "mini", "file": None})
         assert runner.status()["restart_required"] is False
 
@@ -261,6 +267,24 @@ def test_a_bad_input_is_refused_with_its_line_before_any_model_starts(tmp_path, 
         assert "calibrate" not in fleet.temporary
 
 
+def test_noncanonical_fit_is_disabled_when_engine_lacks_layout_flag(tmp_path, monkeypatch):
+    from basal.prompt import LAYOUTS
+
+    layout = next(layout for layout in LAYOUTS if layout != "canonical")
+    monkeypatch.setattr(engine, "calibrate_flags", lambda: frozenset())
+    settings.set_load_options("mini", {"layout": layout})
+    _, app = make_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        listing = client.get("/api/calibrations", params={"id": "mini"}).json()
+        assert listing["layout"] == layout
+        assert listing["layout_reason"] == "code:calibration_layout_unavailable"
+        labelled = tmp_path / "labelled.jsonl"
+        labelled.write_text('{"state":"s","question":"q?","options":["a","b"],"gold":0}\n')
+        refused = client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)})
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == "code:calibration_layout_unavailable"
+
+
 def test_task_questions_calibrate_with_the_engine_in_process_and_reserve_its_memory(tmp_path, monkeypatch, config):
     calls, reserved = [], []
 
@@ -275,8 +299,11 @@ def test_task_questions_calibrate_with_the_engine_in_process_and_reserve_its_mem
 
     monkeypatch.setattr(calibrate, "main", fake_main)
     fleet, app = make_app(tmp_path, APPLE)
+    from basal.prompt import LAYOUTS
+
+    layout = next(layout for layout in LAYOUTS if layout != "canonical")
     settings.set_load_options(
-        "mini", {"mode": "eager", "max_batch": 8, "deterministic": True, "strict_calibration": True}
+        "mini", {"mode": "eager", "layout": layout, "max_batch": 8, "deterministic": True, "strict_calibration": True}
     )
     labelled = tmp_path / "labelled.jsonl"
     labelled.write_text(json.dumps(TASK) + "\n")
@@ -315,6 +342,7 @@ def test_task_questions_calibrate_with_the_engine_in_process_and_reserve_its_mem
         ):
             assert argv[argv.index(flag) + 1] == value
         assert "--strict" in argv and "--no-calibration" in argv
+        assert argv.count("--layout") == 1 and argv[argv.index("--layout") + 1] == layout
         assert "--url" not in argv and argv[argv.index("--mode") + 1] == "eager"
         assert argv[argv.index("--max-batch") + 1] == "8" and "--deterministic" in argv
         assert "--strict-calibration" not in argv  # basal-serve's own, not the engine's
@@ -414,6 +442,7 @@ def test_report_only_on_decision_input_uses_the_temporary_child_and_writes_no_fi
     assert job["phase"] == "done", job["error"]
     assert job["result"] == {"file": None, "report": "report only", "report_only": True}
     assert "--url" in calls[0] and "--report-only" in calls[0]
+    assert "--layout" not in calls[0]
     assert children == [{"calibrate"}] and not fleet.temporary and fleet.reserved == {}
     assert not list(settings.calibrations_dir("mini").glob("*.report.txt"))
 
