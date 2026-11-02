@@ -1,5 +1,21 @@
 # Unreleased
 
+- basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.0**; CI tests 2.4.1 and 2.5.0. What 2.5.0 adds is
+  offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
+  [README](../README.md#supported-engine-range)
+- With engine 2.5.0 the API server's MCP `decide` / `decide_many` tools take a `model` argument and `list_models`
+  names the loaded models; the Playground's MCP example then targets the selected model instead of refusing it.
+  Without `model` the first loaded model answers, as on 2.4.1. [API.md](API.md#mcp-routing)
+- With engine 2.5.0 basal-omni-pico can be loaded with `--mode mlx` on Apple Silicon (bf16 weights); `mlx-q8`,
+  quantised MLX weights and the state or prefix cache are refused with the engine's reasons before loading. The
+  default mode stays eager.
+- The load options list `--mode int8` (engine 2.5.0): basal-omni ultra in bf16 on NVIDIA GPUs of compute capability
+  8.0+; elsewhere the mode is shown unavailable with the reason.
+- With engine 2.5.0 Inspect reads the MLX ports of basal-1.0, basal-1.5 and basal-2.0 on Apple Silicon
+  (basal-viz `--mode mlx`). [USAGE.md](USAGE.md#inspect)
+- The LoRA adapter load option says it needs engine 2.5.0 (it shipped there, not in 2.5.1), and the API server keeps
+  the `code` of a basal-serve error body (2.5.0) instead of deriving it from the status.
+
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
   evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.

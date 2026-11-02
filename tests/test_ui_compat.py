@@ -154,6 +154,13 @@ def test_a_child_error_keeps_its_status_and_the_engine_code_when_it_gives_one(ma
         assert (error["error"]["message"], error["error"]["code"]) == (f"{child.fail} failure", code)
 
 
+def test_a_child_error_that_is_not_json_keeps_its_text_and_status(make):
+    c, _ = make(lambda request: httpx.Response(502, text="Bad Gateway"))
+    with c:
+        r = post(c, "/v1/systemone", {"state": "hi", "questions": {"q": {"type": "noul"}}})
+    assert r.status_code == 502 and r.json() == {"error": "Bad Gateway", "code": "UPSTREAM_ERROR"}
+
+
 @pytest.mark.parametrize(
     "body",
     [

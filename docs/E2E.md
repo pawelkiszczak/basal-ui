@@ -28,6 +28,8 @@ or another Engine backend. Keep subsequent test commands `--no-sync` so the prep
 | `text_model` | the smallest downloaded, runnable text model, basal-2.0 first (`BASAL_E2E_MODEL`) | almost everything |
 | `second_model` | another one (`BASAL_E2E_SECOND_MODEL`) | several models on one API port, memory budget, restart |
 | `bf16_model` | bf16 PyTorch weights of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_BF16_MODEL`) | Inspect, mode comparison |
+| `mlx_model` | an MLX port of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_MLX_MODEL`) | Inspect with basal-viz `--mode mlx` (engine 2.5.0, Apple Silicon) |
+| `pico_model` | basal-omni-pico in bf16 (`BASAL_E2E_PICO_MODEL`) | basal-omni-pico with `--mode mlx` (engine 2.5.0, Apple Silicon) |
 
 A fixture with no model on disk skips its tests; `BASAL_E2E_DOWNLOAD=1` downloads `Remek/basal-2.0-mini` (bf16,
 3.2 GB: runnable on CUDA, Apple Silicon and the CPU) through basal-ui's Download button instead. Other variables:
