@@ -18,16 +18,21 @@ REAL_CLIENT = httpx.AsyncClient
 
 
 class Child:
-    """basal-serve 2.4.1 over HTTP: POST /v1/systemone answers each question, or {"error"} with its status."""
+    """basal-serve over HTTP: POST /v1/systemone answers each question, or {"error"} with its status (2.4.1); with
+    `code` the error body also carries the engine's code (2.5.0)."""
 
-    def __init__(self, fail=None):
+    def __init__(self, fail=None, status=None, code=None):
         self.fail, self.requests = fail, []
+        self.status, self.code = status, code
 
     def __call__(self, request):
         body = json.loads(request.content)
         self.requests.append(body)
         if self.fail:
-            return httpx.Response(422 if self.fail == "value" else 500, json={"error": f"{self.fail} failure"})
+            status = self.status or (422 if self.fail == "value" else 500)
+            return httpx.Response(
+                status, json={"error": f"{self.fail} failure", **({"code": self.code} if self.code is not None else {})}
+            )
         answers = {}
         for name, q in body["questions"].items():
             if q["type"] == "noul":
@@ -120,6 +125,33 @@ def test_systemone_codes_request_ids_and_alias_media(make):
         rejected = post(invalid, "/v1/systemone", {"state": "hi", "questions": {"q": {"type": "noul"}}})
         assert rejected.status_code == 422 and rejected.json()["code"] == "INVALID_REQUEST"
         assert rejected.json()["detail"][0]["msg"] == "value failure"
+
+
+@pytest.mark.parametrize("path", ["/v1/systemone", "/v1/decisions"])
+@pytest.mark.parametrize(
+    "child,code",
+    [
+        (Child("busy", status=503, code="STARTING"), "STARTING"),  # 2.5.0: the engine's code
+        (Child("busy", status=503), "OUT_OF_MEMORY"),  # 2.4.1: from the status
+        (Child("busy", status=503, code=""), "OUT_OF_MEMORY"),
+        (Child("odd", status=418), "UPSTREAM_ERROR"),
+    ],
+)
+def test_a_child_error_keeps_its_status_and_the_engine_code_when_it_gives_one(make, child, code, path):
+    c, _ = make(child)
+    body = (
+        {"state": "hi", "questions": {"q": {"type": "noul"}}}
+        if path == "/v1/systemone"
+        else {"input": "hi", "questions": [{"type": "predicate", "instructions": "valid?"}]}
+    )
+    with c:
+        r = post(c, path, body)
+    assert r.status_code == child.status
+    error = r.json()
+    if path == "/v1/systemone":
+        assert (error["error"], error["code"]) == (f"{child.fail} failure", code)
+    else:
+        assert (error["error"]["message"], error["error"]["code"]) == (f"{child.fail} failure", code)
 
 
 @pytest.mark.parametrize(
