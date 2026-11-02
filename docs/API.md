@@ -47,6 +47,7 @@ shape. `POST /api/calibrate` fits against that active-or-saved layout; non-canon
 `basal-calibrate --layout`, and a request is refused with HTTP 400 when the installed Engine lacks that flag. The
 Calibration tab disables fitting and explains the limitation in that case.
 | `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
+| `POST /api/presets/import-url` | `{"url":"https://example.com/presets.json"}` fetches a public JSON presets file (up to 1 MiB) and merges it using the same validation and replacement rules as individual preset updates. Non-JSON returns 415, oversized data 413, unsafe destinations 400; success returns the current `{"load":...,"request":...}` presets. |
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns

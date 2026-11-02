@@ -21,6 +21,7 @@ MAX_TEXT_CHARS = 200_000
 MAX_REDIRECTS = 3
 TIMEOUT_S = 10
 REDIRECTS = {301, 302, 303, 307, 308}
+PRESET_MAX_BYTES = 1024 * 1024
 
 
 class FetchError(ValueError):
@@ -183,8 +184,8 @@ def _content_state(response: httpx.Response, data: bytes):
     raise UnsupportedContentType(f"unsupported content type: {content_type}")
 
 
-def fetch(url: str) -> dict:
-    """Fetch one bounded anonymous document, manually validating each redirect target."""
+def fetch_bytes(url: str, max_bytes: int, accept: str = "*/*") -> tuple[str, httpx.Response, bytes]:
+    """Fetch a bounded anonymous response, validating each redirect and pinning every connection."""
     current = url
     deadline = time.monotonic() + TIMEOUT_S
     for redirect_count in range(MAX_REDIRECTS + 1):
@@ -197,7 +198,7 @@ def fetch(url: str) -> dict:
                 timeout=remaining, follow_redirects=False, trust_env=False, transport=_transport(host, addresses)
             )
             with client:  # noqa: SIM117 — the stream needs the open client
-                with client.stream("GET", current, headers={"Accept": "text/html,application/json,text/*"}) as response:
+                with client.stream("GET", current, headers={"Accept": accept}) as response:
                     if response.status_code in REDIRECTS:
                         location = response.headers.get("location")
                         if not location:
@@ -214,23 +215,10 @@ def fetch(url: str) -> dict:
                         if time.monotonic() >= deadline:
                             raise FetchHTTPError("URL request timed out")
                         size += len(chunk)
-                        if size > MAX_BYTES:
-                            raise FetchTooLarge(f"response exceeds the {MAX_BYTES}-byte limit")
+                        if size > max_bytes:
+                            raise FetchTooLarge(f"response exceeds the {max_bytes}-byte limit")
                         chunks.append(chunk)
-                    data = b"".join(chunks)
-                    state = _content_state(response, data)
-                    truncated = False
-                    if isinstance(state, str) and len(state) > MAX_TEXT_CHARS:
-                        state = state[:MAX_TEXT_CHARS]
-                        truncated = True
-                    return {
-                        "url": url,
-                        "final_url": current,
-                        "content_type": response.headers.get("content-type", "application/octet-stream"),
-                        "bytes": size,
-                        "truncated": truncated,
-                        "state": state,
-                    }
+                    return current, response, b"".join(chunks)
         except FetchError:
             raise
         except httpx.TimeoutException as exc:
@@ -238,3 +226,21 @@ def fetch(url: str) -> dict:
         except httpx.HTTPError as exc:
             raise FetchHTTPError(f"URL request failed: {exc}") from exc
     raise FetchHTTPError("too many redirects (maximum 3)")
+
+
+def fetch(url: str) -> dict:
+    """Fetch one bounded anonymous document for Playground state."""
+    final_url, response, data = fetch_bytes(url, MAX_BYTES, "text/html,application/json,text/*")
+    state = _content_state(response, data)
+    truncated = False
+    if isinstance(state, str) and len(state) > MAX_TEXT_CHARS:
+        state = state[:MAX_TEXT_CHARS]
+        truncated = True
+    return {
+        "url": url,
+        "final_url": final_url,
+        "content_type": response.headers.get("content-type", "application/octet-stream"),
+        "bytes": len(data),
+        "truncated": truncated,
+        "state": state,
+    }
