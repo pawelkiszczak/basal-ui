@@ -842,7 +842,7 @@ const PL = {
   "basal-ui’s Python": "Python środowiska basal-ui",
   "basal-viz explains decision questions; this request has only task questions": "basal-viz wyjaśnia pytania decyzyjne; to żądanie zawiera wyłącznie pytania zadaniowe",
   "basal-viz loads the bf16 PyTorch weights of basal-1.0, basal-1.5, basal-2.0 or basal-omni into basal-ui’s process (counted in the memory budget) and shows the prompt of every option order, its tokens, the decision after every layer and the calibration.": "basal-viz ładuje wagi PyTorch bf16 modeli basal-1.0, basal-1.5, basal-2.0 lub basal-omni do procesu basal-ui, uwzględnianego w budżecie pamięci, i pokazuje prompt dla każdej kolejności opcji, tokeny, decyzję po każdej warstwie oraz kalibrację.",
-  "basal-viz reads bf16 weights": "basal-viz odczytuje wagi bf16",
+  "basal-viz cannot read this variant here": "basal-viz nie odczyta tutaj tego wariantu",
   "basal-viz reads text only; remove the media to inspect this request": "basal-viz odczytuje tylko tekst; usuń media, aby zbadać to żądanie",
   "basal-viz: the prompt, the tokens, every layer and the calibrated decision.": "basal-viz: prompt, tokeny, każda warstwa i skalibrowana decyzja.",
   "base": "model bazowy",
