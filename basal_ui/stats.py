@@ -1,10 +1,14 @@
 """Per-model statistics of the decisions basal-ui answered (playground, API, MCP) and the benchmark results, kept in
 <settings stem>.stats.json next to the settings file (merged under the settings lock: several basal-ui processes on
 one settings file add up)."""
+
+import contextlib
 import json
 import threading
 import time
 from pathlib import Path
+
+from .traffic import Traffic
 
 SAMPLES = 1000  # latencies kept per model for the percentiles
 BENCHMARKS = 20  # results kept per model (benchmarks, load tests, determinism checks, mode comparisons)
@@ -48,19 +52,38 @@ def _percentile(samples, q):
 
 
 def _empty():
-    return {"requests": 0, "questions": 0, "errors": 0, "input_tokens": 0, "latency_ms_sum": 0.0,
-            "latency_samples": [], "best_prob_sum": 0.0, "best_prob_n": 0, "first_used": None, "last_used": None,
-            "by_type": {}}
+    return {
+        "requests": 0,
+        "questions": 0,
+        "errors": 0,
+        "input_tokens": 0,
+        "latency_ms_sum": 0.0,
+        "latency_samples": [],
+        "best_prob_sum": 0.0,
+        "best_prob_n": 0,
+        "first_used": None,
+        "last_used": None,
+        "by_type": {},
+    }
 
 
 def _read(path: Path) -> dict:
+    """The stats file; reset_at holds when it was last reset: "*" (every model) or a model id -> unix time."""
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(loaded.get("models"), dict) and isinstance(loaded.get("benchmarks"), dict):
+            if not isinstance(loaded.get("reset_at"), dict):
+                loaded["reset_at"] = {}
             return loaded
     except (OSError, ValueError, AttributeError):
         pass
-    return {"models": {}, "benchmarks": {}}
+    return {"models": {}, "benchmarks": {}, "reset_at": {}}
+
+
+def _cleared(reset_at: dict, model_id: str, entry: dict) -> bool:
+    """True when a delta entry started before the file's last reset of that model (or of everything): another
+    process reset the counts this process had not flushed yet."""
+    return (entry["first_used"] or 0) < max(reset_at.get("*", 0), reset_at.get(model_id, 0))
 
 
 def _merge(into: dict, delta: dict) -> None:
@@ -86,35 +109,55 @@ class Stats:
         self.write_lock = threading.Lock()
         self.data = _read(self.path)
         self.delta: dict = {}
+        self.traffic = Traffic()
         self._stop = threading.Event()
         self._flusher = threading.Thread(target=self._flush_loop, daemon=True)
         self._flusher.start()
 
-    def record(self, model_id: str, response_json, latency_ms: float, ok: bool = True) -> None:
-        now = time.time()
-        with self.lock:
-            entry = self.delta.setdefault(model_id, _empty())
-            entry["first_used"] = entry["first_used"] or now
-            entry["last_used"] = now
-            entry["requests"] += 1
-            entry["latency_ms_sum"] += latency_ms
-            entry["latency_samples"] = [*entry["latency_samples"], round(latency_ms, 2)][-SAMPLES:]
-            if not ok or not isinstance(response_json, dict):
-                entry["errors"] += 1
-                return
-            usage = response_json.get("usage")
-            if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int):
-                entry["input_tokens"] += usage["input_tokens"]
-            for _name, answer in answer_items(response_json.get("answers")):
-                kind = answer.get("type") if isinstance(answer.get("type"), str) else "other"
-                by_type = entry["by_type"].setdefault(kind, {"questions": 0, "best_prob_sum": 0.0, "best_prob_n": 0})
-                entry["questions"] += 1
-                by_type["questions"] += 1
-                p = best_probability(answer)
-                if p is not None:
-                    for target in (entry, by_type):
-                        target["best_prob_sum"] += p
-                        target["best_prob_n"] += 1
+    def record(
+        self, model_id: str, response_json, latency_ms: float, ok: bool = True, endpoint=None, method="POST"
+    ) -> None:
+        from . import settings
+
+        @settings._locked
+        def record():
+            # Observe resets and stamp this Decision under the same inter-process lock as reset(). A pending delta
+            # from before a reset must be discarded before adding a later Decision, not together with it at flush.
+            reset_at = _read(self.path)["reset_at"]
+            with self.lock:
+                now = time.time()
+                if endpoint is not None:
+                    self.traffic.record(
+                        model_id, endpoint, method, latency_ms, 200 if ok else 500, response_json, now=now
+                    )
+                entry = self.delta.get(model_id)
+                if entry is None or _cleared(reset_at, model_id, entry):
+                    entry = self.delta[model_id] = _empty()
+                entry["first_used"] = entry["first_used"] or now
+                entry["last_used"] = now
+                entry["requests"] += 1
+                entry["latency_ms_sum"] += latency_ms
+                entry["latency_samples"] = [*entry["latency_samples"], round(latency_ms, 2)][-SAMPLES:]
+                if not ok or not isinstance(response_json, dict):
+                    entry["errors"] += 1
+                    return
+                usage = response_json.get("usage")
+                if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int):
+                    entry["input_tokens"] += usage["input_tokens"]
+                for _name, answer in answer_items(response_json.get("answers")):
+                    kind = answer.get("type") if isinstance(answer.get("type"), str) else "other"
+                    by_type = entry["by_type"].setdefault(
+                        kind, {"questions": 0, "best_prob_sum": 0.0, "best_prob_n": 0}
+                    )
+                    entry["questions"] += 1
+                    by_type["questions"] += 1
+                    p = best_probability(answer)
+                    if p is not None:
+                        for target in (entry, by_type):
+                            target["best_prob_sum"] += p
+                            target["best_prob_n"] += 1
+
+        record()
 
     def _update_file(self, change) -> None:
         """Under the settings lock: read the file, merge this process's delta, apply change(data), write, mirror."""
@@ -126,7 +169,8 @@ class Stats:
             data = _read(self.path)
             try:
                 for model_id, entry in delta.items():
-                    _merge(data["models"].setdefault(model_id, _empty()), entry)
+                    if not _cleared(data["reset_at"], model_id, entry):
+                        _merge(data["models"].setdefault(model_id, _empty()), entry)
                 change(data)
                 settings._write_private(self.path, json.dumps(data))
             except BaseException:
@@ -144,6 +188,7 @@ class Stats:
         def change(data):
             runs = data["benchmarks"].get(model_id, [])
             data["benchmarks"][model_id] = [*runs, result][-BENCHMARKS:]
+
         self._update_file(change)
 
     def snapshot(self) -> dict:
@@ -155,10 +200,12 @@ class Stats:
                 self.data = data
                 merged = json.loads(json.dumps(data))
                 for model_id, entry in self.delta.items():
-                    _merge(merged["models"].setdefault(model_id, _empty()), entry)
+                    if not _cleared(data["reset_at"], model_id, entry):
+                        _merge(merged["models"].setdefault(model_id, _empty()), entry)
             return merged
 
         merged = settings._locked(read)()
+
         def avg(total, n):
             return total / n if n else None
 
@@ -170,9 +217,11 @@ class Stats:
                 "p50_ms": _percentile(e["latency_samples"], 0.5),
                 "p95_ms": _percentile(e["latency_samples"], 0.95),
                 "avg_best_prob": avg(e["best_prob_sum"], e["best_prob_n"]),
-                "by_type": {kind: {"questions": t["questions"],
-                                   "avg_best_prob": avg(t["best_prob_sum"], t["best_prob_n"])}
-                            for kind, t in e["by_type"].items()}}
+                "by_type": {
+                    kind: {"questions": t["questions"], "avg_best_prob": avg(t["best_prob_sum"], t["best_prob_n"])}
+                    for kind, t in e["by_type"].items()
+                },
+            }
         return {"models": models, "benchmarks": merged["benchmarks"]}
 
     def reset(self, model_id: str | None = None) -> None:
@@ -180,8 +229,13 @@ class Stats:
 
         def go():
             with self.lock:
-                previous = self.delta if model_id is None else {
-                    model_id: self.delta.pop(model_id)} if model_id in self.delta else {}
+                previous = (
+                    self.delta
+                    if model_id is None
+                    else {model_id: self.delta.pop(model_id)}
+                    if model_id in self.delta
+                    else {}
+                )
                 if model_id is None:
                     self.delta = {}
                 try:
@@ -190,16 +244,20 @@ class Stats:
                         data["models"].clear()
                     else:
                         data["models"].pop(model_id, None)
+                    data["reset_at"]["*" if model_id is None else model_id] = time.time()
                     settings._write_private(self.path, json.dumps(data))
                 except BaseException:
                     for key, entry in previous.items():
                         _merge(self.delta.setdefault(key, _empty()), entry)
                     raise
                 self.data = data
+                self.traffic.reset(model_id, now=time.time())
 
         with self.write_lock:
             settings._locked(go)()
 
+    def traffic_snapshot(self, minutes: int) -> dict:
+        return self.traffic.snapshot(minutes)
 
     def flush(self) -> None:
         with self.lock:
@@ -209,10 +267,8 @@ class Stats:
 
     def _flush_loop(self):
         while not self._stop.wait(FLUSH_S):
-            try:
+            with contextlib.suppress(OSError):  # the delta is kept; the next flush retries
                 self.flush()
-            except OSError:
-                pass  # the delta is kept; the next flush retries
 
     def close(self) -> None:
         self._stop.set()

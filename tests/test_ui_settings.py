@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ import pytest
 from huggingface_hub.constants import HF_HUB_CACHE
 
 from basal_ui import settings
+from basal_ui.auth import ApiKeys
 
 
 def test_interprocess_lock_context_runs_the_wrapped_function(tmp_path, monkeypatch):
@@ -16,6 +18,7 @@ def test_interprocess_lock_context_runs_the_wrapped_function(tmp_path, monkeypat
     locked = settings._locked(lambda: called.append("inside"))
     locked()
     assert called == ["inside"]
+
 
 def test_set_and_reset_models_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
@@ -46,16 +49,32 @@ def test_invalid_json_shape_uses_default_and_relative_path_is_absolute(tmp_path,
     monkeypatch.chdir(tmp_path)
     config.write_text("[]")
     assert settings.models_dir() == Path(HF_HUB_CACHE)
+    config.unlink()
     stored = settings.set_models_dir("relative-models-dir")
     assert stored == (tmp_path / "relative-models-dir").resolve()
     assert settings.load()["models_dir"] == str(stored)
 
 
+@pytest.mark.parametrize("text", ["{not json", "[]"])
+def test_a_corrupt_settings_file_is_read_as_empty_but_never_overwritten(tmp_path, monkeypatch, text):
+    config = tmp_path / "settings.json"
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    config.write_text(text)
+    with pytest.raises(settings.CorruptSettings, match="not valid JSON"):
+        settings.set_auto_load(True)
+    assert config.read_text() == text
+    assert settings.load() == {}
+
+
 def test_serve_settings_validation_and_api_key_file(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     assert settings.serve_settings()["enabled"] is False
-    for patch, message in (({"port": 80}, "port"), ({"host": "example.com"}, "host"),
-                           ({"max_len": 256}, "max_len"), ({"cors_origins": ["not-an-origin"]}, "cors_origins")):
+    for patch, message in (
+        ({"port": 80}, "port"),
+        ({"host": "example.com"}, "host"),
+        ({"max_len": 256}, "max_len"),
+        ({"cors_origins": ["not-an-origin"]}, "cors_origins"),
+    ):
         with pytest.raises(ValueError, match=message):
             settings.update_serve(patch)
     settings.update_serve({"enabled": True, "cors_origins": ["https://example.com"]})
@@ -136,8 +155,7 @@ def test_key_changes_reach_every_live_instance_and_drop_dead_ones(tmp_path, monk
     """Two basal-ui processes share one settings file: each keeps its own internal key, both see revocations."""
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     other, dead = os.getppid(), 2**22 + 12345  # a live process and a pid that is not running
-    other_file, dead_file = (tmp_path / f"settings.keys-{other}.json",
-                             tmp_path / f"settings.keys-{dead}.json")
+    other_file, dead_file = (tmp_path / f"settings.keys-{other}.json", tmp_path / f"settings.keys-{dead}.json")
     unrelated_file = tmp_path / "other.keys-999999.json"
     unrelated_file.write_text(json.dumps({"keys": []}))
     other_internal = {"name": "basal-ui", "sha256": "b" * 64, "admin": True}
@@ -154,6 +172,27 @@ def test_key_changes_reach_every_live_instance_and_drop_dead_ones(tmp_path, monk
     settings.remove_keys_file()
     assert not (tmp_path / f"settings.keys-{os.getpid()}.json").exists() and other_file.exists()
     assert not dead_file.exists() and unrelated_file.exists()
+
+
+@pytest.mark.parametrize("filename", ["settings.json", "settings[dev].json", "settings*.json", "settings?.json"])
+def test_key_create_and_revoke_sync_only_the_exact_settings_stem(tmp_path, monkeypatch, filename):
+    config = tmp_path / filename
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    admin_secret = "internal-test-key"
+    own = settings.keys_file(hashlib.sha256(admin_secret.encode()).hexdigest())
+    unrelated = tmp_path / f"{config.stem}X.keys-{os.getpid()}.json"
+    unrelated.write_text(json.dumps({"keys": [{"name": "other", "sha256": "b" * 64}]}))
+    api_keys = ApiKeys(own)
+
+    _record, secret = settings.create_key("laptop")
+    assert api_keys.check(secret)["name"] == "laptop"
+    assert api_keys.check(admin_secret)["admin"] is True
+    assert json.loads(unrelated.read_text())["keys"][0]["name"] == "other"
+
+    settings.delete_key("laptop")
+    assert api_keys.check(secret) is None
+    assert api_keys.check(admin_secret)["admin"] is True
+    assert json.loads(unrelated.read_text())["keys"][0]["name"] == "other"
 
 
 def test_auto_load_setting_requires_boolean(tmp_path, monkeypatch):
@@ -181,12 +220,19 @@ def test_loaded_models_keep_load_order_update_media_and_migrate_the_single_model
 def test_memory_settings_validate_budget_and_reserve(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 2 * 1024**3}
-    for patch in ({"budget_bytes": 1024**3 - 1}, {"budget_bytes": "8G"}, {"reserve_bytes": -1},
-                  {"reserve_bytes": 1.5}, {"swap": 1}):
+    for patch in (
+        {"budget_bytes": 1024**3 - 1},
+        {"budget_bytes": "8G"},
+        {"reserve_bytes": -1},
+        {"reserve_bytes": 1.5},
+        {"swap": 1},
+    ):
         with pytest.raises(ValueError):
             settings.update_memory(patch)
     assert settings.update_memory({"budget_bytes": 1024**3, "reserve_bytes": 0}) == {
-        "budget_bytes": 1024**3, "reserve_bytes": 0}
+        "budget_bytes": 1024**3,
+        "reserve_bytes": 0,
+    }
     assert settings.update_memory({"budget_bytes": None})["budget_bytes"] is None
     assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0}
 
@@ -195,11 +241,8 @@ def test_cross_process_settings_updates_do_not_lose_keys(tmp_path, monkeypatch):
     config = tmp_path / "settings.json"
     monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
     env = {**os.environ, "BASAL_UI_CONFIG": str(config)}
-    code = ("from basal_ui import settings\n"
-            "import sys\n"
-            "for i in range(20): settings.create_key(f'{sys.argv[1]}-{i}')")
-    workers = [subprocess.Popen([sys.executable, "-c", code, prefix], env=env)
-               for prefix in ("first", "second")]
+    code = "from basal_ui import settings\nimport sys\nfor i in range(20): settings.create_key(f'{sys.argv[1]}-{i}')"
+    workers = [subprocess.Popen([sys.executable, "-c", code, prefix], env=env) for prefix in ("first", "second")]
     assert [worker.wait(timeout=20) for worker in workers] == [0, 0]
     assert len(settings.keys()) == 40
 
@@ -210,19 +253,29 @@ def test_cross_process_revoke_is_not_undone_by_creates(tmp_path, monkeypatch):
     env = {**os.environ, "BASAL_UI_CONFIG": str(config)}
     settings.create_key("revoke-me")
     start = tmp_path / "start"
-    code = ("from basal_ui import settings\n"
-            "import pathlib, sys, time\n"
-            "start = pathlib.Path(sys.argv[1])\n"
-            "while not start.exists(): time.sleep(.001)\n"
-            "for i in range(100): settings.create_key(f'loop-{i}')\n")
+    code = (
+        "from basal_ui import settings\n"
+        "import pathlib, sys, time\n"
+        "start = pathlib.Path(sys.argv[1])\n"
+        "while not start.exists(): time.sleep(.001)\n"
+        "for i in range(100): settings.create_key(f'loop-{i}')\n"
+    )
     creator = subprocess.Popen([sys.executable, "-c", code, str(start)], env=env)
     revoker = subprocess.Popen(
-        [sys.executable, "-c",
-         ("from basal_ui import settings\n"
-          "import pathlib, sys, time\n"
-          "start = pathlib.Path(sys.argv[1])\n"
-          "while not start.exists(): time.sleep(.001)\n"
-          "settings.delete_key('revoke-me')"), str(start)], env=env)
+        [
+            sys.executable,
+            "-c",
+            (
+                "from basal_ui import settings\n"
+                "import pathlib, sys, time\n"
+                "start = pathlib.Path(sys.argv[1])\n"
+                "while not start.exists(): time.sleep(.001)\n"
+                "settings.delete_key('revoke-me')"
+            ),
+            str(start),
+        ],
+        env=env,
+    )
     start.touch()
     assert creator.wait(timeout=30) == 0
     assert revoker.wait(timeout=30) == 0
@@ -234,8 +287,10 @@ def test_presets_and_update_settings_round_trip(tmp_path, monkeypatch):
     assert settings.presets() == {"load": {}, "request": {}}
     settings.set_preset("load", "fast", {"mode": "eager"})
     settings.set_preset("request", "demo", {"questions": {"q": {"type": "choice"}}})
-    assert settings.presets() == {"load": {"fast": {"mode": "eager"}},
-                                  "request": {"demo": {"questions": {"q": {"type": "choice"}}}}}
+    assert settings.presets() == {
+        "load": {"fast": {"mode": "eager"}},
+        "request": {"demo": {"questions": {"q": {"type": "choice"}}}},
+    }
     settings.set_preset("load", "fast", None)
     assert settings.presets()["load"] == {}
     assert settings.check_updates() is True

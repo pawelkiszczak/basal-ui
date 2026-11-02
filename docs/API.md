@@ -6,6 +6,65 @@ names; the request and response bodies are the engine's own, so the full request
 question-type reference live in the [engine's API reference](https://github.com/rkinas/basal/blob/main/docs/API.md).
 Turning the server on, creating keys and the settings table: [USAGE.md](USAGE.md#api-server).
 
+Trust boundary: the API server and every model's `basal-serve` listen on loopback by default, and loopback is not
+isolation from other users of the same machine — any local account can reach a keyless server. Serve without a key
+only on a host whose users you trust. Backend URLs and interpreters set in a model's load options (`ollama_url`,
+`llamacpp_url`, `think_url`, `think_python`) are contacted or run with basal-ui's own privileges.
+
+## Local app management API
+
+These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
+
+`GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
+`{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
+selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
+a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
+
+Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
+`est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
+`media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies are
+missing). A missing add-on is not represented as a working media load. `recommendation_note` explicitly identifies
+format/tier rankings as heuristics rather than benchmarks. Physical-memory estimates do not reserve capacity;
+`POST /api/load` separately enforces configured budget/reserve and active commitments.
+
+| Route | Contract |
+|---|---|
+| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
+
+Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
+`GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
+`result: {"restart_required":true,"extra":"media","engine_version":"..."}`. While installation is active,
+model-mutating UI routes return 409 / `addon_busy`; Fleet leases and job starts also enforce maintenance atomically.
+The installer changes only declared extra dependencies in the current virtual environment, constrains existing
+versions, never requests/reinstalls the Engine and verifies its identity afterward. Package changes are not
+transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
+These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
+
+### Batch path inspection
+
+`POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:
+
+```json
+{"path":"/Users/me/requests.jsonl","kind":"jsonl"}
+```
+
+`kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
+inspection request returns HTTP 200 even when the file is missing or unsuitable: inspect `ok` and `code`.
+Common facts are `path`, `kind`, `exists`, `is_file`, `is_dir`, `ok` and `code`.
+
+For JSONL input, the response reports byte size, non-empty line count and whether that count is capped. It
+inspects the first non-empty row for request/label shape, question types and a preview; it does **not** validate
+every request in the file. Scanning stops at 100,000 non-empty rows or 64 MiB; the first row must fit within 1 MiB.
+A blank prefix exhausting the scan limit is not reported as an empty file. Preview text is limited to 300 characters
+plus an ellipsis when truncated.
+
+For output, the response reports parent-directory existence, writability and whether an existing file would be
+overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
+Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
+as the other management routes; it is not a filesystem sandbox.
+
 ## Several models behind basal-ui
 
 basal-ui's API server ([USAGE.md](USAGE.md#api-server)) serves every model loaded in the app on one port and
@@ -20,6 +79,9 @@ response.
 | `model` not loaded or not ready | 404 | `MODEL_NOT_FOUND` — the message lists the loaded models |
 | the model was unloaded while the request arrived | 409 | `MODEL_NOT_READY` |
 | its `basal-serve` cannot be reached | 502 | `UPSTREAM_ERROR` |
+| `Content-Type` is not `application/json` | 415 | `UNSUPPORTED_MEDIA_TYPE` |
+| the body is over 256 MiB | 413 | `REQUEST_TOO_LARGE` |
+| a browser `Origin` outside the **CORS origins** setting | 403 | `ORIGIN_REFUSED` |
 
 Errors use the basal envelope (`{"error", "code"}`) on the System One paths and the OpenAI envelope on the Decisions
 paths, like basal-serve's own errors.
@@ -33,9 +95,84 @@ paths, like basal-serve's own errors.
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
-MCP on this port: `decide` and `decide_many` serve the model named in the tool's `model` argument, else the first
-loaded model. The engine's MCP server lists no models (`list_models` and `basal-mcp --model` arrive with the
-model-argument proposal upstream); until then the first loaded model answers every tool call.
+### Recent Decision traffic
+
+The local UI app (not the API-server gateway) exposes `GET /api/traffic?minutes=15` and
+`GET /api/traffic?minutes=60`. Unsupported integer windows return HTTP 400 with an English error; invalid query syntax
+uses FastAPI's HTTP 422 response. This is an in-memory, process-local view of **recorded Decision attempts**, not all
+HTTP traffic. An attempted child forward that fails (including a transport/connection error) counts as a request and
+an error; its latency includes the failed attempt. UI polling, UI/gateway rejections before a child forward, Batch,
+benchmarks and private Inference tests do not contribute. Playground is attributed to `POST /api/decide`; gateway
+rows retain the public `POST` path (`/v1/systemone`, `/v1/basal`, `/v1/decisions` or `/decisions`) rather than the
+translated child path. MCP uses `CALL /mcp` (one invocation, not necessarily one HTTP request).
+
+```json
+{
+  "scope": "process",
+  "window_seconds": 900,
+  "bucket_seconds": 60,
+  "window_start": 1730000000.0,
+  "window_end": 1730000900.0,
+  "observed_since": 1729999900.0,
+  "requests": 3,
+  "errors": 1,
+  "input_tokens": 240,
+  "requests_per_s": 0.0033333333,
+  "input_tokens_per_s": 0.2666666667,
+  "avg_latency_ms": 120.0,
+  "p95_ms": 170.0,
+  "latency_sample_limit": 100,
+  "series": [
+    {
+      "start": 1730000880.0,
+      "requests": 1,
+      "errors": 0,
+      "input_tokens": 80,
+      "requests_per_s": 0.05,
+      "input_tokens_per_s": 4.0
+    }
+  ],
+  "endpoints": [
+    {
+      "endpoint": "/api/decide",
+      "method": "POST",
+      "requests": 1,
+      "errors": 0,
+      "input_tokens": 80,
+      "requests_per_s": 0.0011111111,
+      "input_tokens_per_s": 0.0888888889,
+      "avg_latency_ms": 80.0,
+      "p95_ms": 80.0
+    }
+  ]
+}
+```
+
+Timestamp and rate fields are JSON numbers; counters and `window_seconds`, `bucket_seconds`, and
+`latency_sample_limit` are integers. `avg_latency_ms` and `p95_ms` are numbers or `null` when no sample exists.
+`series` is ordered oldest to newest; its rows use Unix minute starts and may include zero-count minutes, but never
+complete minutes before observation began. Rates use the actual observed elapsed time, capped to the selected window,
+this process's `observed_since`, and the retained bucket span, not a model generation-speed measure. Latencies use
+request-weighted means and sampled p95: at most 100 latency values per model, endpoint and minute are retained; each
+returned aggregate uses at most 6000 samples. The percentile is explicitly approximate under high traffic.
+Only the latest 60 minute buckets are retained. The first/last bucket can cover a partial requested window because
+counters are bucketed by minute; a 60-minute query returns at most those 60 retained minute buckets.
+`input_tokens` is Engine-reported usage when present; missing usage contributes zero and is never estimated.
+
+`GET /api/stats` and `/v1/stats` keep their existing lifetime response shape and cross-process persistence. Deleting
+all stats or one model at `/api/stats` (or `/api/stats/{model_id}`) also clears matching rolling data in that app
+process only; it does not clear another process's in-memory window. Rolling telemetry is not persisted or merged.
+
+### MCP routing
+
+With tested Engine 2.4.1, the streamable-HTTP MCP `decide` and `decide_many` tools answer with the **first loaded
+model**. Their schemas have no `model` argument or `list_models` tool. Use `GET /v1/models` for inventory and the
+System One/OpenAI Decisions routes for named-model routing. Playground refuses to generate an MCP example for
+a different selected model rather than silently changing its target.
+
+Use the running gateway's `/mcp` HTTP endpoint with an initialized MCP client. The stock Engine's `basal-mcp`
+stdio bridge accepts neither `--model` nor an API-key option and does not send the gateway's required `model`
+field; it is not a working stdio-to-gateway connection example.
 
 ## Errors and request IDs
 
@@ -92,15 +229,21 @@ python -c 'import hashlib,secrets; s="bsl_"+secrets.token_urlsafe(32); print("se
 ```
 
 Put the printed secret in your secret store and only the digest in the key file. Send the secret as
-`Authorization: Bearer <secret>` or `X-API-Key: <secret>`. `/health` is always open. The key file is checked again
-when its modification time or size changes, so removing a key revokes it without restarting the API server.
+`Authorization: Bearer <secret>` or `X-API-Key: <secret>`. `/health` is always open. Every authentication attempt
+checks the key file's modification time, size and inode; changes reload it immediately, and unchanged contents are
+revalidated on the first request more than two seconds after the last read. Removing a key revokes it without an API
+server restart. Key creation and revocation synchronize live instance files using literal settings filename stems,
+including filenames containing glob characters.
 `GET /v1/keys` requires an `admin: true` key and reports each key's name and in-memory `last_used` timestamp (null
 until used); it does not return secrets or hashes.
 
 The **CORS origins** setting (API server view) takes browser origins, one per line, or `*`. CORS permits GET, POST and OPTIONS and the headers
 `Authorization`, `Content-Type`, `X-API-Key`, `X-Request-Id`, `Mcp-Session-Id` and `Mcp-Protocol-Version`. It exposes `Mcp-Session-Id`, `x-request-id` and `x-typesafe-request-id`. Preflight
 requests are handled before authentication; allowed origins receive CORS headers, and a foreign origin is rejected
-with HTTP 400 and no allow-origin header.
+with HTTP 400 and no allow-origin header. Any other request that carries an `Origin` header (a browser page) from an
+origin not in the list is refused with 403 `ORIGIN_REFUSED` before the key check and before it reaches a model, so a
+web page cannot run decisions on a keyless server; `GET /health` stays open. Clients outside a browser send no
+`Origin` and are unaffected.
 
 ## OpenAI Decisions compatibility
 
@@ -161,9 +304,9 @@ Full request and verified response:
 Install `typesafe-sdk` and import `typesafe_sdk`. The verified run used version 0.7.5:
 
 ```bash
-python -m pip install typesafe-sdk==0.7.5
+uv pip install typesafe-sdk==0.7.5
 export TYPESAFE_BASE_URL=http://127.0.0.1:8765
-export TYPESAFE_API_KEY=<secret>
+export TYPESAFE_API_KEY="<secret>"
 export TYPESAFE_DEFAULT_MODEL=Remek/basal-2.0-mini-MLX-8bit
 export NO_PROXY=localhost,127.0.0.1
 ```
@@ -186,10 +329,18 @@ result = client.decisions.create(
     model="Remek/basal-2.0-mini-MLX-8bit",
     input="Export fails in Safari but works in Chrome.",
     questions=[
-        {"type": "score", "name": "severity", "instructions": "How severe is the issue?",
-         "levels": [{"label": "minor"}, {"label": "major"}, {"label": "blocking"}]},
-        {"type": "choice", "name": "team", "instructions": "Which team should investigate?",
-         "choices": [{"value": "frontend"}, {"value": "backend"}]},
+        {
+            "type": "score",
+            "name": "severity",
+            "instructions": "How severe is the issue?",
+            "levels": [{"label": "minor"}, {"label": "major"}, {"label": "blocking"}],
+        },
+        {
+            "type": "choice",
+            "name": "team",
+            "instructions": "Which team should investigate?",
+            "choices": [{"value": "frontend"}, {"value": "backend"}],
+        },
     ],
 )
 ```
@@ -206,14 +357,22 @@ Python SDK, both request formats (LiteLLM translates the OpenAI shape to System 
 ```python
 import litellm
 
-r = litellm.systemone(model="hosted_vllm/basal-2.0-mini", api_base="http://127.0.0.1:8000", api_key="<secret>",
-                      state="Customer: charged twice, wants a refund today.",
-                      questions={"refund": {"type": "noul", "instructions": "Is this a refund request?"}})
+r = litellm.systemone(
+    model="hosted_vllm/basal-2.0-mini",
+    api_base="http://127.0.0.1:8000",
+    api_key="<secret>",
+    state="Customer: charged twice, wants a refund today.",
+    questions={"refund": {"type": "noul", "instructions": "Is this a refund request?"}},
+)
 print(r.answers["refund"].noul)
 
-d = litellm.decisions(model="hosted_vllm/basal-2.0-mini", api_base="http://127.0.0.1:8000", api_key="<secret>",
-                      input="Customer: charged twice, wants a refund today.",
-                      questions=[{"type": "predicate", "name": "refund", "instructions": "Is this a refund request?"}])
+d = litellm.decisions(
+    model="hosted_vllm/basal-2.0-mini",
+    api_base="http://127.0.0.1:8000",
+    api_key="<secret>",
+    input="Customer: charged twice, wants a refund today.",
+    questions=[{"type": "predicate", "name": "refund", "instructions": "Is this a refund request?"}],
+)
 print(d.answers[0].probability)
 ```
 
@@ -233,13 +392,30 @@ model_list:
       api_key: <secret>          # any non-empty value when the API server runs without keys
 ```
 
-### `basal.client.Basal`
+### Python (`httpx`)
+
+The gateway needs `model` in every request. `basal.client.Basal` (engine 2.4.1) takes neither a model nor an API key
+(`Basal(url, timeout, early_exit, facts)`), so it cannot reach basal-ui's API server; post the System One body instead:
 
 ```python
-from basal.client import Basal
+import httpx
 
-client = Basal("http://127.0.0.1:8000", api_key="<secret>")
-answer = client.choice("A user asks for a refund.", "Which team?", {"billing": "Billing", "support": "Support"})
+answer = httpx.post(
+    "http://127.0.0.1:8000/v1/systemone",
+    headers={"Authorization": "Bearer <secret>"},
+    json={
+        "model": "Remek/basal-2.0-mini-MLX-8bit",
+        "state": "A user asks for a refund.",
+        "questions": {
+            "team": {
+                "type": "choice",
+                "instructions": "Which team?",
+                "criteria": {"billing": "Billing", "support": "Support"},
+            }
+        },
+    },
+    timeout=120,
+).json()
 ```
 
 ### curl
@@ -247,11 +423,11 @@ answer = client.choice("A user asks for a refund.", "Which team?", {"billing": "
 ```bash
 curl http://127.0.0.1:8000/v1/systemone -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <secret>' \
-  -d '{"state":"Choose a team","questions":{"route":{"type":"choice","instructions":"Which team?","criteria":{"billing":"Billing","support":"Support"}}}}'
+  -d '{"model":"<loaded model id, e.g. Remek/basal-2.0-mini-MLX-8bit>","state":"Choose a team","questions":{"route":{"type":"choice","instructions":"Which team?","criteria":{"billing":"Billing","support":"Support"}}}}'
 
 curl http://127.0.0.1:8000/v1/decisions -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <secret>' \
-  -d '{"input":"Choose a team","questions":[{"type":"choice","instructions":"Which team?","choices":[{"value":"billing"},{"value":"support"}]}]}'
+  -d '{"model":"<loaded model id, e.g. Remek/basal-2.0-mini-MLX-8bit>","input":"Choose a team","questions":[{"type":"choice","instructions":"Which team?","choices":[{"value":"billing"},{"value":"support"}]}]}'
 ```
 
 ### Verified compatibility

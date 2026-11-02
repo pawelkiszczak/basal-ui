@@ -7,7 +7,8 @@ make install                 # uv sync: dev group (engine pinned by [tool.uv.sou
 make engine-pin              # the pinned engine release (basal_ui/engine.py PINNED_RELEASE)
 make engine REF=v2.4.2       # later: another release tag
 make engine REF=feat/engine-adapter-upstream   # or any ref of the fork pawelkiszczak/basal
-make lint                    # ruff check
+make lint                    # ruff check + ruff format --check
+make format                  # ruff format
 make test                    # the unit tests (tests/, not tests/e2e)
 make e2e                     # BASAL_E2E=1: real models on real hardware; docs/E2E.md
 make run                     # start basal-ui
@@ -16,14 +17,14 @@ make screenshots             # refresh docs/images (see "Screenshots")
 
 `make install` syncs the environment from the lockfile; the dev group's `[tool.uv.sources]` pin decides which engine
 release it installs. `make engine REF=…` switches to another release-tag archive or a fork ref for a trial — a later
-`make install` restores the pinned tag. An engine outside `SUPPORTED` starts only with
+`make install` restores the pinned tag. An Engine outside `SUPPORTED_RANGE` starts only with
 `BASAL_UI_ENGINE_UNCHECKED=1` (see the README, "Experimental engine").
 
 ## Code style
 
-- Python: 120 columns; `make lint` runs Ruff with the rules in `pyproject.toml` (`[tool.ruff.lint]`: syntax errors
-  and undefined names). Follow the surrounding code: docstrings that say what a function returns and why, no
-  speculative abstractions.
+- Python: 120 columns; Ruff (`F,I,B,UP,SIM`, `[tool.ruff.lint]` in `pyproject.toml`) and `ruff format`; run
+  `make lint` / `make format`. `uv run --no-sync pre-commit install` (optional; CI runs the same checks). Follow the
+  surrounding code: docstrings that say what a function returns and why, no speculative abstractions.
 - Frontend: plain JavaScript and CSS in `basal_ui/static/` (no build step). Every UI string is English in the code and
   passed through `t()` / `tp()`; its Polish translation goes into `basal_ui/static/i18n.js`.
   `tests/test_ui_i18n.py` fails on a string without one.
@@ -40,18 +41,61 @@ release it installs. `make engine REF=…` switches to another release-tag archi
 - No tests of wiring (that a function calls another, that a field is copied), of wording, or of mocks echoing
   themselves.
 
+Prepare Chromium and the host's Engine extras as described in [E2E setup](docs/E2E.md); `make install` alone does not
+install them. Record the tested commit, hardware, models and skip reasons with an e2e result. The
+[2026-10-29 development gate](docs/E2E.md#verified-dev-gate-2026-10-29) records the merged review fixes;
+it is not release acceptance on `stage` or validation of other hardware.
+
+## Branches and CI
+
+| Branch | Role | Changes arrive by |
+|---|---|---|
+| `dev` | integration: every feature and fix lands here first | a pull request from a topic branch |
+| `stage` | release candidate: what the next release will ship, where the e2e gate runs | a pull request `dev` → `stage` |
+| `main` | released code; `v<version>` tags (including release candidates) are cut from it | a pull request `stage` → `main` |
+
+A fix made on `stage` (found while testing a release candidate) goes back with a pull request `stage` → `dev`, so
+`dev` never loses it.
+
+CI (`.github/workflows/ci.yml`: Ruff check and format, the unit tests, Ubuntu and macOS × Python 3.10 and 3.13 ×
+every tested engine release) runs on every push to `dev`, `stage` and `main` and on every pull request into them, in
+either direction: `dev` → `stage`, `stage` → `dev`, `stage` → `main`. Its last job, `ci-ok`, passes only when every
+matrix job passed; it is the one check branch protection requires (the matrix job names change with the engine
+releases). CD is `publish.yml`: a `v<version>` tag on `main` builds the package, waits for approval in the `pypi`
+environment, publishes to PyPI and creates the GitHub release (see [Releasing](#releasing)).
+
+Branch protection on GitHub enforces this:
+
+| | `dev` | `stage` | `main` |
+|---|---|---|---|
+| changes only through a pull request with `ci-ok` green | yes | yes | yes |
+| the pull request must be up to date with the branch | no | yes | yes |
+| applies to admins too | no (the maintainer may push a fix directly) | yes | yes |
+| force pushes and deletion | refused | refused | refused |
+
+No review approval is required: the project has one maintainer, who cannot approve their own pull requests.
+
 ## Pull requests
 
-One topic per PR. The template (`.github/PULL_REQUEST_TEMPLATE.md`) asks for what and why, whether the engine range
-is affected, the tests run (`make lint`, `make test`, and `make e2e` with the hardware for changes that touch loading,
-serving or the pages), refreshed screenshots for visible changes and a `docs/WHATS_NEW.md` bullet.
+One topic per PR, opened against `dev`. The template (`.github/PULL_REQUEST_TEMPLATE.md`) asks for what and why,
+whether the engine range is affected, the tests run (`make lint`, `make test`, and `make e2e` with the hardware for
+changes that touch loading, serving or the pages), refreshed screenshots for visible changes and a
+`docs/WHATS_NEW.md` bullet.
+
+GitHub may require a maintainer to approve a fork's workflow before checks appear. Review the proposed code before
+approving that run, then wait for the matrix and required `ci-ok` check to pass before merging. Workflow approval
+starts CI; it is not a substitute for passing checks.
 
 ## Screenshots
 
-The README's screenshots and tour GIF (`docs/images/`) come from `make screenshots` (`scripts/screenshots.py`): it
-starts basal-ui on a fresh settings directory, loads `Remek/basal-2.0-mini`, captures five views in Chromium and
-records the tour. Refresh them after a UI change to a view the README shows. It needs `Remek/basal-2.0-mini` on disk,
-Chromium for Playwright (`uv run --extra e2e playwright install chromium`) and `ffmpeg` on `PATH`.
+The README's screenshots and tour GIF (`docs/images/`) come from `make screenshots` (`scripts/screenshots.py`).
+It starts an isolated app, loads cached `Remek/basal-2.0-mini` plus the smallest other downloaded runnable model,
+sends real Decisions, and captures Dashboard, Hardware, Models, Playground, all four Manager tabs, API server,
+Settings, Batch, API examples and model comparison before recording the tour. Counters and answers come from
+that run, not fixtures. Refresh these thirteen screenshots and the GIF after visible UI changes. First follow
+the [E2E environment setup](docs/E2E.md); the target does not install dependencies, download models or change
+the Engine. Both cached models must fit together. It also needs Chromium
+(`uv run --no-sync playwright install chromium`) and `ffmpeg` on `PATH`.
 
 ## Engine proposals
 
@@ -68,18 +112,56 @@ UI never blocks on a proposal. The pipeline:
 3. **Ship the UI control behind a probe.** The basal-ui control for the capability lands behind
    `basal_ui.engine.feature("<name>")` and is tried through the experimental engine route
    (`BASAL_UI_ENGINE_UNCHECKED=1`), so users of supported releases are unaffected.
-4. **Close the loop.** When the release enters `SUPPORTED` (see "Bumping the engine" below), drop the probe and
+4. **Close the loop.** When the release enters `SUPPORTED_RANGE` (see "Bumping the engine" below), drop the probe and
    update the research note's **Outcome**.
 
 `docs/adr/0003-separate-repo-on-upstream-engine.md` records why the repo is set up this way.
 
 ## Releasing
 
-1. If the engine moves, bump it ("Bumping the engine" below); add a `docs/WHATS_NEW.md` section for the version.
-2. Run the e2e gate on real hardware (`make e2e`, `docs/E2E.md`) and record the run (models, hardware, results) in
-   the release PR.
-3. Tag `vX.Y.Z`; `publish.yml` builds and uploads to PyPI (trusted publishing) and the GitHub release notes come
-   from WHATS_NEW.
+The current stable release is package version `0.1.0`, tagged `v0.1.0`. A version bump or merge does not publish
+a package: publication requires the tag workflow and approval of its `pypi` deployment.
+
+1. If the Engine moves, bump it ("Bumping the engine" below). Set `version` in `pyproject.toml` (for example,
+   `0.2.0rc1` for a candidate or `0.2.0` for a stable release), run `uv lock`, and finalize the matching
+   `docs/WHATS_NEW.md` section. Remove its **Unreleased** label before tagging. These changes land on `dev`.
+2. Open the pull request `dev` → `stage`. On `stage`, run the e2e gate on real hardware (`make e2e`, `docs/E2E.md`)
+   and record the run (models, hardware, results) in that pull request; fixes go to `stage` and back to `dev`
+   (`stage` → `dev`).
+3. Open the pull request `stage` → `main` and wait for the required checks before merging.
+4. After it merges, tag `v<version>` on `main` and push the tag. Before building or publishing, `publish.yml`
+   checks that the tagged commit is on `main`, the tag matches `pyproject.toml`, and WHATS_NEW has a nonempty
+   `# <version>` section (for this release, `# 0.1.0`).
+5. Review the build and approve the waiting `pypi` deployment in GitHub Actions. It uploads to PyPI using trusted
+   publishing, then creates the GitHub release with the validated notes and the same built artifacts.
+
+PEP 440 prereleases (including `rc`, alpha, beta and development releases) are marked as GitHub prereleases and
+explicitly excluded from Latest. Stable releases retain GitHub's automatic Latest selection. The GitHub release
+command requires the remote tag to exist; it will not silently create one.
+
+After the first PyPI publication, update README and SECURITY to reflect availability. Keep candidate install
+commands pinned to the prerelease version; do not describe an RC as a stable release.
+
+### One-time trusted publisher setup
+
+On PyPI's [pending publishers page](https://pypi.org/manage/account/publishing/), add a GitHub publisher with:
+
+| Field | Value |
+|---|---|
+| PyPI project name | `basal-ui` |
+| Owner | `pawelkiszczak` |
+| Repository | `basal-ui` |
+| Workflow filename | `publish.yml` |
+| Environment | `pypi` |
+
+The version is not part of the project name. A pending publisher does not upload a package or reserve the name;
+the first successful upload creates the project. No PyPI API token or GitHub secret is needed.
+
+GitHub's [`pypi` environment](https://github.com/pawelkiszczak/basal-ui/settings/environments) allows only **tags**
+matching `v*`, not branches. Its required reviewer is [@pawelkiszczak](https://github.com/pawelkiszczak), and
+administrator bypass is disabled. Self-approval is allowed because there is one maintainer; this is a deliberate
+manual release gate, not a two-person review. The workflow independently enforces that the tagged commit is on
+`main`. Keep the PyPI publisher's environment name and the workflow's `environment: pypi` in sync.
 
 ### Bumping the engine
 

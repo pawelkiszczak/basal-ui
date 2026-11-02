@@ -1,0 +1,26 @@
+version: 2
+# Pull requests go to the default branch, `dev` (CONTRIBUTING.md, "Branches and CI"). One grouped pull request per
+# ecosystem and week keeps the CI load down; each still needs `ci-ok` green to merge.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      python:
+        patterns: ["*"]
+    ignore:
+      # the engine's pinned transformers caps huggingface-hub below the next major; it moves when the engine does
+      - dependency-name: huggingface-hub
+        update-types: ["version-update:semver-major"]

@@ -18,6 +18,9 @@ BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what 
 Run it on every hardware class you ship for (Apple Silicon, an NVIDIA GPU, a CPU-only machine): each run tests the
 engines that machine has and lists the rest as skipped.
 
+Install the Engine extras for the host after syncing; `--extra e2e` installs Playwright, not MLX, media dependencies
+or another Engine backend. Keep subsequent test commands `--no-sync` so the prepared environment is reused.
+
 ## Models
 
 | Fixture | Picked | Used by |
@@ -38,21 +41,178 @@ the hardware allows.
 | File | Feature group | Checks |
 |---|---|---|
 | `test_lifecycle.py` | start, auto-load, shutdown | a load with options is remembered; a new basal-ui on the same settings loads it again with them; Ctrl+C (SIGINT) leaves no `basal-serve` child |
-| `test_models.py` | several models, API server | two models behind one port with a required key: `/v1/models`, `MODEL_REQUIRED`, 401 / 404, request ids, OpenAI Decisions, `/v1/stats` closed to user keys, MCP `list_models` / `decide` when MCP is installed; statistics, history (API and MCP), key last-use; the memory budget refusing a load; restart onto a new child, logs, Download refusing a model on disk, unload |
+| `test_models.py` | several models, API server | two models behind one port with a required key: `/v1/models`, `MODEL_REQUIRED`, 401 / 404, request ids, OpenAI Decisions, `/v1/stats` closed to user keys, MCP tool discovery / `decide` when MCP is installed; statistics, history (API and MCP), key last-use; the memory budget refusing a load; restart onto a new child, logs, Download refusing a model on disk, unload |
 | `test_safety.py` | decision safety | the entry's `certified` thresholds and `context`; `act` with `max_error` deferred below the certified threshold (or without one); a state over the context truncated with consistent token counts; History's `deferred` / `truncated` flags |
 | `test_question_types.py` | every question type | each `advanced.jsonl` request (multi, act, tool, classify, verify, compress, extract) answers in its own shape: keys, sets, costs, verdicts, kept units and their offsets, extracted values and their spans; per-type statistics; `facts` and `lang`; evidence spans or its refusal |
 | `test_calibration.py` | custom calibration | task questions (classify) fitted with the engine in basal-ui's process and its memory released; a file of another model imported with basal-serve's warning and its report; a fit against a temporary uncalibrated child, its report and listing, the child's memory released; selecting the file: Restart to apply, `--calibration`, no calibration warning; back to the shipped file; cancel; refused inputs (with the problem line) |
-| `test_engine231.py` | 2.3.1 integration | real CPU packed and MLX packed loads, inference and restart; child health idle counters; Chromium with explicitly simulated 422/503/500 responses, missing/unreachable counters, warning rendering, packed and cache help |
-| `test_load_options.py` | load options | the 16 modes with reasons for the unavailable ones and the default available; options in the command; `--context-overflow refuse` returning 422; invalid / unavailable options refused; basal-serve's own refusal (prefix cache with `--deterministic`) on the model's row; remembered options used by a plain load |
+| `test_engine_features.py` | 2.3.1 integration | real CPU packed and MLX packed loads, inference and restart; child health idle counters; Chromium with explicitly simulated 422/503/500 responses, missing/unreachable counters, warning rendering, packed and cache help |
+| `test_load_options.py` | load options | every mode of `MODE_ORDER` with reasons for the unavailable ones and the default available; options in the command; `--context-overflow refuse` returning 422; invalid / unavailable options refused; basal-serve's own refusal (prefix cache with `--deterministic`) on the model's row; remembered options used by a plain load |
+| `test_backends.py` | the backend manager | an explicit inference test of a downloaded model on an installed backend in an isolated app; browser navigation, filtering and dialogs ([BACKENDS.md](BACKENDS.md#verification)) |
 | `test_batch.py` | batch | every line answered in order, the summary, paging, the download; not counted in the statistics; cancel without an output file; refused files |
 | `test_measurements.py` | benchmarks | the preset (44 items), a load test (questions per request), a determinism check on a model loaded with `deterministic` (identical answers), two engine modes in process agreeing on 90% or more with the memory released |
 | `test_inspect.py` | Inspect | basal-viz at `/viz` for a bf16 model: info, an explanation that matches basal-serve's probabilities, memory counted then released; other ports refused |
 | `test_experimental.py` | thinking, early exit | refused where they cannot run; with basal-2.0 4.5B and vLLM: forced reasoning with its text, and `think: off`; with basal-1.0 bf16 on CUDA: every early-exit level |
-| `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Model manager section order and the two Models tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons, suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
+| `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Model manager section order and the two Models tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs, including real-model recording, browser Replay and resubmission preserving structured state and choice descriptions named `data`; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons (including unavailable older families), suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
 | `test_elements.py` | marked image elements (Chromium) | natural-pixel box coordinates despite display scaling; drawing, tiny-box rejection, movement, resizing, edge clamping, deletion/renumbering and the 26-box limit; labels, linked choice question, read-only options, clear/delete cleanup, original-image restore, marked PNG badge and re-edit; one-image restriction; clean decide payload and probability overlay; saved-request round trip; evidence disabled with media and re-enabled without it |
+| `test_activity.py` | history, calibration and logs polling (Chromium) | oldest-first history draining of more than one page per poll; the 500-row live-only limit and older-page pagination across idle polls; delayed calibration responses never replacing the selected model's controls; the Logs view clearing old lines when a buffer's generation changes |
+| `test_visual.py` | responsive presentation (Chromium) | all twelve views and every Manager tab fit 1440–390 px in both themes; loaded calibration tables scroll locally; phone header and question controls stay contained and named |
+| `test_pages.py` | Studio Dashboard, Manager and shared loader (Chromium) | real Decision throughput/public endpoint attribution; shared lifetime usage/reset; unavailable Stats/status recovery; Manager routes; scroll/text selection across polling; downloaded-model loading across views; Saved revision preservation; retained attachments and unsupported-media refusal |
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Selected Studio features gate 2026-11-02
+
+Implemented on `feat/studio-feature-selections`, based on Studio commit `86c1322`. The approved preview is
+`prototype/pr-feature-choices` at `878282c`: Appearance A (both Green and Orange), Choice editor A, comparison A,
+API examples B, Settings C, command discovery C, path guidance B and calibration explanation B. Contributor
+ideas from PRs #9 and #11 were selectively adapted, not merged wholesale; see [CONTRIBUTORS.md](../CONTRIBUTORS.md).
+Version `0.1.0rc1`, Engine pins and the supported range are unchanged. This gate is not a release or branch promotion.
+
+| Local check | Observed result |
+|---|---|
+| `make lint` | Ruff lint and format checks passed; 87 files formatted |
+| `make test` | 362 passed, 3 skipped; 88% coverage |
+| Full offline real-model `make e2e ARGS='-q -rs --tb=short'` | 122 passed, 5 skipped |
+| Focused raw-JSON/example freshness and interrupted option-key/cost-draft checks | 3 passed; included in the full gate |
+| `make screenshots` | Thirteen real-inference PNGs and the tour GIF refreshed |
+| Generated API examples executed against the real gateway | System One curl, Python, OpenAI Decisions curl and initialized streamable-HTTP MCP all returned real answers |
+| Native two-model comparison | Both models answered the same frozen request; an actual unload race produced one successful result and one model-specific HTTP 404 |
+| Native Settings, commands and paths | Saved memory/default controls, preserved category drafts, keyboard command navigation, Unicode JSONL inspection and a real two-row Batch run with zero errors |
+| Native MCP configuration | Running endpoint configuration copied; disabling MCP and restarting disabled copying and showed setup guidance; MCP then restored |
+| Documentation links | 80 local file/heading links across 18 Markdown documents checked; no errors |
+
+The full gate used macOS/Apple Silicon, Python 3.13.11, Engine 2.4.1 and offline cached text/bf16 models with MLX.
+Contrast covers Green/Orange in light/dark themes; responsive checks include Settings at 1440/1280/1024/768/390 px.
+The language-draft regression removes an option, edits a cost matrix, leaves a blank or duplicate option key,
+switches language and completes the key without losing its costs. Invalid type changes are refused until the
+row is corrected. Editing raw request JSON disables stale generated examples.
+
+Explicit path inspection did not increment Decision traffic or write an output file. Only the subsequent Batch
+run wrote its requested output. The first-row preview is not a full dataset validation. Comparison calls do count
+as real Decisions; exporting code does not. Calibration explanations use the served model's facts and do not
+establish a new accuracy guarantee.
+
+Unit skips: Pillow is absent, and two adapter checks require Engine 2.5.1. E2E skips: thinking needs a cached 4.5B
+model plus vLLM, early exit needs CUDA/basal-1.0 bf16, and three context-policy cases need metadata absent from this
+Engine's `/v1/models`. Media draft/rendering checks are not new image/audio inference proof. Other hardware and
+encoders remain unverified by this gate. GitHub CI remains a separate merge gate.
+
+## Studio refinement gate 2026-10-30
+
+The follow-up to the approved Studio redesign is verified on `feat/studio-redesign` in
+[PR #10](https://github.com/pawelkiszczak/basal-ui/pull/10), still targeting `dev`. Version `0.1.0rc1`, Engine pins
+and the supported range are unchanged; this is not a release, merge or `stage`/`main` promotion.
+The host and offline text/bf16 model configuration are the same as the earlier Studio gate below.
+
+| Local check | Observed result |
+|---|---|
+| `make lint` | Ruff lint and format checks passed |
+| `make test` | 348 passed, 3 skipped; 88% coverage |
+| Full offline real-model `make e2e ARGS='-v -rs --tb=short'` | 120 passed, 5 skipped |
+| Focused cross-view attachment and existing media-editor regressions | 20 passed; included in the full gate |
+| `make screenshots` | Nine real-inference screenshots and the tour GIF refreshed |
+| Extracted-wheel runtime smoke | Packaged `addons.py`, app/Backend assets and status/add-on/model/traffic APIs returned HTTP 200; static `no-cache` retained; unconfirmed package installation refused with HTTP 400 |
+| Real Engine media-extra installation | Completed through the UI in a disposable virtual environment; Engine 2.4.1, Torch, NumPy and Transformers versions unchanged; fresh-process probes passed |
+| Restart after media installation | Media detected as installed; cached `Remek/basal-omni-1.0-max` loaded through the shared picker in eager/MPS mode with image/audio support |
+| Real multimodal image Decision | Bundled revenue-chart example completed with two answers, 806 input tokens and 546 media tokens on eager/MPS |
+| Documentation links | 74 local file/heading links across all 18 repository Markdown documents checked; no errors |
+
+Regression tests first exposed and then verified fixes for manually selected Backends bypassing stored FP8/NVFP4
+hardware requirements, cross-view loads clearing Playground attachments, and cancellation during installer
+preparation/verification. Desktop and phone Dashboard checks preserve scroll position and selected endpoint text
+across real polling. Backend recommendation loads retain Saved revision/options unless explicitly remembered.
+The attachment-transition test advertises image capability for one text model solely to exercise draft retention;
+it does not claim that text checkpoint performs image inference.
+
+The real image smoke verifies the installed encoders/request path, not model accuracy or media calibration.
+Audio inference was not exercised.
+
+The add-on smoke changed only its disposable environment, not the running user's packages. GGUF source-build
+flags and cancellation/maintenance boundaries have regression coverage; an actual GGUF build was not performed.
+The five E2E skips remain those described below. Missing NVIDIA/ROCm/Strix/TPU hardware is not certified by this run.
+The wheel build still emits the previously recorded setuptools data-directory discovery warnings.
+GitHub's required `ci-ok` remains a separate merge gate; CI does not run real-model E2E.
+
+## Studio redesign gate 2026-10-30
+
+Validated on `feat/studio-redesign`, based on `dev` commit
+[`f37fe44`](https://github.com/pawelkiszczak/basal-ui/commit/f37fe44d765f9e4ce6aab1b77fcea43e833e63c8).
+This is feature-branch verification, not a release or a claim of promotion to `stage`/`main`.
+Package version `0.1.0rc1` and the supported Engine range are unchanged.
+
+Host: Apple Silicon (arm64), macOS, Python 3.13.11, Engine 2.4.1 with MLX and Chromium.
+The configured cached models were `Remek/basal-2.0-mini-MLX-8bit` and `Remek/basal-2.0-mini`
+(also selected for bf16 inspection). No weights were downloaded.
+
+| Local check | Observed result |
+|---|---|
+| `make lint` | Ruff lint and format check passed |
+| `make test` | 318 passed, 3 skipped; 88% coverage |
+| Full real-model `make e2e ARGS='-v -rs --tb=short'` | 115 passed, 5 skipped |
+| Focused unavailable-data and responsive regressions | 2 passed |
+| `make screenshots` | Nine real-inference screenshots and the tour GIF refreshed; no dependency sync |
+| Live API/MCP smoke | HTTP 200 through all four gateway aliases and MCP; traffic retained each public path and `CALL /mcp` |
+| Wheel build/runtime smoke | `0.1.0rc1` wheel built; extracted-package app, Dashboard JS/CSS and `/api/traffic` returned HTTP 200 with static `no-cache` headers; lifetime Stats shape preserved |
+
+The full run used the offline command in the [earlier dev record](#verified-dev-gate-2026-10-29).
+The five skips remain explicit: thinking needs a downloaded 4.5B model and vLLM; early exit needs basal-1.0 bf16 on CUDA;
+three context-policy checks need metadata absent from Engine 2.4.1's `GET /v1/models`.
+This does not validate unavailable NVIDIA/Strix/TPU hardware or replace a `stage` gate.
+
+The wheel build emits setuptools data-directory discovery warnings. The runtime smoke imports the extracted wheel,
+not the checkout, and verifies the new assets/API; no prototype assets are packaged. No package was published.
+
+The browser gate covers all eleven views, every Manager panel, both themes at 1440/1280/1024/768/390 px,
+Polish localization and draft preservation. Real Decisions establish the Dashboard counters; HTTP 503 responses
+are injected only for deterministic unavailable-data cases, not to simulate a physical GPU or storage failure.
+Regression checks retain viewport-centred dialogs, contrast, local table scrolling, original numeric shortcuts,
+History context/older pages, delayed calibration responses and Logs generation changes.
+GitHub's required `ci-ok` check remains a separate merge gate; CI does not run real-model E2E.
+
+## Verified dev gate 2026-10-29
+
+The reviewed changes are integrated in
+[`f97ad69`](https://github.com/pawelkiszczak/basal-ui/commit/f97ad69cb62e627e686081433ab6624a4ce3165e)
+through merged [PR #6](https://github.com/pawelkiszczak/basal-ui/pull/6), including
+[@agentGreg's PR #4](https://github.com/pawelkiszczak/basal-ui/pull/4) and
+[PR #5](https://github.com/pawelkiszczak/basal-ui/pull/5). Its tree matches the locally tested
+[`c9b7661`](https://github.com/pawelkiszczak/basal-ui/commit/c9b7661e12c54c6e3d7738a51436675a2545f86f).
+This is a development verification record, not a release: no promotion to `stage`/`main` or PyPI publication was performed.
+
+Host: Apple Silicon (arm64), macOS, Python 3.13.11, Engine 2.4.1 with its MLX extra and Chromium. The models were
+already cached; no weights were downloaded.
+
+| Check | Observed result |
+|---|---|
+| Full e2e before the contributor follow-up | 111 passed, 5 skipped |
+| Full e2e after the contributor follow-up | 112 passed, 5 skipped |
+| Unit suite (`make test`) | 314 passed, 3 skipped; 88% coverage |
+| Ruff lint and format check (`make lint`) | Passed |
+| [Post-merge CI](https://github.com/pawelkiszczak/basal-ui/actions/runs/40956690254) | Ubuntu/macOS × Python 3.10/3.13 × Engine 2.4.1, plus `releases` and `ci-ok`: passed |
+
+After the setup above, reproduce the real-model run with:
+
+```sh
+HF_HUB_OFFLINE=1 \
+BASAL_E2E_MODEL=Remek/basal-2.0-mini-MLX-8bit \
+BASAL_E2E_SECOND_MODEL=Remek/basal-2.0-mini \
+BASAL_E2E_BF16_MODEL=Remek/basal-2.0-mini \
+make e2e ARGS='-v -rs --tb=short'
+```
+
+The five e2e skips were:
+
+- Thinking: requires a downloaded basal-2.0 4.5B model and vLLM.
+- Early exit: requires basal-1.0 bf16 on a CUDA GPU.
+- Three context-policy checks: Engine 2.4.1's `GET /v1/models` did not report the required policy metadata.
+
+The History regression sends ordinary structured `state.data` and a choice description named `data` through a real
+model, persisted History, browser Replay and resubmission without changing them. The translated-reason regression
+always supplies an older unavailable model and enables **Older families** in both Polish and English passes.
+Nested audio/image payload redaction is covered by unit tests; it does not add audio input support to the Decisions API.
+Browser HTTP-error, health-warning and polling edge cases use deterministic fixtures, not physical GPU failures.
+Passing this Apple Silicon run does not validate NVIDIA/Strix/TPU hardware or replace the e2e gate on `stage`.
 
 ## Writing more
 
@@ -63,7 +223,7 @@ so each one loads what it needs and puts back what it changes (options, calibrat
 
 ## Focused 2.3.1 gate
 
-Run `uv run pytest -q tests/test_ui_engine231.py` for simulated capability, option lifecycle (including auto-load),
+Run `uv run --no-sync pytest -q tests/test_ui_engine_features.py` for simulated capability, option lifecycle (including auto-load),
 health caching/missing fields, both HTTP error envelopes, gateway/Playground forwarding, Batch error records, and
 calibration warning tests. Run the hardware/browser gate with existing local models only:
 
@@ -71,7 +231,7 @@ calibration warning tests. Run the hardware/browser gate with existing local mod
 BASAL_E2E=1 HF_HUB_OFFLINE=1 \
 BASAL_E2E_MODEL=Remek/basal-2.0-mini-MLX-8bit \
 BASAL_E2E_BF16_MODEL=Remek/basal-2.0-mini \
-uv run pytest -q tests/e2e/test_engine231.py
+uv run --no-sync pytest -q tests/e2e/test_engine_features.py
 ```
 
 The example selects Apple Silicon models; change the selections for another host. MLX checks skip with a reason

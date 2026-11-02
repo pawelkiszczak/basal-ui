@@ -1,6 +1,42 @@
 # 0.1.0
 
-- basal-ui is its own repository and package: `pip install basal-ui`, import `basal_ui`, the `basal-ui` command.
+Stable release, tag `v0.1.0`. Includes the review fixes and Studio redesign with the selected contributor-inspired
+interactions. [Verification and remaining hardware limits](E2E.md#selected-studio-features-gate-2026-11-02) are
+recorded separately; stable versioning does not certify untested hardware or model accuracy.
+
+- Publish package version `0.1.0` through PyPI trusted publishing. The GitHub `pypi` environment permits only `v*`
+  tags and requires maintainer approval without an administrator bypass. Release tags must come from `main`;
+  `v0.1.0` is a stable GitHub release, not a prerelease. [Release process](../CONTRIBUTING.md#releasing)
+
+- Apply the Studio layout throughout the app: Dashboard landing, primary task navigation, Tools and Appearance
+  disclosures, paired Playground panels with Request settings, and responsive light/dark English/Polish views.
+  Model manager separates Library, Usage by model, Benchmarks and Calibration. The new `/api/traffic?minutes=15|60`
+  reports real process-local recorded Decision traffic, including input tokens/s, requests/s, latency, errors and
+  public endpoint attribution. Lifetime `/api/stats` stays compatible and shared with Manager; reset scope is explicit.
+  No prototype/demo data or layout switcher ships. The Engine range is unchanged.
+- Keep Dashboard chart/model/endpoint nodes stable during live updates so scrolling and selected endpoint text are
+  preserved. Add a shared **Load downloaded model** action across views, including Dashboard, with supported
+  text/media loads and **Use** for the current view without discarding its input. Playground attachments and
+  marked-element questions survive model loads/selections; incompatible media cannot be sent accidentally.
+- Explain Suggested's real constraints and tier/format heuristics; add detected local Backend choices with
+  mode-specific estimates and native multimodal suggestions even when media dependencies need installation.
+  Manual Backend choices cannot bypass a stored FP8/NVFP4 checkpoint's hardware requirements.
+- Add **Backends → Engine add-ons** for explicit media/GGUF dependency installation through `uv`, with maintenance
+  guards, logs, cancellation and restart guidance. Preserve the installed Engine and existing package versions;
+  never fetch the unrelated PyPI `basal` package. System toolchains remain operator-managed.
+- Integrate the selected contributor-inspired Studio designs: Appearance A with Green/Orange skins, inline
+  Choice editor A, two-model comparison A, protocol-tabbed API examples B, categorized Settings C, Quick actions C,
+  Batch path guidance B and calibration/evidence explanation B. Comparisons make two real Decisions and show
+  per-model errors independently; unsupported protocol conversions are refused rather than losing request fields. Invalid
+  option-key drafts preserve cost columns through language changes, and editing raw JSON invalidates copied examples.
+  Path inspection is explicit, bounded and read-only; it previews the first request, not a full dataset validation.
+  Correct MCP examples to the tested Engine's HTTP-only gateway connection and first-loaded-model routing.
+  Ideas from [#9](https://github.com/pawelkiszczak/basal-ui/pull/9) and
+  [#11](https://github.com/pawelkiszczak/basal-ui/pull/11) are selectively adapted, not merged wholesale;
+  [contributors](../CONTRIBUTORS.md) are credited by GitHub nickname. Engine pins remain unchanged.
+
+- basal-ui is its own repository and package: import `basal_ui`, use the `basal-ui` command, and install the
+  `basal-ui` distribution separately from the Engine. [Installation](../README.md#install)
 - It runs on upstream engine releases `>=2.4.1,<2.5` and refuses others, printing the install command, unless
   `BASAL_UI_ENGINE_UNCHECKED=1` is set (the top bar then shows an *experimental engine* badge with the version and
   commit). [README](../README.md#supported-engine-range)
@@ -12,7 +48,7 @@
 - The LoRA adapter load option appears only with an engine that provides it (≥ 2.5.1), behind
   `engine.feature("adapter")`; on 2.4.x it is greyed out with the reason.
   [Research note](research/lora-adapters-at-load.md)
-- The update check covers basal-ui and the engine: the Overview reports a newer basal-ui release, a newer engine
+- The update check covers basal-ui and the engine: Hardware reports a newer basal-ui release, a newer engine
   release inside the supported range, and an engine release this basal-ui does not support yet.
 - On engine 2.4.1 basal-ui fills in what the engine does not report itself: the certified thresholds of a loaded
   model come from the calibration file it serves; a file fitted in basal-ui names the model's repo id and commit
@@ -34,6 +70,36 @@
   last one pinned); CI's engine matrix is generated from it and a test checks that `pyproject.toml`, the README and
   the E2E guide install the same release. `make engine-pin` prints it.
   [CONTRIBUTING.md](../CONTRIBUTING.md#bumping-the-engine)
+- **API server hardening:** a browser request whose `Origin` is not in the **CORS origins** setting is refused
+  (403 `ORIGIN_REFUSED`) before it reaches a model, so a web page cannot run decisions on a keyless server; bodies
+  must be `application/json` (415) and at most 256 MiB (413). The page and the embedded inspector refuse framing by
+  other sites and are revalidated on every load. [API](API.md#authentication-and-cors)
+- **Reliability:** a restart that fails no longer strands its memory reservation, and a concurrent load waits for it;
+  shutdown cancels jobs, ends their private children and waits up to 30 s for them, while leaving the event loop free
+  to finish inspection workers; a process-group member that ignores SIGTERM is killed; a full disk no longer fails an
+  answered decision (it is logged instead); resetting statistics discards older unflushed counts from other instances
+  without losing Decisions recorded after the reset; invalid settings JSON is never overwritten.
+- **State and UI correctness:** revoked API keys stop working even when the settings filename contains glob characters;
+  History preserves structured context during media redaction and preserves its live records when clearing fails;
+  delayed calibration responses cannot replace another model's controls or apply its selection to the wrong model.
+- **Models:** a sharded download counts as downloaded only with every shard its index names; the offline catalog uses
+  one complete snapshot (`main` when complete, otherwise the newest complete snapshot). Backend tests pin the active
+  child's actual cache commit and size their selected snapshot. Strix and TPU refuse non-bf16 and non-Llama checkpoints.
+  ROCm GPUs are not offered FP8, NVFP4, vLLM or SGLang; a malformed benchmark row fails with its line number.
+- **Accessibility:** History rows open from the keyboard (the time is a button with `aria-expanded`) and keep focus
+  across live refreshes; element boxes can be added, moved (arrows) and resized (Shift+arrows) without a pointer;
+  benchmark and band inputs have labels. Live-only History keeps the newest 500 rows; **More** preserves older pages
+  and their pagination cursor across idle polls, and an empty successful poll restores the table after a network error.
+- **Development:** Ruff `F,I,B,UP,SIM` with `ruff format` (`make format`, optional pre-commit hooks), a coverage
+  report in `make test`, `SECURITY.md`, `CONTRIBUTORS.md`, Dependabot, and CI/release workflows with pinned actions,
+  minimal permissions and a release job that checks the tag against `pyproject.toml` and validates nonempty release
+  notes before PyPI publication. Changes flow `dev` → `stage` → `main`; CI runs on pushes to and pull requests into all three.
+  [CONTRIBUTING.md](../CONTRIBUTING.md#branches-and-ci)
+- **Contributor regressions:** [@agentGreg's History report (#4)](https://github.com/pawelkiszczak/basal-ui/pull/4)
+  is covered by real-model recording, browser Replay and resubmission of ordinary `data` fields; nested Decisions
+  audio/image payloads are redacted and cannot be replayed without their attachments.
+  [The older-family e2e fix (#5)](https://github.com/pawelkiszczak/basal-ui/pull/5) enables **Older families** in both
+  language passes and always exercises an older unavailable model, independently of the machine's model cache.
 
 # Before 0.1.0 (in the fork)
 

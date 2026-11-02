@@ -1,6 +1,8 @@
 """basal-ui's API server: one port for every loaded model. Each request names its model (`"model"` in the body); the
 gateway checks API keys and CORS, serves MCP, answers OpenAI Decisions requests, then forwards to that model's
 private basal-serve and counts the decision in the statistics and the history."""
+
+import json
 import socket
 import threading
 import time
@@ -11,6 +13,7 @@ import httpx
 SYSTEMONE = ("/v1/systemone", "/v1/basal")
 DECISIONS = ("/v1/decisions", "/decisions")
 SNAPSHOT_KEYS = ("host", "port", "require_key", "cors_origins", "mcp")
+MAX_BODY_BYTES = 256 * 1024**2  # a request with 8 media items of 20 MiB, base64-encoded, fits
 
 
 def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0.1"):
@@ -19,10 +22,9 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
+    from .app import host_middleware
     from .auth import protect, request_ids
     from .compat import openai_error
-
-    from .app import host_middleware
 
     allowed_hosts = ["*"] if host in ("0.0.0.0", "::") else {host, "127.0.0.1", "localhost", "::1"}
     client: dict = {}
@@ -37,9 +39,17 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
 
     async def forward(request):
         path = request.url.path
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return error(path, 415, "Content-Type must be application/json", "UNSUPPORTED_MEDIA_TYPE")
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw += chunk
+            if len(raw) > MAX_BODY_BYTES:
+                return error(path, 413, f"request body exceeds {MAX_BODY_BYTES // 1024**2} MiB", "REQUEST_TOO_LARGE")
         try:
-            body = await request.json()
-        except Exception:
+            body = json.loads(raw)
+        except ValueError:
             return error(path, 400, "malformed JSON", "INVALID_JSON")
         if not isinstance(body, dict):
             return error(path, 400, "request body must be a JSON object", "INVALID_JSON")
@@ -48,26 +58,33 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         if not isinstance(model, str) or not model:
             return error(path, 400, f"model is required; loaded models: {loaded_text(loaded)}", "MODEL_REQUIRED")
         if model not in loaded:
-            return error(path, 404, f"model '{model}' is not loaded; loaded models: {loaded_text(loaded)}",
-                         "MODEL_NOT_FOUND")
+            return error(
+                path, 404, f"model '{model}' is not loaded; loaded models: {loaded_text(loaded)}", "MODEL_NOT_FOUND"
+            )
         if path in SYSTEMONE:  # the child's own API has no model field; Decisions translation drops it itself
             body = {k: v for k, v in body.items() if k != "model"}
         upstream = "/v1/systemone" if path in SYSTEMONE else "/v1/decisions"
         try:
-            r = await fleet.adecide(model, body, path=upstream, source="api", client=client["http"])
+            r = await fleet.adecide(model, body, path=upstream, source="api", client=client["http"], endpoint=path)
         except (KeyError, RuntimeError) as exc:  # unloaded or restarted since the check above
             return error(path, 409, f"model '{model}' is not ready: {exc}", "MODEL_NOT_READY")
         except httpx.HTTPError as exc:
             return error(path, 502, f"basal-serve: {exc}", "UPSTREAM_ERROR")
-        return Response(r.content, status_code=r.status_code,
-                        media_type=r.headers.get("content-type", "application/json"))
+        return Response(
+            r.content, status_code=r.status_code, media_type=r.headers.get("content-type", "application/json")
+        )
 
     async def models(_):
         entries = fleet.model_entries()
-        return JSONResponse({"object": "list",
-                             "data": [{"id": e["id"], "object": "model", "created": e["created"], "owned_by": "basal"}
-                                      for e in entries],
-                             "models": [e["entry"] or {"name": e["id"]} for e in entries]})
+        return JSONResponse(
+            {
+                "object": "list",
+                "data": [
+                    {"id": e["id"], "object": "model", "created": e["created"], "owned_by": "basal"} for e in entries
+                ],
+                "models": [e["entry"] or {"name": e["id"]} for e in entries],
+            }
+        )
 
     async def health(_):
         return JSONResponse({"status": "ok", "models": fleet.loaded_ids()})
@@ -89,7 +106,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             model = body.pop("model", None) or (loaded[0] if loaded else None)  # basal-serve 2.4.1's MCP tools
             if model not in loaded:  # take no model argument: the first loaded model answers them
                 raise ValueError(f"model '{model}' is not loaded; loaded models: {loaded_text(loaded)}")
-            r = await fleet.adecide(model, body, source="mcp", client=client["http"])
+            r = await fleet.adecide(model, body, source="mcp", client=client["http"], endpoint="/mcp", method="CALL")
             if r.status_code != 200:
                 try:
                     message = r.json()["error"]
@@ -108,10 +125,16 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
                 await stack.enter_async_context(mcp_run())
             yield
 
-    app = Starlette(routes=[
-        *[Route(p, forward, methods=["POST"]) for p in SYSTEMONE + DECISIONS],
-        Route("/v1/models", models), Route("/health", health), Route("/v1/stats", stats_route), *mcp_routes,
-    ], lifespan=lifespan)
+    app = Starlette(
+        routes=[
+            *[Route(p, forward, methods=["POST"]) for p in SYSTEMONE + DECISIONS],
+            Route("/v1/models", models),
+            Route("/health", health),
+            Route("/v1/stats", stats_route),
+            *mcp_routes,
+        ],
+        lifespan=lifespan,
+    )
     return request_ids(protect(host_middleware(app, allowed_hosts), keys, cors_origins))
 
 
@@ -149,6 +172,7 @@ class Gateway:
                     return self.status()
             if config["mcp"]:
                 from basal.mcp_server import available
+
                 missing = available()
                 if missing:
                     self.error = missing
@@ -204,11 +228,17 @@ class Gateway:
         shown = snapshot or current
         host = shown["host"]
         url_host = host if host != "0.0.0.0" else self.fleet.lan_ip() or "127.0.0.1"
-        return {"running": snapshot is not None, "url": f"http://{url_host}:{shown['port']}" if snapshot else None,
-                "host": host, "port": shown["port"], "require_key": shown["require_key"], "mcp": shown["mcp"],
-                "models": self.fleet.loaded_ids(),
-                "restart_required": (snapshot != current) if config["enabled"] else snapshot is not None,
-                "error": self.error}
+        return {
+            "running": snapshot is not None,
+            "url": f"http://{url_host}:{shown['port']}" if snapshot else None,
+            "host": host,
+            "port": shown["port"],
+            "require_key": shown["require_key"],
+            "mcp": shown["mcp"],
+            "models": self.fleet.loaded_ids(),
+            "restart_required": (snapshot != current) if config["enabled"] else snapshot is not None,
+            "error": self.error,
+        }
 
     def key_usage(self) -> dict:
         keys = self.keys

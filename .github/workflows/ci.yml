@@ -1,17 +1,28 @@
 name: ci
+# Branches: dev (integration) -> stage (release candidate) -> main (released; tags v* publish). CI runs on every push
+# to the three and on every pull request into them, in either direction (dev -> stage, stage -> dev, stage -> main).
 on:
   push:
-    branches: [main]
+    branches: [main, stage, dev]
   pull_request:
+    branches: [main, stage, dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   releases:
     # the engine matrix: every release in basal_ui/engine.py TESTED_RELEASES, as its tag
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
       engines: ${{ steps.read.outputs.engines }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - id: read
         run: |
           python3 - >> "$GITHUB_OUTPUT" <<'EOF'
@@ -24,6 +35,7 @@ jobs:
   ci:
     needs: releases
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -35,10 +47,25 @@ jobs:
       # servers; uv's own builds do not (Linux CPU torch comes from [tool.uv.sources] in pyproject.toml)
       UV_PYTHON_PREFERENCE: only-managed
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
       - run: uv sync --group dev --extra mcp --python ${{ matrix.python }}
       # the dev group installs the pinned release; install the matrix release over it (a no-op reinstall for the pin)
       - run: uv pip install --reinstall-package basal "basal @ https://github.com/rkinas/basal/archive/refs/tags/${{ matrix.engine }}.tar.gz"
       - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
       - run: uv run --no-sync pytest -q --ignore=tests/e2e
+
+  ci-ok:
+    # the one check branch protection requires: green only when every matrix job passed (the matrix names change with
+    # TESTED_RELEASES, so they cannot be required one by one)
+    needs: [releases, ci]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          [ "${{ needs.releases.result }}" = success ] && [ "${{ needs.ci.result }}" = success ] || {
+            echo "releases: ${{ needs.releases.result }}, ci: ${{ needs.ci.result }}"; exit 1; }

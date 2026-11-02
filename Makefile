@@ -1,17 +1,19 @@
 .DEFAULT_GOAL := help
-PYTHON ?= .venv/bin/python
+# PYTHON is a command, word-split in the recipes: `uv run` finds the venv's interpreter on every OS
+PYTHON ?= $(UV) run --no-sync python
 UV ?= uv
 REF ?=
 ARGS ?=
 export PYTHON UV REF  # recipes read them as shell variables ("$$UV"), which quotes paths with spaces
 
-.PHONY: help install engine engine-pin lint test e2e run screenshots
+.PHONY: help install engine engine-pin lint format test e2e run screenshots
 help:
 	@printf '%s\n' \
 	  'make install    uv sync: the venv with the dev group (engine pinned by [tool.uv.sources]) and the mcp extra' \
 	  'make engine     Switch the installed engine: REF=<release tag> installs the tag archive, REF=<branch|sha> the fork ref' \
 	  'make engine-pin Print the engine release basal-ui pins (basal_ui/engine.py PINNED_RELEASE)' \
-	  'make lint       Run ruff on all files' \
+	  'make lint       Run ruff check and ruff format --check on all files' \
+	  'make format     Reformat all files with ruff format' \
 	  'make test       Run the unit tests (tests/, not tests/e2e)' \
 	  'make e2e        Run the end-to-end gate with real models (BASAL_E2E=1; docs/E2E.md)' \
 	  'make run        Start basal-ui' \
@@ -32,19 +34,22 @@ engine:
 	fi
 
 engine-pin:
-	@"$$PYTHON" -c "from basal_ui.engine import PINNED_RELEASE; print(PINNED_RELEASE)"
+	@$$PYTHON -c "from basal_ui.engine import PINNED_RELEASE; print(PINNED_RELEASE)"
 
 lint:
-	"$$UV" run --no-sync ruff check .
+	"$$UV" run --no-sync ruff check . && "$$UV" run --no-sync ruff format --check .
+
+format:
+	"$$UV" run --no-sync ruff format .
 
 test:
-	"$$UV" run --no-sync pytest -q --ignore=tests/e2e $(ARGS)
+	"$$UV" run --no-sync pytest -q --ignore=tests/e2e --cov=basal_ui --cov-report=term-missing:skip-covered $(ARGS)
 
 e2e:
 	BASAL_E2E=1 "$$UV" run --no-sync pytest tests/e2e $(ARGS)
 
 run:
-	"$$PYTHON" -m basal_ui $(ARGS)
+	$$PYTHON -m basal_ui $(ARGS)
 
 screenshots:
-	"$$UV" run --extra e2e python scripts/screenshots.py
+	"$$UV" run --no-sync python scripts/screenshots.py

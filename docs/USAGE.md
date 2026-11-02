@@ -9,72 +9,116 @@ tokenizer, prompt format and calibration of its base repository (the model card'
 `base_model_revision` when the card has one; `--model <base> --gguf <file>`), whose small metadata files are downloaded
 with it; one whose card names no base model is listed as not runnable.
 
+Install from the [README's source instructions](../README.md#install) until the first PyPI release. From that checkout:
+
 ```bash
-uv pip install "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" basal-ui
-basal-ui --port 7860                  # then open http://127.0.0.1:7860
+make run ARGS='--port 7860'           # then open http://127.0.0.1:7860
 ```
 
-The engine install takes the extra of the machine (`basal[mlx]`, `basal[gguf]`, `basal[fp8]`, `basal[vllm]`, …);
-basal-ui is a separate package with no extras of that kind — see the [README](../README.md#install).
+The Engine install takes the extra of the machine (`basal[mlx]`, `basal[gguf]`, `basal[fp8]`, `basal[vllm]`, …).
+The UI's separate `mcp` extra enables its API server's MCP endpoint; `make install` includes it.
 
-The left menu has one view per task, each with its own address (`#overview`, `#models`, `#manager`, `#playground`,
-`#api`, `#history`, `#logs`), so the browser's back button and bookmarks work. **Overview** shows the hardware, the
-**inference** happening now (updated every second while Overview is open: per model the requests basal-ui is waiting
-on by source — Playground, API server, MCP, benchmark — with the longest one's time and basal-serve's running / queued
-counters, and running batch, benchmark, calibration and backend-test jobs with their progress; otherwise *Idle* and
-when the last decision was), the loaded models (one row each: state, a pulsing dot while it answers, mode, media,
-estimated → resident memory, requests and average confidence,
-Restart / Logs / Unload) above a memory budget bar, the recommended model for this machine and short summaries of the
-disk and the API server; **Models**, **Model manager**, **Playground**, **API server**, **History** and **Logs** hold
-the features below. **Models** opens Suggested (default) and All models; **Model manager** orders Loaded (statistics,
-benchmarks and calibration), On disk, then Models directory. The menu's footer shows how many models are ready (and how many are answering), their names, the API server's URL and an
-**Unload all** button. Deleting a model or revoking a key asks for confirmation in a dialog, and actions report their
-outcome in a short notification. On a narrow window the menu becomes a top bar. **ⓘ** on every model opens its model
-card: repository and author (base repository for a conversion), family, tier, port, size, media, the mode this machine
-would use and why, fit, the revisions in the cache, `basal.json`, the shipped calibration of the mode it is served in
-with its certified thresholds, resolved for the active model's revision, mode, quantisation, vLLM preset, prompt
-layout and adapter (or the saved load options when unloaded), the `GET /v1/models` entry of a loaded model (mode, option orders, prompt format, vLLM
-preset, context) and the README (of the `revision` load option when one is set); `basal.json`, the loaded entry and the
-README start collapsed. The menu's footer switches the theme
-(light, dark, or the system's) and the language (**EN** / **PL**, kept in the browser; coded UI-owned model, option,
-backend and job messages are translated in Polish; uncoded server errors stay English). Keyboard: Ctrl/⌘+Enter sends the Playground decision, Alt+1…9 (Option+1…9 on macOS,
-any keyboard layout) opens the views in menu order, `?` lists the shortcuts. Overview says when a newer basal release
-is out (GitHub's latest release of rkinas/basal, checked at most every 6 hours, 10 minutes after a failed check) and
-when new models appeared in the Hugging Face catalog (the offline catalog of the models on disk does not count);
-**Check for updates** turns the release check off.
+The Studio layout opens **Dashboard** (`#dashboard`) by default. The top navigation also contains **Models**,
+**Playground** and **History**; **Tools** opens **Model manager**, **Hardware**, **Batch**, **Inspect**, **Backends**,
+**API server** and **Logs**. **Settings** in the header opens `#settings/storage`, `#settings/defaults` or
+`#settings/appearance`; category changes retain unsaved field values. Each view keeps its own hash address, so
+bookmarks and browser Back/Forward work. The hardware view retains `#overview`; model log links (`#logs/<model id>`)
+still work.
+
+**Quick actions** is a filterable rail beside the workspace on wide screens. Ctrl/⌘+K opens it and focuses its
+filter; arrows navigate matching actions, Enter runs one and Escape closes the rail. It opens the downloaded-model
+loader, Playground, current-request API examples, Settings, Batch or Model manager; opening a view does not run
+inference. The header toggle closes it when more workspace is wanted. On smaller screens it is an inline panel
+above the view rather than an overlay covering its controls.
+
+**Dashboard** shows recorded Decision throughput, latency, errors, endpoint traffic and loaded-model activity.
+[Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
+Manager does not add requests. **Models** opens Suggested (default) and All models.
+
+**Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
+Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load
+options. Keep it open to see startup, then choose **Use** when ready; the current view's model selector is updated
+without navigating away or clearing its input. Inspect lists only its supported bf16 checkpoints. **Browse models
+to download** opens Models when the required checkpoint is not on disk.
+
+**Model manager** separates **Library**, **Usage by model**, **Benchmarks** and **Calibration**. Library holds live
+inference, loaded models, memory and on-disk variants. Storage configuration is in **Settings → Memory & storage**. Inference updates
+every second while Manager is visible: per-model Playground/API/MCP/benchmark requests, longest wait, Engine running
+and queued counters, plus batch, benchmark, calibration and backend-test progress. Otherwise it shows *Idle* and the
+last Decision time. Loaded-model rows retain state, mode, media, estimated/resident memory, usage, confidence and
+Restart / Logs / Unload. Tabs remember the selection; `#manager/library`, `#manager/usage`, `#manager/benchmarks` and
+`#manager/calibration` open a specific panel. Load links always open Library.
+
+The header shows readiness and an **Unload** / **Unload all** action when models are loaded. Deleting a model or
+revoking a key asks for confirmation, and actions report their outcome in a notification. Navigation wraps on smaller
+screens. **ⓘ** on a model opens its card: repository and author (base repository for a conversion), family, tier, port,
+size, media, execution mode and why, memory fit, cached revisions, `basal.json`, and the Shipped calibration resolved
+for the Active load settings (Saved load settings when unloaded). The card also includes the loaded `GET /v1/models`
+entry and README for the selected revision; `basal.json`, the loaded entry and README start collapsed.
+
+**Appearance** keeps both **Green** and **Orange** skins in the header popover, alongside light/dark/system theme
+and **EN** / **PL**. Skin and theme are also available in **Settings → Appearance**; all appearance/language choices
+are browser-local. The basal mark and semantic success/warning/error colors retain their meaning in both skins.
+Coded UI-owned model, option, backend and job messages are translated; uncoded server errors stay English.
+Ctrl/⌘+Enter sends the Playground Decision. Existing physical-key shortcuts are preserved: Alt+1 Hardware, 2 Models,
+3 Manager, 4 Playground, 5 Batch, 6 Inspect, 7 API server, 8 History, 9 Logs, 0 Backends (Option on macOS, any
+keyboard layout); `?` lists them.
+
+**Settings → Defaults** saves **Auto-load remembered models** separately from API-server settings. It restores the
+models loaded when basal-ui last ran, in load order. This category also holds update checks and preset import/export.
+
+**Hardware** reports newer basal-ui/Engine releases and newly discovered models. Release checks run at most every
+6 hours, or 10 minutes after a failure; an offline on-disk catalog is not treated as newly discovered models.
+**Settings → Defaults → Check for updates** disables the release check when switched off.
 
 - **Hardware.** NVIDIA GPU (name, compute capability, memory), Apple Silicon (MLX's recommended working set) or CPU
-  (60% of RAM), the engines installed (`mlx`, `llama-cpp-python`, `vllm`, `media`), and the memory available now
-  (free GPU memory on NVIDIA; free + inactive + speculative pages from `vm_stat` on macOS, which leaves out reclaimable
-  file cache; `MemAvailable` on Linux).
+  (60% of RAM), the engines installed (chips such as `mlx`, `gguf`, `vllm`, `sglang`, `media`), and the memory
+  available now (free GPU memory on NVIDIA; free + inactive + speculative pages from `vm_stat` on macOS, which leaves
+  out reclaimable file cache; `MemAvailable` on Linux).
 - **All models.** Every `Remek/basal-*` repository and each `.gguf` file of a `-GGUF` repository, with weight size,
   estimated memory (weights × 1.2 + 1 GB), fit against the budget and *fit now* against the available memory (*fits*
   up to 85%, *tight* up to 100%), and the `basal-serve` mode it would run in, or why it cannot run here and which
-  extra fixes that. Offline, the list is what is in the models directory.
-- **Suggested**: cards for the models that fit both the budget and the memory available now, a comfortable fit before
-  a tight one. *Recommended*: the basal-2.0 family in the format of the machine (after
-  [HARDWARE.md](https://github.com/rkinas/basal/blob/main/docs/HARDWARE.md#recommendation): FP8 on NVIDIA GPUs with compute capability 8.9+ other than data-centre
-  GPUs and the RTX 4090, bf16 there, `-MLX-8bit` on Apple Silicon, GGUF `Q8_0` on a CPU with `llama-cpp-python`,
-  else bf16), 4.5B if it fits now, else mini. *Best quality*: the largest tier that fits now. *Fastest*: mini.
-  *Multimodal*: the largest basal-omni checkpoint this machine can serve with media. Without a reading of the
-  available memory the budget fit stands in for it.
+  extra fixes that. Offline, the list uses one complete cached snapshot per repository: `main` when complete,
+  otherwise the newest complete snapshot. Partial shards are never combined across revisions; repositories with no
+  complete snapshot are omitted.
+- **Suggested** excludes community variants and experimental text variants, prefers the current text family and a
+  comfortable fit over a tight one, and excludes estimates larger than the hardware budget or available memory now.
+  If available memory is unknown, the budget fit stands in for it; unknown estimates remain visibly unknown.
+  **Recommendation Backend** defaults to **Automatic**; the alternatives are detected, machine-compatible local
+  Backends, not hypothetical installations or external servers. Selecting one recalculates its supported Execution
+  modes and memory estimates for Suggested only. All models retains the normal machine-wide assessment.
+  *Recommended*: the basal-2.0 family in the machine's preferred format (FP8 on suitable NVIDIA GPUs other than
+  data-centre GPUs/the RTX 4090, bf16 there, MLX 8-bit on Apple Silicon, GGUF Q8_0 where available, otherwise bf16),
+  4.5B if comfortably fitting, otherwise mini/smallest available. *Best quality* means the largest fitting tier;
+  *Fastest* is the mini-tier heuristic, not measured throughput. Use Benchmarks to measure actual performance.
+  *Lightest* offers the recurrent pico family. *Multimodal* selects fitting native image/audio checkpoints, including
+  when the media add-on is missing; such a card explains the missing dependency and links to Backends instead of
+  pretending media can load. Media estimates use their eager/vLLM path, not a text CUDA-graph estimate.
+  Loads still enforce the configured Fleet budget, keep-free reserve and existing reservations; recommendations are
+  estimates, not a reservation or an Inference test. A selected Backend opens its recommendation's load options for
+  review, retaining the Saved revision and other inputs. Leave **Remember** unchecked to load this choice without
+  overwriting Saved load settings; check it to save the reviewed options.
 - **Download** (a model not on disk yet) fetches only what serving needs (the chosen `.gguf` file of a `-GGUF`
   repository; not the 4.5B's `think/` model) into the models directory and shows the progress in the row; nothing is
-  started. **Models** downloads, sets up and deletes models; loading is in **Model manager**. Once on disk the row
-  offers **⚙ Setup** and **Delete** (a loaded model cannot be deleted), and a suggestion card links to Model manager.
+  started. Once on disk, Models and its suggestions offer applicable **Load** / **Load with media** actions,
+  **⚙ Setup** and **Delete** (a loaded model cannot be deleted). Loading is also available from the shared header
+  loader and **Model manager → Library**.
 - **⚙ Setup** (Models) opens the load options and saves them for the model without loading it; the next load uses
-  them. **⚙ Options** in Model manager is the same dialog with **Load**.
-  For media, the mode (eager or vLLM) is chosen when loading from Model manager.
-- **Load** (Model manager) runs `basal-serve` for the model as a subprocess on a free loopback port.
+  them. **⚙ Options** in Model manager and the shared loader opens the same dialog with **Load**.
+  Media loads use eager by default; a selected vLLM recommendation or a Saved vLLM mode chooses that path when available.
+- **Load** runs `basal-serve` for the model as a subprocess on a free loopback port.
   **Several models can be loaded at once**: each gets its own private `basal-serve`; a loaded model's row shows its
   state and **Unload**, and Models shows a *loaded* chip. A load that would exceed the memory budget is refused (below).
-- **Load with media** (Model manager), for the basal-omni-1.0 bf16 checkpoints (mini and max: images and audio; ultra: images; the
+- **Load with media**, for the basal-omni-1.0 bf16 checkpoints (mini and max: images and audio; ultra: images; the
   FP8, GGUF and MLX ports and basal-omni-1.1-max have no encoders): `basal-serve --mode eager --media on`, with
-  `--device mps` on Apple Silicon and `--device cpu` on a machine without a GPU, or — chosen in the media load's
-  ⚙ Options on an NVIDIA GPU with `basal[vllm]` — `--mode vllm --media on` ([OMNI.md](https://github.com/rkinas/basal/blob/main/docs/OMNI.md#vllm---mode-vllm)).
-  Needs the `basal[media]` extra (pillow, soundfile, scipy, torchvision); the row says so when it is missing. A
-  remembered text-only engine mode is not applied to a media load.
-- **Model manager**: the models directory (default: the Hugging Face cache, `HF_HUB_CACHE`) can be set to any
+  `--device mps` on Apple Silicon and `--device cpu` on a machine without a GPU, or — with the vLLM Backend selected
+  in Suggested or a Saved vLLM mode on an NVIDIA GPU — `--mode vllm --media on`
+  ([OMNI.md](https://github.com/rkinas/basal/blob/main/docs/OMNI.md#vllm---mode-vllm)).
+  Needs the `basal[media]` extra (pillow, soundfile, scipy, torchvision); the row says so when it is missing.
+  **Tools → Backends → Engine add-ons** can install its declared dependencies in the app's virtual environment;
+  stop all models/jobs first and restart basal-ui afterward. See [installation safety and limits](BACKENDS.md#installing-engine-add-ons).
+  A remembered text-only mode outside eager/vLLM is not applied to a media load.
+- **Settings → Memory & storage → Models directory**: the models directory (default: the Hugging Face cache, `HF_HUB_CACHE`) can be set to any
   writable directory; downloads, the downloaded marks, serving and deletes all use it. The setting is kept in
   `~/.config/basal-ui/settings.json` (`BASAL_UI_CONFIG` moves it). The variants on disk are listed with their size and
   **Load**, **Load with media**, **⚙ Options** or **Unload**, or why the variant cannot run here. Deleting is in
@@ -86,10 +130,19 @@ when new models appeared in the Hugging Face catalog (the offline catalog of the
   chart, a Polish complaint call and an English appointment call; `media/make_media.py` regenerates the files), a
   question builder for every type (`choice`, `noul`, `score`, `multi`, `act` with simple costs or a
   cost matrix, `tool`, `classify`, `verify`, `compress`, `extract`, with `max_error` and evidence where the type takes
-  them), `facts` and `lang` for the request, or the raw JSON request (which carries `"model"`). Question names must be
+  them), or the raw JSON request (which carries `"model"`). **Request settings** contains `facts`, `lang`, Edit JSON,
+  and supported Thinking / early-exit controls, keeping the model and example selectors visible in the toolbar. Question names must be
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
   and must be attached again.
+  Choice, multi and non-boolean act options use inline key/description rows with add, remove, move-up/down and
+  key-visibility controls. Key-only options are supported; untouched structured descriptions and list-form option
+  keys retain their request semantics. Renaming an act outcome keeps its cost-matrix column attached to that outcome.
+  Blank or duplicate row keys are reported instead of silently dropping an option. Marked-image options remain
+  read-only here and are edited through **Mark elements**.
+  Loading or selecting a model, including from another view, retains this tab's attachments and marked-element
+  questions. Sending is blocked if the selected model cannot accept the retained media; remove it or select a
+  compatible media-loaded model.
   Each type has its own
   result view; every answer shows whether it was deferred, whether its confidence clears the model's certified 1% / 5%
   thresholds and how it is calibrated; an answer whose calibration does not hold for it (media answers on a
@@ -100,11 +153,48 @@ when new models appeared in the Hugging Face catalog (the offline catalog of the
   multi and tool also fallback and exclusive keys). Requests go to the selected model's `POST /v1/systemone`. With a
   media server, up to 8 images or audio files (20 MiB each) go along as `media`, with the image `detail`. The media
   examples load their files into the media field, with an audio player for clips; on a model without media they load
-  with a notice and cannot be sent. Mark elements on one image to add a `choice` question; boxes are saved as numbered
-  overlays in a marked copy, and their probabilities appear over that image after a decision. Saved requests retain
-  the original and marked image and boxes. Evidence spans are disabled while media is attached because they refer to
-  spans in the state's text; the raw JSON request still rejects evidence with media. Inspect's example list leaves the
-  media examples out (the lens reads text only).
+  with a notice and cannot be sent. Mark elements on one image to add a `choice` question; a box is drawn with the
+  pointer or added with **Add box** and moved or resized with the arrow keys (Shift resizes, Delete removes). Boxes are
+  saved as numbered overlays in a marked copy, and their probabilities appear over that image after a decision.
+  Saved requests retain the original and marked image and boxes. Evidence spans are disabled while media is attached
+  because they refer to spans in the state's text; the raw JSON request still rejects evidence with media. Inspect's
+  example list leaves the media examples out (the lens reads text only).
+
+## Playground comparison, API examples and calibration evidence
+
+**Compare loaded models** runs the current request against two different ready models. Both receive the same
+frozen state, questions, request settings and ordered attachments, with only `model` changed. Answers are shown
+side by side using their actual question types: a choice, an action or a selected set is not replaced by a generic
+most-probable label. Each panel retains its request snapshot, warnings, usage and raw response; a failure in one
+panel does not hide the other model's answer. Media unsupported by either selected model is refused before sending.
+This is an interactive comparison, not an accuracy or performance benchmark. It creates two real Decisions in
+History and the existing statistics; merely viewing the panel adds none.
+
+![Two real loaded models answering the same request](images/model-comparison.png)
+
+**API examples** uses protocol tabs for System One curl/Python, OpenAI Decisions curl and MCP. **Generate example**
+exports the current request without sending inference; editing the request or changing connection configuration
+invalidates the old example before it can be copied. System One examples preserve the model, typed fields and
+attachment order. They include attachment payloads, so treat copied code as request data. Curl streams JSON through
+standard input rather than putting large media in a shell argument.
+
+OpenAI Decisions exports only requests its supported protocol can represent; unsupported fields/types are explained
+instead of silently discarded. Use System One for those requests. MCP requires an installed, running MCP-enabled
+API server and produces a JSON-RPC `tools/call` for an initialized client. On Engine 2.4.1 it targets the first loaded
+model, so a different selected model is explicitly refused rather than silently routed elsewhere. Examples describe
+the running server when present, otherwise the saved endpoint; the API server must be started before execution.
+Keyed examples read `BASAL_API_KEY` rather than exposing a stored secret.
+
+![Current-request protocol tabs](images/api-examples.png)
+
+Each answer has a **Calibration evidence** rail showing its reported confidence, available certified 1%/5% thresholds,
+applicability reason and the active calibration facts exposed by the served model. Missing thresholds stay
+**Not reported**. Deferral, media/text scope differences, unvalidated calibration and warnings retain their existing
+meaning; the panel introduces no new policy or certification claim. A threshold's applicability is distinct from
+clearing it. Rails stack below their content when there is not enough width to remain readable.
+
+![Categorized application settings](images/settings.png)
+
 
 ## Load options
 
@@ -113,7 +203,9 @@ model in collapsible sections (Engine and any section holding a non-default valu
 stays that way for the next dialog in the session; a collapsed section still saves its values):
 the **engine mode** (every `basal-serve --mode`, the ones this machine or variant cannot use greyed out with
 the reason — CUDA graph modes need an NVIDIA GPU, vLLM / SGLang their extra, MLX Apple Silicon, TPU a TPU VM, Strix
-an AMD Strix Halo; Ollama and llama-server take the URL of the running service), quantisation, attention kernels,
+an AMD Strix Halo; Strix and TPU require bf16 Llama-architecture weights, not basal-omni's Gemma or recurrent models.
+A ROCm GPU, although PyTorch reports CUDA, is offered none of the NVIDIA-only modes — FP8, NVFP4, vLLM and SGLang;
+Ollama and llama-server take the URL of the running service), quantisation, attention kernels,
 dtype, the vLLM preset, GPU share and KV-sharing fast prefill, the Gemma 4 eager forward, attention and per-layer
 embedding offload (`--eager-forward`, `--eager-attn`, `--ple-offload`), the exit heads directory, determinism, option
 orders and the `auto` band, batching, the state and prefix caches, the scheduler and long-request lane, the **prompt
@@ -182,6 +274,20 @@ seconds, items per second, server p50, accuracy over the items with `gold`) and 
 **Download answers** saves the output file. Batch requests go straight to the model's basal-serve: they are not
 counted in the statistics or the history. One batch runs at a time; its log is **Logs → job:batch**.
 
+The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
+or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
+and a bounded non-empty-row count; it does not validate every request in the file. It reads at most 64 MiB/100,000
+rows and caps the first row at 1 MiB. Reaching an inspection cap is not a Batch input-size limit, and a prefix that
+exhausts the scan is not reported as an empty file.
+
+An explicit output path is checked for its parent directory, apparent writability and existing-file overwrite
+warning. An empty output field retains Batch's default path without an overwrite check. Checks are advisory:
+files/permissions can change before execution. Editing a path clears its old facts, and late checks cannot replace
+the facts for a newer value.
+
+![Read-only Batch path inspector](images/batch.png)
+
+
 ## Inspect
 
 **Inspect** embeds `basal-viz` ([in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SERVING.md#see-how-a-decision-is-made))
@@ -199,23 +305,47 @@ refused with the reason.
 
 ## Memory budget
 
-The budget is the hardware budget shown under Hardware unless set in **API server → Memory** (at least 1 GiB), and
+The budget is the hardware budget shown under Hardware unless set in **Settings → Memory & storage** (at least 1 GiB), and
 **Keep free** (default 2 GiB) is held back from it. A load is refused with `409 over memory budget: … loaded + …
 needed > …` when the estimates of the models already loaded or loading plus the new model's estimate exceed budget −
-keep free; unload a model or raise the budget. The Overview bar shows each model's resident memory (summed over the
+keep free; unload a model or raise the budget. The Manager Library bar shows each model's resident memory (summed over the
 `basal-serve` process group with `ps`, so engine workers count; on Windows the estimates stand in), the committed
 estimates and the memory available now. On Apple Silicon, MLX and MPS allocations live in unified memory and may show
 only partly as resident memory; the estimate is what the budget check uses.
 
 ## Statistics and benchmarks
 
-**Model manager → Loaded** lists, per model, the decisions basal-ui answered (playground, API server, MCP): requests,
-questions, errors, average best-answer probability (the answer's `confidence`; `set_confidence` for `multi`; the
-largest probability for `tool`), mean and p95 latency (over the last 1000 requests), input tokens and last use, with
-one line per question type. They are kept in `<settings stem>.stats.json` next to the settings file, survive restarts
-and can be reset per model or all at once.
+### Dashboard
 
-**Benchmark** measures one loaded model at a time: 5 warm-up requests, 30 sequential requests (p50 / p95 / mean
+The 15-minute or one-hour window shows **input tokens processed per second**, not generated output tokens, and
+requests/s, request-weighted mean latency, error rate, per-minute traffic and public endpoint attribution. These are
+recorded child-inference attempts from Playground, the API server and MCP, not all HTTP traffic: UI polling,
+pre-inference authentication/validation rejections, Batch, benchmarks and private Inference tests do not contribute.
+
+Recent traffic is in memory in this app process only, starts at observation, and is not restored from lifetime
+statistics or merged from other processes. Rates use observed elapsed time rather than inventing a full prior
+window. Minute-bucket boundaries are approximate; at most 60 minute buckets are retained. Endpoint p95 is labelled
+**sampled** because retained latency samples are bounded. Missing Engine token usage contributes zero, not an estimate.
+Failed traffic fetches show an unavailable notice and dashes instead of stale live rates. Missing lifetime statistics
+show dashes without disabling valid recent traffic; a failed status poll clears live model activity until recovery.
+The [traffic API contract](API.md#recent-decision-traffic) describes fields and sampling limits.
+
+### Lifetime usage
+
+**Model manager → Usage by model** lists the Decisions basal-ui recorded per model: requests, questions, errors,
+average best-answer probability (the answer's `confidence`; `set_confidence` for `multi`; the largest probability
+for `tool`), lifetime mean latency, p95 over the last 1000 retained latencies, input tokens, last use and question types.
+Dashboard's **Model activity** uses these same lifetime counters, not a second recording path. The window totals may
+differ by time range, process and the legacy lifetime treatment of pre-inference errors.
+
+These totals live in `<settings stem>.stats.json`, survive restarts and merge across apps sharing that settings file.
+A model or global reset affects the shared lifetime totals and clears matching recent traffic in this app process;
+another process's in-memory traffic is not cleared. A reset discards older unflushed lifetime counts from other
+instances, but Decisions recorded after the reset remain counted.
+
+### Benchmarks
+
+**Model manager → Benchmarks** measures one loaded model at a time: 5 warm-up requests, 30 sequential requests (p50 / p95 / mean
 latency) and 120 at concurrency 8 (decisions, questions and input tokens per second, errors). Every item with a `gold`
 answer is scored once (accuracy overall and per file). The set is either the bundled examples (44 items in
 `basal/examples/`) or your own JSONL file or directory: [BENCHMARK_SETS.md](BENCHMARK_SETS.md). The same block runs
@@ -237,7 +367,7 @@ in the statistics or the history.
 
 ## Custom calibration
 
-**Model manager → Loaded → Calibration** runs `basal-calibrate` for a downloaded model on your labelled requests
+**Model manager → Calibration** runs `basal-calibrate` for a downloaded model on your labelled requests
 ([CALIBRATION.md](https://github.com/rkinas/basal/blob/main/docs/CALIBRATION.md#input); the simple `basal-run` items with `gold` work too) at the 1% and / or 5%
 `max_error` targets. For decision questions basal-ui starts a temporary `basal-serve --no-calibration` of the model on
 loopback (its memory is counted in the budget while it runs), calls `basal-calibrate --url` on it and stops it. Task
@@ -260,17 +390,22 @@ file is written) and `--save-rows`, which keeps the uncalibrated probabilities n
 
 **History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:
 time, model, source, a preview of the state, the answer of each question with its confidence, latency and HTTP
-status. Filter by model and source, search the state, open a row for the full request and response, copy the request
+status. Filter by model and source, search the state, open a row for the full request and response (its time is a
+button, so rows open from the keyboard and keep focus across refreshes), copy the request
 or **Replay in Playground** (a converted request in the Playground with its model selected; replay only fills the form).
-Media bytes are removed from history, so a request whose replay needs an original attachment is blocked with an
-explanation. The last 2000 decisions are kept
-in `<settings stem>.history.jsonl` (owner-only) next to the settings file, with media bytes replaced by their size;
-**Clear history** empties it. `GET /api/history?order=asc` returns oldest first for incremental consumers;
+Media payloads, including nested image/audio payload objects in recorded Decisions-style requests, are replaced by
+their size. Replay is blocked with an explanation when an original attachment is missing; redaction is not a promise
+that the API accepts every recorded media shape. Ordinary structured context and question descriptions, including
+fields named `data`, are preserved. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
+next to the settings file. A live-only History view keeps the newest 500 rows. **More** enters older-page browsing:
+explicitly loaded pages and their cursor are kept across polls until the view or filters are reset.
+**Clear history** empties the file before clearing the live view; a failed write leaves the existing records available.
+`GET /api/history?order=asc` returns oldest first for incremental consumers;
 `order=desc` remains the default, and `after` cursors outside the retained window return retained records only.
 
 **Logs** shows the output of each `basal-serve` (the last 1000 lines per model, kept after unload for the last 10
 unloaded models) and basal-ui's own event log (loads, downloads, readiness, errors, unloads, API server starts and
-stops, benchmarks, auto-load decisions). `#logs/<model id>` opens one model's tab (the Overview row's **Logs** link);
+stops, benchmarks, auto-load decisions). `#logs/<model id>` opens one model's tab (the Manager Library row's **Logs** link);
 follow mode keeps the view at the newest line; the text can be copied or downloaded. Logs are kept in memory only.
 `GET /api/logs` returns a buffer `generation`; send it back as `generation` with `after` to detect a replaced buffer
 and receive its retained lines from the start.
@@ -294,7 +429,6 @@ the statistics above (admin key only when keys are required — that is, basal-u
 | CORS origins | Empty | Optional allowed browser origins, one per line; `*` allows every origin. |
 | Decision log | Empty (off) | Every `basal-serve` appends its decisions (propensity records) to this writable file. |
 | MCP at `/mcp` | Off | Adds the MCP streamable-HTTP endpoint when the MCP extra is installed. |
-| Auto-load models | Off | Loads every model that was loaded when basal-ui last ran (in load order). |
 
 **Security.** The server is loopback-only by default. Local-network exposure is unauthenticated unless **Require an API
 key** is enabled; use a key before selecting **Local network**. Keys are generated with the `bsl_` prefix, stored as
@@ -305,17 +439,18 @@ port, reaches it. basal-ui's own internal admin key (the only key `/v1/stats` ac
 
 **Restart server** restarts only the API server (instant; the models stay loaded) and applies the saved host, port,
 key, CORS and MCP settings; until then the status line shows **Restart to apply**. **Max context length** and
-**Decision log** belong to each `basal-serve`: a model loaded before such a change shows **Restart** in its Overview
-row, which reloads only that model. The app checks the chosen bind port before starting the API server and reports
+**Decision log** belong to each `basal-serve`: a model loaded before such a change shows **Restart** in its Manager
+Library row, which reloads only that model. The app checks the chosen bind port before starting the API server and reports
 `port <port> on <host> is in use` if another process owns it.
 
 The **Connect** panel provides copy-ready examples for curl (both `/v1/systemone` and `/v1/decisions`), Python
-(httpx), TypeSafe and OpenAI SDKs, LiteLLM's `hosted_vllm` provider, and MCP, each with the selected model's id in
-`"model"`. When authentication is disabled, examples omit API-key headers. Turn on MCP to use the streamable-HTTP
-endpoint at `/mcp`: its `decide` and `decide_many` tools serve the model named in the tool's `model` argument, else
-the first loaded model (the engine's MCP tools list no models and its `basal-mcp` bridge takes no `--model` until the
-model-argument proposal ships upstream). Full request and response shapes, error envelopes
-and compatibility details are in the [HTTP API reference](API.md).
+(httpx), TypeSafe and OpenAI SDKs, LiteLLM's `hosted_vllm` provider, and MCP. HTTP inference examples include the
+selected model's `"model"` id; when authentication is disabled they omit API-key headers. MCP configuration is
+available only while the API server is running with MCP enabled, and uses its streamable-HTTP `/mcp` endpoint.
+With tested Engine 2.4.1, MCP `decide` and `decide_many` always use the **first loaded model**: their schemas have
+no model argument or model-listing tool. Use the ordinary HTTP routes when you need named-model routing.
+The stock Engine stdio bridge cannot supply the gateway's required model/key, so the UI does not advertise it.
+Full request and response shapes, error envelopes and compatibility details are in the [HTTP API reference](API.md).
 
 ## Serving models from basal-ui
 
@@ -330,11 +465,22 @@ and compatibility details are in the [HTTP API reference](API.md).
 
    ```python
    import httpx
-   r = httpx.post("http://127.0.0.1:8000/v1/systemone", headers={"Authorization": "Bearer <copied key>"}, json={
-       "model": "Remek/basal-2.0-mini-MLX-8bit",
-       "state": "A user asks for a refund.",
-       "questions": {"route": {"type": "choice", "instructions": "Which team?",
-                               "criteria": {"billing": "Billing", "support": "Support"}}}})
+
+   r = httpx.post(
+       "http://127.0.0.1:8000/v1/systemone",
+       headers={"Authorization": "Bearer <copied key>"},
+       json={
+           "model": "Remek/basal-2.0-mini-MLX-8bit",
+           "state": "A user asks for a refund.",
+           "questions": {
+               "route": {
+                   "type": "choice",
+                   "instructions": "Which team?",
+                   "criteria": {"billing": "Billing", "support": "Support"},
+               }
+           },
+       },
+   )
    print(r.json()["answers"]["route"])
    ```
 
@@ -347,8 +493,10 @@ the API keys from the settings plus that process's internal admin key, read by t
 (`0600`) and holds SHA-256 hashes, never secrets. The `basal-serve` children read no key file at all — loopback and
 their private port are their only protection — and the internal key never leaves basal-ui's process. Two basal-ui instances may share one settings
 file: a key created or revoked in either is written into every matching live instance's key file, the files of exited
-instances are removed, and each instance deletes its own file when it quits. The statistics (`<stem>.stats.json`) and
-the history (`<stem>.history.jsonl`) live next to it as well; both are written under the settings lock, so two
+instances are removed, and each instance deletes its own file when it quits.
+Filename stems are matched literally, so glob characters such as `[` or `*` in `BASAL_UI_CONFIG` do not prevent
+creation or revocation from reaching the running instances.
+The statistics (`<stem>.stats.json`) and history (`<stem>.history.jsonl`) live next to it as well; both are written under the settings lock, so two
 instances add their counts up and neither rotation drops the other's decisions (each History view shows only the
 decisions its own instance answered or found in the file at startup).
 
@@ -361,20 +509,24 @@ with the current settings; a model that is unknown or cannot run any more is ski
 - **Port in use:** choose another port, save, and restart the server. basal-ui checks the configured bind address
   before starting the API server and reports `port <port> on <host> is in use`.
 - **400 MODEL_REQUIRED / 404 MODEL_NOT_FOUND:** add `"model": "<id>"` with an id from `GET /v1/models` (or the
-  Overview) to the body; the model must be loaded and ready.
+  Manager Library) to the body; the model must be loaded and ready.
 - **401 Unauthorized:** check that **Require an API key** is on and send the copied secret as
   `Authorization: Bearer <secret>` (or `X-API-Key: <secret>`). Revoked keys stop working immediately; create a new
   key if the original is lost.
-- **409 over memory budget:** unload a model, or raise the budget / lower **Keep free** under **API server → Memory**.
+- **409 over memory budget:** unload a model, or raise the budget / lower **Keep free** under **Settings → Memory & storage**.
 - **CORS preflight returns 400:** add the browser page's exact origin (scheme and host, with any port) to **CORS
-  origins**, save, then restart the server. A foreign origin is rejected without an allow-origin header.
+  origins**, save, then restart the server. A foreign origin is rejected without an allow-origin header, and a browser
+  request (not a preflight) from it is refused with 403 `ORIGIN_REFUSED` before the key check, so a web page cannot
+  drive even a keyless server.
 - **MCP extra missing:** install `basal-ui[mcp]` in the same environment, then enable MCP and restart the
   server. The UI reports when the extra is unavailable.
+- **Settings file is not valid JSON:** the app still opens and shows the settings as empty, but every change is
+  refused with the file's path; fix or delete the file by hand, then change settings again.
 
 For API routes, request and response formats, authentication details and compatibility notes, see the
 [HTTP API reference](API.md). The Connect panel also includes TypeSafe, OpenAI, LiteLLM and MCP examples.
 
 The browser app binds `127.0.0.1` by default and refuses changes (load, delete, settings) sent from other web origins,
-so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning. The
-NVIDIA, CPU and GGUF rules are covered by tests with simulated hardware; end to end it was run on Apple Silicon (MLX,
-and basal-omni-1.0-mini with an image on MPS).
+so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
+Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
+recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).

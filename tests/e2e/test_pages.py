@@ -1,16 +1,31 @@
 """The pages of basal-ui in Chromium (Playwright, basal[e2e]): every view renders without a script error, the
 Playground builds, sends and renders every question type, the load options dialog, Batch, History, Logs and Inspect."""
+
 import json
 import re
+from pathlib import Path
 
 import pytest
 
-from tests.e2e.support import CHOICE, EXAMPLES, advanced_requests
+from tests.e2e.support import CHOICE, EXAMPLES, UI, advanced_requests
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="install basal[e2e] and run: playwright install chromium")
 
-VIEWS = {"backends": "Backends", "overview": "Overview", "models": "Models", "manager": "Model manager", "playground": "Playground",
-         "batch": "Batch", "inspect": "Inspect", "api": "API server", "history": "History", "logs": "Logs"}
+VIEWS = {
+    "dashboard": "Dashboard",
+    "overview": "Hardware",
+    "models": "Models",
+    "manager": "Model manager",
+    "playground": "Playground",
+    "history": "History",
+    "backends": "Backends",
+    "batch": "Batch",
+    "inspect": "Inspect",
+    "api": "API server",
+    "logs": "Logs",
+    "settings": "Settings",
+}
+MANAGER_TABS = ("library", "usage", "benchmarks", "calibration")
 WAIT = 120_000  # ms: a decision of a large model, a model start
 
 
@@ -30,10 +45,16 @@ def page(browser, ui, text_model):
     tab = context.new_page()
     errors = []
     tab.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
-    tab.on("console", lambda m: errors.append(f"console: {m.text}") if m.type == "error"
-           and "Failed to load resource" not in m.text else None)  # 4xx answers the page expects are not errors
+    tab.on(
+        "console",
+        lambda m: (
+            errors.append(f"console: {m.text}")
+            if m.type == "error" and "Failed to load resource" not in m.text
+            else None
+        ),
+    )  # 4xx answers the page expects are not errors
     tab.set_default_timeout(WAIT)
-    tab.goto(ui.url + "/#overview")
+    tab.goto(ui.url + "/")
     tab.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
     yield tab
     context.close()
@@ -41,20 +62,258 @@ def page(browser, ui, text_model):
 
 
 def view(page, name):
-    page.click(f'.side-nav [data-view="{name}"]')
-    sync_api.expect(page.locator("#pageTitle")).to_have_text(VIEWS[name])
+    if name == "settings":
+        page.locator("#openSettings").click()
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        return
+    destination = page.locator(f'.side-nav [data-view="{name}"]')
+    if not destination.is_visible():
+        disclosure = page.locator(".nav-tools")
+        if not disclosure.locator("summary").evaluate("(el) => el.parentElement.open"):
+            disclosure.locator("summary").click()
+    destination.click()
+    sync_api.expect(page.locator(f'section.view[data-page="{name}"]').first).to_be_visible()
+    assert not page.locator(".nav-tools").evaluate("(el) => el.open")
+
+
+def open_request_settings(page):
+    disclosure = page.locator("details.request-settings")
+    if not disclosure.evaluate("(el) => el.open"):
+        disclosure.locator("summary").click()
+
+
+def open_appearance_controls(page):
+    disclosure = page.locator(".appearance-controls details")
+    if not disclosure.evaluate("(el) => el.open"):
+        disclosure.locator("summary").click()
+
+
+def manager_tab(page, name):
+    view(page, "manager")
+    tab = page.locator(f'[data-manager-tab="{name}"]')
+    tab.click()
+    sync_api.expect(tab).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator(f"#manager-{name}")).to_be_visible()
+    for other in MANAGER_TABS:
+        if other != name:
+            sync_api.expect(page.locator(f"#manager-{other}")).to_be_hidden()
+
+
+@pytest.fixture
+def isolated_ui(tmp_path):
+    app = UI(tmp_path).start()
+    yield app
+    left = app.stop()
+    assert not left, f"basal-serve children left running after Dashboard E2E: {left}"
+
+
+def test_dashboard_default_records_real_decisions_and_resets_model_traffic(browser, isolated_ui, text_model):
+    model_id = text_model["id"]
+    isolated_ui.load(model_id)
+    context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+        sync_api.expect(page.locator("#dashboard")).to_be_visible()
+        before = isolated_ui.get("/api/traffic", params={"minutes": 15})
+        assert before["requests"] == before["input_tokens"] == 0
+        assert isolated_ui.get("/api/stats")["models"].get(model_id) is None
+
+        view(page, "playground")
+        page.select_option("#playgroundModel", model_id)
+        page.evaluate("request => setRequest(request)", CHOICE)
+        with page.expect_response(lambda response: response.url.endswith("/api/decide"), timeout=WAIT) as decision:
+            page.click("#sendButton")
+        assert decision.value.status == 200, decision.value.text()
+        sync_api.expect(page.locator("#results article.answer")).to_be_visible()
+
+        view(page, "dashboard")
+        page.wait_for_function(
+            r"() => Number(document.querySelector('#traffic-requests-note').textContent.match(/\d+/)?.[0]) > 0",
+            timeout=WAIT,
+        )
+        traffic = isolated_ui.get("/api/traffic", params={"minutes": 15})
+        stats = isolated_ui.get("/api/stats")["models"][model_id]
+        assert traffic["requests"] == 1 and traffic["input_tokens"] > 0
+        assert traffic["requests_per_s"] > 0 and traffic["input_tokens_per_s"] > 0
+        assert len(traffic["endpoints"]) == 1
+        endpoint = traffic["endpoints"][0]
+        assert (endpoint["endpoint"], endpoint["method"], endpoint["requests"], endpoint["errors"]) == (
+            "/api/decide",
+            "POST",
+            1,
+            0,
+        )
+        assert re.search(r"[1-9]\d*(?:\.\d+)?|0\.\d*[1-9]", page.locator("#traffic-requests").inner_text())
+        assert re.search(r"[1-9]\d*(?:\.\d+)?|0\.\d*[1-9]", page.locator("#traffic-tokens").inner_text())
+        endpoint_row = page.locator("#trafficEndpoints tr").filter(has_text="/api/decide")
+        sync_api.expect(endpoint_row).to_be_visible()
+        sync_api.expect(endpoint_row).to_contain_text("POST")
+        sync_api.expect(endpoint_row).to_contain_text("1")
+
+        page.select_option("#trafficWindow", "60")
+        sync_api.expect(page.locator("#traffic-requests")).not_to_have_text("—", timeout=WAIT)
+        sync_api.expect(page.locator("#traffic-requests-note")).to_contain_text("1")
+        sync_api.expect(endpoint_row).to_be_visible()
+        page.locator('[data-traffic-metric="requests_per_s"]').click()
+        sync_api.expect(page.locator('[data-traffic-metric="requests_per_s"]')).to_have_attribute(
+            "aria-pressed", "true"
+        )
+
+        manager_tab(page, "usage")
+        reset_control = page.locator(f'#statsTable [data-reset="{model_id}"]')
+        sync_api.expect(reset_control).to_be_visible()
+        model_row = reset_control.locator("xpath=ancestor::tr")
+        for value in (stats["requests"], stats["input_tokens"]):
+            sync_api.expect(model_row).to_contain_text(str(value))
+        view(page, "dashboard")
+        dashboard_models = page.locator("#trafficModels")
+        sync_api.expect(dashboard_models).to_be_visible()
+        for value in (stats["requests"], stats["input_tokens"]):
+            sync_api.expect(dashboard_models).to_contain_text(str(value))
+
+        model_article = dashboard_models.locator(f'.traffic-model:has(strong[title="{model_id}"])')
+        sync_api.expect(model_article.locator(".traffic-model-requests")).to_have_text(str(stats["requests"]))
+        sync_api.expect(model_article.locator(".traffic-model-tokens")).to_have_text(str(stats["input_tokens"]))
+
+        isolated_ui.delete(f"/api/stats/{model_id}")
+        assert isolated_ui.get("/api/stats")["models"].get(model_id) is None
+        assert isolated_ui.get("/api/traffic", params={"minutes": 15})["requests"] == 0
+        page.wait_for_function(
+            r"() => Number(document.querySelector('#traffic-requests-note').textContent.match(/\d+/)?.[0]) === 0",
+            timeout=WAIT,
+        )
+        sync_api.expect(page.locator("#trafficEndpoints")).not_to_contain_text("/api/decide")
+        assert not errors, errors
+    finally:
+        context.close()
+
+
+def test_dashboard_unavailable_stats_and_status_recover(browser, isolated_ui, text_model):
+    model_id = text_model["id"]
+    isolated_ui.load(model_id)
+    context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    try:
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+        view(page, "playground")
+        page.select_option("#playgroundModel", model_id)
+        page.evaluate("request => setRequest(request)", CHOICE)
+        with page.expect_response(lambda response: response.url.endswith("/api/decide"), timeout=WAIT) as decision:
+            page.click("#sendButton")
+        assert decision.value.status == 200, decision.value.text()
+        stats = isolated_ui.get("/api/stats")["models"][model_id]
+        assert stats["requests"] > 0 and stats["input_tokens"] > 0
+
+        def unavailable_stats(route):
+            if route.request.method == "GET":
+                route.fulfill(status=503, content_type="application/json", body='{"detail":"temporarily unavailable"}')
+            else:
+                route.continue_()
+
+        view(page, "dashboard")
+        page.route("**/api/stats", unavailable_stats)
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/stats") and response.status == 503,
+            timeout=WAIT,
+        ):
+            page.reload()
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+        sync_api.expect(page.locator(".traffic-model-requests")).to_have_text("—")
+        sync_api.expect(page.locator(".traffic-model-tokens")).to_have_text("—")
+        sync_api.expect(page.locator("#traffic-requests")).not_to_have_text("—", timeout=WAIT)
+
+        page.unroute("**/api/stats", unavailable_stats)
+        page.reload()
+        page.wait_for_function(
+            """model => {
+              const requests = document.querySelector('.traffic-model-requests');
+              const tokens = document.querySelector('.traffic-model-tokens');
+              return requests && tokens && requests.textContent.trim() !== '—' &&
+                tokens.textContent.trim() !== '—' && document.querySelector('.traffic-model strong')?.title === model;
+            }""",
+            arg=model_id,
+        )
+        model_article = page.locator(f'.traffic-model:has(strong[title="{model_id}"])')
+        sync_api.expect(model_article.locator(".traffic-model-requests")).to_have_text(str(stats["requests"]))
+        sync_api.expect(model_article.locator(".traffic-model-tokens")).to_have_text(str(stats["input_tokens"]))
+
+        def unavailable_status(route):
+            if route.request.method == "GET":
+                route.fulfill(status=503, content_type="application/json", body='{"detail":"temporarily unavailable"}')
+            else:
+                route.continue_()
+
+        page.route("**/api/status", unavailable_status)
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/status") and response.status == 503,
+            timeout=WAIT,
+        ):
+            page.evaluate("() => refreshStatus()")
+        page.wait_for_function(
+            """() => document.querySelector('#trafficModels .traffic-model') === null &&
+              document.querySelector('#trafficActivityCounts').textContent.trim() === '' &&
+              ['#traffic-tokens','#traffic-requests','#traffic-latency','#traffic-errors']
+                .every(selector => document.querySelector(selector).textContent.trim() === '—')"""
+        )
+
+        page.unroute("**/api/status", unavailable_status)
+        page.evaluate("() => refreshStatus()")
+        page.wait_for_function(
+            """model => {
+              const article = [...document.querySelectorAll('#trafficModels .traffic-model')]
+                .find(el => el.querySelector('strong')?.title === model);
+              return article !== undefined;
+            }""",
+            arg=model_id,
+        )
+    finally:
+        context.close()
+
+
+def test_manager_tab_routes_follow_click_keyboard_reload_and_back(page):
+    manager_tab(page, "library")
+    benchmarks = page.locator('[data-manager-tab="benchmarks"]')
+    benchmarks.click()
+    sync_api.expect(page.locator("#manager-benchmarks")).to_be_visible()
+    sync_api.expect(page).to_have_url(re.compile(r"#manager/benchmarks$"))
+
+    benchmarks.focus()
+    page.keyboard.press("ArrowRight")
+    calibration = page.locator('[data-manager-tab="calibration"]')
+    sync_api.expect(calibration).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator("#manager-calibration")).to_be_visible()
+    sync_api.expect(page).to_have_url(re.compile(r"#manager/calibration$"))
+
+    page.reload()
+    sync_api.expect(page.locator('[data-manager-tab="calibration"]')).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator("#manager-calibration")).to_be_visible()
+
+    page.go_back()
+    sync_api.expect(page.locator('[data-manager-tab="benchmarks"]')).to_have_attribute("aria-selected", "true")
+    sync_api.expect(page.locator("#manager-benchmarks")).to_be_visible()
+    sync_api.expect(page).to_have_url(re.compile(r"#manager/benchmarks$"))
 
 
 def test_every_view_renders(page, text_model):
+    sync_api.expect(page.locator("#dashboard")).to_be_visible()
     for name in VIEWS:
         view(page, name)
-        sync_api.expect(page.locator(f'section.view[data-page="{name}"]').first).to_be_visible()
-    view(page, "overview")
+    for name in MANAGER_TABS:
+        manager_tab(page, name)
+    manager_tab(page, "library")
     sync_api.expect(page.locator("#loadedModels")).to_contain_text(text_model["id"])
     sync_api.expect(page.locator("#footerState")).to_contain_text("ready")
 
 
-def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page):
+@pytest.mark.parametrize("skin", ["green", "orange"])
+def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page, skin):
     def low_contrast():
         return page.evaluate("""() => {
           const rgb = value => {
@@ -85,8 +344,14 @@ def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page):
             return ratio + .01 < required ? [{text: el.textContent.trim().slice(0,60), ratio, required, fg: style.color, bg}] : [];
           });
         }""")
+
+    page.evaluate("skin => StudioShell.applySkin(skin)", skin)
     for theme in ("light", "dark"):
-        page.evaluate("theme => applyTheme(theme)", theme)
+        appearance = page.locator(".appearance-controls")
+        choice = appearance.locator(f'[data-theme-choice="{theme}"]')
+        if not choice.is_visible():
+            appearance.locator("summary").click()
+        choice.click()
         page.wait_for_timeout(300)
         for name in VIEWS:
             view(page, name)
@@ -94,6 +359,9 @@ def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page):
             if name == "models":
                 page.click("#allModelsTab")
                 assert not low_contrast(), f"{theme} models/all: {low_contrast()}"
+        for name in MANAGER_TABS:
+            manager_tab(page, name)
+            assert not low_contrast(), f"{theme} manager/{name}: {low_contrast()}"
     page.evaluate("() => applyTheme('system')")
 
 
@@ -122,36 +390,55 @@ def test_the_playground_builds_sends_and_renders_each_question_type(page, text_m
 def test_playground_request_names_media_and_history_replay_are_lossless_until_send(page, text_model):
     view(page, "playground")
     page.evaluate("() => { addQuestion(); addQuestion(); }")
-    assert page.evaluate("() => [...document.querySelectorAll('.q-name')].slice(-2).map(x => x.value)") == ["question2", "question3"]
+    assert page.evaluate("() => [...document.querySelectorAll('.q-name')].slice(-2).map(x => x.value)") == [
+        "question2",
+        "question3",
+    ]
 
     page.evaluate("() => { document.querySelector('.q-name').value = '__proto__'; }")
     assert page.evaluate("() => Object.hasOwn(buildRequest().questions, '__proto__')")
 
-    request = {"model": text_model["id"], "state": "inspect", "questions": {"q": {"type": "choice", "instructions": "Choose",
-               "criteria": {"a": None, "b": None}}}, "media": [{"type": "image", "data": "aGVsbG8="}], "detail": "high"}
+    request = {
+        "model": text_model["id"],
+        "state": "inspect",
+        "questions": {"q": {"type": "choice", "instructions": "Choose", "criteria": {"a": None, "b": None}}},
+        "media": [{"type": "image", "data": "aGVsbG8="}],
+        "detail": "high",
+    }
     page.evaluate("r => setRequest(r)", request)
     assert page.evaluate("() => selectedModel") == text_model["id"]
-    assert page.evaluate("() => [selectedMedia.length, $('#mediaDetail').value, buildRequest().media[0].data]") == [1, "high", "aGVsbG8="]
+    assert page.evaluate("() => [selectedMedia.length, $('#mediaDetail').value, buildRequest().media[0].data]") == [
+        1,
+        "high",
+        "aGVsbG8=",
+    ]
     unsupported = {**request, "vendor_extension": {"keep": True}}
     page.evaluate("r => setRequest(r)", unsupported)
     assert page.locator("#editJsonToggle").is_checked()
     sync_api.expect(page.locator("#mediaError")).to_be_visible()
     assert page.evaluate("() => JSON.parse($('#requestJson').value).vendor_extension") == {"keep": True}
     assert page.evaluate("() => selectedMedia.length") == 0
-    for unsupported_value in ({"media": "opaque"}, {"media": [{"type": "image", "data": "aGVsbG8=", "name": "x.png"}]},
-                              {"lang": "fr"}):
+    for unsupported_value in (
+        {"media": "opaque"},
+        {"media": [{"type": "image", "data": "aGVsbG8=", "name": "x.png"}]},
+        {"lang": "fr"},
+    ):
         page.evaluate("([base,extra]) => setRequest({...base,...extra})", [request, unsupported_value])
         assert page.locator("#editJsonToggle").is_checked()
         assert page.evaluate("() => JSON.parse($('#requestJson').value)") == {**request, **unsupported_value}
 
-    page.evaluate("r => setRequest(r)", {"state": "inspect", "questions": {"q": request["questions"]["q"],
-                  "q2": request["questions"]["q"]}})
+    page.evaluate(
+        "r => setRequest(r)",
+        {"state": "inspect", "questions": {"q": request["questions"]["q"], "q2": request["questions"]["q"]}},
+    )
     page.locator(".q-name").first.fill("same")
     page.locator(".q-name").nth(1).fill("same")
-    decide_calls=[]
+    decide_calls = []
+
     def reject_decision(route):
         decide_calls.append(1)
         route.fulfill(status=500, body="unexpected send")
+
     page.route("**/api/decide", reject_decision)
     page.click("#sendButton")
     sync_api.expect(page.locator("#decideError")).to_contain_text("non-blank and unique")
@@ -162,22 +449,71 @@ def test_playground_request_names_media_and_history_replay_are_lossless_until_se
     page.click("#sendButton")
     sync_api.expect(page.locator("#decideError")).to_contain_text("non-blank and unique")
     assert not decide_calls
-    preset_calls=[]
+    preset_calls = []
+
     def count_presets(route):
-        if route.request.method=="PUT":
+        if route.request.method == "PUT":
             preset_calls.append(route.request.method)
         route.continue_()
+
     page.route("**/api/presets", count_presets)
     page.click("#saveRequestPreset")
     page.fill("#presetName", "invalid")
     page.click("#presetNameSave")
     assert "PUT" not in preset_calls
 
-    page.evaluate("([model,r]) => replayRequest({model,replay_request:r,replay_error:null})",
-                  [text_model["id"], {"state": "replayed", "questions": {"q": request["questions"]["q"]}}])
+    page.evaluate(
+        "([model,r]) => replayRequest({model,replay_request:r,replay_error:null})",
+        [text_model["id"], {"state": "replayed", "questions": {"q": request["questions"]["q"]}}],
+    )
     assert page.locator("#stateInput").input_value() == "replayed"
     assert page.locator("#results article.answer").count() == 0
     assert not decide_calls
+
+
+def test_history_preserves_data_fields_through_recording_and_browser_replay(page, ui, text_model):
+    """PR #4: recording and Replay must not rewrite ordinary fields named data."""
+    request = {
+        "state": {"data": "The customer reports a privacy leak.", "ticket": "e2e-data-field"},
+        "questions": {
+            "q": {
+                "type": "choice",
+                "instructions": "Choose the kind of problem.",
+                "criteria": {"data": "A data or privacy problem", "other": "Other"},
+            }
+        },
+    }
+    view(page, "playground")
+    page.evaluate("request => setRequest(request)", request)
+    with page.expect_response(lambda response: "/api/decide" in response.url, timeout=WAIT) as sent:
+        page.click("#sendButton")
+    assert sent.value.status == 200
+    assert sent.value.json()["answers"]["q"]["choice"] in request["questions"]["q"]["criteria"]
+
+    def latest_record():
+        items = ui.get(
+            "/api/history", params={"model": text_model["id"], "source": "playground", "q": "e2e-data-field"}
+        )["items"]
+        return ui.get(f"/api/history/{items[0]['id']}")
+
+    recorded = latest_record()
+    assert recorded["request"]["state"] == request["state"]
+    assert recorded["request"]["questions"] == request["questions"]
+    assert recorded["replay_error"] is None
+    assert recorded["replay_request"]["questions"] == request["questions"]
+
+    view(page, "history")
+    row = page.locator(f'tr[data-history="{recorded["id"]}"]')
+    row.locator(".history-open").click()
+    page.locator(f'tr[data-history="{recorded["id"]}"] + .history-detail .replay-request').click()
+    sync_api.expect(page.locator('section.view[data-page="playground"]')).to_be_visible()
+    replay = page.evaluate("() => $('#editJsonToggle').checked ? JSON.parse($('#requestJson').value) : buildRequest()")
+    assert replay["state"] == request["state"]
+    assert replay["questions"] == request["questions"]
+    with page.expect_response(lambda response: "/api/decide" in response.url, timeout=WAIT) as resent:
+        page.click("#sendButton")
+    assert resent.value.status == 200
+    assert latest_record()["request"]["questions"] == request["questions"]
 
 
 def test_server_messages_translate_in_polish_and_remain_english(page):
@@ -186,13 +522,16 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     fixture = page.evaluate("""async () => {
       const data = await fetch('/api/models').then(r => r.json());
-      if (!data.models.some(m => !m.runnable && m.reason_code)) {
-        const source = data.models.find(m => m.runnable);
-        data.models.push({...source, id: `${source.id}:e2e-unavailable`, runnable: false,
-          reason: 'needs an NVIDIA GPU (the CUDA graph engine)', reason_code: 'cuda_graph_gpu',
-          reason_params: {}});
-      }
       const source = data.models.find(m => m.runnable);
+      let unavailable = data.models.find(m => !m.runnable && m.reason_code &&
+        ['basal-1.0', 'basal-1.5'].includes(m.family));
+      if (!unavailable) {
+        unavailable = {...source, id: '__e2e_older_unavailable__', family: 'basal-1.5', port: 'GGUF',
+          label: 'GGUF Q8_0', runnable: false,
+          reason: 'this GGUF conversion ships no tokenizer or calibration and its model card names no base model',
+          reason_code: 'gguf_base', reason_params: {}};
+        data.models.push(unavailable);
+      }
       const packed = {...source, id: '__e2e_packed__', family: 'basal-2.0', tier: 'mini',
         label: 'MLX 8-bit', runnable: true};
       const multimodal = {...source, id: '__e2e_multimodal__', family: 'basal-omni-1.0',
@@ -207,16 +546,18 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
         {slot: 'multimodal', id: multimodal.id, why: multimodalText,
           why_code: 'suggest_multimodal', why_params: multimodalParams});
       renderModels(data);
-      return {data, unavailable: data.models.find(m => !m.runnable && m.reason_code),
+      return {data, unavailable,
               suggestion: data.suggestions.find(s => s.why_code),
               packed: data.suggestions.find(s => s.id === packed.id),
               multimodal: data.suggestions.find(s => s.id === multimodal.id)};
     }""")
     unavailable, suggestion = fixture["unavailable"], fixture["suggestion"]
     assert unavailable and suggestion
-    page.click('.side-nav [data-view="models"]')
+    assert unavailable["family"] in {"basal-1.0", "basal-1.5"}
+    view(page, "models")
     page.click("#allModelsTab")
     page.check("#notRunnableToggle")
+    page.check("#olderToggle")
     translated_reason = page.evaluate("m => ts(m.reason, m.reason_code, m.reason_params)", unavailable)
     assert translated_reason != unavailable["reason"]
     reason = page.locator("#modelsTable .reason").filter(has_text=translated_reason)
@@ -232,13 +573,13 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
         translated = page.evaluate("s => ts(s.why, s.why_code, s.why_params)", card)
         assert translated != card["why"]
         sync_api.expect(page.locator("#suggested .why").filter(has_text=translated).first).to_be_visible()
-    assert "obrazy i audio" in page.evaluate(
-        "s => ts(s.why, s.why_code, s.why_params)", fixture["multimodal"])
-    assert "--mlx-packed" in page.evaluate(
-        "s => ts(s.why, s.why_code, s.why_params)", fixture["packed"])
-    assert page.evaluate("""() => ts('mini in bf16: needs about — of a 8.6 GB budget',
-      'suggest_recommended_budget', {tier: 'mini', label: 'bf16', estimate: null, memory: 8.6})""") \
-      == "mini w formacie bf16: potrzeba około — z budżetu 8.6 GB"
+    assert "obrazy i audio" in page.evaluate("s => ts(s.why, s.why_code, s.why_params)", fixture["multimodal"])
+    assert "--mlx-packed" in page.evaluate("s => ts(s.why, s.why_code, s.why_params)", fixture["packed"])
+    assert (
+        page.evaluate("""() => ts('mini in bf16: needs about — of a 8.6 GB budget',
+      'suggest_recommended_budget', {tier: 'mini', label: 'bf16', estimate: null, memory: 8.6})""")
+        == "mini w formacie bf16: potrzeba około — z budżetu 8.6 GB"
+    )
 
     options_target = page.evaluate("""async () => {
       for (const m of modelData.filter(x => x.runnable)) {
@@ -252,24 +593,29 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.click("#allModelsTab")
     page.locator(f'#modelsTable .options-model[data-id="{options_target["id"]}"]').click()
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
-    sync_api.expect(page.locator("#loadOptions .option-mode.unavailable small")
-                    .filter(has_text=options_target["text"]).first).to_be_visible()
+    sync_api.expect(
+        page.locator("#loadOptions .option-mode.unavailable small").filter(has_text=options_target["text"]).first
+    ).to_be_visible()
     assert options_target["text"] != options_target["mode"]["reason"]
 
     page.evaluate("localStorage.setItem('basal-ui.lang', 'en')")
     page.reload()
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     page.evaluate("data => renderModels(data)", fixture["data"])
-    page.click('.side-nav [data-view="models"]')
+    view(page, "models")
     page.click("#allModelsTab")
     page.check("#notRunnableToggle")
+    page.check("#olderToggle")
     sync_api.expect(page.locator("#modelsTable .reason").filter(has_text=unavailable["reason"]).first).to_be_visible()
     page.click("#suggestedTab")
     sync_api.expect(page.locator("#suggested .why").filter(has_text=suggestion["why"]).first).to_be_visible()
     page.click("#allModelsTab")
     page.locator(f'#modelsTable .options-model[data-id="{options_target["id"]}"]').click()
-    sync_api.expect(page.locator("#loadOptions .option-mode.unavailable small")
-                    .filter(has_text=options_target["mode"]["reason"]).first).to_be_visible()
+    sync_api.expect(
+        page.locator("#loadOptions .option-mode.unavailable small")
+        .filter(has_text=options_target["mode"]["reason"])
+        .first
+    ).to_be_visible()
 
 
 UNTRANSLATED = """() => {  // visible text and labels that are a key of the Polish dictionary, shown in English
@@ -289,16 +635,18 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     assert page.evaluate("() => [document.documentElement.lang, LANG]") == ["pl", "pl"]
     left = {}
+    appearance = page.locator(".appearance-controls")
+    appearance.locator("summary").click()
+    left["appearance"] = page.evaluate(UNTRANSLATED)
+    appearance.locator("summary").click()
+    disclosure = page.locator(".nav-tools")
+    if not disclosure.evaluate("(el) => el.open"):
+        disclosure.locator("summary").click()
+    left["Tools navigation"] = page.evaluate(UNTRANSLATED)
+    disclosure.locator("summary").click()
     for name in VIEWS:
-        page.click(f'.side-nav [data-view="{name}"]')
-        sync_api.expect(page.locator(f'section.view[data-page="{name}"]').first).to_be_visible()
-        if name == "manager":
-            page.evaluate("""() => {
-              statsData.benchmarks = {stub: [{kind:'modes', model:'Remek/basal-2.0-mini',
-                set:'bundled', when:1, modes:[{mode:'eager',dec_s:2}]}]};
-              renderBenchmarkResults();
-            }""")
-        page.wait_for_timeout(300)  # views render their lists after their own requests
+        view(page, name)
+        page.wait_for_timeout(300)
         if name == "history":
             page.evaluate("""() => renderHistory(['mcp','api','playground'].map((source,i) => ({
               id:'stub'+i,ts:1,model:'Remek/basal-2.0-mini',source,state_preview:'test',
@@ -309,7 +657,18 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
             for tab in ("#suggestedTab", "#allModelsTab"):
                 page.click(tab)
                 left[f"models {tab}"] = page.evaluate(UNTRANSLATED)
-    page.click('.side-nav [data-view="models"]')
+    for tab in MANAGER_TABS:
+        manager_tab(page, tab)
+        page.wait_for_timeout(300)
+        if tab == "benchmarks":
+            page.evaluate("""() => {
+              statsData.benchmarks = {stub: [{kind:'modes', model:'Remek/basal-2.0-mini',
+                set:'bundled', when:1, modes:[{mode:'eager',dec_s:2}]}]};
+              renderBenchmarkResults();
+            }""")
+        left[f"manager {tab}"] = page.evaluate(UNTRANSLATED)
+    view(page, "models")
+    page.click("#allModelsTab")
     page.locator(f'#modelsTable .options-model[data-id="{text_model["id"]}"]').click()
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
     left["load options"] = page.evaluate(UNTRANSLATED)
@@ -317,8 +676,8 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
     page.evaluate("id => openModelCard(id)", text_model["id"])
     sync_api.expect(page.locator("#modelCardDialog")).to_be_visible()
     left["model card"] = page.evaluate(UNTRANSLATED)
-    assert not {k: v for k, v in left.items() if v}, left
-    assert page.locator(".side-nav [data-view='manager']").inner_text().strip() == "Menedżer modeli"
+    assert not {key: value for key, value in left.items() if value}, left
+
 
 def test_model_manager_disk_rows_stack_without_overflow_at_mobile_width(page, text_model):
     page.set_viewport_size({"width": 390, "height": 844})
@@ -349,6 +708,8 @@ def test_media_example_loads_with_a_notice_and_draws_element_probabilities(page,
     sync_api.expect(page.locator("#decideError")).to_contain_text("does not take images")  # refused before sending
     assert not decide_calls
     page.evaluate("() => { loadedMedia = ['image', 'audio']; }")  # as on a media model: evidence is what is refused
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.evaluate("""() => { const r = JSON.parse($('#requestJson').value); r.questions.click_target.evidence = true;
       $('#requestJson').value = JSON.stringify(r); }""")
@@ -362,15 +723,24 @@ def test_media_example_loads_with_a_notice_and_draws_element_probabilities(page,
     assert overlay.locator("rect").count() == 4
     assert "checkout.png" in overlay.get_attribute("aria-label")
     sync_api.expect(overlay.locator("text").first).to_have_text("1 · 70.0%")
-    page.select_option("#examples", str(page.evaluate("() => examples.findIndex(e => e.id === 'media-04-voice-complaint')")))
+    page.select_option(
+        "#examples", str(page.evaluate("() => examples.findIndex(e => e.id === 'media-04-voice-complaint')"))
+    )
     sync_api.expect(page.locator("#mediaItems audio.media-audio")).to_have_count(1)
     assert page.evaluate("() => selectedMedia.map(m => m.file.name)") == ["complaint_pl.wav"]
 
 
-RUBRIC = {"state": "Od wczoraj nie mogę zalogować się do aplikacji.",
-          "questions": {"category": {"type": "classify", "option_keys": "show",
-                                     "labels": [{"name": "bug", "rubric": "błąd aplikacji"}, {"name": "billing"}]},
-                        "dept": {"type": "choice", "instructions": "Który dział?", "criteria": ["it", "sales"]}}}
+RUBRIC = {
+    "state": "Od wczoraj nie mogę zalogować się do aplikacji.",
+    "questions": {
+        "category": {
+            "type": "classify",
+            "option_keys": "show",
+            "labels": [{"name": "bug", "rubric": "błąd aplikacji"}, {"name": "billing"}],
+        },
+        "dept": {"type": "choice", "instructions": "Który dział?", "criteria": ["it", "sales"]},
+    },
+}
 
 
 def test_the_builder_keeps_what_it_cannot_write_in_its_own_form(page):
@@ -386,7 +756,10 @@ def test_the_builder_keeps_what_it_cannot_write_in_its_own_form(page):
     assert built["dept"]["criteria"] == ["it", "sales"] and "option_keys" not in built["dept"]
     cards.nth(0).locator('[data-f="labels"]').fill("bug: błąd aplikacji\nbilling: płatności\nother")
     assert page.evaluate("() => buildRequest().questions.category.labels") == [
-        {"name": "bug", "rubric": "błąd aplikacji"}, {"name": "billing", "rubric": "płatności"}, {"name": "other"}]
+        {"name": "bug", "rubric": "błąd aplikacji"},
+        {"name": "billing", "rubric": "płatności"},
+        {"name": "other"},
+    ]
 
 
 def test_no_automation_claim_where_the_certificate_does_not_hold(page, text_model):
@@ -432,30 +805,49 @@ def test_string_state_is_preserved_until_the_state_field_is_edited(page):
 
 def test_edit_json_rebuilds_the_builder_and_keeps_invalid_json_open(page):
     view(page, "playground")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.fill("#requestJson", "{ invalid")
     page.click("#editJsonToggle")  # stays checked: the toggle refuses to leave invalid JSON
     sync_api.expect(page.locator("#editJsonToggle")).to_be_checked()
     sync_api.expect(page.locator("#editJsonArea")).to_be_visible()
     sync_api.expect(page.locator("#mediaError")).to_contain_text("Invalid request JSON")
-    request = {"state": "builder from edited JSON", "questions": {"priority": {
-        "type": "choice", "criteria": ["low", "high"]}}, "facts": "auto", "lang": "pl"}
+    request = {
+        "state": "builder from edited JSON",
+        "questions": {"priority": {"type": "choice", "criteria": ["low", "high"]}},
+        "facts": "auto",
+        "lang": "pl",
+    }
     page.fill("#requestJson", json.dumps(request))
+    page.click("#generateRequestCode")
+    sync_api.expect(page.locator("#copyRequestCode")).to_be_enabled()
+    request["state"] = "changed after generating the API example"
+    page.fill("#requestJson", json.dumps(request))
+    sync_api.expect(page.locator("#copyRequestCode")).to_be_disabled()
     page.uncheck("#editJsonToggle")
     sync_api.expect(page.locator("#builder")).to_be_visible()
     assert page.evaluate("() => buildRequest()")["questions"] == request["questions"]
     assert page.evaluate("() => buildRequest().state") == request["state"]
 
 
-def test_the_builder_switches_types_and_edits_a_cost_matrix(page):
+@pytest.mark.parametrize("draft_key", ["", "lost"])
+def test_the_builder_switches_types_and_edits_a_cost_matrix(page, draft_key):
     view(page, "playground")
     page.evaluate("() => setRequest({state: 'Paczka nie dotarła.', questions: {}})")
     page.evaluate("() => addQuestion()")
     card = page.locator(".question").first
     card.locator(".q-type").select_option("act")
-    card.locator('[data-f="criteria"]').fill("late: opóźnienie\nlost: zaginięcie")
+    # Removing an option must not affect later outcomes restored from a language draft.
+    card.locator(".choice-editor-add").click()
+    card.locator(".choice-editor-key").fill("discarded")
+    card.locator(".choice-editor-remove").click()
+    for index, (key, description) in enumerate((("late", "opóźnienie"), ("lost", "zaginięcie"))):
+        card.locator(".choice-editor-add").click()
+        option = card.locator(".choice-editor-row").nth(index)
+        option.locator(".choice-editor-key").fill(key)
+        option.locator(".choice-editor-description").fill(description)
     card.locator('[data-cost-mode="matrix"]').click()
-    sync_api.expect(card.locator(".cost-table thead th")).to_have_text(["Action", "late", "lost", ""])
     card.locator(".add-action").click()
     row = card.locator(".cost-table tbody tr").last
     row.locator(".cost-action").fill("human")
@@ -463,16 +855,34 @@ def test_the_builder_switches_types_and_edits_a_cost_matrix(page):
         cell.fill("2")
     costs = page.evaluate("() => buildRequest().questions.question.costs")
     assert costs["human"] == {"late": 2, "lost": 2} and costs["defer"] == {"late": 1, "lost": 1}
-    cell = row.locator(".cost-cell").first
-    cell.fill("")
-    assert page.evaluate("() => document.querySelector('.question')._error") == "every cost cell needs a number"
+    card.locator(".choice-editor-key").first.fill("delayed")
     costs = page.evaluate("() => buildRequest().questions.question.costs")
-    assert "late" not in costs["human"]
-    sync_api.expect(card.locator(".q-error")).to_contain_text("every cost cell needs a number")
+    assert costs["human"] == {"delayed": 2, "lost": 2}
+    assert costs["defer"] == {"delayed": 1, "lost": 1}
+    card.locator(".choice-editor-key").first.fill(draft_key)
+    card.locator(".q-type").select_option("tool")
+    sync_api.expect(card.locator(".q-type")).to_have_value("act")
+    open_appearance_controls(page)
+    page.click('[data-lang-choice="pl"]')
+    sync_api.expect(page.locator("html")).to_have_attribute("lang", "pl")
+    sync_api.expect(card.locator(".choice-editor-row")).to_have_count(2)
+    card.locator(".choice-editor-key").first.fill("resumed")
+    costs = page.evaluate("() => buildRequest().questions.question.costs")
+    assert costs["human"] == {"resumed": 2, "lost": 2}
+    assert costs["defer"] == {"resumed": 1, "lost": 1}
+    forwarded = []
+    page.on("request", lambda request: forwarded.append(request) if request.url.endswith("/api/decide") else None)
+    row = card.locator(".cost-table tbody tr").last
+    row.locator(".cost-cell").first.fill("")
+    sync_api.expect(card.locator(".q-error")).to_be_visible()
+    page.click("#sendButton")
+    sync_api.expect(page.locator("#decideError")).to_be_visible()
+    assert not forwarded
     card.locator(".q-type").select_option("tool")
     card.locator('[data-f="tools"]').fill("not json")
     page.click("#sendButton")
-    sync_api.expect(page.locator("#decideError")).to_contain_text("tools must be a JSON array")
+    sync_api.expect(page.locator("#decideError")).to_be_visible()
+    assert not forwarded
 
 
 def test_safety_strip_and_inspect_button_on_a_decision(page, ui, text_model):
@@ -481,14 +891,15 @@ def test_safety_strip_and_inspect_button_on_a_decision(page, ui, text_model):
     page.click("#sendButton")
     strip = page.locator("#results .chips.safety")
     sync_api.expect(strip.first).to_contain_text(
-        re.compile("Automatable|Below the certified|No certificate|uncalibrated|calibrated"))
+        re.compile("Automatable|Below the certified|No certificate|uncalibrated|calibrated")
+    )
     sync_api.expect(page.locator("#inspectDecision")).to_be_visible()
     if "context" in (ui.model(text_model["id"])["entry"] or {}):  # the meter needs the engine's context policy
         sync_api.expect(page.locator("#results")).to_contain_text("Longest prompt")
 
 
 def test_the_load_options_dialog_lists_the_modes(page, text_model):
-    view(page, "overview")  # the loaded model's ⚙: restart with other options
+    manager_tab(page, "library")  # the loaded model's restart options
     page.click(f'#loadedModels .options-model[data-id="{text_model["id"]}"]')
     dialog = page.locator("#loadOptions")
     sync_api.expect(dialog).to_be_visible()
@@ -500,8 +911,9 @@ def test_the_load_options_dialog_lists_the_modes(page, text_model):
     sync_api.expect(dialog.locator("#optExperimentalNote")).not_to_be_empty()
     for key, modes in (("gemma_attn", "fast"), ("eager_attn", "eager"), ("merge", "fast"), ("ple_offload", "eager")):
         field = dialog.locator(f'[data-opt="{key}"]')  # each switch shows for the backend that reads it
-        assert modes in field.get_attribute("data-modes").split() and ("eager" in field.get_attribute(
-            "data-modes").split()) == (modes == "eager")
+        assert modes in field.get_attribute("data-modes").split() and (
+            "eager" in field.get_attribute("data-modes").split()
+        ) == (modes == "eager")
         if text_model["mode"] not in field.get_attribute("data-modes").split():
             sync_api.expect(field).to_be_hidden()
     page.click("#optionsCancel")
@@ -514,7 +926,6 @@ def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, tex
     sync_api.expect(row.locator(".unload-model")).to_be_visible()
     view(page, "models")
     page.click("#allModelsTab")
-    assert page.locator("#models .load-model").count() == 0  # Models downloads, sets up and deletes
     loads = []
     page.route("**/api/load", lambda route: (loads.append(1), route.fulfill(status=500, body="loaded")))
     page.click(f'#modelsTable .options-model[data-action="save"][data-id="{text_model["id"]}"]')
@@ -533,10 +944,10 @@ def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, tex
 
 
 def test_models_tabs_and_manager_loaded_section(page, text_model):
-    view(page, "manager")
-    positions = page.evaluate("""() => ['statsTable','benchmarks','calibrationBlock','diskModels','modelsDir']
-      .map(id => document.getElementById(id).getBoundingClientRect().top)""")
-    assert positions == sorted(positions)
+    manager_tab(page, "library")
+    sync_api.expect(page.locator("#loadedModels")).to_contain_text(text_model["id"])
+    for tab in MANAGER_TABS:
+        manager_tab(page, tab)
     view(page, "models")
     assert page.locator('#models [role="tab"]').all_text_contents() == ["Suggested", "All models"]
     sync_api.expect(page.locator("#suggestedTab")).to_have_attribute("aria-selected", "true")
@@ -567,7 +978,10 @@ SWITCHED = """lang => typeof LANG !== 'undefined' && typeof statusCache !== 'und
 def test_playground_builder_draft_survives_language_changes_once(page, text_model):
     view(page, "playground")
     request = {
-        "model": text_model["id"], "state": "Review this order", "facts": "auto", "lang": "en",
+        "model": text_model["id"],
+        "state": "Review this order",
+        "facts": "auto",
+        "lang": "en",
         "questions": {
             "decision": {"type": "choice", "instructions": "What next?", "criteria": {"buy": "Buy", "wait": "Wait"}},
             "risk": {"type": "noul", "instructions": "Is it risky?"},
@@ -575,21 +989,25 @@ def test_playground_builder_draft_survives_language_changes_once(page, text_mode
         "media": [{"type": "image", "data": "aGVsbG8="}],
     }
     page.evaluate("r => setRequest(r)", request)
+    open_appearance_controls(page)
+
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
-    assert page.evaluate("() => [selectedModel, $('#stateInput').value, $('#factsToggle').checked, $('#langSelect').value]") == [
-        text_model["id"], "Review this order", True, "en"
-    ]
-    assert page.evaluate("() => JSON.parse(buildRequest().questions.decision.criteria ? JSON.stringify(buildRequest().questions.decision.criteria) : '{}')") == {
-        "buy": "Buy", "wait": "Wait"
-    }
+    assert page.evaluate(
+        "() => [selectedModel, $('#stateInput').value, $('#factsToggle').checked, $('#langSelect').value]"
+    ) == [text_model["id"], "Review this order", True, "en"]
+    assert page.evaluate(
+        "() => JSON.parse(buildRequest().questions.decision.criteria ? JSON.stringify(buildRequest().questions.decision.criteria) : '{}')"
+    ) == {"buy": "Buy", "wait": "Wait"}
     assert page.evaluate("() => selectedMedia.length") == 0
     sync_api.expect(page.locator("#mediaError")).to_contain_text("dołącz media ponownie")
+    open_appearance_controls(page)
+
     page.locator('[data-lang-choice="en"]').click()
     page.wait_for_function(SWITCHED, arg="en")
-    assert page.evaluate("() => [selectedModel, $('#stateInput').value, $('#factsToggle').checked, $('#langSelect').value]") == [
-        text_model["id"], "Review this order", True, "en"
-    ]
+    assert page.evaluate(
+        "() => [selectedModel, $('#stateInput').value, $('#factsToggle').checked, $('#langSelect').value]"
+    ) == [text_model["id"], "Review this order", True, "en"]
     assert page.evaluate("() => buildRequest().questions.decision.criteria") == {"buy": "Buy", "wait": "Wait"}
     assert page.evaluate("() => Object.keys(buildRequest().questions)") == ["decision", "risk"]
     assert page.evaluate("() => selectedMedia.length") == 0
@@ -600,9 +1018,13 @@ def test_playground_builder_draft_survives_language_changes_once(page, text_mode
 
 def test_playground_edit_json_draft_keeps_invalid_text(page):
     view(page, "playground")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     text = '{"state": "unfinished", "questions": ['
     page.fill("#requestJson", text)
+    open_appearance_controls(page)
+
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
     sync_api.expect(page.locator("#requestJson")).to_have_value(text)
@@ -618,15 +1040,25 @@ def test_playground_edit_json_draft_keeps_invalid_text(page):
 def test_playground_incomplete_builder_draft_survives_language_switch_once(page, draft_case):
     view(page, "playground")
     if draft_case == "blank-name":
-        page.evaluate("() => { $('#questions').innerHTML = ''; addQuestion('first', {type:'choice', criteria:{yes:'Yes'}}); $('.q-name').value = ''; }")
+        page.evaluate(
+            "() => { $('#questions').innerHTML = ''; addQuestion('first', {type:'choice', criteria:{yes:'Yes'}}); $('.q-name').value = ''; }"
+        )
     elif draft_case == "duplicate-names":
-        page.evaluate("() => { $('#questions').innerHTML = ''; addQuestion('same', {type:'choice', criteria:{yes:'Yes'}}); addQuestion('same', {type:'noul'}); }")
+        page.evaluate(
+            "() => { $('#questions').innerHTML = ''; addQuestion('same', {type:'choice', criteria:{yes:'Yes'}}); addQuestion('same', {type:'noul'}); }"
+        )
     elif draft_case == "invalid-tools":
-        page.evaluate("() => { $('#questions').innerHTML = ''; addQuestion('tools', {type:'tool', tools:[{name:'lookup'}]}); }")
+        page.evaluate(
+            "() => { $('#questions').innerHTML = ''; addQuestion('tools', {type:'tool', tools:[{name:'lookup'}]}); }"
+        )
         page.fill('.question [data-f="tools"]', '{"unfinished":')
     else:
-        page.evaluate("() => { $('#questions').innerHTML = ''; addQuestion('schema', {type:'extract', schema:{type:'object', properties:{}}}); }")
+        page.evaluate(
+            "() => { $('#questions').innerHTML = ''; addQuestion('schema', {type:'extract', schema:{type:'object', properties:{}}}); }"
+        )
         page.fill('.question [data-f="schema"]', '{"unfinished":')
+
+    open_appearance_controls(page)
 
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
@@ -648,20 +1080,22 @@ def test_playground_incomplete_builder_draft_survives_language_switch_once(page,
 
 def test_playground_language_draft_preserves_blank_act_matrix_rows(page):
     view(page, "playground")
-    page.evaluate("() => { $('#questions').innerHTML = ''; addQuestion('decision', {type:'act', criteria:{buy:'Buy', wait:'Wait'}, costs:{wrong:10}}); }")
+    page.evaluate(
+        "() => { $('#questions').innerHTML = ''; addQuestion('decision', {type:'act', criteria:{buy:'Buy', wait:'Wait'}, costs:{wrong:10}}); }"
+    )
     page.locator('.question [data-cost-mode="matrix"]').click()
     page.locator(".question .cost-action").nth(0).fill("")
     page.locator(".question .cost-action").nth(1).fill("custom")
     page.locator(".question tbody tr").nth(1).locator(".cost-cell").nth(0).fill("17")
     page.locator(".question tbody tr").nth(1).locator(".cost-cell").nth(1).fill("23")
 
+    open_appearance_controls(page)
     page.locator('[data-lang-choice="pl"]').click()
     page.wait_for_function(SWITCHED, arg="pl")
     assert page.locator(".question .cost-action").evaluate_all("(els) => els.map(el => el.value)") == ["", "custom"]
-    assert page.locator(".question tbody tr").evaluate_all("(rows) => rows.map(row => [...row.querySelectorAll('.cost-cell')].map(cell => cell.value))") == [
-        ["0", "10"], ["17", "23"]
-    ]
-
+    assert page.locator(".question tbody tr").evaluate_all(
+        "(rows) => rows.map(row => [...row.querySelectorAll('.cost-cell')].map(cell => cell.value))"
+    ) == [["0", "10"], ["17", "23"]]
 
 
 def test_history_and_logs_views(page, ui, text_model):
@@ -712,34 +1146,64 @@ def test_the_inspect_handoff_names_every_difference_and_refuses_what_it_cannot_e
                                entry: {...served.entry, orders: 2, temperature_per_prim: {choice: 1.2}}}]};
       try { return inspectHandoff({model, ...request}); } finally { statusCache = saved; }
     }"""
-    mixed = {"state": "s", "think": "auto", "early_exit": "0.99", "facts": "auto", "questions": {
-        "dept": {"type": "choice", "criteria": {"a": "A", "b": "B"}},
-        "intent": {"type": "classify", "labels": {"x": "X", "y": "Y"}}}}
+    mixed = {
+        "state": "s",
+        "think": "auto",
+        "early_exit": "0.99",
+        "facts": "auto",
+        "questions": {
+            "dept": {"type": "choice", "criteria": {"a": "A", "b": "B"}},
+            "intent": {"type": "classify", "labels": {"x": "X", "y": "Y"}},
+        },
+    }
     handoff = page.evaluate(probe, [text_model["id"], mixed])
     assert list(handoff["body"]["questions"]) == ["dept"] and handoff["body"]["facts"] == "auto"
     assert not {"model", "think", "early_exit"} & set(handoff["body"])
     notes = " | ".join(handoff["notes"])
-    for part in ("intent: task questions are left out", "engine: served mlx, explained eager on mps",
-                 "option orders: served 2, explained 1", "calibration: the served temperatures differ",
-                 "thinking: explained without the reasoning", "early exit 0.99"):
+    for part in (
+        "intent: task questions are left out",
+        "engine: served mlx, explained eager on mps",
+        "option orders: served 2, explained 1",
+        "calibration: the served temperatures differ",
+        "thinking: explained without the reasoning",
+        "early exit 0.99",
+    ):
         assert part in notes, notes
-    assert "remove the media to inspect this request" in page.evaluate(
-        probe, [text_model["id"], {**mixed, "media": [{"type": "image"}]}])["blocked"]
+    assert (
+        "remove the media to inspect this request"
+        in page.evaluate(probe, [text_model["id"], {**mixed, "media": [{"type": "image"}]}])["blocked"]
+    )
     only_tasks = {"state": "s", "questions": {"intent": mixed["questions"]["intent"]}}
     assert "only task questions" in page.evaluate(probe, [text_model["id"], only_tasks])["blocked"]
-    other = page.evaluate("""([model, request]) => {
+    other = page.evaluate(
+        """([model, request]) => {
       const saved = statusCache; statusCache = {...saved, inspect: {model: 'Remek/basal-1.0-max', state: 'ready'}};
       try { return inspectHandoff({model, ...request}); } finally { statusCache = saved; }
-    }""", [text_model["id"], mixed])
+    }""",
+        [text_model["id"], mixed],
+    )
     assert "the inspector runs Remek/basal-1.0-max" in other["blocked"]
 
 
 def test_the_tool_builder_sets_the_selection_of_several_tools(page):
     view(page, "playground")
     tools = [{"name": "refund", "description": "zwrot"}, {"name": "track", "description": "śledzenie"}]
-    request = {"state": "Chcę zwrotu i numeru przesyłki.", "questions": {"next": {
-        "type": "tool", "tools": tools, "multi": True, "objective": "f1", "min": 1, "max": 2,
-        "exclusive": ["refund"], "fallback": "track", "fallback_threshold": 0.3}}}
+    request = {
+        "state": "Chcę zwrotu i numeru przesyłki.",
+        "questions": {
+            "next": {
+                "type": "tool",
+                "tools": tools,
+                "multi": True,
+                "objective": "f1",
+                "min": 1,
+                "max": 2,
+                "exclusive": ["refund"],
+                "fallback": "track",
+                "fallback_threshold": 0.3,
+            }
+        },
+    }
     page.evaluate("r => setRequest(r)", request)
     assert page.evaluate("() => buildRequest().questions") == request["questions"]
     card = page.locator(".question").first
@@ -758,7 +1222,7 @@ def test_the_tool_builder_sets_the_selection_of_several_tools(page):
 
 def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_model, tmp_path):
     shipped = ui.get("/api/calibrations", params={"id": text_model["id"]})["shipped"]["file"]
-    view(page, "manager")  # Loaded section contains Calibration
+    manager_tab(page, "calibration")
     page.select_option("#calibrationModel", text_model["id"])
     page.fill("#calibrationImportPath", shipped)
     sync_api.expect(page.locator("#calibrationFiles table")).to_be_visible()
@@ -774,9 +1238,14 @@ def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_mod
 
 
 def test_theme_toggle_persists_and_sets_the_document_theme(page):
-    page.click('[data-theme-choice="dark"]')
+    appearance = page.locator(".appearance-controls")
+    if not appearance.locator('[data-theme-choice="dark"]').is_visible():
+        appearance.locator("summary").click()
+    appearance.locator('[data-theme-choice="dark"]').click()
     assert page.evaluate("() => [document.documentElement.dataset.theme, localStorage.getItem('basal-ui.theme')]") == [
-        "dark", "dark"]
+        "dark",
+        "dark",
+    ]
 
 
 def test_control_enter_sends_a_playground_decision(page):
@@ -837,7 +1306,9 @@ def test_every_modal_opens_centred_in_the_viewport_from_any_view(page, text_mode
         page.evaluate(open_it, text_model["id"])
         page.wait_for_function("s => document.querySelector(s).open", arg=selector)
         page.wait_for_timeout(250)  # the model card and load options fade in
-        assert page.evaluate(CENTRED, selector) == {"open": True, "shown": True, "inside": True, "dx": 0, "dy": 0}, selector
+        assert page.evaluate(CENTRED, selector) == {"open": True, "shown": True, "inside": True, "dx": 0, "dy": 0}, (
+            selector
+        )
         page.evaluate("s => document.querySelector(s).close()", selector)
 
 
@@ -858,11 +1329,21 @@ def test_options_dialog_keeps_its_header_and_actions_while_the_options_scroll(pa
     page.set_viewport_size({"width": size[0], "height": size[1]})
     page.evaluate("id => openLoadOptions(id, false, 'save')", text_model["id"])
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
-    page.evaluate("() => document.querySelectorAll('#optionsForm details').forEach(d => { d.open = true; })")  # all expanded
+    page.evaluate(
+        "() => document.querySelectorAll('#optionsForm details').forEach(d => { d.open = true; })"
+    )  # all expanded
     page.wait_for_timeout(500)  # Basecoat animates a <details> opening
-    layout = page.evaluate(DIALOG_LAYOUT, ["#loadOptions", "#optionsForm", "#loadOptions > h3", "#loadOptions .dialog-actions"])
-    assert layout == {"inViewport": True, "centred": True, "dialogScrolls": False, "bodyScrolls": True,
-                      "fixedEnds": True, "footerShown": True}
+    layout = page.evaluate(
+        DIALOG_LAYOUT, ["#loadOptions", "#optionsForm", "#loadOptions > h3", "#loadOptions .dialog-actions"]
+    )
+    assert layout == {
+        "inViewport": True,
+        "centred": True,
+        "dialogScrolls": False,
+        "bodyScrolls": True,
+        "fixedEnds": True,
+        "footerShown": True,
+    }
     switches = [s.bounding_box() for s in page.locator("#optionsForm input[type=checkbox]:visible").all()]
     assert switches and all(s["height"] < 32 for s in switches)  # the compact field sizing leaves the switches alone
     page.click("#optionsCancel")
@@ -876,7 +1357,9 @@ def test_model_card_keeps_its_header_while_the_card_scrolls(page, text_model):
     sync_api.expect(page.locator("#modelCardDialog")).to_be_visible()
     page.evaluate("() => document.querySelectorAll('#modelCardBody details').forEach(d => { d.open = true; })")
     page.wait_for_timeout(500)  # Basecoat animates a <details> opening
-    layout = page.evaluate(DIALOG_LAYOUT, ["#modelCardDialog", "#modelCardBody", ".model-card-head", ".model-card-head"])
+    layout = page.evaluate(
+        DIALOG_LAYOUT, ["#modelCardDialog", "#modelCardBody", ".model-card-head", ".model-card-head"]
+    )
     assert layout["inViewport"] and layout["centred"] and not layout["dialogScrolls"]
     assert layout["bodyScrolls"] and layout["fixedEnds"]
     title = page.locator("#modelCardTitle").inner_text()
@@ -884,13 +1367,16 @@ def test_model_card_keeps_its_header_while_the_card_scrolls(page, text_model):
     facts = page.locator(".model-card-facts dt").all_inner_texts()
     assert not {"Family", "Tier", "Port"} & set(facts)
 
+
 OPEN_SECTIONS = "() => [...document.querySelectorAll('#optionsForm details.option-section')].filter(d => d.open).map(d => d.dataset.section)"
 
 
 def test_options_sections_collapse_open_on_changes_and_remember_the_users_choice(page, text_model):
     page.evaluate("id => openLoadOptions(id, false, 'save')", text_model["id"])
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
-    sections = page.evaluate("() => [...document.querySelectorAll('#optionsForm details.option-section')].map(d => d.dataset.section)")
+    sections = page.evaluate(
+        "() => [...document.querySelectorAll('#optionsForm details.option-section')].map(d => d.dataset.section)"
+    )
     assert len(sections) >= 6 and "Batching" in sections
     assert page.evaluate(OPEN_SECTIONS) == ["Engine"]  # defaults: only the engine is open
     batch = page.locator('#optionsForm details[data-section="Batching"]')
@@ -924,7 +1410,6 @@ def test_model_card_long_blocks_start_collapsed(page, text_model):
     sync_api.expect(page.locator("#modelCardBody .model-card-facts")).to_be_visible()  # the facts stay in view
 
 
-
 def test_model_card_dialog_renders_api_card_data(page):
     page.evaluate("""() => {
       api = async () => ({
@@ -945,9 +1430,12 @@ def test_model_card_dialog_renders_api_card_data(page):
 
 def test_result_views_drop_descriptions_that_only_repeat_the_key(page):
     criteria = {"88412": "88412", "4": "[4] Payment status", "7": "[7]", "9": "[9]x", "none": "Nie podano numeru"}
-    page.evaluate("""c => renderResults({answers: {q: {type: 'choice', choice: '4', confidence: 0.6,
+    page.evaluate(
+        """c => renderResults({answers: {q: {type: 'choice', choice: '4', confidence: 0.6,
       probabilities: {'4': 0.6, '88412': 0.2, '7': 0.1, '9': 0.05, none: 0.05}}}},
-      {questions: {q: {type: 'choice', criteria: c}}})""", criteria)
+      {questions: {q: {type: 'choice', criteria: c}}})""",
+        criteria,
+    )
     sync_api.expect(page.locator("#results .answer .headline")).to_have_text("4 · Payment status")
     bars = page.locator("#results .prob > span").all_inner_texts()
     assert bars == ["4 · Payment status", "88412", "7", "9 · [9]x", "none · Nie podano numeru"]
@@ -964,11 +1452,9 @@ ANSWERING = """([model, batch]) => {  // the status of this basal-ui with reques
 }"""
 
 
-def test_overview_shows_the_inference_in_flight_and_idle_otherwise(page, text_model):
-    view(page, "overview")
-    order = page.evaluate("""() => ['#hardware', '#inference', '#status', '#overview > .dashboard-grid']
-      .map(s => document.querySelector(s).getBoundingClientRect().top)""")
-    assert order == sorted(order) and len(set(order)) == 4  # Hardware, then Inference, Loaded models, the summaries
+def test_manager_library_shows_inference_in_flight_and_idle_otherwise(page, text_model):
+    manager_tab(page, "library")
+    sync_api.expect(page.locator("#inferenceNow")).to_be_visible()
     rows = page.locator("#inferenceNow .inference-row")
     sync_api.expect(rows).to_have_count(1)
     sync_api.expect(rows.first).to_contain_text("Idle")
@@ -979,49 +1465,59 @@ def test_overview_shows_the_inference_in_flight_and_idle_otherwise(page, text_mo
     sync_api.expect(rows.nth(0)).to_contain_text("2 running · 1 queued · Playground 1 · API server 1 · longest 2.4 s")
     sync_api.expect(rows.nth(1)).to_contain_text("Batch")
     sync_api.expect(rows.nth(1)).to_contain_text("3 / 10")
-    assert rows.nth(1).locator(".progress span").get_attribute("style") == "width:30%"
     assert page.locator("#inferenceNow .status-dot.active").count() == 2
-    sync_api.expect(page.locator(f'#loadedModels .model-row:has-text("{text_model["id"]}") .status-dot.active')).to_have_count(1)
+    sync_api.expect(
+        page.locator(f'#loadedModels .model-row:has-text("{text_model["id"]}") .status-dot.active')
+    ).to_have_count(1)
     sync_api.expect(page.locator("#footerState")).to_contain_text("1 answering")
     assert "active" in page.locator("#footerDot").get_attribute("class")
     # basal-serve's counters not read yet (zeros) while basal-ui waits on requests: the requests are what is shown
-    page.evaluate("""m => { const s = structuredClone(statusCache); const x = s.models.find(y => y.id === m);
+    page.evaluate(
+        """m => { const s = structuredClone(statusCache); const x = s.models.find(y => y.id === m);
       x.inflight = [{source: 'playground', seconds: 0.5}, {source: 'playground', seconds: 0.2}];
       x.health = {reachable: true, running: 0, queued: 0}; s.jobs = {}; renderStatus(s); clearTimeout(pollTimer); }""",
-                  text_model["id"])
+        text_model["id"],
+    )
     sync_api.expect(rows).to_have_count(1)
     sync_api.expect(rows.first).to_contain_text("2 requests · Playground 2 · longest 0.5 s")
     assert "running" not in rows.first.inner_text()
-    page.evaluate("""m => { const s = structuredClone(statusCache); const x = s.models.find(y => y.id === m);
+    page.evaluate(
+        """m => { const s = structuredClone(statusCache); const x = s.models.find(y => y.id === m);
       x.inflight = []; x.health = {reachable: true, running: 0, queued: 0}; s.jobs = {}; renderStatus(s); clearTimeout(pollTimer); }""",
-                  text_model["id"])
+        text_model["id"],
+    )
     sync_api.expect(rows).to_have_count(1)
     sync_api.expect(rows.first).to_contain_text("Idle")
     assert page.locator(".status-dot.active").count() == 0
     assert "answering" not in page.locator("#footerState").inner_text()
 
 
-def test_overview_inference_after_a_decision_and_in_polish(page, ui, text_model):
+def test_manager_inference_after_a_decision_and_in_polish(page, ui, text_model):
     ui.decide(text_model["id"], CHOICE)
-    view(page, "overview")
+    manager_tab(page, "library")
     sync_api.expect(page.locator("#inferenceNow")).to_contain_text("last decision")  # the idle line says when
-    assert page.evaluate("() => !$('#overview').hidden")
+    assert page.evaluate("() => !$('#manager-library').hidden")
     page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
     page.reload()
     page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache?.models?.length > 0")
+    manager_tab(page, "library")
     page.evaluate(ANSWERING, [text_model["id"], True])
     rows = page.locator("#inferenceNow .inference-row")
-    sync_api.expect(rows.nth(0)).to_contain_text("2 w toku · 1 w kolejce · Playground 1 · Serwer API 1 · najdłuższe 2.4 s")
+    sync_api.expect(rows.nth(0)).to_contain_text(
+        "2 w toku · 1 w kolejce · Playground 1 · Serwer API 1 · najdłuższe 2.4 s"
+    )
     sync_api.expect(page.locator("#inference .section-index")).to_have_text("WNIOSKOWANIE")
 
 
-def test_a_running_batch_shows_on_the_overview(page, ui, text_model, tmp_path):
+def test_a_running_batch_shows_in_manager_library(page, ui, text_model, tmp_path):
     many = tmp_path / "many.jsonl"
     many.write_text((EXAMPLES / "questions.jsonl").read_text() * 50)
-    ui.post("/api/batch", {"id": text_model["id"], "input": str(many), "output": str(tmp_path / "out.jsonl"),
-                           "concurrency": 1})
+    ui.post(
+        "/api/batch",
+        {"id": text_model["id"], "input": str(many), "output": str(tmp_path / "out.jsonl"), "concurrency": 1},
+    )
     try:
-        view(page, "overview")
+        manager_tab(page, "library")
         row = page.locator("#inferenceNow .inference-row", has_text="Batch")
         sync_api.expect(row).to_be_visible(timeout=10_000)
         sync_api.expect(row).to_contain_text(" / 1000")  # done / total of the real job
@@ -1043,7 +1539,7 @@ def test_usage_line_includes_branches_and_lane(page):
 
 
 def test_load_preset_save_and_apply_round_trip(page, text_model):
-    view(page, "overview")
+    manager_tab(page, "library")
     page.click(f'#loadedModels [data-id="{text_model["id"]}"].options-model')
     dialog = page.locator("#loadOptions")
     sync_api.expect(dialog).to_be_visible()
@@ -1061,16 +1557,184 @@ def test_load_preset_save_and_apply_round_trip(page, text_model):
     page.click("#optionsCancel")
 
 
-def test_revision_option_is_shown_as_a_loaded_model_chip(page, text_model):
-    page.evaluate("""id => {
-      const model = statusCache.models.find(x => x.id === id);
-      model.options ||= {};
-      model.options.revision = 'release-1';
-      renderLoadedRows(statusCache.models);
-    }""", text_model["id"])
-    sync_api.expect(page.locator("#loadedModels")).to_contain_text("revision release-1")
-    view(page, "models")
-    page.evaluate("""id => renderModels({suggestions: [], models: modelData.map(m => m.id === id
-      ? {...m, revision: 'release-1'} : m)})""", text_model["id"])
-    row = page.locator("#modelsTable tr", has=page.locator(f'[data-id="{text_model["id"]}"]'))
-    sync_api.expect(row.first).to_contain_text("revision release-1")
+@pytest.mark.parametrize("width", [1440, 390])
+def test_dashboard_live_updates_preserve_scroll_and_copy_selection(page, ui, text_model, width):
+    ui.post("/api/decide", {**CHOICE, "model": text_model["id"]})
+    page.set_viewport_size({"width": width, "height": 700})
+    view(page, "dashboard")
+    endpoint = page.locator("#trafficEndpoints code").filter(has_text="/api/decide")
+    sync_api.expect(endpoint).to_be_visible()
+    endpoint.scroll_into_view_if_needed()
+    endpoint.evaluate("""node => {
+      const range = document.createRange(); range.selectNodeContents(node);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    }""")
+    before = page.evaluate("scrollY")
+    assert before > 100
+    for _ in range(3):
+        with page.expect_response(lambda response: "/api/traffic?" in response.url):
+            pass
+        assert abs(page.evaluate("scrollY") - before) < 3
+        assert page.evaluate("window.getSelection().toString()") == "/api/decide"
+    page.evaluate("window.getSelection().removeAllRanges()")
+
+
+def test_downloaded_model_loads_from_dashboard_and_batch_without_losing_input(browser, isolated_ui, text_model):
+    model_id = text_model["id"]
+    context = browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    try:
+        page.goto(isolated_ui.url)
+        page.wait_for_function("() => typeof catalogData !== 'undefined' && catalogData && modelData.length")
+
+        def load_here():
+            page.click("#openModelLoader")
+            row = page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True))
+            with page.expect_response(lambda response: response.url.endswith("/api/load")) as loaded:
+                row.locator(".load-model:not([data-media])").click()
+            assert loaded.value.status == 202
+            page.wait_for_function(
+                "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+                arg=model_id,
+                timeout=WAIT,
+            )
+            row.locator(".use-loaded-model").click()
+            sync_api.expect(page.locator("#modelLoaderDialog")).to_be_hidden()
+
+        load_here()
+        sync_api.expect(page.locator(f'#trafficModels strong[title="{model_id}"]')).to_be_visible()
+        for name in ("models", "playground", "api", "backends"):
+            view(page, name)
+            page.click("#openModelLoader")
+            row = page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True))
+            row.locator(".use-loaded-model").click()
+            if name == "playground":
+                assert page.input_value("#playgroundModel") == model_id
+        for panel, selector in (("benchmarks", "#benchmarkModel"), ("calibration", "#calibrationModel")):
+            manager_tab(page, panel)
+            page.click("#openModelLoader")
+            page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True)).locator(
+                ".use-loaded-model"
+            ).click()
+            assert page.input_value(selector) == model_id
+
+        view(page, "inspect")
+        page.click("#openModelLoader")
+        if text_model["inspect_reason"]:
+            assert not page.locator(".model-loader-row").filter(has=page.get_by_text(model_id, exact=True)).is_visible()
+        page.locator('button[data-close="modelLoaderDialog"]').click()
+
+        view(page, "batch")
+        page.fill("#batchInput", "/tmp/preserved-requests.jsonl")
+        isolated_ui.unload(model_id)
+        page.wait_for_function("id => !statusCache.models.some(model => model.id === id)", arg=model_id)
+        load_here()
+        assert page.input_value("#batchModel") == model_id
+        assert page.input_value("#batchInput") == "/tmp/preserved-requests.jsonl"
+    finally:
+        context.close()
+
+
+def test_backend_recommendation_load_preserves_saved_revision_and_settings(browser, isolated_ui, text_model):
+    backend = "mlx" if text_model["port"].startswith("MLX") else "torch"
+    data = isolated_ui.get("/api/models", params={"backend": backend})
+    downloaded = {model["id"] for model in data["models"] if model["downloaded"]}
+    choice = next((item for item in data["suggestions"] if not item["media"] and item["id"] in downloaded), None)
+    if choice is None:
+        pytest.skip("No downloaded text recommendation for the model's installed Backend")
+    model_id = choice["id"]
+    isolated_ui.put("/api/models/options", {"id": model_id, "options": {"revision": "main", "orders": "1"}})
+    before = isolated_ui.get("/api/models/options", params={"id": model_id})["options"]
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    try:
+        page.goto(isolated_ui.url + "/#models")
+        page.wait_for_function("() => typeof catalogData !== 'undefined' && catalogData")
+        page.select_option("#recommendationBackend", backend)
+        page.wait_for_function("backend => catalogData.recommendation_backend === backend", arg=backend)
+        page.click("#suggestedTab")
+        page.locator(f'#suggested .load-model[data-id="{model_id}"]').first.click()
+        sync_api.expect(page.locator("#loadOptions")).to_be_visible()
+        assert page.input_value("#opt-revision") == "main"
+        sync_api.expect(page.locator(f'input[name="optMode"][value="{choice["mode"]}"]')).to_be_checked()
+        sync_api.expect(page.locator("#optionsRemember")).not_to_be_checked()
+        page.click("#optionsApply")
+        page.wait_for_function(
+            "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+            arg=model_id,
+            timeout=WAIT,
+        )
+        loaded = next(model for model in isolated_ui.get("/api/status")["models"] if model["id"] == model_id)
+        assert loaded["mode"] == choice["mode"]
+        assert loaded["options"]["revision"] == "main"
+        assert loaded["options"]["orders"] == "1"
+        assert isolated_ui.get("/api/models/options", params={"id": model_id})["options"] == before
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("with_options", [False, True])
+def test_loading_from_batch_preserves_the_hidden_playground_media_draft(
+    browser, isolated_ui, text_model, second_model, with_options
+):
+    isolated_ui.load(text_model["id"])
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+
+    def previous_media_capability(route):
+        # Exercise client-side draft transitions without claiming image inference from these text checkpoints.
+        response = route.fetch()
+        payload = response.json()
+        for model in payload["models"]:
+            if model["id"] == text_model["id"]:
+                model["media"] = ["image"]
+        route.fulfill(response=response, json=payload)
+
+    page.route("**/api/status", previous_media_capability)
+    try:
+        page.goto(isolated_ui.url + "/#playground")
+        page.wait_for_function("() => typeof catalogData !== 'undefined' && catalogData && !$('#mediaInput').disabled")
+        page.evaluate("request => setRequest(request)", CHOICE)
+        page.fill("#stateInput", "Preserve this Playground draft while loading in Batch.")
+        page.set_input_files(
+            "#mediaInput", str(Path(__file__).resolve().parents[2] / "basal_ui/examples/media/checkout.png")
+        )
+        sync_api.expect(page.locator(".media-item img")).to_be_visible()
+        before = page.evaluate("buildRequest()")
+
+        view(page, "batch")
+        page.click("#openModelLoader")
+        row = page.locator(".model-loader-row").filter(has=page.get_by_text(second_model["id"], exact=True))
+        if with_options:
+            row.locator(".options-model").click()
+            page.click("#optionsApply")
+        else:
+            row.locator(".load-model:not([data-media])").click()
+        page.wait_for_function(
+            "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+            arg=second_model["id"],
+            timeout=WAIT,
+        )
+        if with_options:
+            page.click("#openModelLoader")
+        row.locator(".use-loaded-model").click()
+
+        view(page, "playground")
+        sync_api.expect(page.locator(".media-item img")).to_be_visible()
+        assert page.input_value("#stateInput") == before["state"]
+        assert page.evaluate("buildRequest().media") == before["media"]
+        assert page.evaluate("buildRequest().questions") == before["questions"]
+        assert page.evaluate("loadedMedia") == []
+        posted = []
+        page.on(
+            "request",
+            lambda request: posted.append(request) if request.url.endswith("/api/decide") else None,
+        )
+        page.click("#sendButton")
+        sync_api.expect(page.locator("#decideError")).to_be_visible()
+        assert posted == []  # Preserved media must not be sent to a model without image support.
+    finally:
+        context.close()
