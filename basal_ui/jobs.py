@@ -1,5 +1,6 @@
 """Background jobs of basal-ui (benchmark, calibration, batch, ...): one running job per kind, each in its own thread,
 its progress in /api/status and its output in the Logs view (source job:<kind>)."""
+
 import json
 import os
 import re
@@ -45,14 +46,23 @@ class LogBuffer:
 
 
 PHASE_TEMPLATES = {
-    "phase_starting": "starting", "phase_running": "running", "phase_checking": "checking selected models",
-    "phase_unloading": "unloading selected models", "phase_starting_model": "starting model",
-    "phase_testing_inference": "testing inference", "phase_restoring": "restoring {model}",
+    "phase_starting": "starting",
+    "phase_running": "running",
+    "phase_checking": "checking selected models",
+    "phase_unloading": "unloading selected models",
+    "phase_starting_model": "starting model",
+    "phase_testing_inference": "testing inference",
+    "phase_restoring": "restoring {model}",
     "phase_calibrating_engine": "calibrating (engine in basal-ui's process)",
-    "phase_calibrating": "calibrating", "phase_loading_model": "loading model",
-    "phase_warm_up": "warm-up", "phase_sequential": "sequential", "phase_concurrent": "concurrent",
-    "phase_done": "done", "phase_done_warnings": "done_with_warnings",
-    "phase_cancelled": "cancelled", "phase_error": "error",
+    "phase_calibrating": "calibrating",
+    "phase_loading_model": "loading model",
+    "phase_warm_up": "warm-up",
+    "phase_sequential": "sequential",
+    "phase_concurrent": "concurrent",
+    "phase_done": "done",
+    "phase_done_warnings": "done_with_warnings",
+    "phase_cancelled": "cancelled",
+    "phase_error": "error",
 }
 
 
@@ -88,6 +98,25 @@ def terminate(proc):
     except subprocess.TimeoutExpired:
         signal_group(kill=True)
         proc.wait()
+        return
+    if os.name == "posix":  # the leader is reaped; a member that ignored SIGTERM keeps the group alive
+        deadline = time.monotonic() + 5
+        while _group_alive(proc.pid):
+            if time.monotonic() >= deadline:
+                signal_group(kill=True)
+                break
+            time.sleep(0.1)
+
+
+def _group_alive(pgid) -> bool:
+    """Whether any process of the group is left (signal 0 only probes)."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # a member exists but cannot be signalled by this user
+        pass
+    return True
 
 
 def run_tool(job, module, argv, out_path=None, on_json=None):
@@ -97,10 +126,21 @@ def run_tool(job, module, argv, out_path=None, on_json=None):
     output line when it fails."""
     command = [sys.executable, "-m", f"basal.{module}", *map(str, argv)]
     job.log.append(f"$ {shlex.join(command)}")
-    options = ({"start_new_session": True} if os.name == "posix" else
-               {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)})
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                            errors="replace", bufsize=1, **options)
+    options = (
+        {"start_new_session": True}
+        if os.name == "posix"
+        else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    )
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        **options,
+    )
     finished = threading.Event()
 
     def stop_on_cancel():
@@ -147,6 +187,7 @@ class Job:
         self.running, self.started, self.result = True, time.time(), None
         self.cancel = threading.Event()
         self.lock = threading.Lock()
+        self.thread = None
 
     def progress(self, phase, done=0, total=0):
         with self.lock:
@@ -163,24 +204,43 @@ class Job:
     def state(self) -> dict:
         with self.lock:
             code, params = phase_fields(self.phase)
-            return {"kind": self.kind, "model": self.model, "label": self.label, "phase": self.phase,
-                    "phase_code": code, "phase_params": params,
-                    "done": self.done, "total": self.total, "error": self.error, "running": self.running,
-                    "started": self.started, "result": self.result}
+            return {
+                "kind": self.kind,
+                "model": self.model,
+                "label": self.label,
+                "phase": self.phase,
+                "phase_code": code,
+                "phase_params": params,
+                "done": self.done,
+                "total": self.total,
+                "error": self.error,
+                "running": self.running,
+                "started": self.started,
+                "result": self.result,
+            }
 
 
 class Jobs:
     """The last job of each kind; `logs` is the fleet's log buffers (a job's output goes to logs["job:<kind>"])."""
 
-    def __init__(self, logs: dict, event=None):
+    def __init__(self, logs: dict, event=None, start_lock=None, start_guard=None):
         self.logs = logs
         self.event = event or (lambda level, message: None)
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
+        self.start_lock, self.start_guard = start_lock, start_guard
 
     def start(self, kind, model, label, target, *args) -> dict:
         """Run target(job, *args) in a daemon thread; its return value is the job's result. RuntimeError when a job of
-        the kind is running."""
+        the kind is running or a shared owner refuses the start."""
+        if self.start_lock is None:
+            return self._start(kind, model, label, target, *args)
+        with self.start_lock:
+            return self._start(kind, model, label, target, *args)
+
+    def _start(self, kind, model, label, target, *args) -> dict:
+        if self.start_guard is not None:
+            self.start_guard(kind, target)
         with self.lock:
             current = self.jobs.get(kind)
             if current is not None and current.running:
@@ -192,8 +252,10 @@ class Jobs:
         def run():
             try:
                 result = target(job, *args)
-                job.finish("done_with_warnings" if isinstance(result, dict) and result.get("warnings") else "done",
-                           result=result)
+                job.finish(
+                    "done_with_warnings" if isinstance(result, dict) and result.get("warnings") else "done",
+                    result=result,
+                )
                 self.event("info", f"{kind} finished: {label}")
             except Cancelled:
                 job.finish("cancelled")
@@ -211,7 +273,8 @@ class Jobs:
                 self.event("error", f"{kind} failed: {label}: {exc}")
 
         self.event("info", f"{kind} started: {label}")
-        threading.Thread(target=run, name=f"basal-ui-{kind}", daemon=True).start()
+        job.thread = threading.Thread(target=run, name=f"basal-ui-{kind}", daemon=True)
+        job.thread.start()
         return job.state()
 
     def get(self, kind) -> Job | None:
@@ -230,6 +293,20 @@ class Jobs:
             jobs = list(self.jobs.values())
         for job in jobs:
             job.cancel.set()
+
+    def join(self, timeout: float) -> list[str]:
+        """Wait up to timeout seconds for running jobs; -> the kinds still running."""
+        deadline = time.monotonic() + timeout
+        with self.lock:
+            jobs = list(self.jobs.values())
+        left = []
+        for job in jobs:
+            if job.thread is None:
+                continue
+            job.thread.join(max(0.0, deadline - time.monotonic()))
+            if job.thread.is_alive():
+                left.append(job.kind)
+        return left
 
     def states(self) -> dict[str, dict]:
         with self.lock:

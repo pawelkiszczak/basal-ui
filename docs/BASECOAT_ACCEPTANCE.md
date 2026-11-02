@@ -1,5 +1,9 @@
 # Basecoat UI acceptance — 2026-10-27
 
+Historical record of the 2026-10-27 implementation run; its paths, counts and boundaries describe that run only.
+For the merged development snapshot see the [2026-10-29 dev gate](E2E.md#verified-dev-gate-2026-10-29);
+the later [Studio refinement verification](E2E.md#studio-refinement-gate-2026-10-30) supersedes this record's navigation/layout.
+
 Implemented on the current fork with three isolated Luna work packages. Shared preparation extracted the classic script without introducing a frontend build. Production bundles Basecoat 1.1.0 and its MIT license, the application styles, JavaScript, and existing fonts. Sidebar navigation, all nine views, native dialogs, and fork serving contracts are retained.
 
 ## Changes and regression coverage
@@ -21,7 +25,7 @@ Agent packages were committed separately on `basecoat-visual`, `basecoat-replay`
 
 - `pytest tests/test_ui_*.py tests/test_auth.py tests/test_api_compat.py -q`: **226 passed**.
 - With `BASAL_E2E=1`, `HF_HUB_OFFLINE=1`, `BASAL_E2E_MODEL=Remek/basal-2.0-mini-MLX-8bit`, `BASAL_E2E_BF16_MODEL=Remek/basal-2.0-mini`, and `BASAL_E2E_LOAD_TIMEOUT=180`:
-  `pytest tests/e2e/test_pages.py tests/e2e/test_activity.py tests/e2e/test_visual.py tests/e2e/test_engine231.py::test_browser_errors_health_warnings_and_options -q -rs`: **34 passed**.
+  `pytest tests/e2e/test_pages.py tests/e2e/test_activity.py tests/e2e/test_visual.py tests/e2e/test_engine_features.py::test_browser_errors_health_warnings_and_options -q -rs`: **34 passed**.
 - `node --check basal_ui/static/app.js` and `git diff --check`: passed.
 - Wheel build: passed. All **nine** production static files match source bytes; HTML asset references resolve; prototypes are excluded.
 

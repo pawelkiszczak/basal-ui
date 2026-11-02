@@ -6,28 +6,40 @@ import pytest
 from fastapi.testclient import TestClient
 
 from basal_ui import catalog, inspect, settings
-from basal_ui.app import Fleet, create_app
+from basal_ui.app import create_app
 from basal_ui.catalog import Variant
+from basal_ui.fleet import Fleet
 from basal_ui.hardware import Hardware
 from basal_ui.history import History
+from basal_ui.jobs import Cancelled, Job, LogBuffer
 from basal_ui.stats import Stats
 
 HW = Hardware("cpu", "cpu", 1024**4, None, None, frozenset())
 BF16 = Variant("mini", "Remek/basal-2.0-mini", "basal-2.0", "mini", "bf16", "bf16", None, 100, False)
-MLX = Variant("mini-mlx", "Remek/basal-2.0-mini-MLX-8bit", "basal-2.0", "mini", "MLX-8bit", "MLX 8-bit", None, 100,
-              False)
+MLX = Variant(
+    "mini-mlx", "Remek/basal-2.0-mini-MLX-8bit", "basal-2.0", "mini", "MLX-8bit", "MLX 8-bit", None, 100, False
+)
 
-OMNI_BF16 = Variant("omni-mini", "Remek/basal-omni-1.0-mini", "basal-omni-1.0", "mini", "bf16", "bf16", None, 100,
-                    True)
-OMNI_FP8 = Variant("omni-mini-fp8", "Remek/basal-omni-1.0-mini-FP8", "basal-omni-1.0", "mini", "FP8", "FP8", None,
-                   100, True)
-OMNI_GGUF = Variant("omni-mini-gguf", "Remek/basal-omni-1.0-GGUF", "basal-omni-1.0", "mini", "GGUF", "GGUF", None,
-                    100, True)
-OMNI_MLX = Variant("omni-mini-mlx", "Remek/basal-omni-1.0-mini-MLX-8bit", "basal-omni-1.0", "mini", "MLX-8bit",
-                   "MLX 8-bit", None, 100, True)
+OMNI_BF16 = Variant("omni-mini", "Remek/basal-omni-1.0-mini", "basal-omni-1.0", "mini", "bf16", "bf16", None, 100, True)
+OMNI_FP8 = Variant(
+    "omni-mini-fp8", "Remek/basal-omni-1.0-mini-FP8", "basal-omni-1.0", "mini", "FP8", "FP8", None, 100, True
+)
+OMNI_GGUF = Variant(
+    "omni-mini-gguf", "Remek/basal-omni-1.0-GGUF", "basal-omni-1.0", "mini", "GGUF", "GGUF", None, 100, True
+)
+OMNI_MLX = Variant(
+    "omni-mini-mlx",
+    "Remek/basal-omni-1.0-mini-MLX-8bit",
+    "basal-omni-1.0",
+    "mini",
+    "MLX-8bit",
+    "MLX 8-bit",
+    None,
+    100,
+    True,
+)
 
-PICO = Variant("pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True,
-               recurrent=True)
+PICO = Variant("pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True)
 
 
 @pytest.mark.parametrize("viz_gemma4", [True, False])
@@ -50,8 +62,15 @@ def test_models_api_reports_why_a_variant_cannot_be_inspected(client):
 class StubExplainer:
     def __init__(self, a):
         self.a = a
-        self.info = {"model": "stub", "device": a.device, "layers": 2, "mode": "eager", "orders": 2,
-                     "temperatures": {"choice": 1.1}, "temperature_per_bucket": {}}
+        self.info = {
+            "model": "stub",
+            "device": a.device,
+            "layers": 2,
+            "mode": "eager",
+            "orders": 2,
+            "temperatures": {"choice": 1.1},
+            "temperature_per_bucket": {},
+        }
         workers = self.workers = []
 
         class Srv:
@@ -73,10 +92,21 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     monkeypatch.setattr(inspect, "Explainer", StubExplainer)
     monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
-    fleet = Fleet(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu", settings_mod=settings,
-                  hardware_fn=lambda: HW, stats=Stats(tmp_path / "s.json"), history=History(tmp_path / "h.jsonl"))
-    app = create_app(catalog_fn=lambda **_: ([BF16, MLX, PICO], "test"), hardware_fn=lambda: HW, fleet=fleet,
-                     stats=fleet.stats, history=fleet.history)
+    fleet = Fleet(
+        models_dir_fn=lambda: tmp_path,
+        platform_fn=lambda: "cpu",
+        settings_mod=settings,
+        hardware_fn=lambda: HW,
+        stats=Stats(tmp_path / "s.json"),
+        history=History(tmp_path / "h.jsonl"),
+    )
+    app = create_app(
+        catalog_fn=lambda **_: ([BF16, MLX, PICO], "test"),
+        hardware_fn=lambda: HW,
+        fleet=fleet,
+        stats=fleet.stats,
+        history=fleet.history,
+    )
     with TestClient(app, base_url="http://127.0.0.1") as c:
         c.fleet = fleet
         yield c
@@ -92,8 +122,16 @@ def test_inspector_serves_basal_viz_for_a_bf16_model_and_stops(client):
     while client.get("/api/inspect").json()["state"] != "ready" and time.monotonic() < deadline:
         time.sleep(0.01)
     assert client.get("/api/inspect").json() == {
-        "model": "mini", "state": "ready", "error": None, "mode": "eager", "device": "cpu", "orders": 2,
-        "calibration": None, "temperatures": {"choice": 1.1}, "temperature_per_bucket": {}}
+        "model": "mini",
+        "state": "ready",
+        "error": None,
+        "mode": "eager",
+        "device": "cpu",
+        "orders": 2,
+        "calibration": None,
+        "temperatures": {"choice": 1.1},
+        "temperature_per_bucket": {},
+    }
     assert client.get("/viz/api/info").json()["model"] == "mini"  # the variant's id
     explained = client.post("/viz/api/explain", json={"state": "s", "questions": {}})
     assert explained.json() == {"questions": [], "state": "s", "served": {}}
@@ -125,3 +163,90 @@ def test_stopping_during_explainer_construction_never_publishes_ready(client, mo
     assert client.get("/api/inspect").json()["state"] == "idle"
     assert client.fleet.reserved == {}
     assert created
+
+
+def test_stopping_before_the_inspector_worker_is_scheduled_does_not_block_or_publish_ready(monkeypatch):
+    monkeypatch.setattr(inspect, "Explainer", StubExplainer)
+    monkeypatch.setattr(inspect.Inspector, "_free_engine_memory", staticmethod(lambda: None))
+
+    async def scenario():
+        inspector = inspect.Inspector()
+        loop = asyncio.get_running_loop()
+        inspector.bind(loop)
+        queued = threading.Event()
+        pending = []
+        errors = []
+        schedule = loop.call_soon_threadsafe
+
+        def defer_loader_callback(callback, *args, **kwargs):
+            if threading.current_thread().name == "inspection-loader":
+                pending.append((callback, args, kwargs))
+                queued.set()
+                return None
+            return schedule(callback, *args, **kwargs)
+
+        monkeypatch.setattr(loop, "call_soon_threadsafe", defer_loader_callback)
+        job = Job("inspect", BF16.id, BF16.id, LogBuffer())
+
+        def load():
+            try:
+                inspector.start(job, BF16, "/unused", HW)
+            except Cancelled:
+                errors.append("cancelled")
+
+        loader = threading.Thread(target=load, name="inspection-loader", daemon=True)
+        loader.start()
+        stopper = None
+        try:
+            assert await asyncio.to_thread(queued.wait, 2)
+            stopper = loop.run_in_executor(None, inspector.stop)
+            await asyncio.wait_for(asyncio.shield(stopper), 1)
+            assert inspector.state()["state"] == "idle"
+        finally:
+            for callback, args, kwargs in pending:
+                schedule(callback, *args, **kwargs)
+            await asyncio.to_thread(loader.join, 2)
+            if stopper is not None:
+                await asyncio.wait_for(stopper, 2)
+            await asyncio.to_thread(inspector.stop)
+        assert not loader.is_alive()
+        assert errors == ["cancelled"]
+        assert inspector.state()["state"] == "idle"
+
+    asyncio.run(scenario())
+
+
+def test_app_shutdown_finishes_the_inspector_worker_before_closing_statistics(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(inspect.Inspector, "_free_engine_memory", staticmethod(lambda: None))
+    running, stopped = threading.Event(), threading.Event()
+
+    class Explainer(StubExplainer):
+        def __init__(self, args):
+            super().__init__(args)
+
+            async def worker():
+                running.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stopped.set()
+
+            self.srv.worker = worker
+
+    monkeypatch.setattr(inspect, "Explainer", Explainer)
+    stats = Stats(tmp_path / "stats.json")
+    close = stats.close
+
+    def close_stats():
+        try:
+            assert stopped.is_set(), "inspection must finish before persistence is closed"
+        finally:
+            close()
+
+    monkeypatch.setattr(stats, "close", close_stats)
+    app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: HW, stats=stats)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/inspect", json={"id": BF16.id}).status_code == 202
+        assert running.wait(3)

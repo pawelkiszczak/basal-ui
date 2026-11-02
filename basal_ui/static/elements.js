@@ -37,7 +37,7 @@ function openElementsEditor(index) {
   const item=selectedMedia[index];if(!item||item.kind!=='image')return;
   if(selectedMedia.some((m,i)=>i!==index&&m.elements)){showMediaError(t('Only one image can have marked elements at a time'));return;}
   const dialog=document.createElement('dialog');dialog.className='elements-dialog';
-  dialog.innerHTML=`<h2>${t('Mark elements')}</h2><p class="muted">${t('Drag to draw a box. Select, move, resize or remove boxes; labels are optional.')}</p><div class="elements-layout"><div class="elements-canvas-wrap"><canvas aria-label="${t('Element box editor')}"></canvas></div><div class="elements-side"><div class="elements-list"></div><p class="muted elements-error" role="alert"></p></div></div><div class="dialog-actions"><button type="button" class="elements-clear" data-variant="outline">${t('Clear all')}</button><span class="grow"></span><button type="button" class="elements-cancel" data-variant="outline">${t('Cancel')}</button><button type="button" class="elements-save" data-variant="primary">${t('Save')}</button></div>`;
+  dialog.innerHTML=`<h2>${t('Mark elements')}</h2><p class="muted">${t('Drag or press Add box to create a box; arrows move it, Shift+arrows resize, Delete removes it.')}</p><div class="elements-layout"><div class="elements-canvas-wrap"><canvas tabindex="0" aria-label="${t('Element box editor')}"></canvas></div><div class="elements-side"><div class="elements-list"></div><p class="muted elements-error" role="alert"></p></div></div><div class="dialog-actions"><button type="button" class="elements-add" data-variant="outline">${t('Add box')}</button><button type="button" class="elements-clear" data-variant="outline">${t('Clear all')}</button><span class="grow"></span><button type="button" class="elements-cancel" data-variant="outline">${t('Cancel')}</button><button type="button" class="elements-save" data-variant="primary">${t('Save')}</button></div>`;
   document.body.append(dialog);
   const canvas=$('canvas',dialog),ctx=canvas.getContext('2d'),list=$('.elements-list',dialog),error=$('.elements-error',dialog),save=$('.elements-save',dialog);canvas.hidden=true;save.disabled=true;
   const rawOriginal=item.originalData??item.data,match=rawOriginal.match(/^data:([^;]+);base64,(.*)$/),originalData=match?.[2]||rawOriginal,originalMime=item.originalFile?.type||match?.[1]||item.file.type||'image/png',originalBytes=Uint8Array.from(atob(originalData),x=>x.charCodeAt(0)),source=new Image(),sourceCard=item.elements?[...document.querySelectorAll('.question')].find(q=>$('.q-name',q).value===item.elements.question):null,oldModel=sourceCard?parseQuestionCard(sourceCard)[1]:null,boxes=Object.entries(item.elements?.boxes||{}).map(([key,rect])=>{const option=oldModel?.criteria?.[key],value=typeof option==='string'?option:option?.element,label=item.elements?.labels?.[key]||(typeof value==='string'?value.replace(/^\[\d+\]\s*/,''):'');return {rect:[...rect],label,key,option,label0:label};});
@@ -52,7 +52,17 @@ function openElementsEditor(index) {
   canvas.onpointerdown=e=>{const p=point(e),h=hit(p);if(h){selected=h.i;gesture={...h,start:p,rect:[...boxes[h.i].rect]};}else if(boxes.length>=26){error.textContent=t('You can mark up to 26 elements.');return;}else{selected=boxes.length;boxes.push({rect:[p[0],p[1],0,0],label:''});gesture={draw:true,start:p,rect:[p[0],p[1],0,0]};renderList();}canvas.setPointerCapture(e.pointerId);draw();};
   canvas.onpointermove=e=>{if(!gesture)return;const p=point(e),[sx,sy]=gesture.start;let [x,y,w,h]=gesture.rect;if(gesture.draw){x=Math.min(sx,p[0]);y=Math.min(sy,p[1]);w=Math.abs(p[0]-sx);h=Math.abs(p[1]-sy);}else if(gesture.move){x=Math.max(0,Math.min(width-w,x+p[0]-sx));y=Math.max(0,Math.min(height-h,y+p[1]-sy));}else{if(gesture.corner.includes('w')){w=Math.max(0,x+w-p[0]);x=Math.max(0,p[0]);}else w=Math.max(0,Math.min(width-x,p[0]-x));if(gesture.corner.includes('n')){h=Math.max(0,y+h-p[1]);y=Math.max(0,p[1]);}else h=Math.max(0,Math.min(height-y,p[1]-y));}boxes[selected].rect=[x,y,w,h];draw();};
   canvas.onpointerup=()=>{if(gesture?.draw&&Math.min(boxes[selected].rect[2],boxes[selected].rect[3])<6){boxes.splice(selected,1);selected=-1;renderList();}gesture=null;draw();};
-  dialog.onkeydown=e=>{if((e.key==='Delete'||e.key==='Backspace')&&selected>=0&&e.target.tagName!=='INPUT'){boxes.splice(selected,1);selected=-1;renderList();draw();e.preventDefault();}};
+  const ARROWS={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
+  dialog.onkeydown=e=>{
+    if(selected<0||['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;
+    if(e.key==='Delete'||e.key==='Backspace'){boxes.splice(selected,1);selected=-1;renderList();draw();e.preventDefault();return;}
+    const arrow=ARROWS[e.key];if(!arrow)return;
+    const step=Math.max(1,width/100);let [x,y,w,h]=boxes[selected].rect;
+    if(e.shiftKey){w=Math.max(6,Math.min(width-x,w+arrow[0]*step));h=Math.max(6,Math.min(height-y,h+arrow[1]*step));}  // resize, like a corner drag
+    else{x=Math.max(0,Math.min(width-w,x+arrow[0]*step));y=Math.max(0,Math.min(height-h,y+arrow[1]*step));}  // move, like a drag
+    boxes[selected].rect=[x,y,w,h];draw();e.preventDefault();
+  };
+  $('.elements-add',dialog).onclick=()=>{if(!width)return;if(boxes.length>=26){error.textContent=t('You can mark up to 26 elements.');return;}boxes.push({rect:[width*0.375,height*0.375,width*0.25,height*0.25],label:''});selected=boxes.length-1;renderList();draw();canvas.focus();};
   $('.elements-clear',dialog).onclick=()=>{boxes.splice(0);selected=-1;error.textContent='';renderList();draw();};
   $('.elements-cancel',dialog).onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove());
   $('.elements-save',dialog).onclick=async()=>{
@@ -67,7 +77,7 @@ function openElementsEditor(index) {
     oldCard?.remove();item.originalData=originalData;item.originalFile=item.originalFile||new File([originalBytes],item.file.name,{type:originalMime});const baseName=item.originalFile.name;const file=new File([Uint8Array.from(atob(data),x=>x.charCodeAt(0))],`${baseName.replace(/\.[^.]+$/,'')}-marked.png`,{type:'image/png'});item.data=data;item.file=file;URL.revokeObjectURL(item.url);item.url=URL.createObjectURL(file);
     item.elements={question,image:index,size:[width,height],boxes:Object.fromEntries(boxes.map((b,i)=>[String(i+1),b.rect.map(Math.round)])),labels:Object.fromEntries(boxes.map((b,i)=>[String(i+1),b.label.trim()]))};
     addQuestion(question,{type:'choice',instructions:oldModel?.instructions??t('Which element should be acted on next?'),criteria:Object.fromEntries(boxes.map((b,i)=>[String(i+1),optionOf(b,i)]))});
-    const card=[...document.querySelectorAll('.question')].find(q=>$('.q-name',q).value===question);card._elementOwner=index;card._elementItem=item;card.dataset.elementOwner=index;$('.q-type',card).disabled=true;const options=$('[data-f="criteria"]',card);options.disabled=true;const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');options.after(note);
+    const card=[...document.querySelectorAll('.question')].find(q=>$('.q-name',q).value===question);card._elementOwner=index;card._elementItem=item;card.dataset.elementOwner=index;$('.q-type',card).disabled=true;const options=$('[data-f="criteria"]',card);options.disabled=true;ChoiceEditor.setReadOnly(card);const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');(card.querySelector('.choice-editor')||options).after(note);
     card.querySelector('.q-name').addEventListener('input',e=>{item.elements.question=e.target.value;});renderSelectedMedia();syncRequest();dialog.close();
   };
   source.onload=()=>{width=canvas.width=source.naturalWidth;height=canvas.height=source.naturalHeight;canvas.style.aspectRatio=`${width}/${height}`;canvas.hidden=false;save.disabled=false;renderList();draw();};source.src=imageData();dialog.showModal();
@@ -114,7 +124,7 @@ function restoreElementMarks(records) {
     item.elements=elements;
     if(editingJson)continue;
     card._elementOwner=record.index;card._elementItem=item;card.dataset.elementOwner=record.index;$('.q-type',card).disabled=true;
-    const options=$('[data-f="criteria"]',card);if(options){options.disabled=true;const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');options.after(note);}
+    const options=$('[data-f="criteria"]',card);if(options){options.disabled=true;ChoiceEditor.setReadOnly(card);const note=document.createElement('small');note.className='muted';note.textContent=t('Edit options in Mark elements.');(card.querySelector('.choice-editor')||options).after(note);}
     $('.q-name',card).addEventListener('input',e=>{item.elements.question=e.target.value;});
   }
   renderSelectedMedia();updateMediaEvidence();if(!editingJson)syncRequest();
