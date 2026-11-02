@@ -2570,6 +2570,11 @@ $('#addDecisionServer').onclick=()=>act(async()=>{
   await Promise.all([loadDecisionServers(),refreshStatus()]);
 });
 loadDecisionServers();
+let decisionServerStates='';
+document.addEventListener('app:status',event=>{  // a server's readiness and model list change after it is added
+  const states=(event.detail.models||[]).filter(m=>m.kind==='comparison').map(m=>`${m.id}:${m.state}`).join('|');
+  if(states!==decisionServerStates){decisionServerStates=states;loadDecisionServers();}
+});
 updateDecisionServerConsent();
 
 async function loadMemorySettings(){
