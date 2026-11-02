@@ -87,6 +87,21 @@ default and is inferred by `basal-run` from each state's language; explicit `pl`
 preset selected, JSONL lines containing only `state` are accepted and basal-run supplies that preset's questions.
 Unknown presets or unsupported language values return HTTP 400.
 
+### Scheduled Batch
+
+`GET /api/schedules` lists persisted schedules. `POST /api/schedules` creates one; `PUT /api/schedules/{id}` updates
+it; `DELETE` removes it. Definitions include `model`, absolute existing `input_dir` and writable `output_dir`, a
+filename-only glob `pattern` (default `*.jsonl`), `concurrency` (1–256), `interval` as
+`{"every_minutes":N}` or `{"daily_at":"HH:MM"}` using local time, and optional `overwrite`, `catch_up`, `paused`,
+`preset` and `lang`. Invalid definitions return HTTP 400.
+
+`POST /api/schedules/{id}/run` starts the next eligible file immediately; `GET /api/schedules/{id}/runs?cursor=0`
+returns up to 100 history records and `next_cursor`. A schedule processes files only when their size or modification
+time changes. The output is `<output_dir>/<stem>.answers.jsonl`; existing outputs are skipped unless overwrite is
+enabled. A model that is not loaded is recorded as skipped and is never loaded automatically. Batch jobs remain
+cancellable through `DELETE /api/batch` and visible under `GET /api/status` → `jobs.batch`. Three consecutive failed
+runs pause the schedule. History is appended to `schedules.jsonl` beside the settings file and retained up to 1 MiB.
+
 ### Memory settings and idle-unload status
 
 `GET /api/memory` returns `settings` including `idle_unload_minutes` (`null` means disabled). `PUT /api/memory`
