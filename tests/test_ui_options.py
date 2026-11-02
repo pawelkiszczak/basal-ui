@@ -361,7 +361,7 @@ def test_cuda_graph_modes_require_ampere_or_newer():
     options.check_combination(BF16, sm89, options.validate({"quant": "fp8"}, "fast"), "fast")
 
 
-def test_pico_modes_follow_basal_serve_2_4_refusals():
+def test_pico_modes_follow_basal_serve_refusals():
     pico = Variant(
         "pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True
     )
@@ -378,16 +378,22 @@ def test_pico_modes_follow_basal_serve_2_4_refusals():
     assert no_fla["fast"]["reason"] == no_fla["fast-nocompile"]["reason"] == options.FLA_REASON
     assert [m for m, row in no_fla.items() if row["default"]] == ["eager"]
     options.check_combination(pico, fla, options.validate({}, "fast"), "fast")
-    for refused in (
-        {"batches": "compact"},
-        {"prefix_cache": True},
-        {"state_cache_gb": 1.0},
-        {"long_lane": True},
-        {"lean": "on"},
-        {"quant": "fp8"},
-    ):
+    for refused in ({"long_lane": True}, {"quant": "fp8"}):  # refused by 2.4.1 and 2.5.0 alike
         with pytest.raises(ValueError, match=r"Qwen3\.5"):
             options.check_combination(pico, fla, options.validate(refused), "fast")
+    # basal-serve 2.4.1 refuses these in the graph engine, 2.5.0 serves them: basal-ui asks the engine (gdn_graph.refused)
+    engine_rules = (
+        ({"batches": "compact"}, {"batches": "compact"}),
+        ({"prefix_cache": True}, {"prefix": True}),
+        ({"state_cache_gb": 1.0}, {"state_cache_gb": 1.0}),
+        ({"lean": "on"}, {"lean": True}),
+    )
+    for chosen, rule in engine_rules:
+        if options.gdn_refused(None, device=False, **rule):
+            with pytest.raises(ValueError, match=r"Qwen3\.5"):
+                options.check_combination(pico, fla, options.validate(chosen), "fast")
+        else:
+            options.check_combination(pico, fla, options.validate(chosen), "fast")
     options.check_combination(pico, fla, options.validate({"prefix_cache": True}), "eager")
 
 

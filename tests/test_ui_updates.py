@@ -46,7 +46,7 @@ def test_ui_and_engine_updates_newer_older_unsupported_errors_and_disabled(tmp_p
         )
         assert engine["experimental"] is False and engine["supported"] == SUPPORTED_RANGE
         monkeypatch.setattr(updates, "_cached", {})
-        latest.update({updates.UI_REPO: "0.0.9", updates.ENGINE_REPO: "2.5.0"})
+        latest.update({updates.UI_REPO: "0.0.9", updates.ENGINE_REPO: "2.6.0"})
         d = client.get("/api/updates").json()
         assert d["newer"] is False
         assert d["engine"]["newer"] is True and d["engine"]["latest_supported"] is False  # released, not supported yet

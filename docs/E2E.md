@@ -10,7 +10,7 @@ They are skipped unless `BASAL_E2E=1`, so `pytest` stays fast.
 
 ```bash
 uv sync --group dev --extra mcp --extra e2e      # the dev group pins the engine release basal-ui is tested with
-uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
+uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
 uv run --no-sync playwright install chromium     # once: the page tests drive Chromium
 BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what this machine skipped and why
 ```
