@@ -71,7 +71,7 @@ pythonpath = ["."]  # tests import shared stubs from tests.conftest and tests.te
 markers = ["e2e: end-to-end test of a real basal-ui with real models (BASAL_E2E=1; docs/E2E.md)"]
 
 [tool.uv.sources]
-basal = { url = "https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz" }
+basal = { url = "https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz" }
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]  # CI and Linux dev: no CUDA wheels
 
 [[tool.uv.index]]

@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
+from packaging.version import Version
 
 from basal_ui import engine
 
@@ -30,7 +31,7 @@ def test_a_supported_release_runs_as_is(monkeypatch):
     }
 
 
-@pytest.mark.parametrize("version", ["2.5.0", "2.4.0", "not-a-version"])
+@pytest.mark.parametrize("version", ["2.6.0", "2.4.0", "not-a-version"])
 def test_an_engine_outside_the_range_is_refused_unless_unchecked(monkeypatch, version):
     fake_engine(monkeypatch, version)
     monkeypatch.delenv(engine.UNCHECKED_ENV, raising=False)
@@ -90,3 +91,37 @@ def test_every_pin_names_the_tested_release():
     assert not re.search(r"rkinas/basal\S*?v\d+\.\d+\.\d+", ci), (
         "ci.yml names an engine tag; its matrix comes from TESTED_RELEASES"
     )
+
+
+def test_every_tested_release_is_in_the_range():
+    """CI runs every TESTED_RELEASES entry: each must start without BASAL_UI_ENGINE_UNCHECKED."""
+    for version in engine.TESTED_RELEASES:
+        assert engine.supported(version), version
+
+
+NEW_IN_2_5 = ("adapter", "viz_gemma4", "mcp_models", "mlx_recurrent", "int8", "viz_mlx")
+
+
+def test_feature_probes_match_the_installed_engine():
+    """Each probe tells the tested releases apart: all on with 2.5.0, all off with 2.4.x (CI runs both)."""
+    assert set(NEW_IN_2_5) == set(engine.FEATURES)
+    found = {name: engine.feature(name) for name in engine.FEATURES}
+    assert all(isinstance(value, bool) for value in found.values()), found
+    version = Version(engine.installed()[0])
+    expected = version >= Version("2.5.0")
+    if version.release[:2] not in ((2, 4), (2, 5)):
+        pytest.skip(f"engine {version} is not a tested release line")
+    assert found == dict.fromkeys(NEW_IN_2_5, expected)
+
+
+def test_a_probe_of_an_engine_module_that_cannot_be_imported_is_off(monkeypatch):
+    real = engine.importlib.import_module
+
+    def import_module(name):
+        if name == "basal.mcp_server":
+            raise ImportError("no mcp")
+        return real(name)
+
+    monkeypatch.setattr(engine.importlib, "import_module", import_module)
+    assert engine.feature("mcp_models") is False
+    assert engine._parameter("basal.engine", "NoSuchBackend.__init__", "compute") is False
