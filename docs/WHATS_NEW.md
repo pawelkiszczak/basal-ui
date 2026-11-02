@@ -50,6 +50,10 @@
 - Settings → Defaults can import presets from a public URL; the response is limited to 1 MiB and must be JSON, then
   merges with existing presets using the same rules as file import. [USAGE.md](USAGE.md#load-options),
   [API.md](API.md#local-app-management-api)
+- Settings can attach external System One Decision servers as **Comparison models**. The Playground compares answers and
+  latency side by side, while Batch preflights every input line before running. Comparison answers are marked
+  uncalibrated; their servers and keys never appear on the API server or MCP. [USAGE](USAGE.md#comparison-models) ·
+  [API](API.md#local-app-management-api)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

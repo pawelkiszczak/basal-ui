@@ -86,6 +86,116 @@ def child_request(path, body):
     return internal, systemone_reply
 
 
+COMPARISON_UNSUPPORTED_TYPES = {"multi", "act", "tool", "classify", "verify", "compress", "extract"}
+COMPARISON_UNSUPPORTED_FIELDS = ("facts", "evidence", "max_error", "coverage", "ask_if", "depends_on")
+
+
+def comparison_request(body, image_input=False):
+    """Reject System One features a plain Decision server cannot promise to preserve."""
+    from starlette.responses import JSONResponse
+
+    def refused(field):
+        return JSONResponse(
+            {"error": f"comparison models do not support {field}", "code": "UNSUPPORTED_FOR_COMPARISON"},
+            status_code=400,
+        )
+
+    for field in COMPARISON_UNSUPPORTED_FIELDS:
+        if field in body:
+            return refused(field)
+    questions = body.get("questions")
+    if isinstance(questions, dict):
+        for name, question in questions.items():
+            if not isinstance(question, dict):
+                continue
+            kind = question.get("type")
+            if kind in COMPARISON_UNSUPPORTED_TYPES:
+                return refused(f"questions.{name}.type")
+            for field in COMPARISON_UNSUPPORTED_FIELDS:
+                if field in question:
+                    return refused(f"questions.{name}.{field}")
+            options = question.get("options", question.get("choices", question.get("criteria")))
+            if kind == "choice" and isinstance(options, (list, dict)) and len(options) > 26:
+                return refused(f"questions.{name}.options")
+    media = body.get("media") or body.get("images") or body.get("audio")
+    if media and (not image_input or any(isinstance(item, dict) and item.get("type") == "audio" for item in media)):
+        return refused("media")
+    return None
+
+
+def systemone_to_decisions(body):
+    """The supported subset of System One expressed as an OpenAI Decisions request."""
+    questions = []
+    source = body.get("questions", {})
+    if not isinstance(source, dict):
+        raise ValueError("questions must be an object")
+    for name, question in source.items():
+        kind = question.get("type")
+        item = {"name": name, "instructions": question.get("instructions", "")}
+        if kind == "choice":
+            options = question.get("options", question.get("choices"))
+            criteria = question.get("criteria")
+            if options is None and criteria is not None:
+                options = (
+                    [{"value": value, "description": description} for value, description in criteria.items()]
+                    if isinstance(criteria, dict)
+                    else criteria
+                )
+            choices = [option if isinstance(option, dict) else {"value": option} for option in (options or [])]
+            item.update(
+                type="choice",
+                choices=[
+                    {
+                        "value": choice.get("value"),
+                        **({"description": choice["description"]} if choice.get("description") is not None else {}),
+                    }
+                    for choice in choices
+                ],
+            )
+        elif kind == "noul":
+            item["type"] = "predicate"
+        elif kind == "score":
+            criteria = question.get("criteria", [])
+            labels = list(criteria) if isinstance(criteria, dict) else list(criteria)
+            item.update(type="score", levels=[{"label": str(label)} for label in labels])
+        else:
+            raise ValueError(f"unsupported comparison question type: {kind}")
+        questions.append(item)
+    return {"input": body.get("state", ""), "questions": questions}
+
+
+def decisions_to_systemone(response, original):
+    """Convert an OpenAI Decisions answer back to the System One shape used by the Playground."""
+    answers = {}
+    names = list(original.get("questions", {}))
+    for index, answer in enumerate(response.get("answers", [])):
+        name = answer.get("name") or (names[index] if index < len(names) else f"q{index}")
+        kind = answer.get("type")
+        if kind == "choice":
+            probabilities = {str(item["value"]): item["probability"] for item in answer.get("probabilities", [])}
+            choice = max(probabilities, key=probabilities.get) if probabilities else answer.get("choice")
+            answers[name] = {
+                "type": "choice",
+                "choice": choice,
+                "probabilities": probabilities,
+                "confidence": answer.get("confidence"),
+            }
+        elif kind == "predicate":
+            answers[name] = {"type": "noul", "noul": answer.get("probability")}
+        elif kind == "score":
+            probabilities = {
+                str(item.get("label", item.get("value"))): item["probability"]
+                for item in answer.get("probabilities", [])
+            }
+            answers[name] = {
+                "type": "score",
+                "score": answer.get("score"),
+                "probabilities": probabilities,
+                "confidence": answer.get("confidence"),
+            }
+    return {"model": response.get("model"), "answers": answers, "usage": response.get("usage", {})}
+
+
 MAX_MEDIA_BYTES = 20 * 1024 * 1024  # basal/media.py MAX_BYTES
 
 

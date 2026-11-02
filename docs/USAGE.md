@@ -604,3 +604,18 @@ or start automatically after a restart; every member must already be ready. Unlo
 that uses it. The Playground reports which level/model answered. Blend and fallback results are marked uncalibrated
 and must not be treated as automatable. Cascades are excluded from Calibration, Inspect, and Benchmarks; only
 escalation Cascades are available to Batch. Engine 2.4.1 hides this feature.
+
+## Comparison models
+
+In Settings → Decision servers, add a System One server URL, a display name and (when required) its API key. The app
+lists models reported by `/v1/models`; a stopped or unreachable server is marked **unavailable** and checked again
+automatically. Loopback servers need no consent. Other hosts require checking the consent box because Playground and
+Batch request data is sent to that host. Keys are stored in the owner-only `decision_servers.json` beside the settings
+file and are never returned by the management API. Delete the server to remove its models and key.
+
+Choose a Comparison model in the Playground's second slot to see both answers and their latencies. Its confidence is
+not calibrated, and it is never presented as automatable. Comparison models can also run Batch against labelled
+JSONL. Requests using basal-only question types or fields are refused before they are sent; Batch checks every input
+line before starting. Media is refused unless the reported model accepts images (audio is not supported).
+Comparison models are not loaded processes: they do not count against the memory budget and cannot be restarted or
+served through basal-ui's API server or MCP. They do not appear in Load, Calibration, Inspect or Benchmarks.

@@ -1495,3 +1495,84 @@ def test_cascade_routes_explain_engine_compatibility(tmp_path, monkeypatch):
         response = client.get("/api/cascades")
     assert response.status_code == 409
     assert "need engine 2.5" in response.json()["detail"]
+
+
+def test_comparison_servers_refuse_unsupported_requests_before_forwarding(tmp_path, child, monkeypatch, instant_start):
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+    monkeypatch.setattr(
+        Runner,
+        "decide",
+        lambda self, body, path="/v1/systemone": httpx.Response(
+            200, json={"model": self.model, "answers": {"q": {"type": "choice", "choice": "a"}}}
+        ),
+    )
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
+        wait_for(lambda: states(client).get("mini") == "ready")
+        attached = client.post(
+            "/api/decision-servers",
+            json={"name": "fixture", "url": child.url, "key": "server-secret"},
+        )
+        assert attached.status_code == 201
+        wait_for(lambda: any(x.endswith("/remote") for x in fleet.runners))
+        comparison_id = next(x for x in fleet.runners if x.endswith("/remote"))
+
+        refused = client.post(
+            "/api/compare",
+            json={
+                "model": "mini",
+                "compare_model": comparison_id,
+                "state": "hello",
+                "questions": {"q": {"type": "multi", "instructions": "Choose"}},
+            },
+        )
+        assert refused.status_code == 400
+        assert refused.json() == {
+            "error": "comparison models do not support questions.q.type",
+            "code": "UNSUPPORTED_FOR_COMPARISON",
+        }
+        assert child.seen == []
+
+        compared = client.post(
+            "/api/compare",
+            json={
+                "model": "mini",
+                "compare_model": comparison_id,
+                "state": "hello",
+                "questions": {"q": {"type": "choice", "instructions": "Choose", "criteria": ["a", "b"]}},
+            },
+        )
+        assert compared.status_code == 200
+        assert compared.json()["primary"]["response"]["answers"]["q"]["choice"] == "a"
+        assert compared.json()["comparison"]["response"]["answers"]["q"]["probabilities"] == {"0": 0.8, "1": 0.2}
+        assert child.seen == [
+            (
+                "/v1/systemone",
+                {
+                    "state": "hello",
+                    "questions": {"q": {"type": "choice", "instructions": "Choose", "criteria": ["a", "b"]}},
+                },
+            )
+        ]
+        assert child.auth == ["Bearer server-secret"]
+        secret_path = settings.secrets_path()
+        assert secret_path.stat().st_mode & 0o777 == 0o600
+        assert "server-secret" not in client.get("/api/decision-servers").text
+        server_id = attached.json()["servers"][0]["id"]
+        deleted = client.delete(f"/api/decision-servers/{server_id}")
+        assert deleted.status_code == 200
+        assert comparison_id not in fleet.runners
+        assert settings.get_secret(server_id) is None
+
+
+def test_decision_server_requires_consent_for_hosted_external_url(tmp_path):
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/api/decision-servers",
+            json={"name": "Hosted", "url": "https://api.typesafe.ai"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "CONSENT_REQUIRED"
+    assert "api.typesafe.ai" in response.json()["detail"]["detail"]

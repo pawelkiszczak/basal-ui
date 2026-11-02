@@ -89,6 +89,21 @@ def test_models_endpoint_marks_cascade_kind(fleet):
     assert next(item for item in response.json()["models"] if item["name"] == "tri")["kind"] == "cascade"
 
 
+def test_comparison_runners_are_not_exposed_by_api_gateway(fleet):
+    from basal_ui.fleet import AttachedServerRunner
+
+    server = {"id": "private", "name": "External", "base_url": "http://127.0.0.1:11434"}
+    comparison = AttachedServerRunner(server, {"id": "remote"}, settings)
+    comparison.state = "ready"
+    fleet.runners[comparison.model] = comparison
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        listing = client.get("/v1/models").json()
+        health = client.get("/health").json()
+    assert "private/remote" not in {entry["id"] for entry in listing["data"]}
+    assert "private/remote" not in {entry["name"] for entry in listing["models"]}
+    assert "private/remote" not in health["models"]
+
+
 def test_gateway_rejects_untrusted_host_on_forwarding_routes(fleet):
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         response = client.post("/v1/systemone", json={"model": "a/one"}, headers={"Host": "evil.example"})

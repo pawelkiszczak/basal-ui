@@ -12,6 +12,7 @@ import re
 import secrets
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -401,6 +402,47 @@ def set_secret(name: str, value: str | None) -> None:
     else:
         raise ValueError("secret must be a string or null")
     _write_private(path, json.dumps(secrets, indent=2))
+
+
+def decision_servers() -> list[dict]:
+    value = load().get("decision_servers", [])
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def add_decision_server(name: str, url: str, consent: bool = False) -> dict:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be a non-empty string")
+    if not isinstance(url, str):
+        raise ValueError("url must be an http(s) URL")
+    parsed = urlsplit(url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("url must be an http(s) URL without credentials")
+    if not isinstance(consent, bool):
+        raise ValueError("consent must be a boolean")
+    record = {
+        "id": uuid.uuid4().hex,
+        "name": name.strip(),
+        "url": url.strip().rstrip("/"),
+        "consent": consent,
+        "created": int(time.time()),
+    }
+    data = load()
+    data["decision_servers"] = [*decision_servers(), record]
+    save(data)
+    return record
+
+
+@_locked
+def remove_decision_server(server_id: str) -> bool:
+    data = load()
+    servers = decision_servers()
+    if not any(item.get("id") == server_id for item in servers):
+        return False
+    data["decision_servers"] = [item for item in servers if item.get("id") != server_id]
+    save(data)
+    set_secret(server_id, None)
+    return True
 
 
 def cascades() -> list[dict]:
