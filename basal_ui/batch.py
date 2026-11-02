@@ -13,7 +13,9 @@ def default_output(input_path) -> Path:
     return path.with_name(f"{path.stem}.answers.jsonl")
 
 
-def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, early_exit=None) -> dict:
+def run_batch(
+    job, fleet, model_id, input_path, output_path, concurrency=16, early_exit=None, preset=None, lang="auto"
+) -> dict:
     """The batch job: basal-run in its own process (it writes the output file at the end); a cancel stops it."""
     runner = fleet.ready(model_id)
     total = sum(1 for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip())
@@ -30,6 +32,10 @@ def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, ear
     ]
     if early_exit:
         args += ["--early-exit", str(early_exit)]
+    if preset:
+        args += ["--preset", preset]
+    if lang in ("pl", "en"):
+        args += ["--lang", lang]
     summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
     if summary is None:
         raise RuntimeError("basal-run printed no summary")
