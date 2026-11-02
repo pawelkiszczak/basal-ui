@@ -765,7 +765,8 @@ class Fleet:
             candidates = [
                 (model_id, runner, runner.gen, runner.base_url)
                 for model_id, runner in self.runners.items()
-                if not runner.temporary
+                if isinstance(runner, Runner)
+                and not runner.temporary
                 and runner.state == "ready"
                 and runner.last_used is not None
                 and now - runner.last_used >= minutes * 60

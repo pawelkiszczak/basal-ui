@@ -895,6 +895,15 @@ def test_memory_routes_validate_and_report_the_hardware_budget(tmp_path):
         assert client.get("/api/status").json()["memory"]["budget_bytes"] == 8 * 1024**3
 
 
+def test_idle_unload_skips_non_child_runners(tmp_path):
+    settings.update_memory({"idle_unload_minutes": 1})
+    fleet = make_fleet(tmp_path)
+    cascade = SimpleNamespace(temporary=False, state="ready", last_used=0)
+    fleet.runners["cascade/example"] = cascade
+    assert fleet.unload_idle(61) == []
+    assert fleet.runners["cascade/example"] is cascade
+
+
 def test_idle_unload_requires_idle_health_and_records_status(tmp_path, monkeypatch, instant_start):
     monkeypatch.setattr(
         httpx,
