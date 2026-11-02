@@ -675,6 +675,7 @@ const PL = {
   "Send Playground decision": "Wyślij decyzję z Playground",
   "Send decision": "Wyślij decyzję",
   "Send this tools/call through an initialized MCP client at {url}. The gateway selects the first loaded model.": "Wyślij to tools/call przez zainicjowanego klienta MCP pod adresem {url}. Brama wybiera pierwszy załadowany model.",
+  "Send this tools/call through an initialized MCP client at {url}. list_models names the loaded models; model selects one.": "Wyślij to tools/call przez zainicjowanego klienta MCP pod adresem {url}. list_models podaje załadowane modele; model wybiera jeden z nich.",
   "Sequential": "Sekwencyjnie",
   "Serve the API": "Udostępniaj API",
   "Served calibration": "Kalibracja używana przez model",

@@ -6,8 +6,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from basal_ui import engine, settings
 from basal_ui import gateway as gateway_module
-from basal_ui import settings
 from basal_ui.auth import ApiKeys
 from basal_ui.fleet import Fleet, Runner
 from basal_ui.gateway import Gateway, build_app
@@ -199,9 +199,14 @@ def test_keys_guard_every_route_and_stats_need_the_admin_key(fleet, tmp_path):
         assert preflight.headers["access-control-allow-origin"] == "https://app.example"
 
 
-def test_mcp_tools_answer_with_the_first_loaded_model(fleet):
-    """basal-serve 2.4.1's MCP tools take no model argument: the API server's MCP answers with the first loaded model."""
+@pytest.mark.parametrize("mcp_models", [True, False])
+def test_mcp_tools_route_by_model_argument_or_the_first_loaded_model(fleet, monkeypatch, mcp_models):
+    """Without `model` the API server's MCP answers with the first loaded model (2.4.1 and 2.5.0); with engine 2.5.0
+    the tools take `model` and list_models names the loaded ids."""
     pytest.importorskip("mcp")
+    if mcp_models and not engine.feature("mcp_models"):
+        pytest.skip("the installed engine's MCP tools take no model argument (2.4.1)")
+    monkeypatch.setattr(gateway_module, "feature", lambda name: mcp_models if name == "mcp_models" else False)
     headers = {"Accept": "application/json, text/event-stream", "Host": "127.0.0.1:8793"}
 
     def rpc(client, method, params):
@@ -214,9 +219,26 @@ def test_mcp_tools_answer_with_the_first_loaded_model(fleet):
     with TestClient(build_app(fleet, fleet.stats, mcp=True), base_url="http://127.0.0.1") as client:
         answer = rpc(client, "tools/call", {"name": "decide", "arguments": {"state": "s", "question": "?"}})
         assert answer["structuredContent"]["model"] == "a/one"
-    assert [(r["model"], r["source"]) for r in fleet.history.list()] == [("a/one", "mcp")]
+        tools = {t["name"]: t for t in rpc(client, "tools/list", {})["tools"]}
+        if mcp_models:
+            assert "model" in tools["decide"]["inputSchema"]["properties"]
+            assert "model" in tools["decide_many"]["inputSchema"]["properties"]
+            listed = rpc(client, "tools/call", {"name": "list_models", "arguments": {}})
+            assert listed["structuredContent"] == {"models": ["a/one", "b/two"]}
+            second = rpc(
+                client, "tools/call", {"name": "decide", "arguments": {"state": "s", "question": "?", "model": "b/two"}}
+            )
+            assert second["structuredContent"]["model"] == "b/two"
+            missing = rpc(
+                client, "tools/call", {"name": "decide", "arguments": {"state": "s", "question": "?", "model": "c/x"}}
+            )
+            assert missing["isError"] and "model 'c/x' is not loaded" in missing["content"][0]["text"]
+        else:
+            assert "list_models" not in tools and "model" not in tools["decide"]["inputSchema"]["properties"]
+    expected = [("a/one", "mcp"), ("b/two", "mcp")] if mcp_models else [("a/one", "mcp")]
+    assert sorted((r["model"], r["source"]) for r in fleet.history.list()) == expected
     traffic = fleet.stats.traffic_snapshot(15)
-    assert [(row["endpoint"], row["method"], row["requests"]) for row in traffic["endpoints"]] == [("/mcp", "CALL", 1)]
+    assert [(row["endpoint"], row["method"]) for row in traffic["endpoints"]] == [("/mcp", "CALL")]
 
 
 def test_pre_inference_validation_stays_in_lifetime_stats_but_not_traffic(fleet):
@@ -335,6 +357,7 @@ def test_gateway_serves_on_the_configured_port_and_reports_restarts(fleet):
             ["a/one", "b/two"],
         )
         assert status["restart_required"] is False
+        assert status["mcp_models"] is engine.feature("mcp_models")  # what the Playground's MCP example relies on
         assert httpx.get(f"http://127.0.0.1:{port}/health").json()["models"] == ["a/one", "b/two"]
         settings.update_serve({"require_key": True})
         assert gateway.status()["restart_required"] is True
