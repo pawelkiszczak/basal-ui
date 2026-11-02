@@ -4,6 +4,10 @@
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
   evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.
 
+- Correct the Backend Inference test persistence regression to distinguish user data from read-lock sidecars.
+  Read-only Stats polling must not count private Decisions or change settings, history or persisted statistics.
+  Runtime behavior is unchanged.
+
 # 0.1.0
 
 Stable release, tag `v0.1.0`. Includes the review fixes and Studio redesign with the selected contributor-inspired

@@ -155,13 +155,17 @@ def test_matching_modes_excludes_unsupported_strix_and_tpu_models(manager, backe
 
 
 def test_private_test_does_not_change_settings_history_or_stats(manager, tmp_path):
-    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    # Read-only Stats access may create a lock sidecar; only user data must remain unchanged.
+    paths = [tmp_path / name for name in ("settings.json", "history.jsonl", "stats.json")]
+    before = {p.name: p.read_bytes() if p.exists() else None for p in paths}
     manager.start(request())
     assert finish(manager).phase == "done"
     assert manager.records()[0]["status"] == "passed"
     assert manager.records()[0]["status_code"] == "backend_test_status_passed"
     assert not manager.fleet.temporary and not manager.fleet.reserved
-    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    assert manager.fleet.stats.snapshot()["models"] == {}
+    manager.fleet.stats.flush()
+    assert before == {p.name: p.read_bytes() if p.exists() else None for p in paths}
 
 
 def test_unload_and_restore_preserves_active_snapshot(manager):
