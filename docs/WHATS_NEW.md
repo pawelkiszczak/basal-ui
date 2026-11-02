@@ -47,6 +47,9 @@
 - The Playground can record a microphone clip on models with audio input; it is converted to mono PCM WAV and attached
   within the existing 20 MiB media limit.
 - Playground tool questions can import selected definitions from an MCP streamable-HTTP server and merge by name; an optional bearer token is used only for that call. The question remembers its source URL, and a local BM25 shortlist ranks tools by the question's instructions. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it), [API.md](API.md#importing-mcp-tools-and-shortlisting)
+- Settings → Defaults can import presets from a public URL; the response is limited to 1 MiB and must be JSON, then
+  merges with existing presets using the same rules as file import. [USAGE.md](USAGE.md#load-options),
+  [API.md](API.md#local-app-management-api)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

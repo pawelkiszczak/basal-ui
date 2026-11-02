@@ -255,11 +255,11 @@ loads unchanged.
 
 **Presets**
 save a set of options under a name to apply to any model; the Playground saves requests the same way (**Saved
-requests** in the examples list), and both export to and import from one `presets.json`. Only the values that differ
-from basal-serve's defaults are
-passed, and a combination basal-serve refuses shows its own message on the model's row. **Remember for this model**
-keeps them for its next plain Load; a restart and auto-load reuse the options the model runs with. The row lists them
-as chips. **Experimental**: **Thinking** (`--think auto`, with the reasoning budget, and the Python of an environment
+requests** in the examples list), and both export to and import from one `presets.json`. In Settings → Defaults, **Import
+from URL** fetches and merges a public JSON presets file (up to 1 MiB), using the same validation and merge rules as
+file import. Only the values that differ from basal-serve's defaults are passed, and a combination basal-serve refuses
+shows its own message on the model's row. **Remember for this model** keeps them for its next plain Load; a restart and
+auto-load reuse the options the model runs with. The row lists them as chips. **Experimental**: **Thinking** (`--think auto`, with the reasoning budget, and the Python of an environment
 with vLLM or the URL of a running think server when basal-ui's own has no vLLM; the readout-2 calibration, think
 weights, LoRA adapter and the think server's vLLM memory, context and log) for basal-2.0 4.5B
 ([THINKING.md](https://github.com/rkinas/basal/blob/main/docs/THINKING.md)), and the default **early exit** policy of `--mode fast-exit` (basal-1.0 bf16 on CUDA);

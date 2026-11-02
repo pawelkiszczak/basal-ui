@@ -95,6 +95,62 @@ def test_fetch_route_preserves_json(monkeypatch, tmp_path):
     assert response.json()["state"] == {"ok": True}
 
 
+def test_import_presets_from_url_merges_existing_presets(monkeypatch, tmp_path):
+    monkeypatch.setattr(url_fetch.socket, "getaddrinfo", _resolver("93.184.216.34"))
+    _mock_client(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "application/json; charset=utf-8"},
+            json={
+                "load": {"imported": {"mode": "eager"}},
+                "request": {"shared": {"questions": {"decision": {"type": "choice", "options": ["yes", "no"]}}}},
+            },
+        ),
+    )
+    with _route_client(tmp_path, monkeypatch) as client:
+        client.put("/api/presets", json={"kind": "load", "name": "existing", "value": {"mode": "mps"}})
+        response = client.post("/api/presets/import-url", json={"url": "https://example.com/presets.json"})
+    assert response.status_code == 200
+    assert response.json() == {
+        "load": {"existing": {"mode": "mps"}, "imported": {"mode": "eager"}},
+        "request": {"shared": {"questions": {"decision": {"type": "choice", "options": ["yes", "no"]}}}},
+    }
+
+
+def test_import_presets_from_url_refuses_non_json(monkeypatch, tmp_path):
+    monkeypatch.setattr(url_fetch.socket, "getaddrinfo", _resolver("93.184.216.34"))
+    _mock_client(monkeypatch, lambda request: httpx.Response(200, headers={"content-type": "text/plain"}, text="{}"))
+    with _route_client(tmp_path, monkeypatch) as client:
+        response = client.post("/api/presets/import-url", json={"url": "https://example.com/presets"})
+    assert response.status_code == 415
+    assert response.json()["code"] == "fetch_unsupported_type"
+
+
+def test_import_presets_from_url_refuses_oversized_json(monkeypatch, tmp_path):
+    monkeypatch.setattr(url_fetch.socket, "getaddrinfo", _resolver("93.184.216.34"))
+    _mock_client(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b" " * (1024 * 1024 + 1),
+        ),
+    )
+    with _route_client(tmp_path, monkeypatch) as client:
+        response = client.post("/api/presets/import-url", json={"url": "https://example.com/presets"})
+    assert response.status_code == 413
+    assert response.json()["code"] == "fetch_too_large"
+
+
+def test_import_presets_from_url_refuses_private_addresses(monkeypatch, tmp_path):
+    monkeypatch.setattr(url_fetch.socket, "getaddrinfo", _resolver("10.0.0.1"))
+    with _route_client(tmp_path, monkeypatch) as client:
+        response = client.post("/api/presets/import-url", json={"url": "https://example.com/presets"})
+    assert response.status_code == 400
+    assert response.json()["code"] == "fetch_address_refused"
+
+
 def test_fetch_route_refuses_oversized_response(monkeypatch, tmp_path):
     monkeypatch.setattr(url_fetch.socket, "getaddrinfo", _resolver("93.184.216.34"))
     _mock_client(

@@ -876,6 +876,32 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         return get_presets()
 
+    @app.post("/api/presets/import-url")
+    def import_presets_url(body: dict = Body(...)):
+        from . import fetch as url_fetch
+
+        try:
+            _final_url, response, data = url_fetch.fetch_bytes(
+                body.get("url"), url_fetch.PRESET_MAX_BYTES, "application/json"
+            )
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise url_fetch.UnsupportedContentType(f"unsupported content type: {content_type or 'unknown'}")
+            try:
+                imported = json.loads(data)
+            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+                raise HTTPException(400, f"invalid presets JSON: {exc}") from exc
+            if not isinstance(imported, dict) or any(
+                imported.get(kind) is not None and not isinstance(imported[kind], dict) for kind in ("load", "request")
+            ):
+                raise HTTPException(400, "presets JSON must contain load and request objects")
+            for kind in ("load", "request"):
+                for name, value in (imported.get(kind) or {}).items():
+                    put_preset({"kind": kind, "name": name, "value": value})
+        except url_fetch.FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status_code)
+        return get_presets()
+
     @app.get("/api/models/card")
     def get_model_card(id: str):
         variant = find_variant(id)
