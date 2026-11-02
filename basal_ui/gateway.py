@@ -176,18 +176,26 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
 
         runners = tuple(getattr(fleet, "runners", {}).values())
         child_results = await asyncio.gather(*(fetch_child(runner) for runner in runners))
-        seen_headers = set()
+        families = {}  # metric family -> {"headers": [...], "samples": [...]}: the text format groups each family
+
+        def family(name):
+            for suffix in ("_bucket", "_sum", "_count", "_created", "_total"):
+                if name.endswith(suffix) and name[: -len(suffix)] in families:
+                    return name[: -len(suffix)]
+            return name
+
         for result in child_results:
             if result is None:
                 continue
             model_id, text = result
+            escaped_id = _prom_escape(model_id)
             for line in text.splitlines():
                 if line.startswith(("# HELP ", "# TYPE ")):
                     parts = line.split(None, 3)
-                    header = (parts[1], parts[2]) if len(parts) >= 3 else None
-                    if header is not None and header not in seen_headers:
-                        seen_headers.add(header)
-                        lines.append(line)
+                    if len(parts) >= 3:
+                        headers = families.setdefault(parts[2], {"headers": [], "samples": []})["headers"]
+                        if not any(h.split(None, 3)[1] == parts[1] for h in headers):
+                            headers.append(line)
                     continue
                 if not line or line.startswith("#"):
                     continue
@@ -195,7 +203,6 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
                 if not match:
                     continue
                 name, labels, value = match.groups()
-                escaped_id = _prom_escape(model_id)
                 if labels:
                     content = labels[1:-1]
                     if re.search(r'(?:^|,)model="(?:\\.|[^"\\])*"(?:,|$)', content):
@@ -209,7 +216,11 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
                         labels = "{" + content + f',model="{escaped_id}"' + "}"
                 else:
                     labels = f'{{model="{escaped_id}"}}'
-                lines.append(f"{name}{labels}{value}")
+                families.setdefault(family(name), {"headers": [], "samples": []})["samples"].append(
+                    f"{name}{labels}{value}"
+                )
+        for group in families.values():
+            lines.extend(group["headers"] + group["samples"])
         return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
 
     mcp_routes, mcp_run = [], None
