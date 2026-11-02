@@ -13,7 +13,9 @@ import asyncio
 import base64
 import dataclasses
 import json
+import math
 import os
+import re
 import shutil
 import sys
 import threading
@@ -952,6 +954,8 @@ def create_app(
         think_code, think_params = load_options.option_message_fields(think_reason)
         adapter_reason = load_options.adapter_unavailable()
         adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
+        adapter_root = Path(settings_mod.models_dir()) / "adapters" / variant.id.replace("/", "--")
+        adapters = sorted(str(path) for path in adapter_root.glob("*/lora") if (path / "adapter_config.json").is_file())
         return {
             "modes": load_options.available_modes(variant, current, assessment),
             "options": merged,
@@ -964,6 +968,7 @@ def create_app(
             "adapter_reason": adapter_reason,
             "adapter_reason_code": adapter_code,
             "adapter_reason_params": adapter_params,
+            "adapters": adapters,
             "think": {
                 "model": family_ok,
                 "vllm": "vllm" in current.engines,
@@ -1290,6 +1295,106 @@ def create_app(
         if not local_dir:
             raise HTTPException(400, f"download {variant.id} first")
         return Path(local_dir)
+
+    @app.post("/api/finetune", status_code=202)
+    def post_finetune(body: dict = Body(...)):
+        from . import addons as addon_tools
+        from . import paths
+        from .jobs import run_tool
+
+        if not engine.feature("finetune"):
+            raise HTTPException(400, "fine-tuning needs Engine 2.5")
+        if not addon_tools._extra_installed("finetune"):
+            raise HTTPException(400, "fine-tuning needs the peft add-on; install it in Backends → Engine add-ons")
+        variant = find_variant(body.get("id"))
+        if variant.family not in ("attached",) and not variant.family.startswith("basal-"):
+            raise HTTPException(400, "fine-tuning requires a basal or Attached model")
+        if variant.port != "bf16":
+            raise HTTPException(400, "fine-tuning requires a downloaded bf16 model")
+        local_dir = downloaded(variant)
+        input_path = body.get("input")
+        checked = paths.check(input_path, "jsonl")
+        if not checked["ok"]:
+            raise HTTPException(400, f"input: {checked['code']}")
+        out_name = body.get("out_name")
+        if not isinstance(out_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", out_name):
+            raise HTTPException(400, "out_name must be a safe single path segment")
+        values = {
+            "epochs": (body.get("epochs", 2.0), (int, float), lambda value: value > 0),
+            "lr": (body.get("lr", 1e-4), (int, float), lambda value: value > 0),
+            "rank": (body.get("rank", 16), int, lambda value: value > 0),
+            "alpha": (body.get("alpha", 32), int, lambda value: value > 0),
+            "holdout": (body.get("holdout", 0.25), (int, float), lambda value: 0 < value < 1),
+            "max_len": (body.get("max_len", 2048), int, lambda value: value > 0),
+        }
+        if "max_steps" in body:
+            values["max_steps"] = (body["max_steps"], int, lambda value: value > 0)
+        for key, (value, kinds, valid) in values.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, kinds)
+                or (isinstance(value, float) and not math.isfinite(value))
+                or not valid(value)
+            ):
+                raise HTTPException(400, f"{key} has an invalid value")
+        grad_checkpointing = body.get("grad_checkpointing", False)
+        if not isinstance(grad_checkpointing, bool):
+            raise HTTPException(400, "grad_checkpointing must be a boolean")
+        output_dir = Path(settings_mod.models_dir()) / "adapters" / variant.id.replace("/", "--") / out_name
+        if output_dir.exists():
+            raise HTTPException(409, "fine-tune output already exists")
+        assessment = catalog.assess(variant, hw())
+        device = {"apple": "mps", "cuda": "cuda"}.get(hw().platform, "cpu")
+        argv = [str(checked["path"]), "--model", str(local_dir), "--out", str(output_dir)]
+        for key in ("epochs", "lr", "rank", "alpha", "holdout", "max_len", "max_steps"):
+            if key == "epochs" or key in body:
+                flag = "--max-steps" if key == "max_steps" else f"--{key.replace('_', '-')}"
+                argv.extend((flag, str(values[key][0])))
+        if grad_checkpointing:
+            argv.append("--grad-checkpointing")
+        argv.extend(("--device", device))
+
+        def run(job):
+            try:
+                result = run_tool(job, "finetune", argv, out_path=output_dir / "finetune.json")
+                return {"output": str(output_dir), **result}
+            finally:
+                fleet.release("finetune")
+
+        try:
+            fleet.reserve("finetune", 2 * (assessment.est_memory_bytes or 0))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
+            return fleet.jobs.start("finetune", variant.id, f"Fine-tune {variant.id}", run)
+        except RuntimeError as exc:
+            fleet.release("finetune")
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/finetune")
+    def get_finetune(id: str):
+        if not engine.feature("finetune"):
+            return {"available": False, "reason": "fine-tuning needs Engine 2.5", "results": []}
+        from . import addons as addon_tools
+
+        available = addon_tools._extra_installed("finetune")
+        if not available:
+            return {"available": False, "reason": "fine-tuning needs the peft add-on", "results": []}
+        variant = find_variant(id)
+        root = Path(settings_mod.models_dir()) / "adapters" / variant.id.replace("/", "--")
+        results = []
+        for report in sorted(root.glob("*/finetune.json"), key=lambda path: path.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(report.read_text())
+                if isinstance(data, dict):
+                    results.append({"name": report.parent.name, "output": str(report.parent), **data})
+            except (OSError, ValueError):
+                continue
+        return {"available": True, "results": results}
+
+    @app.delete("/api/finetune")
+    def cancel_finetune():
+        return fleet.jobs.cancel("finetune")
 
     @app.post("/api/calibrate", status_code=202)
     def post_calibrate(body: dict = Body(...)):

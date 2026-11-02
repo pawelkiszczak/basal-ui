@@ -29,12 +29,13 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 
 | Route | Contract |
 |---|---|
-| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
-| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `GET /api/addons` | Current Python environment and `media`/`gguf`/`finetune` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf` or `finetune`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
 | `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
 | `GET /api/attach` | Returns `{"available":boolean,"bases":[...]}`; bases are empty unless `engine.feature("attach")` is available. |
 | `POST /api/attach` | `{"base":"Qwen/Qwen3-4B","revision":null,"format":1}` starts the normal base download and an `attach` job; format is 1 by default or 2. Unsupported bases/format are 400, duplicate or busy job is 409, unavailable Engine feature is 400. |
 | `DELETE /api/attach/{id}` | Removes an Attached model record and its attachment directory; returns 409 while loaded and 404 for unknown ids. |
+| `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
 
 The attach job and download progress appear in `GET /api/status` under `jobs["attach"]` and `downloads[base]`;
 its log is available at `GET /api/logs?source=job%3Aattach`. The generated model is listed by `GET /api/models`
@@ -46,7 +47,21 @@ does not match the active layout (or Saved layout when unloaded). `POST /api/cal
 shape. `POST /api/calibrate` fits against that active-or-saved layout; non-canonical layouts are passed to
 `basal-calibrate --layout`, and a request is refused with HTTP 400 when the installed Engine lacks that flag. The
 Calibration tab disables fitting and explains the limitation in that case.
-| `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
+
+### Fine-tuning
+
+`POST /api/finetune` accepts a downloaded bf16 basal or Attached model, a labelled JSONL `input`, and a safe single-segment
+`out_name`; optional settings are `epochs`, `lr`, `rank`, `alpha`, `holdout`, `max_len`, `max_steps` and
+`grad_checkpointing`. The request validates the input with `POST /api/paths/check`'s JSONL rules, reserves twice the
+estimated model memory, and starts `jobs["finetune"]`. `DELETE /api/finetune` cancels it.
+Progress is exposed under `GET /api/status` → `jobs["finetune"]`; logs use
+`GET /api/logs?source=job%3Afinetune` and the usual cursor/generation contract.
+
+The output is written below `<models_dir>/adapters/<model-id-with-slashes-replaced>/<out_name>/`; the merged model,
+`heldout.jsonl`, `finetune.json` and `lora/` adapter are produced by the Engine. `GET /api/finetune?id=<model>` returns
+availability and completed reports (`top1_before`, `top1_after`, counts). `GET /api/models/options?id=<model>` includes
+the available `adapters` paths for the existing load option. Fine-tuning requires Engine 2.5's `finetune` feature and
+the `peft` add-on; 2.4.1 responds unavailable/refuses the operation.
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns

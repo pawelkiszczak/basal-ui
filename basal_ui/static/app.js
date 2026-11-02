@@ -1502,7 +1502,7 @@ function renderStatus(s) {
   if($('#modelLoaderDialog').open)renderModelLoader();
   renderInference(s);
   renderPlaygroundModels(ready);
-  renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
+  renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderFineTuneState(s.jobs?.finetune); renderBatchState(s.jobs?.batch,ready);
   renderInspectState(s.inspect,s.jobs?.inspect);
   if(serveData)renderServeStatus(s);
   loadStats();
@@ -1713,7 +1713,26 @@ function renderBenchmarkResults() {
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
 $('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div><p id="calibrationLayout" class="muted"></p></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
+$('#calibrationBlock').insertAdjacentHTML('beforeend',`<section class="manager-help" id="fineTunePanel"><h3>${t('Fine-tune')}</h3><p class="muted">${t('Fine-tune a model on labelled decisions')}</p><p class="muted">${t('tested on Apple Silicon with basal-omni-pico; other GPUs untested')}</p><p id="fineTuneAvailability" class="reason"></p><div class="manager-fields"><label class="manager-field">${t('Model')}<select id="fineTuneModel"></select></label><label class="manager-field">${t('Labelled JSONL')}<input id="fineTuneInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><label>${t('Output name')}<input id="fineTuneName" type="text" value="adapted"></label><label>${t('Epochs')}<input id="fineTuneEpochs" type="number" min="0.1" step="0.1" value="2"></label><label>${t('Learning rate')}<input id="fineTuneLr" type="number" min="0.000001" step="0.00001" value="0.0001"></label><label>${t('LoRA rank')}<input id="fineTuneRank" type="number" min="1" step="1" value="16"></label><label>${t('LoRA alpha')}<input id="fineTuneAlpha" type="number" min="1" step="1" value="32"></label><label>${t('Holdout fraction')}<input id="fineTuneHoldout" type="number" min="0.01" max="0.99" step="0.01" value="0.25"></label><label>${t('Maximum prompt length')}<input id="fineTuneMaxLen" type="number" min="1" step="1" value="2048"></label><label>${t('Maximum steps (optional)')}<input id="fineTuneMaxSteps" type="number" min="1" step="1"></label><label><input id="fineTuneGrad" type="checkbox"> ${t('Gradient checkpointing')}</label></div><div class="manager-actions"><button type="button" id="runFineTune">${t('Start fine-tuning')}</button><button type="button" id="cancelFineTune" hidden>${t('Cancel fine-tuning')}</button><span id="fineTuneProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Afinetune">${t('Logs')}</a></div><div id="fineTuneResults"></div></section>`);
+let fineTuneSignature='', fineTuneResultSignature='';
+function renderFineTuneModels(){
+  const select=$('#fineTuneModel'), rows=modelData.filter(m=>m.downloaded&&m.port==='bf16'&&(m.family==='attached'||m.family.startsWith('basal-'))), signature=JSON.stringify(rows.map(m=>m.id));
+  if(signature!==fineTuneSignature){fineTuneSignature=signature;const current=select.value;select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('Download a model first')}</option>`;if(rows.some(m=>m.id===current))select.value=current;loadFineTuneResults();}
+}
+$('#fineTuneModel').onchange=loadFineTuneResults;
+async function loadFineTuneResults(){
+  const id=$('#fineTuneModel').value;if(!id)return;
+  try{const d=await api(`/api/finetune?id=${encodeURIComponent(id)}`);$('#fineTuneAvailability').textContent=d.available?'':d.reason||'';$('#runFineTune').disabled=!d.available;$('#fineTuneResults').innerHTML=(d.results||[]).map(f=>`<article class="card"><h4>${esc(f.name)}</h4><p>${t('Training decisions')}: ${esc(f.train_decisions)} · ${t('Held-out lines')}: ${esc(f.heldout_lines)} · ${t('Scored')}: ${esc(f.scored)}</p><p>${t('Top-1 held-out accuracy before')}: ${f.top1_before==null?'—':pct(f.top1_before)} · ${t('Top-1 held-out accuracy after')}: ${f.top1_after==null?'—':pct(f.top1_after)}</p></article>`).join('');}catch(e){$('#fineTuneAvailability').textContent=e.message;}
+}
+$('#runFineTune').onclick=()=>act(async()=>{const body={id:$('#fineTuneModel').value,input:$('#fineTuneInput').value.trim(),out_name:$('#fineTuneName').value.trim(),epochs:Number($('#fineTuneEpochs').value),lr:Number($('#fineTuneLr').value),rank:Number($('#fineTuneRank').value),alpha:Number($('#fineTuneAlpha').value),holdout:Number($('#fineTuneHoldout').value),max_len:Number($('#fineTuneMaxLen').value),grad_checkpointing:$('#fineTuneGrad').checked};if($('#fineTuneMaxSteps').value)body.max_steps=Number($('#fineTuneMaxSteps').value);await api('/api/finetune',{method:'POST',body:JSON.stringify(body)});toast(t('Fine-tuning started'));await refreshStatus();});
+$('#cancelFineTune').onclick=()=>act(async()=>{await api('/api/finetune',{method:'DELETE'});await refreshStatus();});
+function renderFineTuneState(job){
+  const running=Boolean(job?.running);$('#cancelFineTune').hidden=!running;$('#runFineTune').disabled=running||!$('#fineTuneModel').value||$('#fineTuneAvailability').textContent!=='';
+  $('#fineTuneProgress').textContent=!job?'':running?`${shortName(job.model)} · ${t(job.phase)}…`:job.phase==='error'?t('Failed: {error}',{error:job.error}):job.phase==='cancelled'?t('Cancelled'):job.phase==='done'?t('Completed'):'';
+  const signature=`${job?.started||''}:${job?.phase||''}`;if(!running&&job?.phase==='done'&&signature!==fineTuneResultSignature){fineTuneResultSignature=signature;loadFineTuneResults();}
+}
 $('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;};
+renderFineTuneModels();
 $('#calCompare').onchange();
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
@@ -1732,6 +1751,7 @@ function renderCalibrationModels() {
     loadCalibrations();
   }
   $('#runCalibration').disabled=calibrationRunning||!rows.length;
+  renderFineTuneModels();
 }
 $('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);loadCalibrations();};
 $('#runCalibration').onclick=()=>act(async()=>{
@@ -1890,7 +1910,7 @@ const OPTION_FIELDS={
   truncate_head:{label:'Kept from the beginning',kind:'percent'},
   max_len:{label:'Max length (vLLM / SGLang)',kind:'num',attrs:'min="512" max="131072" step="512"',placeholder:'API server setting'},
   revision:{label:'Model revision',kind:'text',placeholder:'latest (main)'},
-  adapter:{label:'LoRA adapter directory (merged at load)',kind:'text',placeholder:'/path/to/adapter'},
+  adapter:{label:'LoRA adapter directory (merged at load)',kind:'select'},
   think:{label:'Thinking (reason before low-margin decisions)',kind:'bool'},
   think_tokens:{label:'Reasoning tokens',kind:'num',attrs:'min="1" step="32"',think:true},
   think_python:{label:'Python with vLLM',kind:'text',placeholder:'basal-ui’s Python',think:true},
@@ -1916,7 +1936,7 @@ const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
   if(f.kind==='bool')return `<label><input type="checkbox" role="switch" id="${id}"${value?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(t(f.label))}</label>`;
-  const listed=(f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
+  const listed=(key==='adapter'?[[null,'None'],...(optionsState.data.adapters||[]).map(path=>[path,path])]:f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
