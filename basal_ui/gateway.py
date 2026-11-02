@@ -10,6 +10,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
 
+from .engine import feature
+
 SYSTEMONE = ("/v1/systemone", "/v1/basal")
 DECISIONS = ("/v1/decisions", "/decisions")
 SNAPSHOT_KEYS = ("host", "port", "require_key", "cors_origins", "mcp")
@@ -103,8 +105,9 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
 
         async def mcp_decide(body):
             loaded = fleet.loaded_ids()
-            model = body.pop("model", None) or (loaded[0] if loaded else None)  # basal-serve 2.4.1's MCP tools
-            if model not in loaded:  # take no model argument: the first loaded model answers them
+            # the tools' `model` argument (engine 2.5.0, list_models names the ids), else the first loaded model
+            model = body.pop("model", None) or (loaded[0] if loaded else None)
+            if model not in loaded:
                 raise ValueError(f"model '{model}' is not loaded; loaded models: {loaded_text(loaded)}")
             r = await fleet.adecide(model, body, source="mcp", client=client["http"], endpoint="/mcp", method="CALL")
             if r.status_code != 200:
@@ -115,7 +118,8 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
                 raise ValueError(f"basal server {r.status_code}: {message}")
             return r.json()
 
-        mcp_routes, mcp_run = http(SimpleNamespace(decide=mcp_decide, name="basal-ui"), host)
+        server = SimpleNamespace(decide=mcp_decide, name="basal-ui")
+        mcp_routes, mcp_run = http(server, host, **({"models": fleet.loaded_ids} if feature("mcp_models") else {}))
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -235,6 +239,7 @@ class Gateway:
             "port": shown["port"],
             "require_key": shown["require_key"],
             "mcp": shown["mcp"],
+            "mcp_models": feature("mcp_models"),  # MCP tools take `model` and offer list_models (engine 2.5.0)
             "models": self.fleet.loaded_ids(),
             "restart_required": (snapshot != current) if config["enabled"] else snapshot is not None,
             "error": self.error,

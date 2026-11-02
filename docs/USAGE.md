@@ -180,7 +180,8 @@ standard input rather than putting large media in a shell argument.
 
 OpenAI Decisions exports only requests its supported protocol can represent; unsupported fields/types are explained
 instead of silently discarded. Use System One for those requests. MCP requires an installed, running MCP-enabled
-API server and produces a JSON-RPC `tools/call` for an initialized client. On Engine 2.4.1 it targets the first loaded
+API server and produces a JSON-RPC `tools/call` for an initialized client. With Engine 2.5.0 it passes the selected
+model as the tool's `model` argument. With Engine 2.4.1 the tools take no model and answer with the first loaded
 model, so a different selected model is explicitly refused rather than silently routed elsewhere. Examples describe
 the running server when present, otherwise the saved endpoint; the API server must be started before execution.
 Keyed examples read `BASAL_API_KEY` rather than exposing a stored secret.
@@ -447,9 +448,10 @@ The **Connect** panel provides copy-ready examples for curl (both `/v1/systemone
 (httpx), TypeSafe and OpenAI SDKs, LiteLLM's `hosted_vllm` provider, and MCP. HTTP inference examples include the
 selected model's `"model"` id; when authentication is disabled they omit API-key headers. MCP configuration is
 available only while the API server is running with MCP enabled, and uses its streamable-HTTP `/mcp` endpoint.
-With tested Engine 2.4.1, MCP `decide` and `decide_many` always use the **first loaded model**: their schemas have
-no model argument or model-listing tool. Use the ordinary HTTP routes when you need named-model routing.
-The stock Engine stdio bridge cannot supply the gateway's required model/key, so the UI does not advertise it.
+With Engine 2.5.0, MCP `decide` and `decide_many` take a `model` argument (`list_models` names the loaded ids) and
+answer with the first loaded model without one; with Engine 2.4.1 they always use the **first loaded model**: their
+schemas have no model argument or model-listing tool. Use the ordinary HTTP routes when you need named-model routing
+on 2.4.1. The Engine's stdio bridge needs `--model` (2.5.0) to reach the gateway, so the UI does not advertise it.
 Full request and response shapes, error envelopes and compatibility details are in the [HTTP API reference](API.md).
 
 ## Serving models from basal-ui
