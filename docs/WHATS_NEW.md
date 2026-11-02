@@ -1,7 +1,7 @@
 # Unreleased
 
-- basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.0**; CI tests 2.4.1 and 2.5.0. What 2.5.0 adds is
-  offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
+- basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
+  adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)
 - With engine 2.5.0 the API server's MCP `decide` / `decide_many` tools take a `model` argument and `list_models`
   names the loaded models; the Playground's MCP example then targets the selected model instead of refusing it.
@@ -15,9 +15,10 @@
   (basal-viz `--mode mlx`). [USAGE.md](USAGE.md#inspect)
 - The LoRA adapter load option says it needs engine 2.5.0 (it shipped there, not in 2.5.1), and the API server keeps
   the `code` of a basal-serve error body (2.5.0) instead of deriving it from the status.
-- A model whose Hugging Face repository now ships engine 2.5.0's prepared start-up kernels (`prepared/<key>/`, e.g.
-  basal-2.0-mini since 2 November) is no longer reported as not downloaded: basal-ui neither downloads nor requires
-  them, and basal-serve's `--prepared auto` fetches the one for this GPU itself.
+- A model whose Hugging Face repository now ships engine 2.5's prepared start-up kernels (`prepared/<key>/`, e.g.
+  basal-2.0-mini since 2 November) is no longer reported as not downloaded when its local copy lacks them. A download
+  takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
+  engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

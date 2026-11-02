@@ -10,7 +10,8 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 ENGINE_REPO = "rkinas/basal"
-TESTED_RELEASES = ("2.4.1", "2.5.0")  # every release basal-ui is tested with; CI runs each; the last is the pin
+# every release basal-ui is tested with; CI runs each; the last is the pin
+TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1")
 SUPPORTED_RANGE = ">=2.4.1,<2.6"  # bump with TESTED_RELEASES
 SUPPORTED = SpecifierSet(SUPPORTED_RANGE)
 UNCHECKED_ENV = "BASAL_UI_ENGINE_UNCHECKED"

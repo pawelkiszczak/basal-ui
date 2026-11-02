@@ -604,19 +604,20 @@ def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> li
 
 
 def _optional(name: str) -> bool:
-    """Files the default serving modes never read: the 4.5B's thinking-mode model (think/, a second full copy), and the
-    prepared start-up kernels of engine 2.5.0 (prepared/<key>/, one per GPU class and version: basal-serve's
-    --prepared auto fetches the one for this machine itself, prepared.fetch, and compiles as before without it)."""
-    return name.startswith(("think/", "prepared/"))
+    """Files the default serving modes never read: the 4.5B's thinking-mode model (think/, a second full copy)."""
+    return name.startswith("think/")
+
+
+# engine 2.5's prepared start-up kernels (prepared/<key>/, one per GPU class and engine version). basal-ui downloads them
+# with the model: it passes basal-serve the snapshot directory, where --prepared auto finds them (prepared.locate); the
+# engine fetches them itself only for a Hugging Face id. A snapshot without them (downloaded before the repository
+# shipped them) is still complete: without kernels for its GPU, basal-serve compiles as on a cold start.
+PREPARED = "prepared/*"
 
 
 def download_kwargs(v: Variant, revision: str | None = None) -> dict:
     """snapshot_download filters for one variant and optional pinned revision."""
-    kwargs = (
-        {"allow_patterns": [v.gguf_file, *_BASE_FILES]}
-        if v.port == "GGUF"
-        else {"ignore_patterns": ["think/*", "prepared/*"]}
-    )
+    kwargs = {"allow_patterns": [v.gguf_file, *_BASE_FILES]} if v.port == "GGUF" else {"ignore_patterns": ["think/*"]}
     revision = revision if revision is not None else v.cache_revision
     if revision is not None:
         kwargs["revision"] = revision
@@ -652,10 +653,11 @@ def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> P
     """The local snapshot directory if the weights and any required base metadata are cached."""
     from huggingface_hub import snapshot_download
 
+    kwargs = download_kwargs(v, revision)
+    if "ignore_patterns" in kwargs:  # huggingface_hub: any kept file missing makes the snapshot incomplete
+        kwargs["ignore_patterns"] = [*kwargs["ignore_patterns"], PREPARED]
     try:
-        path = Path(
-            snapshot_download(v.repo, cache_dir=cache_dir, local_files_only=True, **download_kwargs(v, revision))
-        )
+        path = Path(snapshot_download(v.repo, cache_dir=cache_dir, local_files_only=True, **kwargs))
     except Exception:  # noqa: BLE001 — an absent or partial snapshot is not downloaded
         return None
     weights = _cached_weight_paths(path, v.port, v.gguf_file)
