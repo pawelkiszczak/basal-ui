@@ -68,7 +68,7 @@ make run                    # then open http://127.0.0.1:7860
 Engine extras are optional. For MLX on Apple Silicon, install the extra after `make install`:
 
 ```bash
-uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz"
+uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz"
 ```
 
 ### PyPI package
@@ -77,18 +77,18 @@ Stable **[0.1.0 is available on PyPI](https://pypi.org/project/basal-ui/0.1.0/)*
 
 ```bash
 uv venv
-uv pip install "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz" "basal-ui==0.1.0"
+uv pip install "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz" "basal-ui==0.1.0"
 uv run --no-sync basal-ui    # then open http://127.0.0.1:7860
 ```
 
 Or as a standalone tool:
 
 ```bash
-uv tool install "basal-ui==0.1.0" --with "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz"
+uv tool install "basal-ui==0.1.0" --with "basal @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz"
 ```
 
 The engine extras of your machine are chosen on the *engine* install, not on basal-ui, for example
-`uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz"`
+`uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz"`
 on Apple Silicon (`mlx`), or `basal[gguf]`, `basal[fp8]`, `basal[vllm]` elsewhere; `basal[media]` for images and audio
 on basal-omni. Use `basal-ui[mcp]==0.1.0` for the UI API server's MCP endpoint. basal-ui does not declare the Engine
 as a dependency: PyPI rejects direct-URL requirements, and the PyPI package named `basal` is an unrelated project. Instead

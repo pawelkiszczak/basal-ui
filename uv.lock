@@ -77,8 +77,8 @@ wheels = [
 
 [[package]]
 name = "basal"
-version = "2.5.0"
-source = { url = "https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz" }
+version = "2.5.1"
+source = { url = "https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz" }
 dependencies = [
     { name = "accelerate" },
     { name = "httpx" },
@@ -91,7 +91,7 @@ dependencies = [
     { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-sdist = { hash = "sha256:a6749d52176dfa1e55c36c596c1b415e1d72a9f9d18356b3ea1d1ace6a8aaa8d" }
+sdist = { hash = "sha256:965e888e5a68995b2df23fb7e29da3bde2082d7b37f0d078721e3e10f437bc80" }
 
 [package.metadata]
 requires-dist = [
@@ -175,7 +175,7 @@ provides-extras = ["mcp", "e2e"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "basal", url = "https://github.com/rkinas/basal/archive/refs/tags/v2.5.0.tar.gz" },
+    { name = "basal", url = "https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz" },
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "pytest" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
