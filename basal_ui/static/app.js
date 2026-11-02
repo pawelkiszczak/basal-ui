@@ -348,6 +348,110 @@ async function selectMedia(files) {
     renderSelectedMedia(); syncRequest();
   } catch (error) { if (selection === mediaSelection) showMediaError(error.message); }
 }
+
+const AUDIO_LIMIT_BYTES=20*1024*1024;
+let audioRecording=null;
+function encodeWav(buffer) {
+  const frames=Math.min(buffer.length,Math.floor((AUDIO_LIMIT_BYTES-44)/2)), channels=buffer.numberOfChannels, bytes=new ArrayBuffer(44+frames*2), view=new DataView(bytes);
+  const text=(offset,value)=>[...value].forEach((char,index)=>view.setUint8(offset+index,char.charCodeAt(0)));
+  text(0,'RIFF');view.setUint32(4,36+frames*2,true);text(8,'WAVE');text(12,'fmt ');view.setUint32(16,16,true);
+  view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,buffer.sampleRate,true);
+  view.setUint32(28,buffer.sampleRate*2,true);view.setUint16(32,2,true);view.setUint16(34,16,true);
+  text(36,'data');view.setUint32(40,frames*2,true);
+  const samples=Array.from({length:channels},(_,channel)=>buffer.getChannelData(channel));
+  for(let frame=0;frame<frames;frame++){
+    let sample=0;for(const channel of samples)sample+=channel[frame];
+    sample=Math.max(-1,Math.min(1,sample/channels));
+    view.setInt16(44+frame*2,sample<0?sample*0x8000:sample*0x7fff,true);
+  }
+  return new Blob([bytes],{type:'audio/wav'});
+}
+const recordingButton=()=>{
+  let button=$('#recordAudio');
+  if(!button){
+    button=document.createElement('button');button.id='recordAudio';button.type='button';button.className='btn';
+    button.dataset.variant='outline';button.hidden=true;
+    const status=document.createElement('span');status.id='recordingStatus';status.className='muted';
+    status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+    const controls=document.createElement('div');controls.className='controls media-record-controls';
+    controls.append(button,status);$('#mediaInput').after(controls);
+    button.addEventListener('click',()=>audioRecording?stopAudioRecording():startAudioRecording());
+  }
+  return button;
+};
+const recordingStatus=()=>$('#recordingStatus');
+function recordingUi(status='',label='Record',disabled=false) {
+  const button=recordingButton();button.hidden=!loadedMedia.includes('audio');button.textContent=t(label);button.disabled=disabled;
+  recordingStatus().textContent=status;
+}
+function stopAudioRecording() {
+  const session=audioRecording;if(!session||session.stopping)return;
+  session.stopping=true;clearInterval(session.clock);clearTimeout(session.timeout);
+  if(!session.stream){
+    session.cancelled=true;audioRecording=null;recordingUi();return;
+  }
+  recordingUi(t('Preparing audio…'),'Preparing audio…',true);
+  if(session.recorder?.state!=='inactive')session.recorder.stop();
+}
+async function startAudioRecording() {
+  if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia){
+    showMediaError(t('Microphone access requires a secure context (HTTPS or localhost).'));return;
+  }
+  showMediaError();
+  const session={stream:null,recorder:null,context:null,chunks:[],stopping:false,cancelled:false,clock:null,timeout:null};
+  audioRecording=session;recordingUi(t('Waiting for microphone permission…'),'Cancel recording');
+  try{
+    session.stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    if(session.cancelled||audioRecording!==session){session.stream.getTracks().forEach(track=>track.stop());return;}
+    if(!window.MediaRecorder||!window.AudioContext)throw new Error(t('Audio recording is unavailable in this browser.'));
+    session.context=new AudioContext();
+    const maxSeconds=Math.floor((AUDIO_LIMIT_BYTES-44)/(2*session.context.sampleRate));
+    const recorder=session.recorder=new MediaRecorder(session.stream);
+    const started=Date.now();
+    recorder.ondataavailable=event=>{if(event.data.size)session.chunks.push(event.data);};
+    recorder.onerror=()=>{showMediaError(t('The microphone recording failed.'));stopAudioRecording();};
+    recorder.onstop=async()=>{
+      session.stream.getTracks().forEach(track=>track.stop());
+      clearInterval(session.clock);clearTimeout(session.timeout);
+      try{
+        if(!session.cancelled&&session.chunks.length){
+          const recorded=new Blob(session.chunks,{type:recorder.mimeType});
+          const decoded=await session.context.decodeAudioData(await recorded.arrayBuffer());
+          const file=new File([encodeWav(decoded)],`recording-${Date.now()}.wav`,{type:'audio/wav'});
+          await selectMedia([file]);recordingStatus().textContent=t('Recording added as an audio attachment.');
+        }
+      }catch(error){showMediaError(error.message||t('Could not process the microphone recording.'));recordingStatus().textContent='';}
+      finally{
+        session.stream.getTracks().forEach(track=>track.stop());
+        await session.context.close();
+        if(audioRecording===session)audioRecording=null;
+        recordingUi(recordingStatus().textContent);
+      }
+    };
+    recorder.start(1000);
+    recordingUi(t('Recording · {time} remaining',{time:formatRecordingTime(maxSeconds)}),'Stop recording');
+    session.clock=setInterval(()=>{
+      const remaining=Math.max(0,maxSeconds-Math.floor((Date.now()-started)/1000));
+      recordingStatus().textContent=t('Recording · {time} remaining',{time:formatRecordingTime(remaining)});
+    },1000);
+    session.timeout=setTimeout(stopAudioRecording,maxSeconds*1000);
+  }catch(error){
+    session.stream?.getTracks().forEach(track=>track.stop());
+    if(audioRecording===session)audioRecording=null;
+    await session.context?.close();
+    recordingUi();
+    const message=error.name==='NotAllowedError'||error.name==='PermissionDeniedError'
+      ?t('Microphone permission was denied. Allow microphone access in your browser settings and try again.')
+      :error.name==='NotFoundError'?t('No microphone was found.'):error.message||t('Could not start microphone recording.');
+    showMediaError(message);
+  }
+}
+function formatRecordingTime(seconds) {
+  return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;
+}
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&audioRecording){event.preventDefault();stopAudioRecording();}
+});
 function renderDashboard() {
   window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
 }
@@ -1137,7 +1241,10 @@ $('#langSelect').addEventListener('change',()=>syncRequest(false,REQUEST_OPTION_
 ['#thinkSelect','#thinkTextToggle','#earlyExitSelect'].forEach(s=>$(s).addEventListener('change',()=>syncRequest(false,REQUEST_OPTION_KEYS)));
 $('#mediaLightboxClose').addEventListener('click',()=>$('#mediaLightbox').close());
 $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox'))$('#mediaLightbox').close();});
-window.addEventListener('beforeunload',()=>selectedMedia.forEach(item=>URL.revokeObjectURL(item.url)));
+window.addEventListener('beforeunload',()=>{
+  audioRecording?.stream?.getTracks().forEach(track=>track.stop());
+  selectedMedia.forEach(item=>URL.revokeObjectURL(item.url));
+});
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
@@ -1391,9 +1498,11 @@ function renderPlaygroundModels(ready) {
   DecisionTools.refreshModels(ready);
 }
 function setPlaygroundMedia(kinds) {
-  if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
+  if(JSON.stringify(kinds)===JSON.stringify(loadedMedia)){recordingButton().hidden=!kinds.includes('audio');return;}
+  if(audioRecording&&!kinds.includes('audio'))stopAudioRecording();
   loadedMedia=kinds; renderSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
+  recordingButton().hidden=!kinds.includes('audio');
 }
 $('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
@@ -2053,6 +2162,7 @@ const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model statu
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
+  if(name!=='playground'&&audioRecording)stopAudioRecording();
   const wasDashboard=!$('#dashboard').hidden;
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
