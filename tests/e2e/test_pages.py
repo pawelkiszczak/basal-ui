@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from basal_ui.engine import feature
+from basal_ui.options import MODE_ORDER
 from tests.e2e.support import CHOICE, EXAMPLES, UI, advanced_requests, free_port
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="install basal[e2e] and run: playwright install chromium")
@@ -907,7 +908,7 @@ def test_the_load_options_dialog_lists_the_modes(page, text_model):
     sync_api.expect(page.locator("#optionsApply")).to_have_text("Restart")
     sync_api.expect(page.locator("#optionsSetupNote")).to_be_hidden()
     sync_api.expect(dialog.locator(f'input[name="optMode"][value="{text_model["mode"]}"]')).to_be_checked()
-    assert dialog.locator('input[name="optMode"]').count() == 16
+    assert dialog.locator('input[name="optMode"]').count() == len(MODE_ORDER)  # every basal-serve mode, int8 included
     assert dialog.locator('input[name="optMode"][disabled]').count() >= 1
     sync_api.expect(dialog.locator("#optExperimentalNote")).not_to_be_empty()
     for key, modes in (("gemma_attn", "fast"), ("eager_attn", "eager"), ("merge", "fast"), ("ple_offload", "eager")):
