@@ -110,6 +110,8 @@ def create_app(
     stats=None,
     history=None,
     addons=None,
+    schedules=None,
+    start_batch=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -125,7 +127,66 @@ def create_app(
     for record in settings_mod.decision_servers():
         fleet.attach_decision_server(record)
     gateway = gateway or Gateway(fleet, settings_mod, stats)
+    from . import batch
+    from .schedules import Schedules
+
+    def start_scheduled_batch(spec, source, output):
+        if not spec["overwrite"] and output.exists():
+            raise RuntimeError(f"output already exists: {output}")
+        if not output.parent.is_dir() or not os.access(output.parent, os.W_OK):
+            raise RuntimeError(f"cannot write to {output.parent}")
+        try:
+            fleet.ready(spec["model"])
+        except KeyError as exc:
+            raise RuntimeError(f"model {spec['model']!r} is not loaded") from exc
+        try:
+            lines = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RuntimeError(f"cannot read {source}: {getattr(exc, 'strerror', None) or exc}") from exc
+        if not lines:
+            raise RuntimeError(f"{source} has no lines")
+        for number, line in enumerate(lines, 1):
+            try:
+                item = json.loads(line)
+            except ValueError:
+                item = None
+            is_state_only = (
+                spec.get("preset")
+                and isinstance(item, dict)
+                and "state" in item
+                and "questions" not in item
+                and "question" not in item
+            )
+            if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
+                raise RuntimeError(
+                    f"{source.name}: line {number} is neither a simple item (state, question, "
+                    "options) nor a /v1/systemone request"
+                )
+        if spec.get("preset"):
+            if not engine.feature("presets"):
+                raise RuntimeError("Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if spec["preset"] not in names():
+                raise RuntimeError(f"unknown preset {spec['preset']!r}")
+        return fleet.start_model_job(
+            "batch",
+            spec["model"],
+            f"{spec['model']} on {source.name}",
+            batch.run_batch,
+            fleet,
+            spec["model"],
+            source,
+            output,
+            spec["concurrency"],
+            None,
+            spec.get("preset"),
+            spec.get("lang", "auto"),
+        )
+
+    schedules = schedules or Schedules(settings_mod, fleet, start_batch or start_scheduled_batch)
     addon_manager = addons or AddonManager(fleet, hardware_fn)
+
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -188,6 +249,15 @@ def create_app(
                 print(f"basal-ui: auto-load of {last['id']} skipped: {exc}", file=sys.stderr)
                 fleet.event("warn", f"auto-load of {last['id']} skipped: {exc}")
 
+    schedule_stop = threading.Event()
+
+    def _scheduled_batch():
+        while not schedule_stop.wait(30):
+            try:
+                schedules.run_due(time.time())
+            except Exception as exc:
+                fleet.event("error", f"scheduled Batch scan failed: {exc}")
+
     @asynccontextmanager
     async def lifespan(_app):
         fleet.start_idle_timer()
@@ -197,7 +267,13 @@ def create_app(
             auto_load_thread.start()
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
+        schedule_stop.clear()
+        schedule_thread = threading.Thread(target=_scheduled_batch, name="basal-ui-schedules", daemon=True)
+        schedule_thread.start()
+        app.state.schedule_thread = schedule_thread
         yield
+        schedule_stop.set()
+        await asyncio.to_thread(schedule_thread.join)
         await asyncio.to_thread(fleet.stop_idle_timer)
         with auto_load_lock:
             auto_load_stop.set()
@@ -215,6 +291,7 @@ def create_app(
         settings_mod.remove_keys_file()
 
     app = host_middleware(FastAPI(title="basal-ui", lifespan=lifespan), allowed_hosts)
+    app.state.schedules = schedules
     app.state.addons = addon_manager
 
     @app.middleware("http")
@@ -1928,6 +2005,73 @@ def create_app(
         from basal.presets import names
 
         return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+
+    def schedule_definition(body):
+        from .schedules import validate
+
+        try:
+            spec = validate(body)
+            if not Path(spec["input_dir"]).is_dir():
+                raise ValueError("input_dir must be an existing directory")
+            if not Path(spec["output_dir"]).is_dir() or not os.access(spec["output_dir"], os.W_OK):
+                raise ValueError("output_dir must be an existing writable directory")
+            if spec.get("preset"):
+                if not engine.feature("presets"):
+                    raise ValueError("Batch presets need Engine 2.5")
+                from basal.presets import names
+
+                if spec["preset"] not in names():
+                    raise ValueError(f"unknown preset {spec['preset']!r}")
+            return spec
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/schedules")
+    def get_schedules():
+        return {"schedules": schedules.list()}
+
+    @app.post("/api/schedules", status_code=201)
+    def create_schedule(body: dict = Body(...)):
+        spec = schedule_definition(body)
+        try:
+            return schedules.create(spec)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/schedules/{schedule_id}")
+    def update_schedule(schedule_id: str, body: dict = Body(...)):
+        try:
+            current = schedules.get(schedule_id)
+            spec = schedule_definition({**current, **body, "id": schedule_id})
+            return schedules.update(schedule_id, spec)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.delete("/api/schedules/{schedule_id}")
+    def delete_schedule(schedule_id: str):
+        try:
+            schedules.delete(schedule_id)
+            return {"deleted": schedule_id}
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.post("/api/schedules/{schedule_id}/run", status_code=202)
+    def run_schedule(schedule_id: str):
+        try:
+            return schedules.run_now(schedule_id)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/schedules/{schedule_id}/runs")
+    def get_schedule_runs(schedule_id: str, cursor: int = 0):
+        if cursor < 0:
+            raise HTTPException(400, "cursor must be non-negative")
+        try:
+            return schedules.runs(schedule_id, cursor)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
 
     @app.post("/api/mcp/tools")
     def import_mcp_tools(body: dict = Body(...)):
