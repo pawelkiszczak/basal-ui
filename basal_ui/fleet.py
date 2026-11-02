@@ -501,14 +501,43 @@ class AttachedServerRunner:
 
     @staticmethod
     def _mark_comparison(response):
+        """The server's reply with every answer marked calibrated: false (a fresh response: the server's own
+        content-length / content-encoding headers do not describe the rewritten body)."""
         if response.status_code == 200:
             data = response.json()
             for answer in data.get("answers", {}).values():
                 if isinstance(answer, dict):
                     answer["calibrated"] = False
-            response = httpx.Response(200, json=data, headers=response.headers)
+            response = httpx.Response(200, json=data)
         response.extensions["basal.inference"] = True
         return response
+
+    def _request(self, body):
+        """(url, json, headers) of a System One body for this server: its own model name, the stored key, and the
+        OpenAI Decisions shape for a hosted Decisions endpoint."""
+        from .compat import systemone_to_decisions
+
+        body = {**body, "model": self.model_name}
+        key = self.settings_mod.get_secret(self.server["id"])
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        if self.server.get("decisions_url"):
+            return self.server["decisions_url"], systemone_to_decisions(body), headers
+        return self.base_url + "/v1/systemone", body, headers
+
+    def _reply(self, response, body):
+        from .compat import decisions_to_systemone
+
+        if self.server.get("decisions_url") and response.status_code == 200:
+            response = httpx.Response(200, json=decisions_to_systemone(response.json(), body))
+        return self._mark_comparison(response)
+
+    def _refusal(self, body):
+        from .compat import comparison_request
+
+        refusal = comparison_request(body, self.image_input)
+        if refusal is None:
+            return None
+        return httpx.Response(refusal.status_code, content=refusal.body, headers={"content-type": "application/json"})
 
     def status(self):
         return {
@@ -531,48 +560,18 @@ class AttachedServerRunner:
         }
 
     def decide(self, body, path="/v1/systemone"):
-        from .compat import comparison_request, decisions_to_systemone, systemone_to_decisions
-
-        refusal = comparison_request(body, self.image_input)
+        refusal = self._refusal(body)
         if refusal is not None:
-            return httpx.Response(
-                refusal.status_code, content=refusal.body, headers={"content-type": "application/json"}
-            )
-        key = self.settings_mod.get_secret(self.server["id"])
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
-        if self.server.get("decisions_url"):
-            response = httpx.post(
-                self.server["decisions_url"], json=systemone_to_decisions(body), headers=headers, timeout=120
-            )
-            if response.status_code == 200:
-                response = httpx.Response(
-                    200, json=decisions_to_systemone(response.json(), body), headers=response.headers
-                )
-        else:
-            response = httpx.post(self.base_url + path, json=body, headers=headers, timeout=120)
-        return self._mark_comparison(response)
+            return refusal
+        url, payload, headers = self._request(body)
+        return self._reply(httpx.post(url, json=payload, headers=headers, timeout=120), body)
 
     async def adecide(self, client, body, path="/v1/systemone"):
-        from .compat import comparison_request, decisions_to_systemone, systemone_to_decisions
-
-        refusal = comparison_request(body, self.image_input)
+        refusal = self._refusal(body)
         if refusal is not None:
-            return httpx.Response(
-                refusal.status_code, content=refusal.body, headers={"content-type": "application/json"}
-            )
-        key = self.settings_mod.get_secret(self.server["id"])
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
-        if self.server.get("decisions_url"):
-            response = await client.post(
-                self.server["decisions_url"], json=systemone_to_decisions(body), headers=headers, timeout=120
-            )
-            if response.status_code == 200:
-                response = httpx.Response(
-                    200, json=decisions_to_systemone(response.json(), body), headers=response.headers
-                )
-        else:
-            response = await client.post(self.base_url + path, json=body, headers=headers, timeout=120)
-        return self._mark_comparison(response)
+            return refusal
+        url, payload, headers = self._request(body)
+        return self._reply(await client.post(url, json=payload, headers=headers, timeout=120), body)
 
     def detach(self):
         self.state = "idle"

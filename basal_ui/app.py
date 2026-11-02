@@ -2165,7 +2165,12 @@ def create_app(
             for n, line in enumerate(lines, 1):
                 item = json.loads(line)
                 try:
-                    request = to_request(item, None, preset, lang)
+                    # basal-run 2.4.1's to_request(item, early_exit) has no presets (Batch presets need 2.5)
+                    request = (
+                        to_request(item, None, preset, lang if lang in ("pl", "en") else None)
+                        if preset
+                        else to_request(item)
+                    )
                 except (KeyError, TypeError, ValueError) as exc:
                     raise HTTPException(400, f"{source.name}: line {n}: {exc}") from exc
                 refusal = comparison_request(request, comparison_runner.image_input)

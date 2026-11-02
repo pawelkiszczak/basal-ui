@@ -1466,6 +1466,7 @@ def test_comparison_servers_refuse_unsupported_requests_before_forwarding(tmp_pa
                 {
                     "state": "hello",
                     "questions": {"q": {"type": "choice", "instructions": "Choose", "criteria": ["a", "b"]}},
+                    "model": "remote",  # the server's own model name, not basal-ui's "<server id>/remote"
                 },
             )
         ]
