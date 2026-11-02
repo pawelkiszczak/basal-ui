@@ -980,15 +980,16 @@ def create_app(
 
     @app.post("/api/benchmark", status_code=202)
     def post_benchmark(body: dict = Body(...)):
-        """kind benchmark (the preset), loadtest, determinism (a loaded model) or modes (a downloaded model, loaded
-        in basal-ui's process mode by mode); one measurement at a time."""
-        from . import bench
+        """Run one model benchmark; Engine-tool checks also accept downloaded, unloaded models."""
+        from . import bench, engine
 
         model_id, kind = body.get("id"), body.get("kind", "benchmark")
-        if kind not in ("benchmark", "loadtest", "determinism", "modes"):
-            raise HTTPException(400, "kind must be benchmark, loadtest, determinism or modes")
+        if kind not in ("benchmark", "loadtest", "determinism", "modes", "identity", "order_check"):
+            raise HTTPException(400, "kind must be benchmark, loadtest, determinism, modes, identity or order_check")
         if kind == "modes":
             return start_modes(model_id, body)
+        if kind in ("identity", "order_check"):
+            return start_engine_check(model_id, kind, body, bench, engine)
         try:
             label, paths = bench.resolve_set(body.get("set", "bundled"))
         except ValueError as exc:
@@ -1014,6 +1015,62 @@ def create_app(
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    def start_engine_check(model_id, kind, body, bench, engine):
+        variant = find_variant(model_id)
+        local_dir = downloaded(variant)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        if kind == "order_check" and not engine.feature("order_check"):
+            raise HTTPException(400, "order check needs Engine 2.5")
+        if kind == "identity":
+            dtype = body.get("dtype", "bf16")
+            if dtype not in ("fp32", "bf16"):
+                raise HTTPException(400, "dtype must be fp32 or bf16")
+            fast = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+            )
+            if not fast or not fast["available"]:
+                raise HTTPException(
+                    400, f"identity gate requires fast mode: {fast['reason'] if fast else 'unavailable'}"
+                )
+            job_fn, args = bench.identity_job, (dtype.replace("fp32", "float32").replace("bf16", "bfloat16"), options)
+            reservation = bench.comparison_memory(["fast"], assessment.est_memory_bytes)
+        else:
+            job_fn, args, reservation = bench.order_check_job, (), assessment.est_memory_bytes or 0
+        try:
+            fleet.reserve(kind, reservation)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
+            return fleet.jobs.start(
+                "benchmark", variant.id, f"{kind}: {variant.id}", job_fn, fleet, variant, local_dir, *args
+            )
+        except RuntimeError as exc:
+            fleet.release(kind)
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/benchmark/availability")
+    def benchmark_availability(id: str):
+        from . import engine
+
+        variant = find_variant(id)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        fast = next(
+            (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+        )
+        return {
+            "identity": {
+                "available": bool(fast and fast["available"]),
+                "reason": fast["reason"] if fast else "fast unavailable",
+            },
+            "order_check": {
+                "available": engine.feature("order_check"),
+                "reason": None if engine.feature("order_check") else "needs Engine 2.5",
+            },
+        }
 
     def modes_context(variant):
         """(local dir, assessment, merged load options, the modes a comparison may run) of a downloaded variant."""

@@ -1438,13 +1438,27 @@ $('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
 <details class="manager-help"><summary>${t('How this measurement runs')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
+$('#benchmarkResults').insertAdjacentHTML('beforebegin',`<div class="bench-params"><div class="qf-row"><label for="identityDtype">${t('Identity gate dtype')}</label><select id="identityDtype"><option value="fp32">fp32</option><option value="bf16">bf16</option></select><button type="button" id="runIdentity">${t('Identity gate')}</button><button type="button" id="runOrderCheck">${t('Order check')}</button></div><p class="muted" id="engineCheckReason"></p></div>`);
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
 $('#benchmarkSet').onchange=()=>{localStorage.setItem('basal-ui.benchmarkSet',$('#benchmarkSet').value);updateBenchmarkForm();};
 $('#benchmarkPath').oninput=()=>localStorage.setItem('basal-ui.benchmarkPath',$('#benchmarkPath').value);
 $('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels());};
-$('#benchmarkModel').onchange=()=>{updateBenchmarkForm();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+$('#benchmarkModel').onchange=()=>{updateBenchmarkForm();updateEngineCheckAvailability();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+async function updateEngineCheckAvailability() {
+  const id=$('#benchmarkModel').value;
+  if(!id)return;
+  try{
+    const d=await api(`/api/benchmark/availability?id=${encodeURIComponent(id)}`);
+    $('#runIdentity').disabled=!d.identity.available; $('#runIdentity').title=d.identity.reason||'';
+    $('#runOrderCheck').disabled=!d.order_check.available; $('#runOrderCheck').title=d.order_check.reason||'';
+    $('#engineCheckReason').textContent=[!d.identity.available?`${t('Identity gate')}: ${d.identity.reason}`:'',!d.order_check.available?`${t('Order check')}: ${d.order_check.reason}`:''].filter(Boolean).join(' · ');
+  }catch(error){$('#engineCheckReason').textContent=error.message;}
+}
+$('#runIdentity').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#benchmarkModel').value,kind:'identity',dtype:$('#identityDtype').value})});toast(t('Identity gate started'));await refreshStatus();});
+$('#runOrderCheck').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#benchmarkModel').value,kind:'order_check'})});toast(t('Order check started'));await refreshStatus();});
+updateEngineCheckAvailability();
 let benchModelsSignature='', comparisonFor='';
 function updateBenchmarkForm() {
   const kind=$('#benchmarkKind').value;
@@ -1485,7 +1499,7 @@ function renderBenchmarkState(bench, ready) {
     benchModelsSignature=signature;
     select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
     if(ids.includes(current))select.value=current;
-    updateBenchmarkForm(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
+    updateBenchmarkForm(); updateEngineCheckAvailability(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
   }
   const running=Boolean(bench?.running);
   $('#runBenchmark').disabled=running||!ids.length; $('#cancelBenchmark').hidden=!running;
@@ -1496,6 +1510,12 @@ function renderBenchmarkState(bench, ready) {
 function benchmarkRow(x) {
   const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
   if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}</td></tr>`;}
+  if(kind==='identity'||kind==='order_check'){
+    const rows=kind==='identity'?(x.rows||[]):Object.entries(x.by_k||{}).map(([k,v])=>({path:`${k} options`,...v}));
+    const detail=rows.map(r=>`<tr><td>${esc(r.path||'—')}</td><td>${esc(r.gate||'—')}</td><td>${r.max_dp==null?'—':Number(r.max_dp).toExponential(2)}</td></tr>`).join('');
+    const max=rows.length?Math.max(...rows.map(r=>Number(r.max_dp)||0)).toExponential(2):'—';
+    return `<tr>${head}<td colspan="7"><details><summary><span class="badge ${x.pass===false?'fit-tight':'fit-fits'}">${x.pass===false?t('Failed'):t('Passed')}</span> · ${esc(x.dtype||'')} · ${t('max |Δp|')} ${max}</summary><table class="mini-table"><thead><tr><th>${t('Path')}</th><th>${t('Gate')}</th><th>${t('max |Δp|')}</th></tr></thead><tbody>${detail}</tbody></table></details></td></tr>`;
+  }
   if(kind==='modes'){
     const f=(v,d=1)=>v==null||Number.isNaN(Number(v))?'—':Number(v).toFixed(d);
     const rows=(x.modes||[]).map(m=>m.error?`<tr><td>${esc(m.mode)}</td><td colspan="8"><span class="reason wide">${esc(m.error)}</span></td></tr>`:`<tr><td>${esc(m.mode)}</td><td>${f(m.lat1_ms)}</td><td>${f(m.lat2_ms)}</td><td>${f(m.lat2_p95_ms)}</td><td>${f(m.dec_s)}</td><td>${m.agree==null?`ref`:f(m.agree,3)}</td><td>${m.acc==null?'—':pct(m.acc)}</td><td>${f(m.load_s)}</td><td>${f(m.mem_gb,2)}</td></tr>`).join('');

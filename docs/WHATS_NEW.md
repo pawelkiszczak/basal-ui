@@ -36,6 +36,8 @@
   `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
   not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
   value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
+- Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
+  the option-order check. Results and per-path probability deltas are saved with the other benchmark results.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

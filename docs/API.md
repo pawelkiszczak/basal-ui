@@ -71,6 +71,15 @@ overwritten. These are advisory facts at inspection time; permissions and files 
 Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
 as the other management routes; it is not a filesystem sandbox.
 
+### Benchmarks
+
+`POST /api/benchmark` accepts `{"id":"<downloaded model id>","kind":"identity","dtype":"bf16"}` or
+`{"id":"<downloaded model id>","kind":"order_check"}`. Identity `dtype` is `fp32` or `bf16` (default `bf16`) and
+requires the fast execution mode to be available for that model and host. `order_check` requires Engine 2.5's
+`order_check` feature probe; otherwise the request returns HTTP 400. Both start the shared `benchmark` job, reserve
+memory while running, write logs under `job:benchmark`, and save results with `GET /api/benchmarks`. The accepted
+benchmark kinds are `benchmark`, `loadtest`, `determinism`, `modes`, `identity` and `order_check`.
+
 ## Several models behind basal-ui
 
 basal-ui's API server ([USAGE.md](USAGE.md#api-server)) serves every model loaded in the app on one port and
