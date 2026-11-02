@@ -2603,12 +2603,16 @@ loadPresets();refreshUpdates();
 const schedulePanel=document.createElement('section');
 schedulePanel.className='card';
 schedulePanel.id='schedulePanel';
-schedulePanel.hidden=true;
 schedulePanel.innerHTML=`<div class="tabs" role="tablist" aria-label="${t('Batch')}"><button type="button" role="tab" id="batchRunTab" aria-selected="true">${t('Batch run')}</button><button type="button" role="tab" id="batchSchedulesTab" aria-selected="false">${t('Schedules')}</button></div><div id="scheduleManager" hidden><h2>${t('Scheduled Batch')}</h2><div id="scheduleList" aria-live="polite"></div><form id="scheduleForm" class="controls"><input id="scheduleName" class="input" placeholder="${t('Name')}" aria-label="${t('Name')}"><select id="scheduleModel" class="select" aria-label="${t('Model')}"></select><input id="scheduleInputDir" class="input" placeholder="${t('Input folder')}" aria-label="${t('Input folder')}"><input id="schedulePattern" class="input" value="*.jsonl" aria-label="${t('File pattern')}"><input id="scheduleOutputDir" class="input" placeholder="${t('Output folder')}" aria-label="${t('Output folder')}"><input id="scheduleConcurrency" class="input" type="number" min="1" max="256" value="16" aria-label="${t('Concurrency')}"><select id="scheduleIntervalType" class="select" aria-label="${t('Interval')}"><option value="every">${t('Every N minutes')}</option><option value="daily">${t('Daily at')}</option></select><input id="scheduleEvery" class="input" type="number" min="1" value="60" aria-label="${t('Every N minutes')}"><input id="scheduleDaily" class="input" type="time" value="09:00" aria-label="${t('Daily at')}"><label><input id="scheduleOverwrite" type="checkbox"> ${t('Allow overwriting output')}</label><label><input id="scheduleCatchUp" type="checkbox"> ${t('Catch up missed daily run')}</label><label><input id="schedulePaused" type="checkbox"> ${t('Paused')}</label><select id="schedulePreset" class="select" aria-label="${t('Preset')}"><option value="">${t('None')}</option></select><select id="scheduleLang" class="select" aria-label="${t('Language')}"><option value="auto">auto</option><option value="pl">pl</option><option value="en">en</option></select><button class="btn primary" type="submit">${t('Save schedule')}</button><button class="btn" id="scheduleCancelEdit" type="button" hidden>${t('Cancel')}</button><p id="scheduleError" class="error-box" role="alert" hidden></p></form></div>`;
+const batchCard=$('#batch > .card');
+const scheduleTabs=schedulePanel.querySelector('.tabs');
+batchCard.before(scheduleTabs);  // not a .card: path-inspector.js wraps the first card of #batch
+schedulePanel.hidden=true;
 $('#batch').append(schedulePanel);
-const scheduleRunTab=$('#batchRunTab'), scheduleTab=$('#batchSchedulesTab'), scheduleManager=$('#scheduleManager'), batchCard=$('#batch > .card');
-scheduleRunTab.onclick=()=>{batchCard.hidden=false;scheduleManager.hidden=true;scheduleRunTab.setAttribute('aria-selected','true');scheduleTab.setAttribute('aria-selected','false');};
-scheduleTab.onclick=()=>{batchCard.hidden=true;scheduleManager.hidden=false;scheduleRunTab.setAttribute('aria-selected','false');scheduleTab.setAttribute('aria-selected','true');loadSchedules();};
+const scheduleRunTab=$('#batchRunTab'), scheduleTab=$('#batchSchedulesTab'), scheduleManager=$('#scheduleManager');
+const batchRunView=()=>batchCard.closest('.path-inspector-layout')||batchCard;
+scheduleRunTab.onclick=()=>{batchRunView().hidden=false;schedulePanel.hidden=scheduleManager.hidden=true;scheduleRunTab.setAttribute('aria-selected','true');scheduleTab.setAttribute('aria-selected','false');};
+scheduleTab.onclick=()=>{batchRunView().hidden=true;schedulePanel.hidden=scheduleManager.hidden=false;scheduleRunTab.setAttribute('aria-selected','false');scheduleTab.setAttribute('aria-selected','true');loadSchedules();};
 let editingSchedule=null,schedulePresetData=[];
 async function loadSchedules(){
   try{
