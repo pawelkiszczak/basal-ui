@@ -37,6 +37,8 @@
 - Playground's **Fetch URL** loads a bounded, anonymous public HTTP(S) response into State for review, keeps JSON
   structured and records the source URL with Playground Decisions in History and Replay. SSRF address checks apply
   to DNS results and every redirect; see [API.md](API.md#fetching-a-url-into-playground-state).
+- The Playground can record a microphone clip on models with audio input; it is converted to mono PCM WAV and attached
+  within the existing 20 MiB media limit.
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

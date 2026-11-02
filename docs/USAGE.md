@@ -160,6 +160,9 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   Loading or selecting a model, including from another view, retains this tab's attachments and marked-element
   questions. Sending is blocked if the selected model cannot accept the retained media; remove it or select a
   compatible media-loaded model.
+  On a model with audio input, **Record** captures a microphone clip; press it again, press Escape, or leave Playground
+  to stop. The timer counts down from the 20 MiB attachment limit. The browser must have microphone permission and
+  serve the app in a secure context (HTTPS or localhost). Recordings are added as playable WAV attachments.
   Each type has its own
   result view; every answer shows whether it was deferred, whether its confidence clears the model's certified 1% / 5%
   thresholds and how it is calibrated; an answer whose calibration does not hold for it (media answers on a
