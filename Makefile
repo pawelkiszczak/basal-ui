@@ -52,4 +52,4 @@ run:
 	$$PYTHON -m basal_ui $(ARGS)
 
 screenshots:
-	"$$UV" run --extra e2e python scripts/screenshots.py
+	"$$UV" run --no-sync python scripts/screenshots.py

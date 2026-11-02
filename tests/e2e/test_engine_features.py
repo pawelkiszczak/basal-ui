@@ -7,7 +7,7 @@ import pytest
 
 from tests.e2e import test_pages
 from tests.e2e.support import CHOICE
-from tests.e2e.test_pages import sync_api, view
+from tests.e2e.test_pages import open_request_settings, sync_api, view
 
 browser, page = test_pages.browser, test_pages.page  # pytest fixtures shared with test_pages
 
@@ -58,6 +58,8 @@ def test_mlx_packed_and_health(ui, text_model, hardware):
 def test_browser_errors_health_warnings_and_options(page, text_model):
     """Real Chromium and app; errors/counter edge cases/warnings below are simulated, not GPU OOM acceptance."""
     view(page, "playground")
+    open_request_settings(page)
+
     page.check("#editJsonToggle")
     page.fill("#requestJson", json.dumps(CHOICE))
     for status, code, message in [

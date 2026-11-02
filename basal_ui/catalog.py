@@ -379,20 +379,29 @@ def omni_fast(hw: Hardware) -> bool:
     return hw.platform == "cuda" and ("gemma-fast" in hw.engines or (hw.cuda_capability or (0, 0))[0] == 12)
 
 
+def _quantized_hardware_reason(v: Variant, hw: Hardware) -> str | None:
+    """Stored low-precision checkpoints require their native device, regardless of local Execution mode."""
+    cap = hw.cuda_capability or (0, 0)
+    if v.port == "FP8" and (hw.platform != "cuda" or cap < (8, 9) or "rocm" in hw.engines):
+        return _text("fp8_hardware")
+    if v.port == "NVFP4" and (hw.platform != "cuda" or cap < (10, 0) or "rocm" in hw.engines):
+        return _text("nvfp4_hardware")
+    return None
+
+
 def _mode(v: Variant, hw: Hardware) -> tuple[str | None, str | None]:
     """(basal-serve --mode, None) or (None, why this machine cannot serve the variant)."""
     cap = hw.cuda_capability or (0, 0)
+    hardware_reason = _quantized_hardware_reason(v, hw)
+    if hardware_reason:
+        return None, hardware_reason
     if v.port == "FP8":
-        if hw.platform != "cuda" or cap < (8, 9) or "rocm" in hw.engines:  # ROCm reports platform "cuda"
-            return None, _text("fp8_hardware")
         if v.family == CURRENT_TEXT_FAMILY:  # loaded as stored by the basal engine
             return "fast", None
         if "vllm" not in hw.engines:
             return None, _text("fp8_vllm")
         return "vllm", None
     if v.port == "NVFP4":
-        if hw.platform != "cuda" or cap < (10, 0) or "rocm" in hw.engines:
-            return None, _text("nvfp4_hardware")
         if "vllm" not in hw.engines:
             return None, _text("nvfp4_vllm")
         return "vllm", None
@@ -479,7 +488,7 @@ def _gb(size: int | None) -> str:
     return "—" if size is None else f"{size / 1_000_000_000:.1f} GB"
 
 
-def suggest(items: list[Assessment], hw: Hardware) -> list[dict]:
+def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> list[dict]:
     """Suggestion cards [{"slot", "id", "why"}] in slot order recommended, best_quality, fastest, lightest, multimodal;
     a slot is left out when nothing qualifies. Only variants that fit both the memory budget and the memory available
     now are candidates, and a comfortable fit wins over a tight one. Where the available memory is unknown, the budget
@@ -528,7 +537,8 @@ def suggest(items: list[Assessment], hw: Hardware) -> list[dict]:
                 else "suggest_recommended_unknown"
             )
             if (
-                hw.platform == "apple"
+                packed
+                and hw.platform == "apple"
                 and "mlx" in hw.engines
                 and v.family in ("basal-1.0", "basal-1.5", "basal-2.0")
                 and (v.port == "bf16" or v.port.startswith("MLX"))
@@ -566,16 +576,28 @@ def suggest(items: list[Assessment], hw: Hardware) -> list[dict]:
                 mode=pick.mode,
             )
         )
-    multimodal = largest([a for a in fitting if a.media_mode is not None])
+    multimodal = largest([a for a in fitting if a.variant.media])
     if multimodal:
+        media_available = multimodal.media_mode is not None and multimodal.media_reason is None
+        media_mode = multimodal.media_mode or "eager"
+        media_reason_code = message_fields(multimodal.media_reason, "media_dependency")[0]
         suggestions.append(
-            _suggestion(
-                "multimodal",
-                multimodal.variant.id,
-                "suggest_multimodal",
-                kinds=list(multimodal.variant.media),
-                mode=multimodal.media_mode,
-            )
+            {
+                **_suggestion(
+                    "multimodal",
+                    multimodal.variant.id,
+                    "suggest_multimodal",
+                    kinds=list(multimodal.variant.media),
+                    mode=media_mode,
+                ),
+                "mode": media_mode,
+                "media": True,
+                "media_available": media_available,
+                "media_reason": multimodal.media_reason,
+                "media_reason_code": media_reason_code,
+                "media_reason_params": {},
+                "media_setup": None if media_available else "#backends",
+            }
         )
     return suggestions
 

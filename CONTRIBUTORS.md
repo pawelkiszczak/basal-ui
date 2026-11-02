@@ -9,6 +9,8 @@ are missing or listed wrongly, open a pull request against `dev` that fixes this
 |---|---|---|
 | Paweł Kiszczak | [@pawelkiszczak](https://github.com/pawelkiszczak) | author and maintainer: the browser app, the API server, the fleet of `basal-serve` children, the tests, the docs |
 | Greg Brzezinka | [@agentGreg](https://github.com/agentGreg) | merged History context-preservation fix ([#4](https://github.com/pawelkiszczak/basal-ui/pull/4)) and older-family e2e regression fix ([#5](https://github.com/pawelkiszczak/basal-ui/pull/5)); integrated with broader regressions in [#6](https://github.com/pawelkiszczak/basal-ui/pull/6) |
+| Konrad | [@konraddzbik](https://github.com/konraddzbik) | interaction, accessibility, choice-editor, model-comparison, API-example, Settings, path-guidance and calibration ideas in [#9](https://github.com/pawelkiszczak/basal-ui/pull/9), selectively adapted into Studio |
+| Marek Wolański | [@marekwolansky](https://github.com/marekwolansky) | Green/Orange appearance and shared visual direction in [#11](https://github.com/pawelkiszczak/basal-ui/pull/11), adapted into Studio; the contributor PR was not merged wholesale |
 
 ## The basal engine
 

@@ -223,15 +223,24 @@ class Job:
 class Jobs:
     """The last job of each kind; `logs` is the fleet's log buffers (a job's output goes to logs["job:<kind>"])."""
 
-    def __init__(self, logs: dict, event=None):
+    def __init__(self, logs: dict, event=None, start_lock=None, start_guard=None):
         self.logs = logs
         self.event = event or (lambda level, message: None)
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
+        self.start_lock, self.start_guard = start_lock, start_guard
 
     def start(self, kind, model, label, target, *args) -> dict:
         """Run target(job, *args) in a daemon thread; its return value is the job's result. RuntimeError when a job of
-        the kind is running."""
+        the kind is running or a shared owner refuses the start."""
+        if self.start_lock is None:
+            return self._start(kind, model, label, target, *args)
+        with self.start_lock:
+            return self._start(kind, model, label, target, *args)
+
+    def _start(self, kind, model, label, target, *args) -> dict:
+        if self.start_guard is not None:
+            self.start_guard(kind, target)
         with self.lock:
             current = self.jobs.get(kind)
             if current is not None and current.running:

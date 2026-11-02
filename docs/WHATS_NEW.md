@@ -1,17 +1,42 @@
-# 0.1.0rc1
+# 0.1.0
 
-Unreleased release candidate (planned tag `v0.1.0rc1`). The review fixes and contributor PRs
-[#4](https://github.com/pawelkiszczak/basal-ui/pull/4), [#5](https://github.com/pawelkiszczak/basal-ui/pull/5)
-and [#6](https://github.com/pawelkiszczak/basal-ui/pull/6) are merged
-on `dev`; [verification and remaining hardware limits](E2E.md#verified-dev-gate-2026-10-29) are recorded separately.
-No promotion to `stage`/`main` or PyPI publication was performed for that snapshot.
+Stable release, tag `v0.1.0`. Includes the review fixes and Studio redesign with the selected contributor-inspired
+interactions. [Verification and remaining hardware limits](E2E.md#selected-studio-features-gate-2026-11-02) are
+recorded separately; stable versioning does not certify untested hardware or model accuracy.
 
-- Prepare package version `0.1.0rc1` and PyPI trusted publishing. The GitHub `pypi` environment permits only `v*`
+- Publish package version `0.1.0` through PyPI trusted publishing. The GitHub `pypi` environment permits only `v*`
   tags and requires maintainer approval without an administrator bypass. Release tags must come from `main`;
-  release candidates become GitHub prereleases and are not marked Latest. [Release process](../CONTRIBUTING.md#releasing)
+  `v0.1.0` is a stable GitHub release, not a prerelease. [Release process](../CONTRIBUTING.md#releasing)
 
-- basal-ui is its own repository and package: import `basal_ui`, the `basal-ui` command, and `pip install basal-ui`
-  after the first PyPI release. Until then, use the [source install](../README.md#install).
+- Apply the Studio layout throughout the app: Dashboard landing, primary task navigation, Tools and Appearance
+  disclosures, paired Playground panels with Request settings, and responsive light/dark English/Polish views.
+  Model manager separates Library, Usage by model, Benchmarks and Calibration. The new `/api/traffic?minutes=15|60`
+  reports real process-local recorded Decision traffic, including input tokens/s, requests/s, latency, errors and
+  public endpoint attribution. Lifetime `/api/stats` stays compatible and shared with Manager; reset scope is explicit.
+  No prototype/demo data or layout switcher ships. The Engine range is unchanged.
+- Keep Dashboard chart/model/endpoint nodes stable during live updates so scrolling and selected endpoint text are
+  preserved. Add a shared **Load downloaded model** action across views, including Dashboard, with supported
+  text/media loads and **Use** for the current view without discarding its input. Playground attachments and
+  marked-element questions survive model loads/selections; incompatible media cannot be sent accidentally.
+- Explain Suggested's real constraints and tier/format heuristics; add detected local Backend choices with
+  mode-specific estimates and native multimodal suggestions even when media dependencies need installation.
+  Manual Backend choices cannot bypass a stored FP8/NVFP4 checkpoint's hardware requirements.
+- Add **Backends → Engine add-ons** for explicit media/GGUF dependency installation through `uv`, with maintenance
+  guards, logs, cancellation and restart guidance. Preserve the installed Engine and existing package versions;
+  never fetch the unrelated PyPI `basal` package. System toolchains remain operator-managed.
+- Integrate the selected contributor-inspired Studio designs: Appearance A with Green/Orange skins, inline
+  Choice editor A, two-model comparison A, protocol-tabbed API examples B, categorized Settings C, Quick actions C,
+  Batch path guidance B and calibration/evidence explanation B. Comparisons make two real Decisions and show
+  per-model errors independently; unsupported protocol conversions are refused rather than losing request fields. Invalid
+  option-key drafts preserve cost columns through language changes, and editing raw JSON invalidates copied examples.
+  Path inspection is explicit, bounded and read-only; it previews the first request, not a full dataset validation.
+  Correct MCP examples to the tested Engine's HTTP-only gateway connection and first-loaded-model routing.
+  Ideas from [#9](https://github.com/pawelkiszczak/basal-ui/pull/9) and
+  [#11](https://github.com/pawelkiszczak/basal-ui/pull/11) are selectively adapted, not merged wholesale;
+  [contributors](../CONTRIBUTORS.md) are credited by GitHub nickname. Engine pins remain unchanged.
+
+- basal-ui is its own repository and package: import `basal_ui`, use the `basal-ui` command, and install the
+  `basal-ui` distribution separately from the Engine. [Installation](../README.md#install)
 - It runs on upstream engine releases `>=2.4.1,<2.5` and refuses others, printing the install command, unless
   `BASAL_UI_ENGINE_UNCHECKED=1` is set (the top bar then shows an *experimental engine* badge with the version and
   commit). [README](../README.md#supported-engine-range)
@@ -23,7 +48,7 @@ No promotion to `stage`/`main` or PyPI publication was performed for that snapsh
 - The LoRA adapter load option appears only with an engine that provides it (≥ 2.5.1), behind
   `engine.feature("adapter")`; on 2.4.x it is greyed out with the reason.
   [Research note](research/lora-adapters-at-load.md)
-- The update check covers basal-ui and the engine: the Overview reports a newer basal-ui release, a newer engine
+- The update check covers basal-ui and the engine: Hardware reports a newer basal-ui release, a newer engine
   release inside the supported range, and an engine release this basal-ui does not support yet.
 - On engine 2.4.1 basal-ui fills in what the engine does not report itself: the certified thresholds of a loaded
   model come from the calibration file it serves; a file fitted in basal-ui names the model's repo id and commit

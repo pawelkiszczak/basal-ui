@@ -88,10 +88,14 @@ starts CI; it is not a substitute for passing checks.
 
 ## Screenshots
 
-The README's screenshots and tour GIF (`docs/images/`) come from `make screenshots` (`scripts/screenshots.py`): it
-starts basal-ui on a fresh settings directory, loads `Remek/basal-2.0-mini`, captures five views in Chromium and
-records the tour. Refresh them after a UI change to a view the README shows. It needs `Remek/basal-2.0-mini` on disk,
-Chromium for Playwright (`uv run --extra e2e playwright install chromium`) and `ffmpeg` on `PATH`.
+The README's screenshots and tour GIF (`docs/images/`) come from `make screenshots` (`scripts/screenshots.py`).
+It starts an isolated app, loads cached `Remek/basal-2.0-mini` plus the smallest other downloaded runnable model,
+sends real Decisions, and captures Dashboard, Hardware, Models, Playground, all four Manager tabs, API server,
+Settings, Batch, API examples and model comparison before recording the tour. Counters and answers come from
+that run, not fixtures. Refresh these thirteen screenshots and the GIF after visible UI changes. First follow
+the [E2E environment setup](docs/E2E.md); the target does not install dependencies, download models or change
+the Engine. Both cached models must fit together. It also needs Chromium
+(`uv run --no-sync playwright install chromium`) and `ffmpeg` on `PATH`.
 
 ## Engine proposals
 
@@ -115,11 +119,11 @@ UI never blocks on a proposal. The pipeline:
 
 ## Releasing
 
-The current candidate is package version `0.1.0rc1`, with planned tag `v0.1.0rc1`. It has not been published.
-Preparing the publisher or merging changes into `dev` does not publish a package.
+The current stable release is package version `0.1.0`, tagged `v0.1.0`. A version bump or merge does not publish
+a package: publication requires the tag workflow and approval of its `pypi` deployment.
 
 1. If the Engine moves, bump it ("Bumping the engine" below). Set `version` in `pyproject.toml` (for example,
-   `0.1.0rc1` for a candidate or `0.1.0` for the stable release), run `uv lock`, and finalize the matching
+   `0.2.0rc1` for a candidate or `0.2.0` for a stable release), run `uv lock`, and finalize the matching
    `docs/WHATS_NEW.md` section. Remove its **Unreleased** label before tagging. These changes land on `dev`.
 2. Open the pull request `dev` → `stage`. On `stage`, run the e2e gate on real hardware (`make e2e`, `docs/E2E.md`)
    and record the run (models, hardware, results) in that pull request; fixes go to `stage` and back to `dev`
@@ -127,7 +131,7 @@ Preparing the publisher or merging changes into `dev` does not publish a package
 3. Open the pull request `stage` → `main` and wait for the required checks before merging.
 4. After it merges, tag `v<version>` on `main` and push the tag. Before building or publishing, `publish.yml`
    checks that the tagged commit is on `main`, the tag matches `pyproject.toml`, and WHATS_NEW has a nonempty
-   `# <version>` section (for this candidate, `# 0.1.0rc1`).
+   `# <version>` section (for this release, `# 0.1.0`).
 5. Review the build and approve the waiting `pypi` deployment in GitHub Actions. It uploads to PyPI using trusted
    publishing, then creates the GitHub release with the validated notes and the same built artifacts.
 
