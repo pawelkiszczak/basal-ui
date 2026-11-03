@@ -91,6 +91,44 @@ which skips because headless Chromium's fake microphone never starts on this mac
 resolve, even outside basal-ui); the WAV encoder is still asserted before the skip. Not exercised: a real
 `basal-attach` of `Qwen/Qwen3-4B` (8 GB download) and a real `basal-finetune` run (needs the `finetune` add-on);
 both are covered by unit tests with the Engine tool replaced.
+## Stage gate, engine 2.5.1, 2026-11-02
+
+`stage` at [`9e96e4b`](https://github.com/pawelkiszczak/basal-ui/commit/9e96e4b) (merged
+[#35](https://github.com/pawelkiszczak/basal-ui/pull/35); its tree is identical to the tested `dev` commit
+`38e53f1`). Pin 2.5.1, range `>=2.4.1,<2.6`, package version still `0.1.0`: no version bump, tag, `main` promotion
+or publication. Host and models as in the [Engine 2.5.0 gate](#engine-250-gate-2026-11-02); offline
+(`HF_HUB_OFFLINE=1`).
+
+| Check | Engine 2.5.1 | Engine 2.5.0 | Engine 2.4.1 |
+|---|---|---|---|
+| Full e2e (`make e2e`) | 129 passed, 2 skipped | 129 passed, 2 skipped | 124 passed, 7 skipped |
+| Unit suite (`make test`), 4 runs on 2.5.1 and 2.4.1 | 385 passed, 1 skipped each | 385 passed, 1 skipped | 381 passed, 5 skipped each |
+| Feature probes on | 6 / 6 | 6 / 6 | 0 / 6 |
+| Unit coverage, three engines combined (`--cov-branch`) | 86.23% (baseline `caf98d9`: 85.88%); no uncovered line or branch among the lines changed since `caf98d9` | | |
+| PR CI (`ci-ok`, Ubuntu/macOS × Python 3.10/3.13 × three engines) | passed on [#35](https://github.com/pawelkiszczak/basal-ui/pull/35) | | |
+
+The skips are those of the 2.5.0 gate: thinking and early exit (hardware), and on 2.4.1 by design the three
+context-policy checks, Inspect of an MLX port and basal-omni-pico on `--mode mlx`.
+
+Also checked on this tree:
+
+- Wheel and sdist built; `twine check` passed; installed with engine 2.5.1 in a clean Python 3.10 venv and run from
+  outside the checkout: all 20 static assets referenced by `/` plus `/` and `/viz/` answered 200 with `no-cache`; the
+  engine reported 2.5.1, not experimental, latest supported; `Remek/basal-2.0-mini` (local copy without `prepared/`)
+  listed as downloaded, loaded in `mps` and answered.
+- The API server of that install with a required key and MCP: System One (with `x-request-id` echoed), OpenAI
+  Decisions, an empty `questions` refused with 422 `INVALID_REQUEST` and `detail`, 401 `UNAUTHORIZED` without a key,
+  `/v1/models` with the child's `certified` and `context`, MCP `list_models`; the engine's stdio bridge
+  (`basal-mcp --url … --model … --api-key …`) answered with the named model and reported the gateway's 401 for a
+  wrong key.
+- Chromium over all eleven views in English and Polish, light and dark, without a script error; the Playground's MCP
+  example named the selected model, and a decision rendered the safety strip and the context meter.
+- `catalog.download` of `Remek/basal-2.0-mini` fetched `prepared/8ec427959bcceb5504f4/` into the snapshot.
+- The unit suite against upstream `main` (2.5.1, `1605082`) with `BASAL_UI_ENGINE_UNCHECKED=1`: 385 passed, 1 skipped.
+- 86 local links across 22 Markdown files: none broken.
+
+Not validated: `--mode int8` and `--prepared auto` loading shipped kernels need a CUDA GPU (unit tests only for int8);
+NVIDIA/Strix/TPU hardware.
 
 ## Engine 2.5.0 gate 2026-11-02
 
