@@ -52,6 +52,10 @@
 - Engine 2.5 adds Cascades: combine ready basal models with escalation or weighted blending, optionally with a chat
   fallback, behind one model name. Cascades are listed on the API server, and their answer attribution and
   calibration status are shown in the Playground. [USAGE](USAGE.md#cascades) · [API](API.md#cascades)
+- Settings can attach external System One Decision servers as **Comparison models**. The Playground compares answers and
+  latency side by side, while Batch preflights every input line before running. Comparison answers are marked
+  uncalibrated; their servers and keys never appear on the API server or MCP. [USAGE](USAGE.md#comparison-models) ·
+  [API](API.md#local-app-management-api)
 
 - On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
   accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the

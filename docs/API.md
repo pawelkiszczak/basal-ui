@@ -35,6 +35,15 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 | `GET /api/attach` | Returns `{"available":boolean,"bases":[...]}`; bases are empty unless `engine.feature("attach")` is available. |
 | `POST /api/attach` | `{"base":"Qwen/Qwen3-4B","revision":null,"format":1}` starts the normal base download and an `attach` job; format is 1 by default or 2. Unsupported bases/format are 400, duplicate or busy job is 409, unavailable Engine feature is 400. |
 | `DELETE /api/attach/{id}` | Removes an Attached model record and its attachment directory; returns 409 while loaded and 404 for unknown ids. |
+| `GET /api/decision-servers` | Returns saved Decision servers, their cached `ready`/`unavailable` state, and reported models. API keys are never returned. |
+| `POST /api/decision-servers` | `{"name":"Ollama","url":"http://127.0.0.1:11434","key":"optional","consent":false}` attaches a server and polls `/health`, then `/v1/models`. Loopback and link-local hosts do not need consent; other hosts require `consent:true` or return 400 `CONSENT_REQUIRED` with the host in `detail`. |
+| `DELETE /api/decision-servers/{id}` | Detaches the server's models and deletes its saved key; unknown ids return 404. |
+
+Comparison models are available only to the Playground's second model slot and Batch. A request rejected for a
+basal-only type, field, more than 26 choice options, or unsupported media returns HTTP 400
+`UNSUPPORTED_FOR_COMPARISON`; no upstream request is made. Batch validates every JSONL line before it starts and
+includes the line number in any refusal. Hosted URLs ending in `/v1/decisions` use the existing System One ↔ OpenAI
+Decisions conversion when `/v1/models` is unavailable.
 
 The attach job and download progress appear in `GET /api/status` under `jobs["attach"]` and `downloads[base]`;
 its log is available at `GET /api/logs?source=job%3Aattach`. The generated model is listed by `GET /api/models`
@@ -152,6 +161,8 @@ paths, like basal-serve's own errors.
 `GET /v1/models` lists the ready models in both shapes: `models` holds each model's basal-serve entry (as above) and
 `data` the OpenAI list (`{"id", "object": "model", "created", "owned_by": "basal"}`), with `"object": "list"`.
 `GET /health` answers `{"status": "ok", "models": [ids]}`.
+Comparison models are intentionally absent from this API server's `/v1/models`, `/health` model list and MCP
+`list_models`; they can only be called by the local Playground compare route and Batch.
 
 `GET /v1/stats` returns basal-ui's statistics: `{"models": {id: {"requests", "questions", "errors", "input_tokens",
 "avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
