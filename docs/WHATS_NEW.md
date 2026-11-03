@@ -64,6 +64,10 @@
   `basal-finetune`; the cancellable job reserves memory, reports held-out accuracy and exposes its LoRA adapter in
   Load options. Install the `finetune` (`peft`) add-on from Backends first. [USAGE.md](USAGE.md#fine-tune),
   [API.md](API.md#fine-tuning)
+- Batch → **Schedules** watches an input folder for new or changed JSONL files, runs Batch with the saved model,
+  preset and language, and writes stable output names. Pause/resume, edit, run-now and a capped persistent run history
+  are available in the Batch view. [USAGE.md](USAGE.md#batch) · [API.md](API.md#scheduled-batch)
+
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
   evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.

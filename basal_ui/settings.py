@@ -646,3 +646,62 @@ def keys_file(internal_sha256: str) -> Path:
 def remove_keys_file() -> None:
     """Called when basal-ui exits: its API server is gone, so is its key file."""
     _keys_path().unlink(missing_ok=True)
+
+
+@_locked
+def schedules() -> list[dict]:
+    value = load().get("schedules", [])
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def set_schedules(rows: list[dict]) -> None:
+    value = load()
+    value["schedules"] = rows
+    save(value)
+
+
+def schedule_history_path() -> Path:
+    return _settings_path().with_name("schedules.jsonl")
+
+
+@_locked
+def schedule_history() -> list[dict]:
+    path = schedule_history_path()
+    try:
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    except (OSError, ValueError):
+        return []
+
+
+@_locked
+def schedule_runs(schedule_id: str, cursor: int = 0) -> dict:
+    rows = [row for row in schedule_history() if row.get("schedule") == schedule_id]
+    offset = max(0, cursor)
+    return {"runs": rows[offset : offset + 100], "next_cursor": offset + 100 if offset + 100 < len(rows) else None}
+
+
+@_locked
+def append_schedule_run(row: dict) -> None:
+    path = schedule_history_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+    try:
+        current = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        current = ""
+    combined = current + encoded
+    if len(combined.encode("utf-8")) > 1024 * 1024:
+        lines = combined.splitlines(keepends=True)
+        kept = []
+        size = 0
+        for line in reversed(lines):
+            line_size = len(line.encode("utf-8"))
+            if size + line_size > 1024 * 1024:
+                break
+            kept.append(line)
+            size += line_size
+        _write_private(path, "".join(reversed(kept)))
+    else:
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(encoded)

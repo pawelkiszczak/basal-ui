@@ -324,6 +324,14 @@ and the answers page by page are shown; **Download answers** saves the output fi
 model's basal-serve: they are not counted in the statistics or the history. One batch runs at a time; its log is
 **Logs → job:batch**. Engine 2.4.1 keeps these preset controls disabled with the installed-engine reason.
 
+**Batch → Schedules** watches an absolute input folder for matching JSONL files and runs each new or changed file
+through the selected ready model. Choose a filename pattern, output folder, concurrency and either an interval in
+minutes or a local daily time. Outputs use `<stem>.answers.jsonl`; existing outputs are skipped unless overwrite is
+enabled. Preset and language settings follow the manual Batch controls. Schedules can be paused, resumed, edited,
+deleted or run immediately; run history records completions, failures and skips. The model is never loaded
+automatically. A daily schedule missed while the app is closed runs after restart only when **Catch up missed daily
+run** is enabled. Three consecutive failures pause the schedule until it is resumed or edited.
+
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
 and a bounded non-empty-row count; it does not validate every request in the file. It reads at most 64 MiB/100,000
