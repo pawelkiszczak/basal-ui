@@ -166,3 +166,5 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 .model-loader-dialog{width:min(900px,calc(100vw - 32px))}.model-loader-dialog h2{font-size:20px}.model-loader-row{display:grid;gap:12px;padding:20px 0;border-bottom:1px solid var(--line)}.model-loader-row strong{overflow-wrap:anywhere}.model-loader-row .controls{flex-wrap:wrap}.model-loader-dialog>.dashboard-link{display:inline-flex;margin-top:20px}
 .recommendation-controls{gap:8px;margin-bottom:24px}.recommendation-controls>select{max-width:380px;width:100%}.recommendation-controls>.manager-help{margin:8px 0 0}.recommendation-controls p+p{margin-top:12px}
 @media(max-width:720px){.page-header{padding-right:0}.page-header>#openModelLoader{position:static;margin-top:18px}}
+.media-record-controls{margin:8px 0 0;align-items:center;gap:10px}
+.mcp-import-tools{max-height:50dvh;overflow:auto;margin:12px 0}.mcp-import-tool{display:flex;align-items:flex-start;gap:10px;padding:8px;border-bottom:1px solid var(--line);cursor:pointer}.mcp-import-tool span{min-width:0;overflow-wrap:anywhere}.mcp-import-tool small{display:block;color:var(--muted)}

@@ -12,7 +12,9 @@ import re
 import secrets
 import threading
 import time
+import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from huggingface_hub.constants import HF_HUB_CACHE
 
@@ -324,16 +326,18 @@ def memory_settings() -> dict:
     value = load().get("memory")
     value = value if isinstance(value, dict) else {}
     budget, reserve = value.get("budget_bytes"), value.get("reserve_bytes", DEFAULT_RESERVE)
+    idle_unload = value.get("idle_unload_minutes")
     return {
         "budget_bytes": budget if type(budget) is int else None,
         "reserve_bytes": reserve if type(reserve) is int and reserve >= 0 else DEFAULT_RESERVE,
+        "idle_unload_minutes": idle_unload if type(idle_unload) is int and idle_unload >= 1 else None,
     }
 
 
 @_locked
 def update_memory(patch: dict) -> dict:
-    """budget_bytes: null (the hardware budget) or at least 1 GiB; reserve_bytes: kept free, >= 0."""
-    unknown = set(patch) - {"budget_bytes", "reserve_bytes"}
+    """Validate the memory budget, reserve and optional idle-unload timeout."""
+    unknown = set(patch) - {"budget_bytes", "reserve_bytes", "idle_unload_minutes"}
     if unknown:
         raise ValueError(f"unknown memory setting: {min(unknown)}")
     value = {**memory_settings(), **patch}
@@ -343,6 +347,10 @@ def update_memory(patch: dict) -> dict:
         raise ValueError("budget_bytes must be null or at least 1 GiB")
     if type(value["reserve_bytes"]) is not int or value["reserve_bytes"] < 0:
         raise ValueError("reserve_bytes must be a non-negative integer")
+    if value["idle_unload_minutes"] is not None and (
+        type(value["idle_unload_minutes"]) is not int or value["idle_unload_minutes"] < 1
+    ):
+        raise ValueError("idle_unload_minutes must be null or a positive integer")
     data = load()
     data["memory"] = value
     save(data)
@@ -362,8 +370,168 @@ def history_path() -> Path:
     return _sibling("history.jsonl")
 
 
+def secrets_path() -> Path:
+    return _settings_path().parent / "decision_servers.json"
+
+
+@_locked
+def get_secret(name: str) -> str | None:
+    try:
+        value = json.loads(secrets_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    secret = value.get(name) if isinstance(value, dict) else None
+    return secret if isinstance(secret, str) else None
+
+
+@_locked
+def set_secret(name: str, value: str | None) -> None:
+    path = secrets_path()
+    try:
+        secrets = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        secrets = {}
+    except ValueError as exc:
+        raise ValueError(f"{path} is not valid JSON") from exc
+    if not isinstance(secrets, dict):
+        raise ValueError(f"{path} is not a JSON object")
+    if value is None:
+        secrets.pop(name, None)
+    elif isinstance(value, str):
+        secrets[name] = value
+    else:
+        raise ValueError("secret must be a string or null")
+    _write_private(path, json.dumps(secrets, indent=2))
+
+
+def decision_servers() -> list[dict]:
+    value = load().get("decision_servers", [])
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def add_decision_server(name: str, url: str, consent: bool = False) -> dict:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be a non-empty string")
+    if not isinstance(url, str):
+        raise ValueError("url must be an http(s) URL")
+    parsed = urlsplit(url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("url must be an http(s) URL without credentials")
+    if not isinstance(consent, bool):
+        raise ValueError("consent must be a boolean")
+    record = {
+        "id": uuid.uuid4().hex,
+        "name": name.strip(),
+        "url": url.strip().rstrip("/"),
+        "consent": consent,
+        "created": int(time.time()),
+    }
+    data = load()
+    data["decision_servers"] = [*decision_servers(), record]
+    save(data)
+    return record
+
+
+@_locked
+def remove_decision_server(server_id: str) -> bool:
+    data = load()
+    servers = decision_servers()
+    if not any(item.get("id") == server_id for item in servers):
+        return False
+    data["decision_servers"] = [item for item in servers if item.get("id") != server_id]
+    save(data)
+    set_secret(server_id, None)
+    return True
+
+
+def cascades() -> list[dict]:
+    value = load().get("cascades", [])
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def set_cascade(spec: dict, replace: bool = False) -> dict:
+    if not isinstance(spec, dict):
+        raise ValueError("cascade must be an object")
+    name = spec.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name):
+        raise ValueError("name must match ^[a-z0-9][a-z0-9-]{0,39}$")
+    if not replace and name in {x.get("name") for x in cascades()}:
+        raise ValueError(f"cascade {name!r} already exists")
+    kind, levels = spec.get("kind"), spec.get("levels")
+    if kind not in ("escalate", "blend"):
+        raise ValueError("kind must be escalate or blend")
+    if (
+        not isinstance(levels, list)
+        or len(levels) < 2
+        or any(not isinstance(x, dict) or not isinstance(x.get("model"), str) or not x["model"] for x in levels)
+    ):
+        raise ValueError("levels must contain at least two model ids")
+    if kind == "escalate":
+        for level in levels[:-1]:
+            below = level.get("below")
+            if isinstance(below, bool) or not isinstance(below, (int, float)) or not 0 < below <= 1:
+                raise ValueError("each non-final escalate level needs below in (0, 1]")
+        normalized = {
+            "name": name,
+            "kind": kind,
+            "levels": [
+                {"model": x["model"], **({"below": x["below"]} if i < len(levels) - 1 else {})}
+                for i, x in enumerate(levels)
+            ],
+            "weights": None,
+        }
+    else:
+        weights = spec.get("weights")
+        if (
+            not isinstance(weights, list)
+            or len(weights) != len(levels)
+            or any(isinstance(x, bool) or not isinstance(x, (int, float)) or x <= 0 for x in weights)
+        ):
+            raise ValueError("blend weights must be positive and match the levels")
+        normalized = {"name": name, "kind": kind, "levels": [{"model": x["model"]} for x in levels], "weights": weights}
+    fallback = spec.get("fallback")
+    if fallback is not None:
+        if not isinstance(fallback, dict):
+            raise ValueError("fallback must be an object or null")
+        url = fallback.get("url")
+        if not isinstance(url, str) or urlsplit(url).scheme not in ("http", "https") or not urlsplit(url).netloc:
+            raise ValueError("fallback.url must be an http(s) URL")
+        if not isinstance(fallback.get("model"), str) or not fallback["model"]:
+            raise ValueError("fallback.model must be a non-empty string")
+        for field, default, minimum in (("below", 0.5, 0), ("timeout", 60, 0), ("max_tokens", 8192, 1)):
+            value = fallback.get(field, default)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= minimum:
+                raise ValueError(f"fallback.{field} must be greater than {minimum}")
+        normalized["fallback"] = {
+            k: fallback[k] for k in ("url", "model", "below", "timeout", "max_tokens") if k in fallback
+        }
+        secret = fallback.get("key")
+        if secret is not None:
+            set_secret(f"cascade:{name}", secret)
+    else:
+        normalized["fallback"] = None
+        set_secret(f"cascade:{name}", None)
+    data = load()
+    saved = [x for x in cascades() if x.get("name") != name]
+    saved.append(normalized)
+    data["cascades"] = saved
+    save(data)
+    return normalized
+
+
+@_locked
+def delete_cascade(name: str) -> None:
+    data = load()
+    data["cascades"] = [x for x in cascades() if x.get("name") != name]
+    save(data)
+    set_secret(f"cascade:{name}", None)
+
+
 def calibrations_dir(model_id: str) -> Path:
-    """Where basal-ui writes the calibration files it fits for a model: <settings dir>/calibrations/<org>--<name>/."""
+    """Where basal-ui writes the calibration files it fits for a model."""
+
     return _settings_path().parent / "calibrations" / model_id.replace("/", "--")
 
 
@@ -371,6 +539,38 @@ def calibration_selection() -> dict:
     """{model id: calibration file basal-serve is started with}; a model without an entry uses its shipped file."""
     value = load().get("calibration")
     return {k: v for k, v in value.items() if isinstance(v, str)} if isinstance(value, dict) else {}
+
+
+def attached_models() -> list[dict]:
+    value = load().get("attached", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def add_attached(record: dict) -> None:
+    required = ("id", "base", "out_dir", "format", "created")
+    if not isinstance(record, dict) or any(key not in record for key in required):
+        raise ValueError("attached model record is incomplete")
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    if any(item.get("id") == record["id"] for item in attached if isinstance(item, dict)):
+        raise ValueError(f"attached model {record['id']!r} already exists")
+    data["attached"] = [*attached, record]
+    save(data)
+
+
+@_locked
+def remove_attached(model_id: str) -> dict:
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    record = next((item for item in attached if isinstance(item, dict) and item.get("id") == model_id), None)
+    if record is None:
+        raise ValueError(f"unknown attached model {model_id!r}")
+    data["attached"] = [item for item in attached if item is not record]
+    save(data)
+    return record
 
 
 @_locked
@@ -488,3 +688,62 @@ def keys_file(internal_sha256: str) -> Path:
 def remove_keys_file() -> None:
     """Called when basal-ui exits: its API server is gone, so is its key file."""
     _keys_path().unlink(missing_ok=True)
+
+
+@_locked
+def schedules() -> list[dict]:
+    value = load().get("schedules", [])
+    return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def set_schedules(rows: list[dict]) -> None:
+    value = load()
+    value["schedules"] = rows
+    save(value)
+
+
+def schedule_history_path() -> Path:
+    return _settings_path().with_name("schedules.jsonl")
+
+
+@_locked
+def schedule_history() -> list[dict]:
+    path = schedule_history_path()
+    try:
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    except (OSError, ValueError):
+        return []
+
+
+@_locked
+def schedule_runs(schedule_id: str, cursor: int = 0) -> dict:
+    rows = [row for row in schedule_history() if row.get("schedule") == schedule_id]
+    offset = max(0, cursor)
+    return {"runs": rows[offset : offset + 100], "next_cursor": offset + 100 if offset + 100 < len(rows) else None}
+
+
+@_locked
+def append_schedule_run(row: dict) -> None:
+    path = schedule_history_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+    try:
+        current = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        current = ""
+    combined = current + encoded
+    if len(combined.encode("utf-8")) > 1024 * 1024:
+        lines = combined.splitlines(keepends=True)
+        kept = []
+        size = 0
+        for line in reversed(lines):
+            line_size = len(line.encode("utf-8"))
+            if size + line_size > 1024 * 1024:
+                break
+            kept.append(line)
+            size += line_size
+        _write_private(path, "".join(reversed(kept)))
+    else:
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(encoded)

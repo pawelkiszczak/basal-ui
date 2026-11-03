@@ -19,8 +19,16 @@ from packaging.utils import canonicalize_name
 
 from .jobs import Cancelled, terminate
 
-ADDONS = {"media": "Media (image and audio)", "gguf": "GGUF (llama.cpp)"}
-ADDON_MODULES = {"media": ("PIL", "scipy", "torchvision"), "gguf": ("llama_cpp",)}
+ADDONS = {
+    "media": "Media (image and audio)",
+    "gguf": "GGUF (llama.cpp)",
+    "finetune": "Fine-tune (LoRA)",
+}
+ADDON_MODULES = {
+    "media": ("PIL", "scipy", "torchvision"),
+    "gguf": ("llama_cpp",),
+    "finetune": ("peft",),
+}
 ADDON_JOB = "engine-addon"
 ADDON_MESSAGES = {
     "addon_missing_extra": "The installed Engine does not declare the {extra} extra",
@@ -228,7 +236,7 @@ def _verify_install(extra, expected_version, expected_source):
 
 
 class AddonManager:
-    """Inspect and install media and GGUF extras through the Fleet maintenance lock and Jobs."""
+    """Inspect and install supported Engine extras through the Fleet maintenance lock and Jobs."""
 
     def __init__(
         self,
@@ -356,7 +364,7 @@ class AddonManager:
 
     def install(self, body):
         if not isinstance(body, dict) or not isinstance(body.get("extra"), str) or body["extra"] not in ADDONS:
-            raise ValueError("extra must be media or gguf")
+            raise ValueError("extra must be media, gguf or finetune")
         if body.get("confirmed") is not True:
             raise ValueError("Explicit confirmation is required to install an Engine add-on")
         extra = body["extra"]

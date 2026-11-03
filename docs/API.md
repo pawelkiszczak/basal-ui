@@ -29,9 +29,52 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 
 | Route | Contract |
 |---|---|
-| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
-| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `GET /api/addons` | Current Python environment and `media`/`gguf`/`finetune` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf` or `finetune`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
 | `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
+| `GET /api/attach` | Returns `{"available":boolean,"bases":[...]}`; bases are empty unless `engine.feature("attach")` is available. |
+| `POST /api/attach` | `{"base":"Qwen/Qwen3-4B","revision":null,"format":1}` starts the normal base download and an `attach` job; format is 1 by default or 2. Unsupported bases/format are 400, duplicate or busy job is 409, unavailable Engine feature is 400. |
+| `DELETE /api/attach/{id}` | Removes an Attached model record and its attachment directory; returns 409 while loaded and 404 for unknown ids. |
+| `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
+| `GET /api/decision-servers` | Returns saved Decision servers, their cached `ready`/`unavailable` state, and reported models. API keys are never returned. |
+| `POST /api/decision-servers` | `{"name":"Ollama","url":"http://127.0.0.1:11434","key":"optional","consent":false}` attaches a server and polls `/health`, then `/v1/models`. Loopback and link-local hosts do not need consent; other hosts require `consent:true` or return 400 `CONSENT_REQUIRED` with the host in `detail`. |
+| `DELETE /api/decision-servers/{id}` | Detaches the server's models and deletes its saved key; unknown ids return 404. |
+
+Comparison models are available only to the Playground's second model slot and Batch. A request rejected for a
+basal-only type, field, more than 26 choice options, or unsupported media returns HTTP 400
+`UNSUPPORTED_FOR_COMPARISON`; no upstream request is made. Batch validates every JSONL line before it starts and
+includes the line number in any refusal. Hosted URLs ending in `/v1/decisions` use the existing System One ↔ OpenAI
+Decisions conversion when `/v1/models` is unavailable.
+
+The attach job and download progress appear in `GET /api/status` under `jobs["attach"]` and `downloads[base]`;
+its log is available at `GET /api/logs?source=job%3Aattach`. The generated model is listed by `GET /api/models`
+and can be loaded and calibrated like other catalog entries.
+
+`GET /api/calibrations?id=<model>` lists fitted/imported files with their `layout` (missing metadata means
+`canonical`), the Shipped calibration context, the current fit `layout`, and `layout_mismatch` when the Selected file
+does not match the active layout (or Saved layout when unloaded). `POST /api/calibrations/select` returns the same
+shape. `POST /api/calibrate` fits against that active-or-saved layout; non-canonical layouts are passed to
+`basal-calibrate --layout`, and a request is refused with HTTP 400 when the installed Engine lacks that flag. The
+Calibration tab disables fitting and explains the limitation in that case.
+| `POST /api/fetch` | `{"url":"https://example.com"}` fetches a bounded anonymous document for Playground state. Returns `{url,final_url,content_type,bytes,truncated,state}`; unsafe destinations are 400, oversized responses 413, unsupported content types 415 and fetch/HTTP failures 502. |
+| `POST /api/presets/import-url` | `{"url":"https://example.com/presets.json"}` fetches a public JSON presets file (up to 1 MiB) and merges it using the same validation and replacement rules as individual preset updates. Non-JSON returns 415, oversized data 413, unsafe destinations 400; success returns the current `{"load":...,"request":...}` presets. |
+| `POST /api/mcp/tools` | `{"url":"http://localhost:8000/mcp","token":"optional"}` initializes streamable-HTTP MCP and returns tool definitions as `{"tools":[{"name":"get_weather","description":"...","inputSchema":{...}}]}`. Loopback MCP servers are allowed; other destinations use the Fetch URL address guard and pinned connection. A JSON-RPC/server failure is 502; unsafe addresses are 400. |
+| `POST /api/tools/shortlist` | `{"tools":[...],"query":"...","k":40}` ranks tools by BM25 and returns the selected `tools`; `k` must be an integer from 1 to 255. |
+
+### Fine-tuning
+
+`POST /api/finetune` accepts a downloaded bf16 basal or Attached model, a labelled JSONL `input`, and a safe single-segment
+`out_name`; optional settings are `epochs`, `lr`, `rank`, `alpha`, `holdout`, `max_len`, `max_steps` and
+`grad_checkpointing`. The request validates the input with `POST /api/paths/check`'s JSONL rules, reserves twice the
+estimated model memory, and starts `jobs["finetune"]`. `DELETE /api/finetune` cancels it.
+Progress is exposed under `GET /api/status` → `jobs["finetune"]`; logs use
+`GET /api/logs?source=job%3Afinetune` and the usual cursor/generation contract.
+
+The output is written below `<models_dir>/adapters/<model-id-with-slashes-replaced>/<out_name>/`; the merged model,
+`heldout.jsonl`, `finetune.json` and `lora/` adapter are produced by the Engine. `GET /api/finetune?id=<model>` returns
+availability and completed reports (`top1_before`, `top1_after`, counts). `GET /api/models/options?id=<model>` includes
+the available `adapters` paths for the existing load option. Fine-tuning requires Engine 2.5's `finetune` feature and
+the `peft` add-on; 2.4.1 responds unavailable/refuses the operation.
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
@@ -42,12 +85,76 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Batch presets
+
+`GET /api/batch/presets` returns the Engine's ready question names and supported language values:
+`{"available":true,"presets":["..."],"langs":["auto","pl","en"]}`. On Engine 2.4.1 it returns
+`available: false`, empty lists, and a `reason`; it does not import the 2.5-only preset module.
+
+`POST /api/batch` accepts optional `preset` (one of those names) and `lang` (`auto`, `pl` or `en`). `auto` is the
+default and is inferred by `basal-run` from each state's language; explicit `pl` or `en` passes `--lang`. With a
+preset selected, JSONL lines containing only `state` are accepted and basal-run supplies that preset's questions.
+Unknown presets or unsupported language values return HTTP 400.
+
+### Scheduled Batch
+
+`GET /api/schedules` lists persisted schedules. `POST /api/schedules` creates one; `PUT /api/schedules/{id}` updates
+it; `DELETE` removes it. Definitions include `model`, absolute existing `input_dir` and writable `output_dir`, a
+filename-only glob `pattern` (default `*.jsonl`), `concurrency` (1–256), `interval` as
+`{"every_minutes":N}` or `{"daily_at":"HH:MM"}` using local time, and optional `overwrite`, `catch_up`, `paused`,
+`preset` and `lang`. Invalid definitions return HTTP 400.
+
+`POST /api/schedules/{id}/run` starts the next eligible file immediately; `GET /api/schedules/{id}/runs?cursor=0`
+returns up to 100 history records and `next_cursor`. A schedule processes files only when their size or modification
+time changes. The output is `<output_dir>/<stem>.answers.jsonl`; existing outputs are skipped unless overwrite is
+enabled. A model that is not loaded is recorded as skipped and is never loaded automatically. Batch jobs remain
+cancellable through `DELETE /api/batch` and visible under `GET /api/status` → `jobs.batch`. Three consecutive failed
+runs pause the schedule. History is appended to `schedules.jsonl` beside the settings file and retained up to 1 MiB.
+
+### Memory settings and idle-unload status
+
+`GET /api/memory` returns `settings` including `idle_unload_minutes` (`null` means disabled). `PUT /api/memory`
+accepts that setting as `null` or an integer of at least 1 alongside `budget_bytes` and `reserve_bytes`; invalid
+values return HTTP 400 with the validation detail.
+
+`GET /api/status` includes `idle_unloaded_at`, keyed by model id. Each value contains `at` (Unix timestamp in seconds)
+and `minutes` (the configured idle timeout used). The entry remains until that model is loaded again. Idle-unloaded
+models remain in the remembered-model list and are not reloaded automatically on request.
+### Fetching a URL into Playground state
+
+`POST /api/fetch` runs on the local UI port and accepts only absolute `http` or `https` URLs. It resolves the host
+before connecting and refuses any loopback, private, link-local, carrier-grade NAT, multicast, unspecified, reserved
+or cloud metadata address; all addresses returned for the host must be public. Each of at most three redirects is
+resolved and checked again. Requests send no cookies or credentials and do not follow redirects automatically.
+Responses stream up to 4 MiB; text is capped at 200,000 characters. HTML becomes readable text with a title, JSON
+remains a parsed object, and other `text/*` responses remain text; other content types return 415.
+
+The Playground carries the originally requested `source_url` as local request metadata. It is retained in the History
+request and restored as a read-only Replay note; `/api/decide` removes it before forwarding the Decision to the model.
+
+Every request and redirect connects only to an address that check accepted (the host is not resolved again for the
+socket), so a DNS answer that changes after the check cannot redirect the connection to a private address; HTTPS still
+verifies the certificate against the URL's hostname.
+
+### Importing MCP tools and shortlisting
+
+`POST /api/mcp/tools` uses MCP streamable HTTP: it initializes the session, follows `tools/list` cursors for at most 20
+pages, and accepts JSON or server-sent-event responses. Replies are capped at 4 MiB and requests time out after 10 s.
+An optional bearer token is used only for that request. Local loopback services (127/8, `::1`, and `localhost`) are
+allowed; non-loopback hosts use the same address guard and DNS-pinned transport as `/api/fetch`. Redirects are not
+followed.
+
+The Playground stores the imported source URL as question metadata so the picker can refresh it; it removes that
+metadata before forwarding a Decision. Imported definitions are merged by `name`. `POST /api/tools/shortlist` runs
+local BM25 over tool names and descriptions using the question's instructions as the query; it adds no dependencies.
+The picker warns above 50 tools and refuses a selection over 255.
+
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:
 
 ```json
-{"path":"/Users/me/requests.jsonl","kind":"jsonl"}
+{"path":"/Users/me/requests.jsonl","kind":"jsonl","preset":"triage"}
 ```
 
 `kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
@@ -59,11 +166,22 @@ inspects the first non-empty row for request/label shape, question types and a p
 every request in the file. Scanning stops at 100,000 non-empty rows or 64 MiB; the first row must fit within 1 MiB.
 A blank prefix exhausting the scan limit is not reported as an empty file. Preview text is limited to 300 characters
 plus an ellipsis when truncated.
+When the selected Batch preset is included as `preset`, a state-only first row is previewed as a request using that
+preset's questions. Without it, the same row is unsuitable.
 
 For output, the response reports parent-directory existence, writability and whether an existing file would be
 overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
 Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
 as the other management routes; it is not a filesystem sandbox.
+
+### Benchmarks
+
+`POST /api/benchmark` accepts `{"id":"<downloaded model id>","kind":"identity","dtype":"bf16"}` or
+`{"id":"<downloaded model id>","kind":"order_check"}`. Identity `dtype` is `fp32` or `bf16` (default `bf16`) and
+requires the fast execution mode to be available for that model and host. `order_check` requires Engine 2.5's
+`order_check` feature probe; otherwise the request returns HTTP 400. Both start the shared `benchmark` job, reserve
+memory while running, write logs under `job:benchmark`, and save results with `GET /api/benchmarks`. The accepted
+benchmark kinds are `benchmark`, `loadtest`, `determinism`, `modes`, `identity` and `order_check`.
 
 ## Several models behind basal-ui
 
@@ -89,11 +207,33 @@ paths, like basal-serve's own errors.
 `GET /v1/models` lists the ready models in both shapes: `models` holds each model's basal-serve entry (as above) and
 `data` the OpenAI list (`{"id", "object": "model", "created", "owned_by": "basal"}`), with `"object": "list"`.
 `GET /health` answers `{"status": "ok", "models": [ids]}`.
+Comparison models are intentionally absent from this API server's `/v1/models`, `/health` model list and MCP
+`list_models`; they can only be called by the local Playground compare route and Batch.
 
 `GET /v1/stats` returns basal-ui's statistics: `{"models": {id: {"requests", "questions", "errors", "input_tokens",
 "avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
+
+`GET /metrics` exposes Prometheus text format 0.0.4 on the API-server port. It reports basal-ui's lifetime per-model
+request, question, error and input-token counters plus latency quantiles/average; request and error counts by endpoint
+and method over the last 15 minutes; and the number of ready models. Ready Engine children are scraped concurrently
+with a 2-second timeout. Their `text/plain` samples are included with a `model` label; children that return 404,
+another status or another media type are skipped. Engine 2.4.1 therefore exports only basal-ui metrics. The route is
+open when API keys are disabled and requires an admin key when they are enabled (user keys receive 403).
+
+Store a basal-ui admin key (for example, in `/etc/prometheus/basal-ui-admin-key`) and reference it from Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: basal-ui
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/basal-ui-admin-key
+```
 
 ### Recent Decision traffic
 
@@ -447,3 +587,16 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+## Cascades
+
+Engine 2.5 exposes configured Cascades through the local app API:
+
+- `GET /api/cascades` lists definitions and running state; fallback keys are never returned.
+- `POST /api/cascades` creates a definition (`name`, `kind`, ordered `levels`, optional `weights` and `fallback`).
+- `PUT /api/cascades/{name}` replaces a definition; `DELETE` removes a stopped definition.
+- `POST /api/cascades/{name}/start` starts it only when every member is ready; `/stop` unloads the router.
+
+The gateway's `GET /v1/models` lists Cascade entries with `kind: "cascade"` and accepts their name in the request's
+`model` field. Escalation answers include per-answer `answered_by`, `level`, and `model`. Blend and fallback answers
+include `calibrated: false`. On Engine 2.4.1, Cascade routes return a conflict explaining that Engine 2.5 is required.

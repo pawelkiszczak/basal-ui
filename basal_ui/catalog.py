@@ -18,9 +18,11 @@ _REPO_RE = re.compile(
     r"(?:-(FP8|NVFP4|GGUF|MLX(?:-8bit|-6bit|-bf16|-fp4)?|oQ6e))?$"
 )
 _PICO_RE = re.compile(r"^basal-omni-(pico)(?:-(FP8|NVFP4|GGUF|MLX(?:-8bit)?))?$")
-AUTHORS = ("Remek", "pawelkiszczak", "agentGreg")
+ATTACHABLE = ("Qwen/Qwen3-4B",)
+ATTACHED_MODE_REASON = "attached models serve in eager, mps, mlx or fast"
 _BASE_FILES = ("*.json", "*.jinja", "*.model", "*.txt")
 TIER_ORDER = {"pico": 0, "mini": 1, "1.5B": 2, "4.5B": 3, "max": 4, "ultra": 5}
+AUTHORS = ("Remek", "pawelkiszczak", "agentGreg")
 CURRENT_TEXT_FAMILY = "basal-2.0"
 # docs/HARDWARE.md, Recommendation: bf16 on data-centre GPUs (launch-bound at batch 1) and on the RTX 4090 (FP8
 # compilation stalled there); FP8 on other GPUs with compute capability 8.9+
@@ -144,10 +146,48 @@ class Variant:
     weights_only: bool = False  # a GGUF repository without tokenizer and calibration: they come from base_repo
     recurrent: bool = False  # RECURRENT_MODELS
     cache_revision: str | None = None  # the complete snapshot selected by the offline catalog
+    local_dir: str | None = None
 
     @property
     def community(self) -> bool:
-        return self.author != "Remek"
+        return self.family != "attached" and self.author != "Remek"
+
+
+def attached_variants(records) -> list[Variant]:
+    """Build catalog variants from persistent attached-model records."""
+    out = []
+    for record in records:
+        base, model_id, directory = record.get("base"), record.get("id"), record.get("out_dir")
+        if not isinstance(base, str) or not isinstance(model_id, str) or not isinstance(directory, str):
+            continue
+        path = Path(directory)
+        try:
+            config = json.loads((path / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            config = {}
+        weights = [p for p in path.glob("*.safetensors") if p.is_file()]
+        weight_bytes = sum(p.stat().st_size for p in weights)
+        try:
+            params = float(config.get("num_parameters") or weight_bytes / 2)
+        except (TypeError, ValueError):
+            params = weight_bytes / 2
+        tier = f"{params / 1_000_000_000:.1f}B"
+        out.append(
+            Variant(
+                model_id,
+                base,
+                "attached",
+                tier,
+                "bf16",
+                "bf16",
+                None,
+                weight_bytes,
+                True,
+                author=base.split("/", 1)[0],
+                local_dir=str(path),
+            )
+        )
+    return out
 
 
 @dataclass(frozen=True)
@@ -428,6 +468,8 @@ def _mode(v: Variant, hw: Hardware) -> tuple[str | None, str | None]:
     if hw.platform == "apple":
         if "mlx" in hw.engines:
             return "mlx", None
+        if v.family == "attached":
+            return "mps", None
         if v.experimental:
             return None, _text("omni_apple_dependency")
         return "mps", None
@@ -457,9 +499,12 @@ def _fit(est: int | None, budget: int | None) -> str:
     return "too_large"
 
 
-def assess(v: Variant, hw: Hardware) -> Assessment:
+def assess(v: Variant, hw: Hardware, options: dict | None = None) -> Assessment:
     mode, reason = _mode(v, hw)
-    overhead = GRAPH_ENGINE_OVERHEAD if mode in GRAPH_ENGINE_MODES else GIB
+    overhead = GIB
+    if mode in GRAPH_ENGINE_MODES:
+        graph_memory = (options or {}).get("graph_memory_gb")  # --graph-memory-gb replaces the 4 GiB estimate
+        overhead = int(graph_memory * GIB) if graph_memory else GRAPH_ENGINE_OVERHEAD
     est = int(v.weights_bytes * 1.2) + overhead if v.weights_bytes is not None else None  # weights + runtime + KV cache
     fit = _fit(est, hw.memory_bytes) if hw.memory_bytes else "unknown"
     fit_now = _fit(est, hw.available_bytes)
@@ -651,6 +696,9 @@ def _base_revision(v: Variant) -> dict:
 
 def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> Path | None:
     """The local snapshot directory if the weights and any required base metadata are cached."""
+    if v.local_dir is not None:
+        path = Path(v.local_dir)
+        return path if (path / "basal.json").is_file() else None
     from huggingface_hub import snapshot_download
 
     kwargs = download_kwargs(v, revision)

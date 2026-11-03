@@ -63,6 +63,34 @@ the hardware allows.
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
 
+## Roadmap features gate 2026-11-02
+
+Branch `integration/roadmap`: every roadmap feature branch (idle unload, calibration layout, Engine 2.5 load options,
+identity/order check, Batch presets, `/metrics`, Attached models, Cascades, Comparison models, Fetch URL, MCP tools
+import, microphone recording, Scheduled Batch, presets from URL, fine-tune) merged over the engine 2.5.1 pin. A
+development verification record, not a release.
+
+Host: macOS/Apple Silicon (arm64), Python 3.13.11, Engine 2.5.1 with its `mlx` and `media` extras, Chromium.
+Cached models only (`HF_HUB_OFFLINE=1`): `Remek/basal-2.0-mini-MLX-8bit` (text), `Remek/basal-2.0-mini` (second and
+bf16), `Remek/basal-omni-1.0-max` (audio, recording test).
+
+| Check | Observed result |
+|---|---|
+| `make lint` | Passed |
+| Unit suite, Engine 2.5.1 (with the `mlx`, `media` and `e2e` extras) | 453 passed |
+| Unit suite, Engine 2.4.1 (same tree) | 444 passed, 9 skipped |
+| Full `make e2e ARGS='-q -rs --tb=short'` | 129 passed, 3 skipped in 352 s |
+| Real `basal-router` Cascade over two loopback replicas | escalation answered with `answered_by: escalated`; unloading a member stopped the Cascade |
+| Comparison model against a loopback Decision server, real `basal-2.0-mini` as primary | both answers returned; the server received its own model name and the stored bearer key; a `multi` question refused with `UNSUPPORTED_FOR_COMPARISON` before sending |
+| Idle unload with a real child (1 minute) | `basal-2.0-mini` unloaded with `idle_unloaded_at`; the Comparison model stayed |
+| API server `/metrics` with a real child | basal-ui series plus the child's own series labelled `model="Remek/basal-2.0-mini"` |
+| Fetch URL in the Playground | `https://example.com/` reduced into State; loopback refused |
+
+Skips: thinking (no cached 4.5B / vLLM), early exit (no CUDA / basal-1.0 bf16), and the microphone recording test,
+which skips because headless Chromium's fake microphone never starts on this macOS host (`getUserMedia` does not
+resolve, even outside basal-ui); the WAV encoder is still asserted before the skip. Not exercised: a real
+`basal-attach` of `Qwen/Qwen3-4B` (8 GB download) and a real `basal-finetune` run (needs the `finetune` add-on);
+both are covered by unit tests with the Engine tool replaced.
 ## Stage gate, engine 2.5.1, 2026-11-02
 
 `stage` at [`9e96e4b`](https://github.com/pawelkiszczak/basal-ui/commit/9e96e4b) (merged

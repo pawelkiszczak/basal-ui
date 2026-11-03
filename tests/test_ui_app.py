@@ -5,6 +5,7 @@ import struct
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -44,6 +45,7 @@ def instant_start(monkeypatch):
                 if not self.temporary:
                     settings.remember_loaded(assessment.variant.id, media)
                 self.state, self.media, self.ready_at = "ready", (["image", "audio"] if media else []), time.time()
+                self.last_used = time.monotonic()
                 self.serve_snapshot = {"log_decisions": "", "max_len": 4096, "calibration": None}
 
     monkeypatch.setattr(Runner, "_start", start)
@@ -879,15 +881,91 @@ def test_memory_routes_validate_and_report_the_hardware_budget(tmp_path):
     app, _ = app_for(tmp_path, [], hw=Hardware("cpu", "cpu", 16 * 1024**3, None, None, frozenset(), 5))
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/api/memory").json() == {
-            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3},
+            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3, "idle_unload_minutes": None},
             "hardware_budget_bytes": 16 * 1024**3,
             "available_bytes": 5,
         }
         assert client.put("/api/memory", json={"budget_bytes": 1024}).status_code == 400
         assert client.put("/api/memory", json={"reserve_bytes": -1}).status_code == 400
-        saved = client.put("/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}).json()
-        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}
+        for value in (0, -1, 1.5, "1"):
+            assert client.put("/api/memory", json={"idle_unload_minutes": value}).status_code == 400
+        saved = client.put(
+            "/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": 1}
+        ).json()
+        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": 1}
         assert client.get("/api/status").json()["memory"]["budget_bytes"] == 8 * 1024**3
+
+
+def test_idle_unload_skips_non_child_runners(tmp_path):
+    settings.update_memory({"idle_unload_minutes": 1})
+    fleet = make_fleet(tmp_path)
+    cascade = SimpleNamespace(temporary=False, state="ready", last_used=0)
+    fleet.runners["cascade/example"] = cascade
+    assert fleet.unload_idle(61) == []
+    assert fleet.runners["cascade/example"] is cascade
+
+
+def test_idle_unload_requires_idle_health_and_records_status(tmp_path, monkeypatch, instant_start):
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *a, **kw: httpx.Response(
+            200, json={"status": "ok", "running": 0, "queued": 0}, request=httpx.Request("GET", "http://test")
+        ),
+    )
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.put("/api/memory", json={"idle_unload_minutes": 1}).status_code == 200
+        assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
+        wait_for(lambda: states(client) == {"mini": "ready"})
+        runner = fleet.runners[MINI.id]
+        ready = runner.last_used
+        runner.base_url = "http://test"
+        assert fleet.unload_idle(ready + 61) == [MINI.id]
+        status = client.get("/api/status").json()
+        assert status["models"] == []
+        assert status["idle_unloaded_at"][MINI.id]["minutes"] == 1
+        assert MINI.id in [entry["id"] for entry in settings.last_models()]
+        assert client.post("/api/decide", json={"model": MINI.id, "state": "x"}).status_code == 404
+        assert "unloaded after 1 idle minutes" in [line["text"] for line in fleet.logs[MINI.id].since()]
+
+
+def test_idle_unload_skips_busy_health_and_a_decision_resets_idle_clock(tmp_path, monkeypatch, instant_start):
+    response = httpx.Response(200, json={"answers": {}})
+    health = {"running": 1, "queued": 0}
+    monkeypatch.setattr(Runner, "decide", lambda self, body, path="/v1/systemone": response)
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *a, **kw: httpx.Response(
+            200, json={"status": "ok", **health}, request=httpx.Request("GET", "http://test")
+        ),
+    )
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": MINI.id})
+        wait_for(lambda: states(client) == {"mini": "ready"})
+        runner = fleet.runners[MINI.id]
+        ready = runner.last_used
+        runner.base_url = "http://test"
+        assert fleet.unload_idle(ready + 61) == []
+        assert fleet.runners[MINI.id] is runner
+        health.clear()
+        assert fleet.unload_idle(ready + 61) == []
+        health.update(running=0, queued=0)
+        fleet.decide(MINI.id, {"state": "x"})
+        assert runner.last_used > ready
+        assert fleet.unload_idle(ready + 60) == []
+        assert fleet.runners[MINI.id] is runner
+
+
+def test_idle_unload_worker_stops_cleanly_with_app_lifespan(tmp_path):
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1"):
+        worker = app.state.idle_thread
+        assert worker.name == "basal-ui-idle" and worker.is_alive()
+    assert not worker.is_alive()
 
 
 def test_rss_is_summed_per_process_group(monkeypatch):
@@ -1178,3 +1256,238 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_attach_route_downloads_attaches_and_lists_the_local_variant(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text('{"num_parameters": 4000000000}')
+    target_weights = snapshot / "model.safetensors"
+    target_weights.write_bytes(b"weights")
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: True)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, *args, **kwargs: snapshot)
+
+    def fake_run_tool(job, module, argv):
+        assert module == "attach"
+        assert argv[0] == snapshot and argv[-2:] == ["--format", "1"]
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True)
+        (out / "basal.json").write_text("{}")
+        (out / "config.json").symlink_to(snapshot / "config.json")
+        (out / "model.safetensors").symlink_to(target_weights)
+
+    monkeypatch.setattr(jobs, "run_tool", fake_run_tool)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "elsewhere/model"}).status_code == 400
+        response = client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"})
+        assert response.status_code == 202
+        job = fleet.jobs.get("attach")
+        job.thread.join(2)
+        assert not job.thread.is_alive() and job.phase == "done", job.error
+        variant = next(item for item in client.get("/api/models").json()["models"] if item["family"] == "attached")
+        assert variant["id"] == "attached/qwen-qwen3-4b"
+        assert variant["local_dir"] == str(models / "attached" / "qwen-qwen3-4b")
+        assert variant["tier"] == "4.0B" and variant["weights_bytes"] == len(b"weights")
+        assert variant["downloaded"] and variant["uncalibrated"] and variant["attached"]
+        assert variant["inspect_reason"] == "attached models cannot be inspected"
+        assert not any(item["id"] == variant["id"] for item in client.get("/api/models").json()["suggestions"])
+        loaded = SimpleNamespace(state="ready")
+        fleet.runners[variant["id"]] = loaded
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 409
+        del fleet.runners[variant["id"]]
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 200
+        assert not Path(variant["local_dir"]).exists() and target_weights.exists()
+        assert settings.attached_models() == []
+
+
+def test_attached_models_only_offer_supported_execution_modes():
+    from basal_ui import catalog, options
+
+    variant = Variant("attached/test", "Qwen/Qwen3-4B", "attached", "4.0B", "bf16", "bf16", None, 100, True)
+    modes = options.available_modes(variant, HW, catalog.assess(variant, HW))
+    available = {row["mode"] for row in modes if row["available"]}
+    allowed = {"eager", "mps", "mlx", "mlx-q8", "fast"}
+    assert available <= allowed
+    assert any(row["mode"] in allowed for row in modes)
+    refused = next(row for row in modes if row["mode"] == "vllm")
+    assert refused["reason"] == catalog.ATTACHED_MODE_REASON
+    assert refused["reason_code"] == "mode_attached"
+
+
+def test_attach_is_unavailable_without_the_engine_feature(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/attach").json() == {"available": False, "bases": []}
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 400
+
+
+def test_cascade_api_start_routes_models_and_stops_when_member_unloads(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui import fleet as fleet_module
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    app, fleet = app_for(tmp_path, [])
+
+    class ReadyMember:
+        def __init__(self, model, url):
+            self.model, self.base_url, self.state, self.process = model, url, "ready", None
+            self.est_memory_bytes, self.temporary, self.ready_at = 10, False, time.time()
+            self.models_entry, self.rss_bytes, self.pid = {"name": model}, None, None
+
+        def status(self):
+            return {"id": self.model, "state": self.state, "rss_bytes": None}
+
+        def detach(self):
+            self.state = "idle"
+            return None, self.est_memory_bytes
+
+    fleet.runners.update(
+        {
+            "a/one": ReadyMember("a/one", "http://127.0.0.1:8101"),
+            "b/two": ReadyMember("b/two", "http://127.0.0.1:8102"),
+        }
+    )
+    launched = []
+
+    class Process:
+        stdout = ()
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(fleet_module, "rss_by_pgid", lambda: {})
+    monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda argv, **kwargs: (launched.append(argv), Process())[1])
+    monkeypatch.setattr(fleet_module.httpx, "get", lambda *args, **kwargs: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(fleet_module.Runner, "_terminate", lambda proc: None)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+        assert client.post("/api/cascades", json=body).status_code == 201
+        assert client.post("/api/cascades/tri/start").status_code == 202
+        assert launched[0][-6:] == [
+            "--replicas",
+            "http://127.0.0.1:8101",
+            "--escalate",
+            "http://127.0.0.1:8102",
+            "--escalate-below",
+            "0.8",
+        ]
+        assert any(item["id"] == "tri" and item["entry"]["kind"] == "cascade" for item in fleet.model_entries())
+        client.post("/api/unload", json={"id": "a/one"})
+        assert "tri" not in fleet.runners
+
+
+def test_cascade_start_refuses_unloaded_member(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+        assert client.post("/api/cascades", json=body).status_code == 201
+        response = client.post("/api/cascades/tri/start")
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "CASCADE_MEMBER_NOT_LOADED"
+
+
+def test_cascade_routes_explain_engine_compatibility(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.get("/api/cascades")
+    assert response.status_code == 409
+    assert "need engine 2.5" in response.json()["detail"]
+
+
+def test_comparison_servers_refuse_unsupported_requests_before_forwarding(tmp_path, child, monkeypatch, instant_start):
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+    monkeypatch.setattr(
+        Runner,
+        "decide",
+        lambda self, body, path="/v1/systemone": httpx.Response(
+            200, json={"model": self.model, "answers": {"q": {"type": "choice", "choice": "a"}}}
+        ),
+    )
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
+        wait_for(lambda: states(client).get("mini") == "ready")
+        attached = client.post(
+            "/api/decision-servers",
+            json={"name": "fixture", "url": child.url, "key": "server-secret"},
+        )
+        assert attached.status_code == 201
+        wait_for(lambda: any(x.endswith("/remote") for x in fleet.runners))
+        comparison_id = next(x for x in fleet.runners if x.endswith("/remote"))
+
+        refused = client.post(
+            "/api/compare",
+            json={
+                "model": "mini",
+                "compare_model": comparison_id,
+                "state": "hello",
+                "questions": {"q": {"type": "multi", "instructions": "Choose"}},
+            },
+        )
+        assert refused.status_code == 400
+        assert refused.json() == {
+            "error": "comparison models do not support questions.q.type",
+            "code": "UNSUPPORTED_FOR_COMPARISON",
+        }
+        assert child.seen == []
+
+        compared = client.post(
+            "/api/compare",
+            json={
+                "model": "mini",
+                "compare_model": comparison_id,
+                "state": "hello",
+                "questions": {"q": {"type": "choice", "instructions": "Choose", "criteria": ["a", "b"]}},
+            },
+        )
+        assert compared.status_code == 200
+        assert compared.json()["primary"]["response"]["answers"]["q"]["choice"] == "a"
+        assert compared.json()["comparison"]["response"]["answers"]["q"]["probabilities"] == {"0": 0.8, "1": 0.2}
+        assert child.seen == [
+            (
+                "/v1/systemone",
+                {
+                    "state": "hello",
+                    "questions": {"q": {"type": "choice", "instructions": "Choose", "criteria": ["a", "b"]}},
+                    "model": "remote",  # the server's own model name, not basal-ui's "<server id>/remote"
+                },
+            )
+        ]
+        assert child.auth == ["Bearer server-secret"]
+        secret_path = settings.secrets_path()
+        assert secret_path.stat().st_mode & 0o777 == 0o600
+        assert "server-secret" not in client.get("/api/decision-servers").text
+        server_id = attached.json()["servers"][0]["id"]
+        deleted = client.delete(f"/api/decision-servers/{server_id}")
+        assert deleted.status_code == 200
+        assert comparison_id not in fleet.runners
+        assert settings.get_secret(server_id) is None
+
+
+def test_decision_server_requires_consent_for_hosted_external_url(tmp_path):
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/api/decision-servers",
+            json={"name": "Hosted", "url": "https://api.typesafe.ai"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "CONSENT_REQUIRED"
+    assert "api.typesafe.ai" in response.json()["detail"]["detail"]

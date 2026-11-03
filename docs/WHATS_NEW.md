@@ -19,6 +19,61 @@
   basal-2.0-mini since 2 November) is no longer reported as not downloaded when its local copy lacks them. A download
   takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
+- `GLOSSARY.md` adds **Decision server**, **Comparison model**, **Attached model** and **Cascade**; ADR 0004 records
+  why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
+  ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
+  `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- **Calibration** fits for the model's Active or Saved prompt layout, labels every fitted/imported file with its layout
+  and warns when the Selected calibration does not match the served layout. Non-canonical fits are disabled with a
+  reason if the Engine lacks `basal-calibrate --layout`. [USAGE.md](USAGE.md#custom-calibration)
+- Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
+  the option-order check. Results and per-path probability deltas are saved with the other benchmark results.
+- The API-server gateway exposes `/metrics` in Prometheus text format: basal-ui request/latency and recent endpoint
+  traffic metrics, plus per-child Engine metrics on 2.5. Unavailable child metrics are skipped; API-key setups require
+  an admin key. [API.md](API.md#several-models-behind-basal-ui)
+- **Idle model unloading** is optional under Settings → Memory & storage. Ready models with no Decisions and no running
+  or queued child work are unloaded after the chosen number of minutes while remaining remembered for auto-load.
+  The Library, Dashboard and model logs record why the model was unloaded. [USAGE.md](USAGE.md#memory-budget)
+- Playground's **Fetch URL** loads a bounded, anonymous public HTTP(S) response into State for review, keeps JSON
+  structured and records the source URL with Playground Decisions in History and Replay. Every request and redirect
+  connects only to a checked public address (DNS rebinding cannot redirect it); see
+  [API.md](API.md#fetching-a-url-into-playground-state).
+- The Playground can record a microphone clip on models with audio input; it is converted to mono PCM WAV and attached
+  within the existing 20 MiB media limit.
+- Settings → Defaults can import presets from a public URL; the response is limited to 1 MiB and must be JSON, then
+  merges with existing presets using the same rules as file import. [USAGE.md](USAGE.md#load-options),
+  [API.md](API.md#local-app-management-api)
+- Every engine 2.5 `basal-serve` load option is in Load options — the second read (`--reread` and its combine,
+  token and image controls), `--order-average`, `--prepared`, `--compile-scope`, `--graph-memory-gb` (which sizes the
+  fit estimate), `--mlx-forward` / `--mlx-compute`, the FP8 / NVFP4 quantisation switches, `--state-cache-lock` /
+  `--state-cache-bits`, `--long-lane-gdn` (without which the long lane stays refused for Qwen3.5),
+  `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
+  not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
+  value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
+- Engine 2.5 adds Cascades: combine ready basal models with escalation or weighted blending, optionally with a chat
+  fallback, behind one model name. Cascades are listed on the API server, and their answer attribution and
+  calibration status are shown in the Playground. [USAGE](USAGE.md#cascades) · [API](API.md#cascades)
+- Playground tool questions can import selected definitions from an MCP streamable-HTTP server and merge by name; an
+  optional bearer token is used only for that call. The question remembers its source URL, and a local BM25 shortlist
+  ranks tools by the question's instructions. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it),
+  [API.md](API.md#importing-mcp-tools-and-shortlisting)
+- Settings can attach external System One Decision servers as **Comparison models**. The Playground compares answers and
+  latency side by side, while Batch preflights every input line and reaches the server (with its model name and
+  key) through a private proxy. Comparison answers are marked uncalibrated; their servers and keys never appear on
+  the API server or MCP. [USAGE](USAGE.md#comparison-models) · [API](API.md#local-app-management-api)
+- On Engine 2.5, Batch offers basal-run's question presets and `auto`/Polish/English wording. State-only JSONL lines are
+  accepted with a preset; the path inspector uses the selected preset to preview them. Engine 2.4.1 explains that the
+  feature is unavailable. [USAGE.md](USAGE.md#batch), [API.md](API.md#batch-presets)
+- Model manager can attach `Qwen/Qwen3-4B` with Engine 2.5's `basal-attach`; it appears as an **Attached** model,
+  serves in supported modes, and remains marked uncalibrated until a Selected calibration is fitted. It can be removed
+  when unloaded; Attached models are excluded from suggestions and Inspect. [USAGE.md](USAGE.md#attached-models)
+- Model manager → Calibration can fine-tune a downloaded bf16 basal or Attached model with Engine 2.5's
+  `basal-finetune`; the cancellable job reserves memory, reports held-out accuracy and exposes its LoRA adapter in
+  Load options. Install the `finetune` (`peft`) add-on from Backends first. [USAGE.md](USAGE.md#fine-tune),
+  [API.md](API.md#fine-tuning)
+- Batch → **Schedules** watches an input folder for new or changed JSONL files, runs Batch with the saved model,
+  preset and language, and writes stable output names. Pause/resume, edit, run-now and a capped persistent run history
+  are available in the Batch view. [USAGE.md](USAGE.md#batch) · [API.md](API.md#scheduled-batch)
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

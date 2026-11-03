@@ -2,7 +2,9 @@
 gateway checks API keys and CORS, serves MCP, answers OpenAI Decisions requests, then forwards to that model's
 private basal-serve and counts the decision in the statistics and the history."""
 
+import asyncio
 import json
+import re
 import socket
 import threading
 import time
@@ -16,6 +18,15 @@ SYSTEMONE = ("/v1/systemone", "/v1/basal")
 DECISIONS = ("/v1/decisions", "/decisions")
 SNAPSHOT_KEYS = ("host", "port", "require_key", "cors_origins", "mcp")
 MAX_BODY_BYTES = 256 * 1024**2  # a request with 8 media items of 20 MiB, base64-encoded, fits
+SAMPLE_LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*\})?(\s+.+)$")
+
+
+def _prom_escape(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _prom_labels(labels):
+    return ",".join(f'{key}="{_prom_escape(value)}"' for key, value in labels.items())
 
 
 def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0.1"):
@@ -36,6 +47,13 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             return openai_error(status, message, code)
         return JSONResponse({"error": message, "code": code}, status_code=status)
 
+    def api_loaded_ids():
+        return [
+            model_id
+            for model_id in fleet.loaded_ids()
+            if (getattr(fleet.runners.get(model_id), "models_entry", None) or {}).get("kind") != "comparison"
+        ]
+
     def loaded_text(loaded):
         return ", ".join(loaded) or "none"
 
@@ -55,7 +73,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             return error(path, 400, "malformed JSON", "INVALID_JSON")
         if not isinstance(body, dict):
             return error(path, 400, "request body must be a JSON object", "INVALID_JSON")
-        loaded = fleet.loaded_ids()
+        loaded = api_loaded_ids()
         model = body.get("model")
         if not isinstance(model, str) or not model:
             return error(path, 400, f"model is required; loaded models: {loaded_text(loaded)}", "MODEL_REQUIRED")
@@ -77,25 +95,147 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         )
 
     async def models(_):
-        entries = fleet.model_entries()
+        entries = [entry for entry in fleet.model_entries() if (entry["entry"] or {}).get("kind") != "comparison"]
         return JSONResponse(
             {
                 "object": "list",
                 "data": [
-                    {"id": e["id"], "object": "model", "created": e["created"], "owned_by": "basal"} for e in entries
+                    {
+                        "id": e["id"],
+                        "object": "model",
+                        "created": e["created"],
+                        "owned_by": "basal",
+                        **({"kind": "cascade"} if e["entry"] and e["entry"].get("kind") == "cascade" else {}),
+                    }
+                    for e in entries
                 ],
                 "models": [e["entry"] or {"name": e["id"]} for e in entries],
             }
         )
 
     async def health(_):
-        return JSONResponse({"status": "ok", "models": fleet.loaded_ids()})
+        return JSONResponse({"status": "ok", "models": api_loaded_ids()})
 
     async def stats_route(request):
         record = request.scope.get("basal.api_key")
         if record is not None and not record.get("admin", False):
             return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
         return JSONResponse(stats.snapshot())
+
+    async def metrics_route(request):
+        record = request.scope.get("basal.api_key")
+        if record is not None and not record.get("admin", False):
+            return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
+        lines = [
+            "# HELP basal_ui_requests_total Total Decisions requests answered by basal-ui.",
+            "# TYPE basal_ui_requests_total counter",
+            "# HELP basal_ui_questions_total Total questions answered by basal-ui.",
+            "# TYPE basal_ui_questions_total counter",
+            "# HELP basal_ui_errors_total Total Decisions errors recorded by basal-ui.",
+            "# TYPE basal_ui_errors_total counter",
+            "# HELP basal_ui_input_tokens_total Total Engine-reported input tokens.",
+            "# TYPE basal_ui_input_tokens_total counter",
+            "# HELP basal_ui_latency_seconds Decision latency in seconds.",
+            "# TYPE basal_ui_latency_seconds summary",
+            "# HELP basal_ui_latency_seconds_avg Average Decision latency in seconds.",
+            "# TYPE basal_ui_latency_seconds_avg gauge",
+        ]
+        model_stats = stats.snapshot()["models"]
+        for model_id, values in sorted(model_stats.items()):
+            label = _prom_labels({"model": model_id})
+            for name in ("requests", "questions", "errors", "input_tokens"):
+                lines.append(f"basal_ui_{name}_total{{{label}}} {values[name]}")
+            for quantile, field in (("0.5", "p50_ms"), ("0.95", "p95_ms")):
+                value = values[field]
+                if value is not None:
+                    lines.append(f'basal_ui_latency_seconds{{{label},quantile="{quantile}"}} {value / 1000}')
+            avg = values["avg_latency_ms"]
+            if avg is not None:
+                lines.append(f"basal_ui_latency_seconds_avg{{{label}}} {avg / 1000}")
+                lines.append(f"basal_ui_latency_seconds_count{{{label}}} {values['requests']}")
+                lines.append(f"basal_ui_latency_seconds_sum{{{label}}} {avg * values['requests'] / 1000}")
+
+        traffic = stats.traffic_snapshot(15)
+        for name, field, description in (
+            ("basal_ui_traffic_requests_total", "requests", "Recorded Decision requests in the rolling window."),
+            ("basal_ui_traffic_errors_total", "errors", "Recorded Decision errors in the rolling window."),
+        ):
+            lines.extend((f"# HELP {name} {description}", f"# TYPE {name} counter"))
+            for endpoint in traffic["endpoints"]:
+                labels = _prom_labels({"endpoint": endpoint["endpoint"], "method": endpoint["method"]})
+                lines.append(f"{name}{{{labels}}} {endpoint[field]}")
+
+        lines.extend(
+            (
+                "# HELP basal_ui_models_loaded Number of ready models served by basal-ui.",
+                "# TYPE basal_ui_models_loaded gauge",
+                f"basal_ui_models_loaded {len(api_loaded_ids())}",
+            )
+        )
+
+        async def fetch_child(runner):
+            if runner.state != "ready" or not runner.base_url:
+                return None
+            entry = getattr(runner, "models_entry", None)
+            if isinstance(entry, dict) and entry.get("kind") in ("cascade", "comparison"):
+                return None
+            try:
+                response = await client["http"].get(runner.base_url + "/metrics", timeout=2)
+            except httpx.HTTPError:
+                return None
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if response.status_code != 200 or content_type != "text/plain":
+                return None
+            return runner.model, response.text
+
+        runners = tuple(getattr(fleet, "runners", {}).values())
+        child_results = await asyncio.gather(*(fetch_child(runner) for runner in runners))
+        families = {}  # metric family -> {"headers": [...], "samples": [...]}: the text format groups each family
+
+        def family(name):
+            for suffix in ("_bucket", "_sum", "_count", "_created", "_total"):
+                if name.endswith(suffix) and name[: -len(suffix)] in families:
+                    return name[: -len(suffix)]
+            return name
+
+        for result in child_results:
+            if result is None:
+                continue
+            model_id, text = result
+            escaped_id = _prom_escape(model_id)
+            for line in text.splitlines():
+                if line.startswith(("# HELP ", "# TYPE ")):
+                    parts = line.split(None, 3)
+                    if len(parts) >= 3:
+                        headers = families.setdefault(parts[2], {"headers": [], "samples": []})["headers"]
+                        if not any(h.split(None, 3)[1] == parts[1] for h in headers):
+                            headers.append(line)
+                    continue
+                if not line or line.startswith("#"):
+                    continue
+                match = SAMPLE_LINE.match(line)
+                if not match:
+                    continue
+                name, labels, value = match.groups()
+                if labels:
+                    content = labels[1:-1]
+                    if re.search(r'(?:^|,)model="(?:\\.|[^"\\])*"(?:,|$)', content):
+                        content = re.sub(
+                            r'(^|,)model="(?:\\.|[^"\\])*"',
+                            lambda item, model_label=escaped_id: f'{item.group(1)}model="{model_label}"',
+                            content,
+                        )
+                        labels = "{" + content + "}"
+                    else:
+                        labels = "{" + content + f',model="{escaped_id}"' + "}"
+                else:
+                    labels = f'{{model="{escaped_id}"}}'
+                families.setdefault(family(name), {"headers": [], "samples": []})["samples"].append(
+                    f"{name}{labels}{value}"
+                )
+        for group in families.values():
+            lines.extend(group["headers"] + group["samples"])
+        return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
 
     mcp_routes, mcp_run = [], None
     if mcp:
@@ -104,7 +244,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         from basal.mcp_server import http
 
         async def mcp_decide(body):
-            loaded = fleet.loaded_ids()
+            loaded = api_loaded_ids()
             # the tools' `model` argument (engine 2.5.0, list_models names the ids), else the first loaded model
             model = body.pop("model", None) or (loaded[0] if loaded else None)
             if model not in loaded:
@@ -119,7 +259,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             return r.json()
 
         server = SimpleNamespace(decide=mcp_decide, name="basal-ui")
-        mcp_routes, mcp_run = http(server, host, **({"models": fleet.loaded_ids} if feature("mcp_models") else {}))
+        mcp_routes, mcp_run = http(server, host, **({"models": api_loaded_ids} if feature("mcp_models") else {}))
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -135,6 +275,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             Route("/v1/models", models),
             Route("/health", health),
             Route("/v1/stats", stats_route),
+            Route("/metrics", metrics_route),
             *mcp_routes,
         ],
         lifespan=lifespan,

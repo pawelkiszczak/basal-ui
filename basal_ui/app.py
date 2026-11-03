@@ -12,8 +12,12 @@ import argparse
 import asyncio
 import base64
 import dataclasses
+import ipaddress
 import json
+import math
 import os
+import re
+import shutil
 import sys
 import threading
 import time
@@ -27,7 +31,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -106,6 +110,8 @@ def create_app(
     stats=None,
     history=None,
     addons=None,
+    schedules=None,
+    start_batch=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -117,8 +123,70 @@ def create_app(
         stats=stats,
         history=history,
     )
+
+    for record in settings_mod.decision_servers():
+        fleet.attach_decision_server(record)
     gateway = gateway or Gateway(fleet, settings_mod, stats)
+    from . import batch
+    from .schedules import Schedules
+
+    def start_scheduled_batch(spec, source, output):
+        if not spec["overwrite"] and output.exists():
+            raise RuntimeError(f"output already exists: {output}")
+        if not output.parent.is_dir() or not os.access(output.parent, os.W_OK):
+            raise RuntimeError(f"cannot write to {output.parent}")
+        try:
+            fleet.ready(spec["model"])
+        except KeyError as exc:
+            raise RuntimeError(f"model {spec['model']!r} is not loaded") from exc
+        try:
+            lines = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RuntimeError(f"cannot read {source}: {getattr(exc, 'strerror', None) or exc}") from exc
+        if not lines:
+            raise RuntimeError(f"{source} has no lines")
+        for number, line in enumerate(lines, 1):
+            try:
+                item = json.loads(line)
+            except ValueError:
+                item = None
+            is_state_only = (
+                spec.get("preset")
+                and isinstance(item, dict)
+                and "state" in item
+                and "questions" not in item
+                and "question" not in item
+            )
+            if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
+                raise RuntimeError(
+                    f"{source.name}: line {number} is neither a simple item (state, question, "
+                    "options) nor a /v1/systemone request"
+                )
+        if spec.get("preset"):
+            if not engine.feature("presets"):
+                raise RuntimeError("Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if spec["preset"] not in names():
+                raise RuntimeError(f"unknown preset {spec['preset']!r}")
+        return fleet.start_model_job(
+            "batch",
+            spec["model"],
+            f"{spec['model']} on {source.name}",
+            batch.run_batch,
+            fleet,
+            spec["model"],
+            source,
+            output,
+            spec["concurrency"],
+            None,
+            spec.get("preset"),
+            spec.get("lang", "auto"),
+        )
+
+    schedules = schedules or Schedules(settings_mod, fleet, start_batch or start_scheduled_batch)
     addon_manager = addons or AddonManager(fleet, hardware_fn)
+
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -133,6 +201,8 @@ def create_app(
         current = hw()
         assessment = catalog.assess(variant, current)
         merged = load_options.validate(options, assessment.mode)
+        if merged["graph_memory_gb"]:  # the sized graphs replace the fixed graph-engine estimate
+            assessment = catalog.assess(variant, current, merged)
         if media:
             modes = {m["mode"]: m for m in load_options.available_media_modes(assessment, current)}
             chosen = modes.get(merged["mode"] or "eager")
@@ -158,7 +228,7 @@ def create_app(
 
     def _auto_load():
         try:
-            variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+            variants, _ = all_variants()
         except Exception as exc:  # the catalog is unavailable: nothing to load
             print(f"basal-ui: auto-load skipped: {exc}", file=sys.stderr)
             fleet.event("warn", f"auto-load skipped: {exc}")
@@ -179,6 +249,24 @@ def create_app(
                 print(f"basal-ui: auto-load of {last['id']} skipped: {exc}", file=sys.stderr)
                 fleet.event("warn", f"auto-load of {last['id']} skipped: {exc}")
 
+    idle_stop = threading.Event()
+
+    def _idle_unload():
+        while not idle_stop.wait(30):
+            try:
+                fleet.unload_idle(time.monotonic())
+            except Exception as exc:  # keep the maintenance thread alive after a failed scan
+                fleet.event("error", f"idle unload failed: {exc}")
+
+    schedule_stop = threading.Event()
+
+    def _scheduled_batch():
+        while not schedule_stop.wait(30):
+            try:
+                schedules.run_due(time.time())
+            except Exception as exc:
+                fleet.event("error", f"scheduled Batch scan failed: {exc}")
+
     @asynccontextmanager
     async def lifespan(_app):
         auto_load_thread = None
@@ -187,7 +275,19 @@ def create_app(
             auto_load_thread.start()
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
+        idle_stop.clear()
+        idle_thread = threading.Thread(target=_idle_unload, name="basal-ui-idle", daemon=True)
+        idle_thread.start()
+        app.state.idle_thread = idle_thread
+        schedule_stop.clear()
+        schedule_thread = threading.Thread(target=_scheduled_batch, name="basal-ui-schedules", daemon=True)
+        schedule_thread.start()
+        app.state.schedule_thread = schedule_thread
         yield
+        idle_stop.set()
+        schedule_stop.set()
+        idle_thread.join()
+        schedule_thread.join()
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:
@@ -204,6 +304,7 @@ def create_app(
         settings_mod.remove_keys_file()
 
     app = host_middleware(FastAPI(title="basal-ui", lifespan=lifespan), allowed_hosts)
+    app.state.schedules = schedules
     app.state.addons = addon_manager
 
     @app.middleware("http")
@@ -278,8 +379,14 @@ def create_app(
     def index():
         return FileResponse(STATIC / "index.html")
 
+    def all_variants(cache_dir=None, refresh=False):
+        variants, source = catalog_fn(cache_dir=cache_dir or settings_mod.models_dir(), refresh=refresh)
+        if engine.feature("attach"):
+            variants = [*variants, *catalog.attached_variants(settings_mod.attached_models())]
+        return variants, source
+
     def find_variant(model_id):
-        variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, _ = all_variants()
         variant = next((v for v in variants if v.id == model_id), None)
         if variant is None:
             raise HTTPException(400, f"unknown model {model_id!r}")
@@ -370,15 +477,103 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         return get_memory()
 
+    @app.get("/api/attach")
+    def get_attach_options():
+        available = engine.feature("attach")
+        return {"available": available, "bases": list(catalog.ATTACHABLE) if available else []}
+
+    @app.post("/api/attach", status_code=202)
+    def post_attach(body: dict = Body(...)):
+        if not engine.feature("attach"):
+            raise HTTPException(400, "attached models need engine 2.5")
+        base, revision, fmt = body.get("base"), body.get("revision"), body.get("format", 1)
+        if base not in catalog.ATTACHABLE:
+            raise HTTPException(400, f"base must be one of {', '.join(catalog.ATTACHABLE)}")
+        if revision is not None and (not isinstance(revision, str) or not revision.strip() or "\0" in revision):
+            raise HTTPException(400, "revision must be a non-empty string or null")
+        if type(fmt) is not int or fmt not in (1, 2):
+            raise HTTPException(400, "format must be 1 or 2")
+        slug = base.lower().replace("/", "-")
+        model_id = f"attached/{slug}"
+        if any(record.get("id") == model_id for record in settings_mod.attached_models()):
+            raise HTTPException(409, f"attached model {model_id!r} already exists")
+        out_dir = settings_mod.models_dir() / "attached" / slug
+        if out_dir.exists():
+            raise HTTPException(409, f"attached model directory already exists: {out_dir}")
+        source = catalog.Variant(
+            base, base, "attached-base", "unknown", "bf16", "bf16", None, None, True, cache_revision=revision
+        )
+
+        def attach_job(job):
+            from .jobs import run_tool
+
+            fleet.download(source)
+            while fleet.downloads.alive(base):
+                job.check()
+                progress = fleet.downloads.status().get(base, {})
+                if progress.get("error"):
+                    raise RuntimeError(f"download failed: {progress['error']}")
+                time.sleep(0.1)
+            progress = fleet.downloads.status().get(base, {})
+            if progress.get("error"):
+                raise RuntimeError(f"download failed: {progress['error']}")
+            snapshot = catalog.is_downloaded(source, settings_mod.models_dir(), revision=revision)
+            if snapshot is None:
+                raise RuntimeError(f"downloaded base {base!r} is incomplete")
+            job.check()
+            try:
+                run_tool(job, "attach", [snapshot, "--out", out_dir, "--format", str(fmt)])
+                record = {
+                    "id": model_id,
+                    "base": base,
+                    "revision": revision,
+                    "out_dir": str(out_dir),
+                    "format": fmt,
+                    "created": int(time.time()),
+                }
+                settings_mod.add_attached(record)
+                return record
+            except BaseException:
+                if out_dir.exists():
+                    shutil.rmtree(out_dir)
+                raise
+
+        try:
+            return fleet.jobs.start("attach", model_id, f"Attach {base}", attach_job)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/api/attach/{model_id:path}")
+    def delete_attached(model_id: str):
+        if not engine.feature("attach"):
+            raise HTTPException(400, "attached models need engine 2.5")
+        with fleet.lock:
+            record = next((r for r in settings_mod.attached_models() if r.get("id") == model_id), None)
+            if record is None:
+                raise HTTPException(404, f"unknown attached model {model_id!r}")
+            runner = fleet.runners.get(model_id)
+            if runner is not None and runner.state != "idle":
+                raise HTTPException(409, "unload the attached model first")
+            out_dir = Path(record["out_dir"])
+            attached_root = (settings_mod.models_dir() / "attached").resolve()
+            if out_dir.parent.resolve() != attached_root:
+                raise HTTPException(409, "attached model directory is outside the models directory")
+            if out_dir.exists():
+                shutil.rmtree(out_dir)
+            settings_mod.remove_attached(model_id)
+        return {"deleted": model_id}
+
     @app.post("/api/restart", status_code=202)
     def restart_model(body: dict = Body(...)):
         model_id = body.get("id")
         current = next((m for m in fleet.status()["models"] if m["id"] == model_id), None)
         if current is None:
             raise HTTPException(404, f"model {model_id!r} is not loaded")
+        if current.get("kind") == "comparison":
+            raise HTTPException(400, "Comparison models cannot be restarted")
         if current["state"] in ("downloading", "starting"):
             raise HTTPException(409, "model is still loading")
-        variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, _ = all_variants()
         variant = next((v for v in variants if v.id == model_id), None)
         if variant is None:
             raise HTTPException(400, "loaded model is no longer available")
@@ -397,9 +592,7 @@ def create_app(
 
     from .backends import Manager as BackendManager
 
-    backend_manager = BackendManager(
-        fleet, lambda: catalog_fn(cache_dir=settings_mod.models_dir())[0], hardware_fn, settings_mod
-    )
+    backend_manager = BackendManager(fleet, lambda: all_variants()[0], hardware_fn, settings_mod)
     app.state.backends = backend_manager
 
     @app.get("/api/addons")
@@ -539,7 +732,7 @@ def create_app(
         available = {item["id"] for item in installed}
         if backend not in available:
             raise HTTPException(400, f"unknown or unavailable recommendation backend {backend!r}")
-        variants, source = catalog_fn(refresh=refresh, cache_dir=cache_dir)
+        variants, source = all_variants(refresh=refresh, cache_dir=cache_dir)
         baseline = [catalog.assess(v, current_hw) for v in variants]
         recommended = baseline
         if backend != "automatic":
@@ -624,12 +817,14 @@ def create_app(
             "weights_bytes",
             "experimental",
             "recurrent",
+            "local_dir",
         )
         on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in baseline}
         saved = settings_mod.load().get("load_options")  # once, not load_options() per row
         revisions = (
             {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
         )
+        selected_calibrations = settings_mod.calibration_selection()
         return {
             "source": source,
             "recommendation_backends": installed,
@@ -659,11 +854,155 @@ def create_app(
                     "downloaded": on_disk[a.variant.id] is not None,
                     "downloaded_bytes": on_disk[a.variant.id],
                     "revision": revisions.get(a.variant.id),
+                    "attached": a.variant.family == "attached",
+                    "uncalibrated": (
+                        a.variant.family == "attached"
+                        and not Path(selected_calibrations.get(a.variant.id, "")).is_file()
+                    ),
                     "inspect_reason": inspectable(a.variant, current_hw),
                 }
                 for a in baseline
             ],
         }
+
+    def decision_server_response():
+        return {
+            "servers": [
+                {
+                    **record,
+                    "state": fleet.decision_servers.get(record["id"], {}).get("state", "unavailable"),
+                    "models": [
+                        runner.models_entry
+                        for runner in fleet.runners.values()
+                        if getattr(runner, "server", {}).get("id") == record["id"]
+                    ],
+                }
+                for record in settings_mod.decision_servers()
+            ]
+        }
+
+    @app.get("/api/decision-servers")
+    def get_decision_servers():
+        return decision_server_response()
+
+    @app.post("/api/decision-servers", status_code=201)
+    def post_decision_server(body: dict = Body(...)):
+        try:
+            parsed = urlsplit(body.get("url", "").strip())
+            host = parsed.hostname or ""
+            if not host:
+                raise ValueError("url must be an http(s) URL")
+            try:
+                address = ipaddress.ip_address(host)
+                local = address.is_loopback or address.is_link_local
+            except ValueError:
+                local = host.lower() == "localhost"
+            consent = body.get("consent", False)
+            if not local and consent is not True:
+                raise HTTPException(
+                    400, {"code": "CONSENT_REQUIRED", "detail": f"Consent is required to send requests to {host}"}
+                )
+            record = settings_mod.add_decision_server(body.get("name"), body.get("url"), consent)
+            key = body.get("key")
+            if key is not None and (not isinstance(key, str) or not key.strip()):
+                settings_mod.remove_decision_server(record["id"])
+                raise ValueError("key must be a non-empty string")
+            if key:
+                settings_mod.set_secret(record["id"], key)
+            fleet.attach_decision_server(record)
+        except HTTPException:
+            raise
+        except (ValueError, AttributeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return decision_server_response()
+
+    @app.delete("/api/decision-servers/{server_id}")
+    def delete_decision_server(server_id: str):
+        if not settings_mod.remove_decision_server(server_id):
+            raise HTTPException(404, f"Decision server {server_id!r} not found")
+        fleet.remove_decision_server(server_id)
+        return decision_server_response()
+
+    def require_router():
+        from .engine import feature, installed
+
+        if not feature("router"):
+            raise HTTPException(409, f"Cascades need engine 2.5 (installed: {installed()[0]})")
+
+    @app.get("/api/cascades")
+    def get_cascades():
+        require_router()
+        loaded = set(fleet.loaded_ids())
+        return {
+            "cascades": [
+                {
+                    **spec,
+                    "running": spec["name"] in loaded,
+                    "fallback": (
+                        {k: v for k, v in spec.get("fallback", {}).items() if k != "key"}
+                        if spec.get("fallback")
+                        else None
+                    ),
+                }
+                for spec in settings_mod.cascades()
+            ]
+        }
+
+    @app.post("/api/cascades", status_code=201)
+    def post_cascade(body: dict = Body(...)):
+        require_router()
+        try:
+            name = body.get("name")
+            variants, _ = catalog_fn(cache_dir=settings_mod.models_dir())
+            if name in fleet.runners or any(variant.id == name for variant in variants):
+                raise ValueError("cascade name conflicts with a model id")
+            settings_mod.set_cascade(body)
+            return get_cascades()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/cascades/{name}")
+    def put_cascade(name: str, body: dict = Body(...)):
+        require_router()
+        payload = {**body, "name": name}
+        try:
+            previous = next((x for x in settings_mod.cascades() if x["name"] == name), None)
+            if previous is None:
+                raise KeyError(name)
+            return {"cascade": settings_mod.set_cascade(payload, replace=True)}
+        except KeyError as exc:
+            raise HTTPException(404, f"cascade {name!r} not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.delete("/api/cascades/{name}")
+    def delete_cascade(name: str):
+        require_router()
+        if name in fleet.runners:
+            raise HTTPException(409, "stop the Cascade before deleting it")
+        if not any(x["name"] == name for x in settings_mod.cascades()):
+            raise HTTPException(404, f"cascade {name!r} not found")
+        settings_mod.delete_cascade(name)
+        return get_cascades()
+
+    @app.post("/api/cascades/{name}/start", status_code=202)
+    def start_cascade(name: str):
+        require_router()
+        try:
+            return fleet.start_cascade(name)
+        except KeyError as exc:
+            raise HTTPException(404, f"cascade {name!r} not found") from exc
+        except RuntimeError as exc:
+            code = "CASCADE_MEMBER_NOT_LOADED" if "member" in str(exc) else "CASCADE_START_FAILED"
+            raise HTTPException(409, {"code": code, "detail": str(exc)}) from exc
+
+    @app.post("/api/cascades/{name}/stop")
+    def stop_cascade(name: str):
+        require_router()
+        try:
+            return fleet.stop_cascade(name)
+        except KeyError as exc:
+            raise HTTPException(404, f"cascade {name!r} is not running") from exc
 
     @app.get("/api/presets")
     def get_presets():
@@ -686,6 +1025,32 @@ def create_app(
             settings_mod.set_preset(kind, name, value)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        return get_presets()
+
+    @app.post("/api/presets/import-url")
+    def import_presets_url(body: dict = Body(...)):
+        from . import fetch as url_fetch
+
+        try:
+            _final_url, response, data = url_fetch.fetch_bytes(
+                body.get("url"), url_fetch.PRESET_MAX_BYTES, "application/json"
+            )
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise url_fetch.UnsupportedContentType(f"unsupported content type: {content_type or 'unknown'}")
+            try:
+                imported = json.loads(data)
+            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+                raise HTTPException(400, f"invalid presets JSON: {exc}") from exc
+            if not isinstance(imported, dict) or any(
+                imported.get(kind) is not None and not isinstance(imported[kind], dict) for kind in ("load", "request")
+            ):
+                raise HTTPException(400, "presets JSON must contain load and request objects")
+            for kind in ("load", "request"):
+                for name, value in (imported.get(kind) or {}).items():
+                    put_preset({"kind": kind, "name": name, "value": value})
+        except url_fetch.FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status_code)
         return get_presets()
 
     @app.get("/api/models/card")
@@ -791,7 +1156,7 @@ def create_app(
         installed = ui_version()
         engine_status = engine.status()
         engine_latest, engine_error = updates.latest(updates.ENGINE_REPO) if enabled else (None, None)
-        variants, source = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, source = all_variants()
         # only the hub catalog is the whole catalog: the cache fallback would seed (or report) a partial list
         new_models = settings_mod.update_seen_ids(v.id for v in variants) if source == "hub" else []
         return {
@@ -817,7 +1182,7 @@ def create_app(
 
     @app.post("/api/updates/seen")
     def mark_updates_seen():
-        variants, source = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, source = all_variants()
         if source == "hub":
             settings_mod.mark_models_seen(v.id for v in variants)
         return get_updates()
@@ -837,8 +1202,9 @@ def create_app(
         packed_code, packed_params = load_options.option_message_fields(packed_reason)
         think_reason = None if family_ok else load_options.THINK_REASON
         think_code, think_params = load_options.option_message_fields(think_reason)
-        adapter_reason = load_options.adapter_unavailable()
-        adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
+        unavailable = load_options.unavailable_options()
+        adapter_root = Path(settings_mod.models_dir()) / "adapters" / variant.id.replace("/", "--")
+        adapters = sorted(str(path) for path in adapter_root.glob("*/lora") if (path / "adapter_config.json").is_file())
         return {
             "modes": load_options.available_modes(variant, current, assessment),
             "options": merged,
@@ -848,9 +1214,8 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
-            "adapter_reason": adapter_reason,
-            "adapter_reason_code": adapter_code,
-            "adapter_reason_params": adapter_params,
+            "unavailable": unavailable,
+            "adapters": adapters,
             "think": {
                 "model": family_ok,
                 "vllm": "vllm" in current.engines,
@@ -934,10 +1299,18 @@ def create_app(
     def decide(body: dict = Body(...)):  # sync: runs in the threadpool, a slow decision does not block the UI
         body = dict(body)
         model_id = body.pop("model", None)
+        source_url = body.pop("source_url", None)
+        questions = body.get("questions")
+        if isinstance(questions, dict):
+            for question in questions.values():
+                if isinstance(question, dict):
+                    question.pop("mcp_url", None)
+        if source_url is not None and not isinstance(source_url, str):
+            raise HTTPException(400, "source_url must be a string")
         if not isinstance(model_id, str) or not model_id:
             raise HTTPException(400, f"model is required; loaded: {fleet.loaded_ids()}")
         try:
-            r = fleet.decide(model_id, body, source="playground")
+            r = fleet.decide(model_id, body, source="playground", source_url=source_url)
         except KeyError as exc:
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
@@ -950,6 +1323,45 @@ def create_app(
             headers={k: r.headers[k] for k in ("x-request-id", "x-typesafe-request-id") if k in r.headers},
             media_type=r.headers.get("content-type", "application/json"),
         )
+
+    @app.post("/api/compare")
+    def compare_decisions(body: dict = Body(...)):
+        payload = dict(body)
+        model_id, comparison_id = payload.pop("model", None), payload.pop("compare_model", None)
+        source_url = payload.pop("source_url", None)
+        if not isinstance(model_id, str) or not isinstance(comparison_id, str):
+            raise HTTPException(400, "model and compare_model are required")
+        comparison = fleet.runners.get(comparison_id)
+        if comparison is None or getattr(comparison, "models_entry", {}).get("kind") != "comparison":
+            raise HTTPException(400, "compare_model must be a Comparison model")
+        from .compat import comparison_request
+
+        refusal = comparison_request(payload, comparison.image_input)
+        if refusal is not None:
+            return refusal
+
+        def answer(model):
+            started = time.perf_counter()
+            try:
+                response = fleet.decide(model, payload, source="playground", source_url=source_url)
+                try:
+                    data = response.json()
+                except ValueError:
+                    data = {"error": response.text}
+                return {
+                    "model": model,
+                    "response": data,
+                    "status": response.status_code,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+            except (KeyError, RuntimeError, httpx.HTTPError) as exc:
+                return {
+                    "model": model,
+                    "error": str(exc),
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+
+        return {"primary": answer(model_id), "comparison": answer(comparison_id)}
 
     @app.get("/api/stats")
     def get_stats():
@@ -973,15 +1385,16 @@ def create_app(
 
     @app.post("/api/benchmark", status_code=202)
     def post_benchmark(body: dict = Body(...)):
-        """kind benchmark (the preset), loadtest, determinism (a loaded model) or modes (a downloaded model, loaded
-        in basal-ui's process mode by mode); one measurement at a time."""
-        from . import bench
+        """Run one model benchmark; Engine-tool checks also accept downloaded, unloaded models."""
+        from . import bench, engine
 
         model_id, kind = body.get("id"), body.get("kind", "benchmark")
-        if kind not in ("benchmark", "loadtest", "determinism", "modes"):
-            raise HTTPException(400, "kind must be benchmark, loadtest, determinism or modes")
+        if kind not in ("benchmark", "loadtest", "determinism", "modes", "identity", "order_check"):
+            raise HTTPException(400, "kind must be benchmark, loadtest, determinism, modes, identity or order_check")
         if kind == "modes":
             return start_modes(model_id, body)
+        if kind in ("identity", "order_check"):
+            return start_engine_check(model_id, kind, body, bench, engine)
         try:
             label, paths = bench.resolve_set(body.get("set", "bundled"))
         except ValueError as exc:
@@ -1007,6 +1420,62 @@ def create_app(
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    def start_engine_check(model_id, kind, body, bench, engine):
+        variant = find_variant(model_id)
+        local_dir = downloaded(variant)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        if kind == "order_check" and not engine.feature("order_check"):
+            raise HTTPException(400, "order check needs Engine 2.5")
+        if kind == "identity":
+            dtype = body.get("dtype", "bf16")
+            if dtype not in ("fp32", "bf16"):
+                raise HTTPException(400, "dtype must be fp32 or bf16")
+            fast = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+            )
+            if not fast or not fast["available"]:
+                raise HTTPException(
+                    400, f"identity gate requires fast mode: {fast['reason'] if fast else 'unavailable'}"
+                )
+            job_fn, args = bench.identity_job, (dtype.replace("fp32", "float32").replace("bf16", "bfloat16"), options)
+            reservation = bench.comparison_memory(["fast"], assessment.est_memory_bytes)
+        else:
+            job_fn, args, reservation = bench.order_check_job, (), assessment.est_memory_bytes or 0
+        try:
+            fleet.reserve(kind, reservation)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
+            return fleet.jobs.start(
+                "benchmark", variant.id, f"{kind}: {variant.id}", job_fn, fleet, variant, local_dir, *args
+            )
+        except RuntimeError as exc:
+            fleet.release(kind)
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/benchmark/availability")
+    def benchmark_availability(id: str):
+        from . import engine
+
+        variant = find_variant(id)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        fast = next(
+            (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+        )
+        return {
+            "identity": {
+                "available": bool(fast and fast["available"]),
+                "reason": fast["reason"] if fast else "fast unavailable",
+            },
+            "order_check": {
+                "available": engine.feature("order_check"),
+                "reason": None if engine.feature("order_check") else "needs Engine 2.5",
+            },
+        }
 
     def modes_context(variant):
         """(local dir, assessment, merged load options, the modes a comparison may run) of a downloaded variant."""
@@ -1118,6 +1587,106 @@ def create_app(
             raise HTTPException(400, f"download {variant.id} first")
         return Path(local_dir)
 
+    @app.post("/api/finetune", status_code=202)
+    def post_finetune(body: dict = Body(...)):
+        from . import addons as addon_tools
+        from . import paths
+        from .jobs import run_tool
+
+        if not engine.feature("finetune"):
+            raise HTTPException(400, "fine-tuning needs Engine 2.5")
+        if not addon_tools._extra_installed("finetune"):
+            raise HTTPException(400, "fine-tuning needs the peft add-on; install it in Backends → Engine add-ons")
+        variant = find_variant(body.get("id"))
+        if variant.family not in ("attached",) and not variant.family.startswith("basal-"):
+            raise HTTPException(400, "fine-tuning requires a basal or Attached model")
+        if variant.port != "bf16":
+            raise HTTPException(400, "fine-tuning requires a downloaded bf16 model")
+        local_dir = downloaded(variant)
+        input_path = body.get("input")
+        checked = paths.check(input_path, "jsonl")
+        if not checked["ok"]:
+            raise HTTPException(400, f"input: {checked['code']}")
+        out_name = body.get("out_name")
+        if not isinstance(out_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", out_name):
+            raise HTTPException(400, "out_name must be a safe single path segment")
+        values = {
+            "epochs": (body.get("epochs", 2.0), (int, float), lambda value: value > 0),
+            "lr": (body.get("lr", 1e-4), (int, float), lambda value: value > 0),
+            "rank": (body.get("rank", 16), int, lambda value: value > 0),
+            "alpha": (body.get("alpha", 32), int, lambda value: value > 0),
+            "holdout": (body.get("holdout", 0.25), (int, float), lambda value: 0 < value < 1),
+            "max_len": (body.get("max_len", 2048), int, lambda value: value > 0),
+        }
+        if "max_steps" in body:
+            values["max_steps"] = (body["max_steps"], int, lambda value: value > 0)
+        for key, (value, kinds, valid) in values.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, kinds)
+                or (isinstance(value, float) and not math.isfinite(value))
+                or not valid(value)
+            ):
+                raise HTTPException(400, f"{key} has an invalid value")
+        grad_checkpointing = body.get("grad_checkpointing", False)
+        if not isinstance(grad_checkpointing, bool):
+            raise HTTPException(400, "grad_checkpointing must be a boolean")
+        output_dir = Path(settings_mod.models_dir()) / "adapters" / variant.id.replace("/", "--") / out_name
+        if output_dir.exists():
+            raise HTTPException(409, "fine-tune output already exists")
+        assessment = catalog.assess(variant, hw())
+        device = {"apple": "mps", "cuda": "cuda"}.get(hw().platform, "cpu")
+        argv = [str(checked["path"]), "--model", str(local_dir), "--out", str(output_dir)]
+        for key in ("epochs", "lr", "rank", "alpha", "holdout", "max_len", "max_steps"):
+            if key == "epochs" or key in body:
+                flag = "--max-steps" if key == "max_steps" else f"--{key.replace('_', '-')}"
+                argv.extend((flag, str(values[key][0])))
+        if grad_checkpointing:
+            argv.append("--grad-checkpointing")
+        argv.extend(("--device", device))
+
+        def run(job):
+            try:
+                result = run_tool(job, "finetune", argv, out_path=output_dir / "finetune.json")
+                return {"output": str(output_dir), **result}
+            finally:
+                fleet.release("finetune")
+
+        try:
+            fleet.reserve("finetune", 2 * (assessment.est_memory_bytes or 0))
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
+            return fleet.jobs.start("finetune", variant.id, f"Fine-tune {variant.id}", run)
+        except RuntimeError as exc:
+            fleet.release("finetune")
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/finetune")
+    def get_finetune(id: str):
+        if not engine.feature("finetune"):
+            return {"available": False, "reason": "fine-tuning needs Engine 2.5", "results": []}
+        from . import addons as addon_tools
+
+        available = addon_tools._extra_installed("finetune")
+        if not available:
+            return {"available": False, "reason": "fine-tuning needs the peft add-on", "results": []}
+        variant = find_variant(id)
+        root = Path(settings_mod.models_dir()) / "adapters" / variant.id.replace("/", "--")
+        results = []
+        for report in sorted(root.glob("*/finetune.json"), key=lambda path: path.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(report.read_text())
+                if isinstance(data, dict):
+                    results.append({"name": report.parent.name, "output": str(report.parent), **data})
+            except (OSError, ValueError):
+                continue
+        return {"available": True, "results": results}
+
+    @app.delete("/api/finetune")
+    def cancel_finetune():
+        return fleet.jobs.cancel("finetune")
+
     @app.post("/api/calibrate", status_code=202)
     def post_calibrate(body: dict = Body(...)):
         from . import calibration
@@ -1199,7 +1768,16 @@ def create_app(
             assessment, options = catalog.assess(variant, hw()), {}
         else:
             try:
-                assessment, options = prepare(variant, False, settings_mod.load_options(variant.id))
+                with fleet.lock:
+                    active_runner = fleet.runners.get(variant.id)
+                active = active_runner is not None and active_runner.status()["state"] == "ready"
+                saved_options = active_runner.options if active else settings_mod.load_options(variant.id)
+                assessment, options = prepare(variant, False, saved_options)
+                from basal.prompt import model_layout
+
+                fit_layout = options.get("layout") or model_layout(local_dir)
+                if fit_layout != "canonical" and "--layout" not in engine.calibrate_flags():
+                    raise HTTPException(400, "code:calibration_layout_unavailable")
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
@@ -1264,9 +1842,22 @@ def create_app(
                     shipped["error"] = str(exc)
             except (OSError, ValueError, KeyError) as exc:
                 shipped = {"error": str(exc)}
+        files = calibration.listing(variant.id, settings_mod, local_dir)
+        selected = settings_mod.calibration_selection().get(variant.id)
+        active_layout = (shipped or {}).get("context", {}).get("layout", "canonical")
+        selected_entry = next((f for f in files if selected and f["file"] == selected), None)
+        selected_layout = selected_entry.get("layout", "canonical") if selected_entry else "canonical"
+        mismatch = active_layout if selected and selected_layout != active_layout else None
+        layout_supported = "--layout" in engine.calibrate_flags()
         return {
-            "selected": settings_mod.calibration_selection().get(variant.id),
-            "files": calibration.listing(variant.id, settings_mod, local_dir),
+            "selected": selected,
+            "layout": active_layout,
+            "layout_supported": layout_supported,
+            "layout_reason": None
+            if active_layout == "canonical" or layout_supported
+            else "code:calibration_layout_unavailable",
+            "layout_mismatch": mismatch,
+            "files": files,
             "shipped": shipped,
         }
 
@@ -1372,16 +1963,169 @@ def create_app(
         """Return bounded, read-only facts about a path used by Batch."""
         from . import paths
 
+        preset = body.get("preset")
+        if preset not in (None, ""):
+            from . import engine
+
+            if not isinstance(preset, str):
+                raise HTTPException(400, "preset must be a string")
+            if not engine.feature("presets"):
+                raise HTTPException(400, "Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if preset not in names():
+                raise HTTPException(400, f"unknown preset {preset!r}")
+        else:
+            preset = None
         try:
-            return paths.check(body.get("path"), body.get("kind"))
+            return paths.check(body.get("path"), body.get("kind"), preset)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/batch/presets")
+    def get_batch_presets():
+        from . import engine
+
+        available = engine.feature("presets")
+        if not available:
+            return {
+                "available": False,
+                "presets": [],
+                "langs": [],
+                "reason": f"needs engine 2.5 (installed: {engine.status()['version']})",
+            }
+        from basal.presets import names
+
+        return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+
+    def schedule_definition(body):
+        from .schedules import validate
+
+        try:
+            spec = validate(body)
+            if not Path(spec["input_dir"]).is_dir():
+                raise ValueError("input_dir must be an existing directory")
+            if not Path(spec["output_dir"]).is_dir() or not os.access(spec["output_dir"], os.W_OK):
+                raise ValueError("output_dir must be an existing writable directory")
+            if spec.get("preset"):
+                if not engine.feature("presets"):
+                    raise ValueError("Batch presets need Engine 2.5")
+                from basal.presets import names
+
+                if spec["preset"] not in names():
+                    raise ValueError(f"unknown preset {spec['preset']!r}")
+            return spec
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/schedules")
+    def get_schedules():
+        return {"schedules": schedules.list()}
+
+    @app.post("/api/schedules", status_code=201)
+    def create_schedule(body: dict = Body(...)):
+        spec = schedule_definition(body)
+        try:
+            return schedules.create(spec)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/schedules/{schedule_id}")
+    def update_schedule(schedule_id: str, body: dict = Body(...)):
+        try:
+            current = schedules.get(schedule_id)
+            spec = schedule_definition({**current, **body, "id": schedule_id})
+            return schedules.update(schedule_id, spec)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.delete("/api/schedules/{schedule_id}")
+    def delete_schedule(schedule_id: str):
+        try:
+            schedules.delete(schedule_id)
+            return {"deleted": schedule_id}
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.post("/api/schedules/{schedule_id}/run", status_code=202)
+    def run_schedule(schedule_id: str):
+        try:
+            return schedules.run_now(schedule_id)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/schedules/{schedule_id}/runs")
+    def get_schedule_runs(schedule_id: str, cursor: int = 0):
+        if cursor < 0:
+            raise HTTPException(400, "cursor must be non-negative")
+        try:
+            return schedules.runs(schedule_id, cursor)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.post("/api/mcp/tools")
+    def import_mcp_tools(body: dict = Body(...)):
+        from .mcp_import import list_tools
+
+        url, token = body.get("url"), body.get("token")
+        if not isinstance(url, str) or not url:
+            raise HTTPException(400, "url must be a non-empty string")
+        if token is not None and not isinstance(token, str):
+            raise HTTPException(400, "token must be a string")
+        try:
+            return {"tools": list_tools(url, token)}
+        except ValueError as exc:
+            raise HTTPException(getattr(exc, "status_code", 400), str(exc)) from exc
+
+    @app.post("/api/tools/shortlist")
+    def shortlist_tools(body: dict = Body(...)):
+        from .mcp_import import shortlist
+
+        tools, query, k = body.get("tools"), body.get("query"), body.get("k", 40)
+        if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
+            raise HTTPException(400, "tools must be an array of objects")
+        if not isinstance(query, str):
+            raise HTTPException(400, "query must be a string")
+        if type(k) is not int or not 1 <= k <= 255:
+            raise HTTPException(400, "k must be an integer between 1 and 255")
+        try:
+            return {"tools": shortlist(tools, query, k)}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/fetch")
+    def fetch_url(body: dict = Body(...)):
+        """Fetch and reduce one public HTTP(S) document for the Playground state."""
+        from . import fetch as url_fetch
+
+        try:
+            return url_fetch.fetch(body.get("url"))
+        except url_fetch.FetchError as exc:
+            return JSONResponse(
+                {"detail": str(exc), "code": exc.code},
+                status_code=exc.status_code,
+            )
 
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
         from . import batch
 
         model_id = body.get("id")
+        preset = body.get("preset")
+        lang = body.get("lang", "auto")
+        if preset is not None:
+            from . import engine
+
+            if not engine.feature("presets"):
+                raise HTTPException(400, "Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if not isinstance(preset, str) or preset not in names():
+                raise HTTPException(400, f"unknown preset {preset!r}")
+        if lang not in ("auto", "pl", "en"):
+            raise HTTPException(400, "lang must be one of auto, pl, en")
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(
@@ -1397,7 +2141,14 @@ def create_app(
                 item = json.loads(line)
             except ValueError:
                 item = None
-            if not isinstance(item, dict) or not ("questions" in item or "options" in item):
+            is_state_only = (
+                preset
+                and isinstance(item, dict)
+                and "state" in item
+                and "questions" not in item
+                and "question" not in item
+            )
+            if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
                 raise HTTPException(
                     400,
                     f"{source.name}: line {n} is neither a simple item (state, question, "
@@ -1405,6 +2156,28 @@ def create_app(
                 )
         if not lines:
             raise HTTPException(400, f"{source} has no lines")
+        comparison_runner = fleet.runners.get(model_id)
+        if getattr(comparison_runner, "models_entry", {}).get("kind") == "comparison":
+            from basal.run import to_request
+
+            from .compat import comparison_request
+
+            for n, line in enumerate(lines, 1):
+                item = json.loads(line)
+                try:
+                    # basal-run 2.4.1's to_request(item, early_exit) has no presets (Batch presets need 2.5)
+                    request = (
+                        to_request(item, None, preset, lang if lang in ("pl", "en") else None)
+                        if preset
+                        else to_request(item)
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise HTTPException(400, f"{source.name}: line {n}: {exc}") from exc
+                refusal = comparison_request(request, comparison_runner.image_input)
+                if refusal is not None:
+                    detail = json.loads(refusal.body)["error"]
+                    raise HTTPException(400, f"{source.name}: line {n}: {detail}")
+
         out = Path(body["output"]).expanduser() if body.get("output") else batch.default_output(source)
         if out.resolve() == source.resolve():
             raise HTTPException(400, "output must not be the input file")
@@ -1440,6 +2213,8 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
+                preset,
+                lang,
             )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc

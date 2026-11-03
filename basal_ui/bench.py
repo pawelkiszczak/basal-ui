@@ -13,6 +13,8 @@ import httpx
 from basal.bench import DEFAULT_QUESTIONS
 from basal.loadtest import body
 
+from . import engine
+from . import options as load_options
 from .jobs import Cancelled, run_tool
 
 MIN_ITEMS = 10
@@ -309,6 +311,62 @@ def comparison_modes(available) -> list[str]:
 def comparison_memory(modes, est_memory_bytes) -> int:
     """The memory a comparison holds at its peak: one mode at a time, eager-fp32 at twice the bf16 weights."""
     return (2 if "eager-fp32" in modes else 1) * (est_memory_bytes or 0)
+
+
+def identity_args(local_dir, dtype, options, out_json) -> list[str]:
+    """Build basal-bench's fast-path identity gate command for the saved serving options."""
+    args = ["--identity", "--model", str(local_dir), "--dtype", dtype, "--out", str(out_json)]
+    for key, flag in (
+        ("attn", "--attn"),
+        ("merge", "--merge"),
+        ("lean", "--lean"),
+        ("tree", "--tree"),
+        ("gemma_attn", "--gemma-attn"),
+    ):
+        value = options.get(key)
+        if value is not None and value != load_options.DEFAULTS.get(key):
+            args += [flag, str(value)]
+    return args
+
+
+def order_args(local_dir, out_json) -> list[str]:
+    return ["--order-check", "--model", str(local_dir), "--out", str(out_json)]
+
+
+def identity_job(job, fleet, variant, local_dir, dtype, options):
+    """Run the Engine identity gate, store its per-path results and release its memory reservation."""
+    with tempfile.TemporaryDirectory(prefix="basal-ui-identity-") as directory:
+        out_json = str(Path(directory) / "identity.json")
+        try:
+            result = run_tool(job, "bench", identity_args(local_dir, dtype, options, out_json), out_path=out_json)
+        finally:
+            fleet.release("identity")
+    rows = result["rows"]
+    stored = {
+        "kind": "identity",
+        "dtype": dtype,
+        "rows": rows,
+        "pass": all(row.get("gate") == "pass" for row in rows),
+        "engine": engine.installed()[0],
+        "when": time.time(),
+    }
+    if fleet.stats is not None:
+        fleet.stats.add_benchmark(variant.id, stored)
+    return stored
+
+
+def order_check_job(job, fleet, variant, local_dir):
+    """Run Engine 2.5's option-order check and save its report unchanged."""
+    with tempfile.TemporaryDirectory(prefix="basal-ui-order-check-") as directory:
+        out_json = str(Path(directory) / "order-check.json")
+        try:
+            result = run_tool(job, "bench", order_args(local_dir, out_json), out_path=out_json)
+        finally:
+            fleet.release("order_check")
+    result.update(kind="order_check", model=variant.id, when=time.time())
+    if fleet.stats is not None:
+        fleet.stats.add_benchmark(variant.id, result)
+    return result
 
 
 def bench_args(local_dir, modes, n, lat_n, gguf, options) -> list[str]:
