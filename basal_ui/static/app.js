@@ -573,6 +573,11 @@ $('#importPresets').onchange=()=>act(async()=>{
   for(const kind of ['load','request'])for(const [name,value] of Object.entries(data[kind]||{})){await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value})});count++;}
   await loadPresets();toast(t('Imported {count} presets',{count}));$('#importPresets').value='';
 });
+$('#importPresetsUrl').onclick=()=>act(async()=>{
+  const url=prompt(t('Enter a presets file URL'));if(!url)return;
+  await api('/api/presets/import-url',{method:'POST',body:JSON.stringify({url})});
+  await loadPresets();toast(t('Presets imported from URL'));
+});
 $('#examples').insertAdjacentHTML('afterend',`<button type="button" id="saveRequestPreset">${t('Save request…')}</button><button type="button" id="deleteRequestPreset">${t('Delete request')}</button>`);
 $('#saveRequestPreset').onclick=()=>promptPresetName('request');
 $('#deleteRequestPreset').onclick=()=>act(async()=>{const v=$('#examples').value;if(!v.startsWith('preset:'))return toast(t('Choose a saved request first'),'error');await deletePreset('request',v.slice(7));$('#examples').value='';});
