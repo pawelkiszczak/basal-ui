@@ -503,6 +503,7 @@ class Fleet:
         self._rss_cache = (0.0, {})
         self.idle_unloads = {}
         self.idle_settings_generation = 0
+        self.idle_settings_changed = 0.0
         self.idle_stop = threading.Event()
         self.idle_thread = None
 
@@ -667,26 +668,31 @@ class Fleet:
                 raise RuntimeError("model is unavailable during maintenance")
             retiring = []
             for i in ids:
-                runner = self.runners.pop(i)
-                # detach under the fleet lock: the old load can no longer reach ready and remember itself after
-                # forget_loaded; its memory stays committed until the child is gone (a new load must wait for it)
-                proc, est = runner.detach()
-                retiring.append((runner, proc))
-                self.retiring[runner] = est
-                if forget:
-                    self.settings_mod.forget_loaded(i)
+                retiring.append(self._detach_runner(i, forget))
             self._prune_logs()
         for i, (runner, proc) in zip(ids, retiring, strict=True):
-            Runner._terminate(proc)
-            with self.lock:
-                self.retiring.pop(runner, None)
-            self.event("info", f"unloaded: {i}")
+            self._finish_unload(i, runner, proc)
         if model_id is None:  # every model: the private children of jobs too (their job then fails)
             with self.lock:
                 temporary = list(self.temporary)
             for kind in temporary:
                 self.stop_temporary(kind)
         return self.status()
+
+    def _detach_runner(self, model_id, forget):
+        # Caller holds the fleet lock; retiring memory stays reserved until termination finishes.
+        runner = self.runners.pop(model_id)
+        proc, est = runner.detach()
+        self.retiring[runner] = est
+        if forget:
+            self.settings_mod.forget_loaded(model_id)
+        return runner, proc
+
+    def _finish_unload(self, model_id, runner, proc):
+        Runner._terminate(proc)
+        with self.lock:
+            self.retiring.pop(runner, None)
+        self.event("info", f"unloaded: {model_id}")
 
     def start_idle_timer(self):
         self.idle_stop.clear()
@@ -718,7 +724,7 @@ class Fleet:
                     or runner.temporary
                     or runner.state != "ready"
                     or runner.last_used is None
-                    or now - runner.last_used < timeout * 60
+                    or now - max(runner.last_used, self.idle_settings_changed) < timeout * 60
                     or not runner.base_url
                 ):
                     continue
@@ -745,7 +751,7 @@ class Fleet:
                     or self.idle_settings_generation != settings_generation
                     or runner.state != "ready"
                     or runner.last_used != last_used
-                    or now - runner.last_used < timeout * 60
+                    or now - max(runner.last_used, self.idle_settings_changed) < timeout * 60
                     or type(health.get("running")) is not int
                     or health["running"] != 0
                     or type(health.get("queued")) is not int
@@ -755,8 +761,10 @@ class Fleet:
                 message = f"unloaded after {timeout} idle minutes"
                 runner.log.append(message)
                 self.idle_unloads[model_id] = {"code": "idle_unload", "minutes": timeout, "at": time.time()}
-                self.unload(model_id, forget=False)
-                self.event("info", f"{model_id}: {message}")
+                detached, proc = self._detach_runner(model_id, forget=False)
+                self._prune_logs()
+            self._finish_unload(model_id, detached, proc)
+            self.event("info", f"{model_id}: {message}")
 
     def restart(self, assessment, media=False, options=None):
         """Unload and load again; options None keeps the running child's load options. The model stays in maintenance

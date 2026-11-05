@@ -1203,13 +1203,13 @@ def test_idle_unload_lifecycle(tmp_path, monkeypatch, instant_start):
         runner.base_url = "http://localhost"
         assert client.put("/api/memory", json={"idle_unload_minutes": 0}).status_code == 400
         assert client.put("/api/memory", json={"idle_unload_minutes": None}).status_code == 200
-        fleet.unload_idle(runner.last_used + 61)
+        fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
         assert "mini" in states(client)
         assert client.put("/api/memory", json={"idle_unload_minutes": 1}).status_code == 200
         with fleet.lease("mini"):
-            fleet.unload_idle(runner.last_used + 61)
+            fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
             assert "mini" in states(client)
-        fleet.unload_idle(runner.last_used + 61)
+        fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
         assert "mini" not in states(client)
         assert client.get("/api/status").json()["idle_unloads"]["mini"]["code"] == "idle_unload"
         assert settings.last_models()[0]["id"] == "mini"
@@ -1231,7 +1231,7 @@ def test_idle_unload_rechecks_health_and_timeout(tmp_path, monkeypatch, instant_
         wait_for(lambda: states(client).get("mini") == "ready")
         runner = fleet.runners["mini"]
         runner.base_url = "http://localhost"
-        now = runner.last_used + 61
+        now = max(runner.last_used, fleet.idle_settings_changed) + 61
         for counters in ({"running": 1, "queued": 0}, {"running": 0, "queued": 1}, {"running": None, "queued": 0}):
             health.update(counters)
             fleet.unload_idle(now)
@@ -1245,3 +1245,71 @@ def test_idle_unload_rechecks_health_and_timeout(tmp_path, monkeypatch, instant_
         monkeypatch.setattr("basal_ui.fleet.httpx.get", disable_during_health)
         fleet.unload_idle(now)
         assert "mini" in states(client)
+
+
+def test_idle_timeout_changes_restart_countdown(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        runner.last_used -= 600
+        for minutes in (3, 1):
+            assert client.put("/api/memory", json={"idle_unload_minutes": minutes}).status_code == 200
+            deadline = fleet.idle_settings_changed + minutes * 60
+            fleet.unload_idle(deadline - 0.001)
+            assert "mini" in states(client)
+        fleet.unload_idle(deadline)
+        assert "mini" not in states(client)
+
+
+def test_idle_unload_releases_fleet_lock_while_terminating(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    entered, release = threading.Event(), threading.Event()
+
+    def terminate(proc):
+        entered.set()
+        assert release.wait(5)
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        runner.est_memory_bytes = 123
+        monkeypatch.setattr(Runner, "_terminate", staticmethod(terminate))
+        worker = threading.Thread(target=fleet.unload_idle, args=(fleet.idle_settings_changed + 60,))
+        worker.start()
+        try:
+            assert entered.wait(3)
+            assert fleet.lock.acquire(timeout=1)
+            try:
+                assert "mini" not in fleet.runners
+                assert fleet.retiring[runner] == 123
+            finally:
+                fleet.lock.release()
+            with pytest.raises(KeyError), fleet.lease("mini"):
+                pass
+        finally:
+            release.set()
+            worker.join(5)
+        assert not worker.is_alive()
+        assert runner not in fleet.retiring

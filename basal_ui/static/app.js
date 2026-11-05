@@ -1306,7 +1306,7 @@ function renderStatus(s) {
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
-  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
+  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads,s.idle_unloads||{}]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   rowsSignature=signature;
   if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
@@ -1321,7 +1321,6 @@ function renderStatus(s) {
   $('#footerUnload').hidden=!models.length; $('#footerUnload').textContent=models.length>1?t('Unload all'):t('Unload');
   renderMemoryBar(s.memory||{},models);
   renderLoadedRows(models);
-  renderDiskModels();
   renderManagerSummary();
   if($('#modelLoaderDialog').open)renderModelLoader();
   renderInference(s);

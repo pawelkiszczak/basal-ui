@@ -119,11 +119,6 @@
       [number(row.requests),number(row.requests_per_s,true),number(row.p95_ms),number(row.errors)].forEach((value,column)=>text(node.children[column+1],value));
       if(container.children[index]!==node)container.insertBefore(node,container.children[index]||null);
     });
-    idle.forEach(([id,reason])=>{
-      existing.get(id)?.remove(); existing.delete(id);
-      const node=document.createElement('article');node.className='traffic-model';node.dataset.model=id;node.dataset.idle='1';container.appendChild(node);
-      node.textContent=`${id}: ${t('Unloaded after {minutes} idle minutes at {time}',{minutes:reason.minutes,time:new Date(reason.at*1000).toLocaleString()})}`;
-    });
     existing.forEach(node=>node.remove());
   }
 

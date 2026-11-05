@@ -368,9 +368,11 @@ def create_app(
     def put_memory(body: dict = Body(...)):
         try:
             with fleet.lock:
-                settings_mod.update_memory(body)
-                if "idle_unload_minutes" in body:
+                old_timeout = settings_mod.memory_settings()["idle_unload_minutes"]
+                updated = settings_mod.update_memory(body)
+                if updated["idle_unload_minutes"] != old_timeout:
                     fleet.idle_settings_generation += 1
+                    fleet.idle_settings_changed = time.monotonic()
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return get_memory()

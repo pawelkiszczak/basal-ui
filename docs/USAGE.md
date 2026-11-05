@@ -317,7 +317,7 @@ keep free; unload a model or raise the budget. The Manager Library bar shows eac
 estimates and the memory available now. On Apple Silicon, MLX and MPS allocations live in unified memory and may show
 only partly as resident memory; the estimate is what the budget check uses.
 
-Optionally set **Unload idle models after minutes** in **Settings → Memory & storage** (empty means off; minimum 1 minute). A ready model is unloaded after that long without a Decision only when its server reports no running or queued work. Batch and other model jobs keep their models loaded while they run. Idle-unloaded models remain remembered for auto-load at the next start; requests return the existing model-not-loaded error until then. The Library, Dashboard and model log show the reason.
+Optionally set **Unload idle models after minutes** in **Settings → Memory & storage** (empty means off; minimum 1 minute). A ready model is unloaded after that long without a Decision only when its server reports no running or queued work. Changing the timeout starts a fresh countdown for models already loaded. Batch and other model jobs keep their models loaded while they run. Idle-unloaded models remain remembered for auto-load at the next start; requests return the existing model-not-loaded error until then. The Library, Dashboard and model log show the reason.
 
 ## Statistics and benchmarks
 
