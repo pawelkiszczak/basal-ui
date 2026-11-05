@@ -97,9 +97,17 @@ basal-ui's internal key is one; user keys get 403), otherwise it is open like `/
 
 ### Prometheus metrics
 
-`GET /metrics` returns Prometheus text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. It exports lifetime per-model request, question, error and input-token totals, p50/p95 and average latency in seconds, loaded-model count, and process-local 15-minute endpoint request and error counts. The rolling counts can decrease as the window advances or after a reset; lifetime counts can decrease after a reset. Each ready child's available text metrics are appended with the loaded model ID as a `model` label. Children that fail to respond, return a non-text response or do not support metrics are skipped.
+`GET /metrics` returns Prometheus text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. It exports lifetime per-model request, question, error and input-token totals, p50/p95 and average latency in seconds, loaded-model count, and process-local 15-minute endpoint request and error counts. Lifetime totals have Prometheus type `counter` and can decrease after a reset. Rolling 15-minute counts have type `gauge` because they can decrease as the window advances or after a reset. Each ready child's available text metrics are appended with the loaded model ID as a `model` label. Children that fail to respond, return a non-text response or do not support metrics are skipped.
 
-Example Prometheus scrape configuration (omit `authorization` when keys are disabled):
+To enable authenticated scraping, create a secret file accessible to both basal-ui and Prometheus and start basal-ui with its contents in `BASAL_UI_ADMIN_KEY` (set **Require an API key** in the API server settings):
+
+```sh
+umask 077
+python -c 'import secrets; print(secrets.token_urlsafe(32))' > /secure/path/basal-admin-key
+BASAL_UI_ADMIN_KEY="$(cat /secure/path/basal-admin-key)" basal-ui
+```
+
+Keep the secret file readable only by the operator and Prometheus. Set the environment variable before starting basal-ui; an unset or empty value generates a random internal key. Only its digest is saved in the per-process key file; it is not exposed in the UI. Restart basal-ui to change it. Prometheus uses the same secret file below (omit `authorization` when keys are disabled):
 
 ```yaml
 scrape_configs:
@@ -108,7 +116,7 @@ scrape_configs:
       - targets: ["127.0.0.1:8000"]
     authorization:
       type: Bearer
-      credentials: YOUR_ADMIN_KEY
+      credentials_file: /secure/path/basal-admin-key
 ```
 
 ### Recent Decision traffic

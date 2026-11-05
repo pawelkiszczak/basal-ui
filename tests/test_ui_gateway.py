@@ -420,6 +420,10 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
         response = client.get("/metrics")
         assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
         lines = response.text.splitlines()
+        for key in ("requests", "questions", "errors", "input_tokens"):
+            assert lines.count(f"# TYPE basal_ui_{key}_total counter") == 1
+        for key in ("requests", "errors"):
+            assert lines.count(f"# TYPE basal_ui_traffic_{key}_total gauge") == 1
         label = r'model="a/\"one\\line\nnext"'
         assert f"basal_ui_requests_total{{{label}}} 1" in lines
         assert f"basal_ui_questions_total{{{label}}} 1" in lines
@@ -437,3 +441,32 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
         assert "engine_active" not in client.get("/metrics").text
         child.metrics_reply = (200, "application/json", '{"bad": 1}')
         assert "engine_active" not in client.get("/metrics").text
+
+
+def test_configured_admin_secret_authenticates_real_gateway_and_is_not_persisted(tmp_path, monkeypatch):
+    secret = "operator-admin-secret"
+    monkeypatch.setenv("BASAL_UI_ADMIN_KEY", secret)
+    stats = Stats(tmp_path / "stats.json")
+    fleet = Fleet(lambda: tmp_path, lambda: "cpu", settings, lambda: HW, stats=stats)
+    _, user_secret = settings.create_key("operator")
+    port = free_port()
+    settings.update_serve({"enabled": True, "port": port, "require_key": True})
+    gateway = Gateway(fleet, settings, stats)
+    try:
+        assert gateway.start()["running"]
+        url = f"http://127.0.0.1:{port}/metrics"
+        assert httpx.get(url).status_code == 401
+        assert httpx.get(url, headers={"Authorization": f"Bearer {user_secret}"}).status_code == 403
+        response = httpx.get(url, headers={"Authorization": f"Bearer {secret}"})
+        assert response.status_code == 200
+        assert "basal_ui_models_loaded 0" in response.text
+        assert secret not in (tmp_path / "settings.json").read_text()
+        key_file = settings._keys_path()
+        assert secret not in key_file.read_text()
+        assert hashlib.sha256(secret.encode()).hexdigest() in key_file.read_text()
+    finally:
+        gateway.stop()
+        settings.remove_keys_file()
+        stats.close()
+    monkeypatch.setenv("BASAL_UI_ADMIN_KEY", "")
+    assert Fleet(lambda: tmp_path, lambda: "cpu", settings, lambda: HW).internal_secret

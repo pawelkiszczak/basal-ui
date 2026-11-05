@@ -482,7 +482,7 @@ class Fleet:
         self.models_dir_fn, self.platform_fn = models_dir_fn, platform_fn
         self.settings_mod, self.hardware_fn = settings_mod, hardware_fn
         self.stats, self.history = stats, history
-        self.internal_secret = secrets.token_urlsafe(32)
+        self.internal_secret = os.environ.get("BASAL_UI_ADMIN_KEY") or secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.runners: dict[str, Runner] = {}
         self.logs: dict[str, LogBuffer] = {"basal-ui": LogBuffer()}

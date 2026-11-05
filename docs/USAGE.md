@@ -439,7 +439,7 @@ key** is enabled; use a key before selecting **Local network**. Keys are generat
 SHA-256 hashes in the settings file and keys file, and their plaintext is shown only once when created. Copy it then;
 it cannot be retrieved later. Revoking a key rewrites the live keys file and takes effect without a restart. Each
 `basal-serve` child listens on loopback only and takes no key: only basal-ui, which starts it and knows its private
-port, reaches it. basal-ui's own internal admin key (the only key `/v1/stats` and `/metrics` accept) is not exposed in the UI.
+port, reaches it. basal-ui's internal admin key is not exposed in the UI. To use `/v1/stats` or `/metrics` with authentication, set `BASAL_UI_ADMIN_KEY` before startup as described in the [Prometheus setup](API.md#prometheus-metrics).
 
 **Restart server** restarts only the API server (instant; the models stay loaded) and applies the saved host, port,
 key, CORS and MCP settings; until then the status line shows **Restart to apply**. **Max context length** and

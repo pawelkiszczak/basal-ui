@@ -130,23 +130,26 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         record = request.scope.get("basal.api_key")
         if record is not None and not record.get("admin", False):
             return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
-        lines = []
+        counters = ("requests", "questions", "errors", "input_tokens")
+        lines = [f"# TYPE basal_ui_{key}_total counter" for key in counters]
         for model, entry in stats.snapshot()["models"].items():
             label = f'model="{_label(model)}"'
-            for key in ("requests", "questions", "errors", "input_tokens"):
+            for key in counters:
                 lines.append(f"basal_ui_{key}_total{{{label}}} {entry[key]}")
             for quantile, key in (("0.5", "p50_ms"), ("0.95", "p95_ms")):
                 if entry[key] is not None:
                     lines.append(f'basal_ui_latency_seconds{{{label},quantile="{quantile}"}} {entry[key] / 1000}')
             if entry["avg_latency_ms"] is not None:
                 lines.append(f"basal_ui_latency_seconds_avg{{{label}}} {entry['avg_latency_ms'] / 1000}")
+        lines.extend(f"# TYPE basal_ui_traffic_{key}_total gauge" for key in ("requests", "errors"))
         for entry in stats.traffic_snapshot(15)["endpoints"]:
             labels = f'endpoint="{_label(entry["endpoint"])}",method="{_label(entry["method"])}"'
             for key in ("requests", "errors"):
                 lines.append(f"basal_ui_traffic_{key}_total{{{labels}}} {entry[key]}")
         loaded = fleet.loaded_ids()
         lines.append(f"basal_ui_models_loaded {len(loaded)}")
-        metadata = set()
+        metadata = {("TYPE", f"basal_ui_{key}_total") for key in counters}
+        metadata.update(("TYPE", f"basal_ui_traffic_{key}_total") for key in ("requests", "errors"))
         for model in loaded:
             try:
                 with fleet.lease(model) as runner:
