@@ -478,6 +478,7 @@ def test_layout_fit_selection_and_certification(tmp_path, monkeypatch, config):
         assert calls[-1][calls[-1].index("--layout") + 1] == "qfirst"
         file = job["result"]["file"]
         listing = client.post("/api/calibrations/select", json={"id": "mini", "file": file}).json()
+        assert listing["calibrate_layout"] is True
         assert listing["files"][0]["layout"] == "qfirst" and not listing["layout_mismatch"]
         assert calibration.served_certified({}, config, "eager", {"layout": "qfirst"}, file)
         assert not calibration.served_certified({}, config, "eager", {"layout": "canonical"}, file)
