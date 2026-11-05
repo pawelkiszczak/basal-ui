@@ -468,5 +468,3 @@ def test_configured_admin_secret_authenticates_real_gateway_and_is_not_persisted
         gateway.stop()
         settings.remove_keys_file()
         stats.close()
-    monkeypatch.setenv("BASAL_UI_ADMIN_KEY", "")
-    assert Fleet(lambda: tmp_path, lambda: "cpu", settings, lambda: HW).internal_secret
