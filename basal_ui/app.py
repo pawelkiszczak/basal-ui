@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -1123,7 +1123,12 @@ def create_app(
         from . import calibration
 
         variant = find_variant(body.get("id"))
-        local_dir = downloaded(variant)
+        from basal.prompt import model_layout
+
+        local_dir = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=effective_revision(variant))
+        if not local_dir:
+            raise HTTPException(400, f"download {variant.id} first")
+        local_dir = Path(local_dir)
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(400, "input must be the path of a labelled JSONL file (docs/CALIBRATION.md)")
@@ -1195,13 +1200,27 @@ def create_app(
                 raise ValueError
         except (TypeError, ValueError):
             raise HTTPException(400, "targets must be a list of max_error values between 0 and 1") from None
-        if from_rows:  # a refit of saved rows runs no engine: no load options, no memory check
-            assessment, options = catalog.assess(variant, hw()), {}
+        with fleet.lock:
+            runner = fleet.runners.get(variant.id)
+        active = runner is not None and runner.status()["state"] == "ready"
+        selected_options = runner.options if active else settings_mod.load_options(variant.id)
+        if from_rows:  # a refit of saved rows runs no engine and needs no memory check
+            assessment, options = catalog.assess(variant, hw()), selected_options
         else:
             try:
-                assessment, options = prepare(variant, False, settings_mod.load_options(variant.id))
+                assessment, options = prepare(variant, False, selected_options)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+        if from_rows:
+            name = source.name.removesuffix(".rows.jsonl")
+            original = source.with_name(name + ".json")
+            try:
+                options = {"layout": calibration.summary(original)["layout"]}
+            except (OSError, ValueError):
+                options = {"layout": "canonical"}
+        layout = options.get("layout") or model_layout(local_dir)
+        if layout != "canonical" and not engine.feature("calibrate_layout"):
+            raise HTTPException(400, "The installed Engine cannot calibrate a non-canonical layout")
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
         label = f"{variant.id} on {source.name}" + (" (engine in process: task questions)" if in_process else "")
         reserve = in_process and not from_rows
@@ -1264,10 +1283,18 @@ def create_app(
                     shipped["error"] = str(exc)
             except (OSError, ValueError, KeyError) as exc:
                 shipped = {"error": str(exc)}
+        selected = settings_mod.calibration_selection().get(variant.id)
+        files = calibration.listing(variant.id, settings_mod, local_dir)
+        selected_file = next((f for f in files if f["file"] == selected), None)
+        layout = (shipped or {}).get("context", {}).get("layout")
+        mismatch = bool(selected_file and layout and selected_file.get("layout") and selected_file["layout"] != layout)
         return {
-            "selected": settings_mod.calibration_selection().get(variant.id),
-            "files": calibration.listing(variant.id, settings_mod, local_dir),
+            "selected": selected,
+            "files": files,
             "shipped": shipped,
+            "layout_mismatch": mismatch,
+            "layout_mismatch_code": "calibration_layout_mismatch" if mismatch else None,
+            "calibrate_layout": engine.feature("calibrate_layout"),
         }
 
     @app.post("/api/calibrations/import")

@@ -276,7 +276,7 @@ def test_task_questions_calibrate_with_the_engine_in_process_and_reserve_its_mem
     monkeypatch.setattr(calibrate, "main", fake_main)
     fleet, app = make_app(tmp_path, APPLE)
     settings.set_load_options(
-        "mini", {"mode": "eager", "max_batch": 8, "deterministic": True, "strict_calibration": True}
+        "mini", {"mode": "eager", "max_batch": 8, "deterministic": True, "strict_calibration": True, "layout": "qfirst"}
     )
     labelled = tmp_path / "labelled.jsonl"
     labelled.write_text(json.dumps(TASK) + "\n")
@@ -314,6 +314,7 @@ def test_task_questions_calibrate_with_the_engine_in_process_and_reserve_its_mem
             ("--concurrency", "7"),
         ):
             assert argv[argv.index(flag) + 1] == value
+        assert argv[argv.index("--layout") + 1] == "qfirst"
         assert "--strict" in argv and "--no-calibration" in argv
         assert "--url" not in argv and argv[argv.index("--mode") + 1] == "eager"
         assert argv[argv.index("--max-batch") + 1] == "8" and "--deterministic" in argv
@@ -330,7 +331,9 @@ def test_a_calibration_fitted_elsewhere_is_imported_selectable_and_warned_about(
     _, app = make_app(tmp_path)
     elsewhere = tmp_path / "other" / "CALIBRATION.custom.json"
     elsewhere.parent.mkdir()
-    elsewhere.write_text(json.dumps({**FITTED, "fitted_on": {**FITTED["fitted_on"], "model": "Remek/basal-2.0-max"}}))
+    elsewhere.write_text(
+        json.dumps({**FITTED, "fitted_on": {**FITTED["fitted_on"], "model": "Remek/basal-2.0-max", "layout": "qfirst"}})
+    )
     elsewhere.with_suffix(".report.txt").write_text("their report\n")
     junk = tmp_path / "junk.json"
     junk.write_text('{"hello": 1}')
@@ -342,12 +345,13 @@ def test_a_calibration_fitted_elsewhere_is_imported_selectable_and_warned_about(
         done = client.post("/api/calibrations/import", json={"id": "mini", "path": str(elsewhere)}).json()
         entry = next(f for f in done["files"] if f["file"] == done["file"])
         assert entry["imported"] and "fitted on Remek/basal-2.0-max" in entry["warning"]
+        assert entry["layout"] == "qfirst" and done["shipped"]["context"]["layout"] == "canonical"
         assert (
             client.get("/api/calibrations/report", params={"id": "mini", "file": done["file"]}).json()["report"]
             == "their report\n"
         )
         selected = client.post("/api/calibrations/select", json={"id": "mini", "file": done["file"]}).json()
-        assert selected["selected"] == done["file"]
+        assert selected["selected"] == done["file"] and selected["layout_mismatch"]
 
 
 def test_importing_same_calibration_twice_never_overwrites_file_or_report(tmp_path):
@@ -452,3 +456,59 @@ def test_a_file_fitted_on_a_cache_snapshot_belongs_to_the_served_repo(tmp_path):
     path.write_text(json.dumps({"fitted_on": {"model": str(local)}}))
     calibration.name_snapshot(path, local)
     assert json.loads(path.read_text())["fitted_on"] == {"model": str(local)}
+
+
+def test_layout_fit_selection_and_certification(tmp_path, monkeypatch, config):
+    calls = []
+
+    def fit(argv):
+        calls.append(argv)
+        layout = argv[argv.index("--layout") + 1] if "--layout" in argv else "canonical"
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps({**FITTED, "fitted_on": {"layout": layout}}))
+
+    monkeypatch.setattr(calibrate, "main", fit)
+    fleet, app = make_app(tmp_path)
+    settings.set_load_options("mini", {"layout": "qfirst"})
+    labelled = tmp_path / "labelled.jsonl"
+    labelled.write_text('{"state":"s","question":"q?","options":["a","b"],"gold":0}\n')
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)}).status_code == 202
+        job = wait_job(client)
+        assert job["phase"] == "done", job["error"]
+        assert calls[-1][calls[-1].index("--layout") + 1] == "qfirst"
+        file = job["result"]["file"]
+        listing = client.post("/api/calibrations/select", json={"id": "mini", "file": file}).json()
+        assert listing["files"][0]["layout"] == "qfirst" and not listing["layout_mismatch"]
+        assert calibration.served_certified({}, config, "eager", {"layout": "qfirst"}, file)
+        assert not calibration.served_certified({}, config, "eager", {"layout": "canonical"}, file)
+        runner = Runner(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu", settings_mod=settings)
+        runner.state, runner.model, runner.mode, runner.options = "ready", "mini", "eager", {"layout": "canonical"}
+        fleet.runners["mini"] = runner
+        listing = client.get("/api/calibrations", params={"id": "mini"}).json()
+        assert listing["layout_mismatch"] and listing["layout_mismatch_code"] == "calibration_layout_mismatch"
+        assert client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)}).status_code == 202
+        assert wait_job(client)["phase"] == "done"
+        assert "--layout" not in calls[-1]
+        monkeypatch.setattr(engine, "feature", lambda name: name != "calibrate_layout")
+        runner.options["layout"] = "qfirst"
+        assert client.get("/api/calibrations", params={"id": "mini"}).json()["calibrate_layout"] is False
+        assert client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)}).status_code == 400
+
+
+def test_refit_preserves_the_layout_of_the_original_rows(tmp_path, monkeypatch, config):
+    def fit(argv):
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(FITTED))
+
+    monkeypatch.setattr(calibrate, "main", fit)
+    _, app = make_app(tmp_path)
+    original = tmp_path / "fit.json"
+    original.write_text(json.dumps({**FITTED, "fitted_on": {"layout": "qfirst"}}))
+    rows = tmp_path / "fit.rows.jsonl"
+    rows.write_text('{"basal_calibrate_rows":1}\n')
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert (
+            client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True}).status_code == 202
+        )
+        job = wait_job(client)
+        assert job["phase"] == "done", job["error"]
+        assert json.loads(Path(job["result"]["file"]).read_text())["fitted_on"]["layout"] == "qfirst"

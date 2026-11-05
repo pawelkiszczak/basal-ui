@@ -380,7 +380,7 @@ questions (`classify`, `verify`, `extract` with `gold`) are certified on the ans
 is reserved in the budget until it ends; Cancel takes effect when it finishes). Every problem of the input is reported
 with its line before a model is loaded. The job's output is under **Logs → job:calibrate**. The files go to
 `calibrations/<org>--<model>/` next to the settings file, each with its report (`.report.txt`); the table compares them
-with the shipped file (decisions per type, certified thresholds of the types and tasks, automation on CERT).
+with the shipped file (decisions per type, certified thresholds of the types and tasks, automation on CERT). Fits use the active load settings layout, or the saved layout when unloaded; the table shows each file’s layout and warns when the Selected calibration differs from those settings.
 **Import** copies a file fitted elsewhere (with its report next to it) into the list; one fitted on another model or
 revision shows basal-serve's warning. **Use** selects one for the model: basal-ui then starts its `basal-serve` with
 `--calibration FILE`, and a loaded model shows **Restart to apply**. **Advanced** passes basal-calibrate's own
@@ -388,7 +388,7 @@ controls: `--strict` with a `--reference`, `--min-per-type`, `--min-blend`, `--m
 `--concurrency`, the file to compare with (shipped, none: `--no-calibration`, or a path; a path and a `--reference`
 file are checked before the run starts), `--report-only` (the run uses the same engine as a fit, the report opens, no
 file is written) and `--save-rows`, which keeps the uncalibrated probabilities next to the file; such a file gets
-**Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check).
+**Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check). A refit uses its original calibration file to identify the saved rows’ layout; without it, the rows are treated as canonical.
 
 ## History and logs
 
