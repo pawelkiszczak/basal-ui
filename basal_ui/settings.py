@@ -327,13 +327,16 @@ def memory_settings() -> dict:
     return {
         "budget_bytes": budget if type(budget) is int else None,
         "reserve_bytes": reserve if type(reserve) is int and reserve >= 0 else DEFAULT_RESERVE,
+        "idle_unload_minutes": value.get("idle_unload_minutes")
+        if type(value.get("idle_unload_minutes")) is int and value["idle_unload_minutes"] >= 1
+        else None,
     }
 
 
 @_locked
 def update_memory(patch: dict) -> dict:
     """budget_bytes: null (the hardware budget) or at least 1 GiB; reserve_bytes: kept free, >= 0."""
-    unknown = set(patch) - {"budget_bytes", "reserve_bytes"}
+    unknown = set(patch) - {"budget_bytes", "reserve_bytes", "idle_unload_minutes"}
     if unknown:
         raise ValueError(f"unknown memory setting: {min(unknown)}")
     value = {**memory_settings(), **patch}
@@ -343,6 +346,9 @@ def update_memory(patch: dict) -> dict:
         raise ValueError("budget_bytes must be null or at least 1 GiB")
     if type(value["reserve_bytes"]) is not int or value["reserve_bytes"] < 0:
         raise ValueError("reserve_bytes must be a non-negative integer")
+    idle = value["idle_unload_minutes"]
+    if idle is not None and (type(idle) is not int or idle < 1):
+        raise ValueError("idle_unload_minutes must be null or an integer of at least 1")
     data = load()
     data["memory"] = value
     save(data)

@@ -200,11 +200,12 @@ function renderDiskModels() {
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span>${idleUnloadText(statusCache?.idle_unloads?.[m.id])}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
   $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
   renderManagerSummary();
 }
+function idleUnloadText(reason){return reason?.code==='idle_unload'?`<span class="muted">${esc(t('Unloaded after {minutes} idle minutes at {time}',{minutes:reason.minutes,time:new Date(reason.at*1000).toLocaleString()}))}</span>`:'';}
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
@@ -1320,6 +1321,7 @@ function renderStatus(s) {
   $('#footerUnload').hidden=!models.length; $('#footerUnload').textContent=models.length>1?t('Unload all'):t('Unload');
   renderMemoryBar(s.memory||{},models);
   renderLoadedRows(models);
+  renderDiskModels();
   renderManagerSummary();
   if($('#modelLoaderDialog').open)renderModelLoader();
   renderInference(s);
@@ -2109,6 +2111,7 @@ selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
 async function loadMemorySettings(){
   try{
     const d=await api('/api/memory'), budget=$('input#memoryBudget');
+    $('#idleUnload').value=d.settings.idle_unload_minutes??'';
     budget.placeholder=t('Hardware budget: {size} GiB',{size:(d.hardware_budget_bytes/2**30).toFixed(1)});
     for(const [input,bytes] of [[budget,d.settings.budget_bytes],[$('#memoryReserve'),d.settings.reserve_bytes]]){
       input.value=bytes==null?'':String(Number((bytes/2**30).toFixed(3)));
@@ -2119,7 +2122,7 @@ async function loadMemorySettings(){
 $('#saveMemory').onclick=async()=>{
   const bytesOf=input=>{const value=input.value.trim();if(value===input.dataset.shown&&input.dataset.bytes!==undefined)return input.dataset.bytes===''?null:Number(input.dataset.bytes);return value===''?null:Math.round(Number(value)*2**30);};
   try{
-    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0})});
+    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0,idle_unload_minutes:$('#idleUnload').value===''?null:Number($('#idleUnload').value)})});
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };
