@@ -553,3 +553,20 @@ def test_canonical_default_needs_no_layout_capability(tmp_path, monkeypatch, con
         assert client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)}).status_code == 202
         assert wait_job(client)["phase"] == "done"
         assert "--layout" not in calls[-1]
+
+
+@pytest.mark.parametrize("metadata", ['{"layout":"unknown"}', "{"])
+def test_invalid_model_layout_keeps_calibration_listing_available(tmp_path, config, metadata):
+    (config / "basal.json").write_text(metadata)
+    directory = settings.calibrations_dir("mini")
+    directory.mkdir(parents=True, exist_ok=True)
+    fitted = directory / "fit.json"
+    fitted.write_text(json.dumps(FITTED))
+    _, app = make_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as client:
+        response = client.get("/api/calibrations", params={"id": "mini"})
+        assert response.status_code == 200
+        listing = response.json()
+        assert listing["default_layout"] is None
+        assert "error" in listing["shipped"]
+        assert [entry["file"] for entry in listing["files"]] == [str(fitted)]

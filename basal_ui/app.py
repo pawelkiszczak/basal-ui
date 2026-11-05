@@ -1280,8 +1280,10 @@ def create_app(
         revision = effective_revision(variant)
         local_dir = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=revision)
         shipped = None
+        default_layout = None
         if local_dir:
             try:
+                default_layout = model_layout(local_dir)
                 assessment = catalog.assess(variant, hw())
                 path, context = resolve_shipped_calibration(variant, local_dir, assessment)
                 shipped = {"file": str(path), "context": context}
@@ -1303,7 +1305,7 @@ def create_app(
             "layout_mismatch": mismatch,
             "layout_mismatch_code": "calibration_layout_mismatch" if mismatch else None,
             "calibrate_layout": engine.feature("calibrate_layout"),
-            "default_layout": model_layout(local_dir) if local_dir else None,
+            "default_layout": default_layout,
         }
 
     @app.post("/api/calibrations/import")
