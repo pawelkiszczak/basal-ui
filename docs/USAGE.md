@@ -419,7 +419,7 @@ and receive its retained lines from the start.
 One port serves every loaded model. The API server runs inside basal-ui and forwards each request to the private
 `basal-serve` of the model it names, so every request body must carry `"model"`: `400 MODEL_REQUIRED` without it,
 `404 MODEL_NOT_FOUND` for a model that is not loaded (both list the loaded models). `GET /v1/models` lists the ready
-models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /v1/stats` returns
+models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /metrics` exposes [Prometheus metrics](API.md#prometheus-metrics), and `GET /v1/stats` returns
 the statistics above (admin key only when keys are required — that is, basal-ui's own key). Details:
 [API.md](API.md#several-models-behind-basal-ui).
 
@@ -439,7 +439,7 @@ key** is enabled; use a key before selecting **Local network**. Keys are generat
 SHA-256 hashes in the settings file and keys file, and their plaintext is shown only once when created. Copy it then;
 it cannot be retrieved later. Revoking a key rewrites the live keys file and takes effect without a restart. Each
 `basal-serve` child listens on loopback only and takes no key: only basal-ui, which starts it and knows its private
-port, reaches it. basal-ui's own internal admin key (the only key `/v1/stats` accepts) is not exposed in the UI.
+port, reaches it. basal-ui's own internal admin key (the only key `/v1/stats` and `/metrics` accept) is not exposed in the UI.
 
 **Restart server** restarts only the API server (instant; the models stay loaded) and applies the saved host, port,
 key, CORS and MCP settings; until then the status line shows **Restart to apply**. **Max context length** and

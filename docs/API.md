@@ -95,6 +95,22 @@ paths, like basal-serve's own errors.
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
+### Prometheus metrics
+
+`GET /metrics` returns Prometheus text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. It exports lifetime per-model request, question, error and input-token totals, p50/p95 and average latency in seconds, loaded-model count, and process-local 15-minute endpoint request and error counts. The rolling counts can decrease as the window advances or after a reset; lifetime counts can decrease after a reset. Each ready child's available text metrics are appended with the loaded model ID as a `model` label. Children that fail to respond, return a non-text response or do not support metrics are skipped.
+
+Example Prometheus scrape configuration (omit `authorization` when keys are disabled):
+
+```yaml
+scrape_configs:
+  - job_name: basal-ui
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    authorization:
+      type: Bearer
+      credentials: YOUR_ADMIN_KEY
+```
+
 ### Recent Decision traffic
 
 The local UI app (not the API-server gateway) exposes `GET /api/traffic?minutes=15` and

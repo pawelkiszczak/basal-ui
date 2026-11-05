@@ -191,6 +191,9 @@ def test_keys_guard_every_route_and_stats_need_the_admin_key(fleet, tmp_path):
         user = {"Authorization": "Bearer user-secret"}
         assert client.post("/v1/systemone", json={"model": "a/one", "state": "s"}, headers=user).status_code == 200
         assert client.get("/v1/stats", headers=user).status_code == 403
+        assert client.get("/metrics", headers=user).status_code == 403
+        assert client.get("/metrics").status_code == 401
+        assert client.get("/metrics", headers={"X-API-Key": "admin-secret"}).status_code == 200
         stats = client.get("/v1/stats", headers={"X-API-Key": "admin-secret"})
         assert stats.status_code == 200 and stats.json()["models"]["a/one"]["requests"] == 2
         preflight = client.options(
@@ -393,3 +396,44 @@ def test_port_in_use_is_reported_and_lan_url_is_used_for_all_interfaces(fleet, m
     assert gateway.status()["url"] == "http://192.0.2.10:8123"
     gateway.status()
     assert calls == [1]
+
+
+def test_metrics_combines_stats_and_ready_children(fleet, child):
+    model = 'a/"one\\line\nnext'
+    runner = fleet.runners.pop("a/one")
+    runner.model, runner.base_url = model, child.url
+    fleet.runners[model] = runner
+    fleet.runners["b/two"].base_url = child.url
+    child.metrics_reply = (
+        200,
+        "text/plain; version=0.0.4",
+        '# HELP engine_hits Hits\n# TYPE engine_hits counter\nengine_hits{kind="a}b"} 3\nengine_active 1\n',
+    )
+    fleet.stats.record(
+        model,
+        {"answers": {"q": {"type": "choice"}}, "usage": {"input_tokens": 7}},
+        250,
+        endpoint='/v1/"test',
+        method="POST",
+    )
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.get("/metrics")
+        assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
+        lines = response.text.splitlines()
+        label = r'model="a/\"one\\line\nnext"'
+        assert f"basal_ui_requests_total{{{label}}} 1" in lines
+        assert f"basal_ui_questions_total{{{label}}} 1" in lines
+        assert f"basal_ui_errors_total{{{label}}} 0" in lines
+        assert f"basal_ui_input_tokens_total{{{label}}} 7" in lines
+        assert f'basal_ui_latency_seconds{{{label},quantile="0.95"}} 0.25' in lines
+        assert f"basal_ui_latency_seconds_avg{{{label}}} 0.25" in lines
+        assert r'basal_ui_traffic_requests_total{endpoint="/v1/\"test",method="POST"} 1' in lines
+        assert "basal_ui_models_loaded 2" in lines
+        assert f'engine_hits{{kind="a}}b",{label}}} 3' in lines
+        assert 'engine_active{model="b/two"} 1' in lines
+        assert lines.count("# HELP engine_hits Hits") == 1
+        assert lines.count("# TYPE engine_hits counter") == 1
+        child.metrics_reply = (404, "text/plain", "missing")
+        assert "engine_active" not in client.get("/metrics").text
+        child.metrics_reply = (200, "application/json", '{"bad": 1}')
+        assert "engine_active" not in client.get("/metrics").text
