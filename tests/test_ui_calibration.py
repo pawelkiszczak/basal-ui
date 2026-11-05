@@ -513,3 +513,43 @@ def test_refit_preserves_the_layout_of_the_original_rows(tmp_path, monkeypatch, 
         job = wait_job(client)
         assert job["phase"] == "done", job["error"]
         assert json.loads(Path(job["result"]["file"]).read_text())["fitted_on"]["layout"] == "qfirst"
+
+
+def test_canonical_override_requires_layout_capability(tmp_path, monkeypatch, config):
+    import basal.prompt
+
+    monkeypatch.setattr(basal.prompt, "model_layout", lambda path: "qfirst")
+    monkeypatch.setattr(engine, "feature", lambda name: name != "calibrate_layout")
+    settings.set_load_options("mini", {"layout": "canonical"})
+    labelled = tmp_path / "labelled.jsonl"
+    labelled.write_text('{"state":"s","question":"q?","options":["a","b"],"gold":0}\n')
+    _, app = make_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        result = client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)})
+        assert result.status_code == 400
+        assert result.json()["code"] == "calibration_layout_unsupported"
+        listing = client.get("/api/calibrations", params={"id": "mini"}).json()
+        assert listing["default_layout"] == "qfirst"
+        rows = tmp_path / "fit.rows.jsonl"
+        rows.write_text('{"basal_calibrate_rows":1}\n')
+        (tmp_path / "fit.json").write_text(json.dumps({**FITTED, "fitted_on": {"layout": "canonical"}}))
+        result = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert result.status_code == 400 and result.json()["code"] == "calibration_layout_unsupported"
+
+
+def test_canonical_default_needs_no_layout_capability(tmp_path, monkeypatch, config):
+    calls = []
+
+    def fit(argv):
+        calls.append(argv)
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(FITTED))
+
+    monkeypatch.setattr(calibrate, "main", fit)
+    monkeypatch.setattr(engine, "feature", lambda name: name != "calibrate_layout")
+    labelled = tmp_path / "labelled.jsonl"
+    labelled.write_text('{"state":"s","question":"q?","options":["a","b"],"gold":0}\n')
+    _, app = make_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)}).status_code == 202
+        assert wait_job(client)["phase"] == "done"
+        assert "--layout" not in calls[-1]

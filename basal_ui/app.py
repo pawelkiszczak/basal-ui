@@ -1219,8 +1219,14 @@ def create_app(
             except (OSError, ValueError):
                 options = {"layout": "canonical"}
         layout = options.get("layout") or model_layout(local_dir)
-        if layout != "canonical" and not engine.feature("calibrate_layout"):
-            raise HTTPException(400, "The installed Engine cannot calibrate a non-canonical layout")
+        if (layout != "canonical" or model_layout(local_dir) != layout) and not engine.feature("calibrate_layout"):
+            return JSONResponse(
+                {
+                    "detail": "The installed Engine cannot calibrate this layout",
+                    "code": "calibration_layout_unsupported",
+                },
+                status_code=400,
+            )
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
         label = f"{variant.id} on {source.name}" + (" (engine in process: task questions)" if in_process else "")
         reserve = in_process and not from_rows
@@ -1267,6 +1273,8 @@ def create_app(
         return state
 
     def calibrations_response(variant):
+        from basal.prompt import model_layout
+
         from . import calibration
 
         revision = effective_revision(variant)
@@ -1295,6 +1303,7 @@ def create_app(
             "layout_mismatch": mismatch,
             "layout_mismatch_code": "calibration_layout_mismatch" if mismatch else None,
             "calibrate_layout": engine.feature("calibrate_layout"),
+            "default_layout": model_layout(local_dir) if local_dir else None,
         }
 
     @app.post("/api/calibrations/import")

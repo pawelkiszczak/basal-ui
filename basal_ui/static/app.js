@@ -1305,8 +1305,9 @@ function renderStatus(s) {
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
-  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
+  const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(signature!==rowsSignature&&$('#calibrationModel').value)loadCalibrations();
   rowsSignature=signature;
   if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
@@ -1566,6 +1567,7 @@ function renderCalibrationState(job) {
 async function loadCalibrations() {
   const id=$('#calibrationModel').value, sequence=++calibrationSequence, files=$('#calibrationFiles');
   files.innerHTML='';
+  calibrationBlocked=true; $('#runCalibration').disabled=true;
   files.setAttribute('aria-busy','true');
   $('#importCalibration').disabled=true;
   if(!id){files.removeAttribute('aria-busy');return;}
@@ -1588,7 +1590,7 @@ function thresholdCell(thresholds) {
 function renderCalibrationFiles(id, d) {
   const loaded=(statusCache?.models||[]).find(m=>m.id===id);
   const layout=d.shipped?.context?.layout;
-  calibrationBlocked=!layout||(layout!=='canonical'&&!d.calibrate_layout);
+  calibrationBlocked=!layout||(!d.calibrate_layout&&(layout!=='canonical'||d.default_layout&&d.default_layout!==layout));
   $('#runCalibration').disabled=calibrationRunning||calibrationBlocked;
   const row=(f,value,label)=>{
     const fitted=f?.fitted_on&&typeof f.fitted_on==='object'?f.fitted_on:null, gates=f?.gates||{};
@@ -1599,14 +1601,15 @@ function renderCalibrationFiles(id, d) {
   const ctx=d.shipped?.context||{}, context=d.shipped?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
   const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
   const shipped=d.shipped?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
-  const reason=layout&&!d.calibrate_layout&&layout!=='canonical'?t('The installed Engine cannot calibrate a non-canonical layout'):'';
+  const reason=layout&&calibrationBlocked?t('The installed Engine cannot calibrate this layout'):'';
   const mismatch=d.layout_mismatch_code?ts('Selected calibration layout differs from the load settings; certified thresholds will not apply.',d.layout_mismatch_code):'';
   $('#calibrationFiles').innerHTML=`<p class="muted">${context}<br>${selection}<br>${t('Fit layout')}: ${esc(layout||'—')}</p>${reason?`<p class="reason">${esc(reason)}</p>`:''}${mismatch?`<p class="reason">${esc(mismatch)}</p>`:''}<div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Layout')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
     if(!radio)continue;
-    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;button.disabled=calibrationBlocked;
-    radio.closest('tr').lastElementChild.append(' ',button);
+    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;button.disabled=!d.calibrate_layout&&(f.layout!=='canonical'||d.default_layout&&d.default_layout!=='canonical');
+    const cell=radio.closest('tr').lastElementChild; cell.append(' ',button);
+    if(button.disabled){const reason=document.createElement('span');reason.className='reason';reason.textContent=t('The installed Engine cannot calibrate this layout');cell.append(' ',reason);}
   }
   $('#calibrationFiles').querySelectorAll('[data-refit]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
@@ -1798,7 +1801,7 @@ $('#optionsApply').onclick=async()=>{
   const {id,media,restart,save,data,initialMode}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
   $('#optionsApply').disabled=true;
   try{
-    if(remember||data.saved&&!initialMode)await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});
+    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();return;}
     if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
     else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}

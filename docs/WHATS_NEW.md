@@ -1,6 +1,6 @@
 # Unreleased
 
-- Calibration fits and compares the layout in active or saved load settings, labels imported and fitted files, and warns when the Selected calibration does not match.
+- Calibration fits and compares the layout in active or saved load settings, labels imported and fitted files, warns when the Selected calibration does not match, and preserves the original layout when refitting saved rows.
 
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
