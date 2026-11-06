@@ -23,6 +23,8 @@
   why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
   ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
   `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
+  the option-order check. Results and per-path probability deltas are saved with the other benchmark results.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
