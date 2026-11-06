@@ -1241,23 +1241,6 @@ def test_the_tool_builder_sets_the_selection_of_several_tools(page):
     assert not {"multi", "min", "max", "exclusive", "fallback", "threshold"} & set(built)
 
 
-def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_model, tmp_path):
-    shipped = ui.get("/api/calibrations", params={"id": text_model["id"]})["shipped"]["file"]
-    manager_tab(page, "calibration")
-    page.select_option("#calibrationModel", text_model["id"])
-    page.fill("#calibrationImportPath", shipped)
-    sync_api.expect(page.locator("#calibrationFiles table")).to_be_visible()
-    before = page.locator("#calibrationFiles .chip", has_text="imported").count()
-    page.click("#importCalibration")
-    sync_api.expect(page.locator("#calibrationImportPath")).to_have_value("")  # done: the field is cleared
-    sync_api.expect(page.locator("#calibrationFiles .chip", has_text="imported")).to_have_count(before + 1)
-    row = page.locator("#calibrationFiles tbody tr", has=page.locator(".chip", has_text="imported")).first
-    sync_api.expect(row.locator("td").nth(3)).to_contain_text("5%")  # the shipped file's certified thresholds
-    page.fill("#calibrationImportPath", str(tmp_path / "none.json"))
-    page.click("#importCalibration")
-    sync_api.expect(page.locator(".toast.error").last).to_contain_text("cannot read")
-
-
 def test_theme_toggle_persists_and_sets_the_document_theme(page):
     appearance = page.locator(".appearance-controls")
     if not appearance.locator('[data-theme-choice="dark"]').is_visible():

@@ -1,13 +1,12 @@
 """Scheduled Batch runs over changed JSONL files in configured folders."""
 
+import contextlib
 import re
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-
-MAX_HISTORY_BYTES = 1024 * 1024
 
 
 def validate(definition):
@@ -85,34 +84,49 @@ class Schedules:
         self.lock = threading.RLock()
         self.active = None
         self.failures = {}
+        self.pending = {}
 
     def list(self):
         return self.settings.schedules()
 
     def create(self, body):
         spec = validate(body)
-        with self.lock:
-            rows = self.settings.schedules()
+
+        def add(rows):
             if any(row["id"] == spec["id"] for row in rows):
                 raise ValueError(f"schedule {spec['id']!r} already exists")
-            self.settings.set_schedules([*rows, spec])
-        return spec
+            rows.append(spec)
+            return spec
 
-    def update(self, schedule_id, body):
-        old = self.get(schedule_id)
-        spec = validate({**old, **body, "id": schedule_id})
         with self.lock:
-            rows = self.settings.schedules()
-            self.settings.set_schedules([spec if row["id"] == schedule_id else row for row in rows])
-        return spec
+            return self.settings.update_schedules(add)
+
+    def update(self, schedule_id, body, validator=validate):
+        def change(rows):
+            for index, old in enumerate(rows):
+                if old["id"] == schedule_id:
+                    spec = validator({**old, **body, "id": schedule_id})
+                    rows[index] = spec
+                    return spec
+            raise KeyError(schedule_id)
+
+        with self.lock:
+            result = self.settings.update_schedules(change)
+            self.pending.pop(schedule_id, None)
+            return result
 
     def delete(self, schedule_id):
+        def remove(rows):
+            for index, row in enumerate(rows):
+                if row["id"] == schedule_id:
+                    rows.pop(index)
+                    return
+            raise KeyError(schedule_id)
+
         with self.lock:
-            rows = self.settings.schedules()
-            if not any(row["id"] == schedule_id for row in rows):
-                raise KeyError(schedule_id)
-            self.settings.set_schedules([row for row in rows if row["id"] != schedule_id])
+            self.settings.update_schedules(remove)
             self.failures.pop(schedule_id, None)
+            self.pending.pop(schedule_id, None)
 
     def get(self, schedule_id):
         row = next((row for row in self.settings.schedules() if row["id"] == schedule_id), None)
@@ -148,9 +162,13 @@ class Schedules:
         if "every_minutes" in spec["interval"]:
             return (current.timestamp() - last.timestamp()) >= spec["interval"]["every_minutes"] * 60
         target = spec["interval"]["daily_at"]
-        today_slot = datetime.combine(current.date(), datetime.strptime(target, "%H:%M").time()).timestamp()
+        slot_time = datetime.strptime(target, "%H:%M").time()
+        today_slot = datetime.combine(current.date(), slot_time).timestamp()
         if spec["catch_up"]:
-            return current.timestamp() >= today_slot and last.date() < current.date()
+            latest_slot = today_slot
+            if current.timestamp() < today_slot:
+                latest_slot = datetime.combine(current.date() - timedelta(days=1), slot_time).timestamp()
+            return last.timestamp() < latest_slot
         return current.strftime("%H:%M") == target and last.date() < current.date()
 
     def _record(self, row):
@@ -167,116 +185,145 @@ class Schedules:
                 break
         return count
 
-    def _finish_active(self):
+    def _failure(self, schedule_id):
+        count = self.failures.get(schedule_id, self._prior_failures(schedule_id)) + 1
+        self.failures[schedule_id] = count
+        if count >= 3:
+            with contextlib.suppress(KeyError):
+                self.update(
+                    schedule_id, {"paused": True, "paused_reason": "paused after three consecutive failed runs"}
+                )
+            self.pending.pop(schedule_id, None)
+
+    def _finish_active(self, now):
         if self.active is None:
             return False
-        schedule_id, path, signature, output, job, started = self.active
+        spec, path, signature, output, job, started = self.active
         state = job.state() if hasattr(job, "state") else job
         if state["running"]:
             return True
-        record = {"schedule": schedule_id, "at": started, "file": str(path), "output": str(output)}
+        duration = (
+            (state["finished"] - state["started"])
+            if state.get("finished") is not None
+            else (self._time(now).timestamp() - started)
+        )
+        record = {
+            "schedule": spec["id"],
+            "model": spec["model"],
+            "at": started,
+            "duration": max(0, duration),
+            "file": str(path),
+            "output": str(output),
+            "size": signature[0],
+            "mtime": signature[1],
+            "rows": 0,
+            "errors": 0,
+        }
         if state["phase"] in ("done", "done_with_warnings"):
-            record["rows"] = (state.get("result") or {}).get("items", 0)
-            self.failures[schedule_id] = 0
+            result = state.get("result") or {}
+            record["rows"], record["errors"] = result.get("items", 0), result.get("errors", 0)
+            self.failures[spec["id"]] = 0
         else:
-            record["error"] = state.get("error") or state["phase"]
-            count = self.failures.get(schedule_id, self._prior_failures(schedule_id)) + 1
-            self.failures[schedule_id] = count
-            if count >= 3:
-                specs = self.settings.schedules()
-                for spec in specs:
-                    if spec["id"] == schedule_id:
-                        spec["paused"], spec["paused_reason"] = True, "paused after three consecutive failed runs"
-                self.settings.set_schedules(specs)
-        self._record({**record, "size": signature[0], "mtime": signature[1]})
+            record["error"], record["errors"] = state.get("error") or state["phase"], 1
+            self._failure(spec["id"])
+        self._record(record)
         self.active = None
         return False
 
     def run_due(self, now=None, schedule_id=None, force=False):
         now = time.time() if now is None else now
+        timestamp = self._time(now).timestamp()
         with self.lock:
-            if self._finish_active():
+            if self._finish_active(now):
                 return None
             for spec in self.settings.schedules():
-                if schedule_id is not None and spec["id"] != schedule_id:
+                sid = spec["id"]
+                if schedule_id is not None and sid != schedule_id:
                     continue
-                if (spec["paused"] and not force) or not self._due(spec, now, force):
+                if spec["paused"] and not force:
+                    self.pending.pop(sid, None)
                     continue
-                try:
-                    files = sorted(Path(spec["input_dir"]).glob(spec["pattern"]), key=lambda p: p.name)
-                except OSError as exc:
-                    self._record(
-                        {"schedule": spec["id"], "at": self._time(now).timestamp(), "file": None, "error": str(exc)}
-                    )
-                    continue
-                processed = {
-                    (row.get("file"), row.get("size"), row.get("mtime"))
-                    for row in self._history()
-                    if row.get("schedule") == spec["id"]
-                }
-                for path in files:
+                if sid not in self.pending:
+                    if not self._due(spec, now, force):
+                        continue
+                    try:
+                        self.pending[sid] = sorted(Path(spec["input_dir"]).glob(spec["pattern"]), key=lambda p: p.name)
+                    except OSError as exc:
+                        self._failure(sid)
+                        self._record(
+                            {
+                                "schedule": sid,
+                                "model": spec["model"],
+                                "at": timestamp,
+                                "duration": 0,
+                                "file": None,
+                                "error": str(exc),
+                                "rows": 0,
+                                "errors": 1,
+                            }
+                        )
+                        continue
+                queue = self.pending[sid]
+                while queue:
+                    path = queue[0]
                     try:
                         stat = path.stat()
                         if not path.is_file():
+                            queue.pop(0)
                             continue
                     except OSError:
+                        queue.pop(0)
                         continue
                     signature = stat.st_size, stat.st_mtime
-                    if (str(path), *signature) in processed:
+                    if self.settings.schedule_processed(sid).get(str(path)) == list(signature):
+                        queue.pop(0)
                         continue
                     output = Path(spec["output_dir"]) / f"{path.stem}.answers.jsonl"
+                    record = {
+                        "schedule": sid,
+                        "model": spec["model"],
+                        "at": timestamp,
+                        "duration": 0,
+                        "file": str(path),
+                        "output": str(output),
+                        "size": signature[0],
+                        "mtime": signature[1],
+                        "rows": 0,
+                        "errors": 0,
+                    }
+                    if output.resolve() == path.resolve():
+                        self._failure(sid)
+                        self._record({**record, "error": "output must not be the input file", "errors": 1})
+                        queue.pop(0)
+                        if sid not in self.pending:
+                            break
+                        continue
                     if not spec["overwrite"] and output.exists():
-                        self._record(
-                            {
-                                "schedule": spec["id"],
-                                "at": self._time(now).timestamp(),
-                                "file": str(path),
-                                "skipped": "output exists",
-                                "size": signature[0],
-                                "mtime": signature[1],
-                            }
-                        )
+                        self._record({**record, "skipped": "output exists"})
+                        queue.pop(0)
                         continue
                     try:
                         self.fleet.ready(spec["model"])
                     except (KeyError, RuntimeError):
-                        self._record(
-                            {
-                                "schedule": spec["id"],
-                                "at": self._time(now).timestamp(),
-                                "file": str(path),
-                                "skipped": "model not loaded",
-                                "size": signature[0],
-                                "mtime": signature[1],
-                            }
-                        )
+                        self._record({**record, "skipped": "model not loaded"})
+                        queue.pop(0)
                         continue
                     try:
                         launched = self.start_batch(spec, path, output)
                     except RuntimeError as exc:
                         if "already running" in str(exc):
                             return None
-                        self._record(
-                            {
-                                "schedule": spec["id"],
-                                "at": self._time(now).timestamp(),
-                                "file": str(path),
-                                "error": str(exc),
-                                "size": signature[0],
-                                "mtime": signature[1],
-                            }
-                        )
-                        count = self.failures.get(spec["id"], self._prior_failures(spec["id"])) + 1
-                        self.failures[spec["id"]] = count
-                        if count >= 3:
-                            self.update(
-                                spec["id"],
-                                {"paused": True, "paused_reason": "paused after three consecutive failed runs"},
-                            )
+                        self._failure(sid)
+                        self._record({**record, "error": str(exc), "errors": 1})
+                        queue.pop(0)
+                        if sid not in self.pending:
+                            break
                         continue
+                    queue.pop(0)
                     job = self.fleet.jobs.get("batch")
-                    self.active = (spec["id"], path, signature, output, job or launched, self._time(now).timestamp())
+                    self.active = (spec, path, signature, output, job or launched, timestamp)
                     return launched
+                self.pending.pop(sid, None)
             return None
 
     def run_now(self, schedule_id, now=None):

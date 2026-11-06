@@ -570,7 +570,7 @@ class AttachedServerRunner:
         refusal = self._refusal(body)
         if refusal is not None:
             return refusal
-        url, payload, headers = self._request(body)
+        url, payload, headers = await asyncio.to_thread(self._request, body)
         return self._reply(await client.post(url, json=payload, headers=headers, timeout=120), body)
 
     def detach(self):
@@ -591,16 +591,21 @@ class CascadeRunner:
         self.ready_at, self.last_used = None, time.monotonic()
         self.log = LogBuffer()
         self.lock = threading.RLock()
+        self.gen = 0
         self.base_url = None
         self.command = []
         self.levels = [dict(x) for x in spec["levels"]]
         self.models_entry = {"name": self.model, "kind": "cascade", "levels": self.levels}
 
     def start(self, members):
+        with self.lock:
+            gen = self.gen
+            if self.state != "starting":
+                raise RuntimeError("cascade start cancelled")
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        self.base_url = f"http://127.0.0.1:{port}"
+        base_url = f"http://127.0.0.1:{port}"
         argv = [
             sys.executable,
             "-m",
@@ -637,31 +642,45 @@ class CascadeRunner:
             key = self.settings_mod.get_secret(f"cascade:{self.model}")
             if key:
                 env["BASAL_FALLBACK_API_KEY"] = key
-        self.command = argv
         try:
-            self.process = subprocess.Popen(  # its own session: terminate() signals the process group
-                argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, start_new_session=True
-            )
-            threading.Thread(target=self._read_logs, daemon=True).start()
+            with self.lock:
+                if gen != self.gen:
+                    raise RuntimeError("cascade start cancelled")
+                self.command, self.base_url = argv, base_url
+                self.process = proc = subprocess.Popen(
+                    argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, start_new_session=True
+                )
+            threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
             deadline = time.monotonic() + START_TIMEOUT_S
             while time.monotonic() < deadline:
-                if self.process.poll() is not None:
-                    raise RuntimeError(f"basal-router exited ({self.process.returncode}): {self.log.last() or ''}")
+                with self.lock:
+                    if gen != self.gen:
+                        raise RuntimeError("cascade start cancelled")
+                if proc.poll() is not None:
+                    raise RuntimeError(f"basal-router exited ({proc.returncode}): {self.log.last() or ''}")
                 try:
-                    if httpx.get(self.base_url + "/health", timeout=0.5).status_code == 200:
-                        self.state, self.ready_at = "ready", time.time()
+                    if httpx.get(base_url + "/health", timeout=0.5).status_code == 200:
+                        with self.lock:
+                            if gen != self.gen:
+                                raise RuntimeError("cascade start cancelled")
+                            self.state, self.ready_at = "ready", time.time()
                         return self
                 except httpx.HTTPError:
                     pass
                 time.sleep(0.2)
             raise RuntimeError(f"basal-router did not become healthy within {START_TIMEOUT_S} s")
         except Exception as exc:
-            self.error, self.state = str(exc), "error"
-            self.stop()
+            proc = None
+            with self.lock:
+                if gen == self.gen:
+                    proc, self.process = self.process, None
+                    self.gen += 1
+                    self.error, self.state = str(exc), "error"
+            Runner._terminate(proc)
             raise
 
-    def _read_logs(self):
-        for line in self.process.stdout:
+    def _read_logs(self, proc):
+        for line in proc.stdout:
             self.log.append(line.rstrip())
 
     @property
@@ -669,28 +688,29 @@ class CascadeRunner:
         return self.process.pid if self.process else None
 
     def status(self):
-        if self.state == "ready" and self.process and self.process.poll() is not None:
-            self.state, self.error = "error", f"basal-router exited ({self.process.returncode})"
-        return {
-            "id": self.model,
-            "model": self.model,
-            "state": self.state,
-            "error": self.error,
-            "kind": "cascade",
-            "entry": self.models_entry,
-            "models_entry": self.models_entry,
-            "base_url": self.base_url,
-            "pid": self.process.pid if self.process else None,
-            "ready_at": self.ready_at,
-            "est_memory_bytes": 0,
-            "temporary": False,
-            "cascade_kind": self.spec["kind"],
-            "cascade_has_fallback": bool(self.spec.get("fallback")),
-            "media": [],
-            "options": {},
-            "health": {"reachable": self.state == "ready"},
-            "rss_bytes": self.rss_bytes,
-        }
+        with self.lock:
+            if self.state == "ready" and self.process and self.process.poll() is not None:
+                self.state, self.error = "error", f"basal-router exited ({self.process.returncode})"
+            return {
+                "id": self.model,
+                "model": self.model,
+                "state": self.state,
+                "error": self.error,
+                "kind": "cascade",
+                "entry": self.models_entry,
+                "models_entry": self.models_entry,
+                "base_url": self.base_url,
+                "pid": self.process.pid if self.process else None,
+                "ready_at": self.ready_at,
+                "est_memory_bytes": 0,
+                "temporary": False,
+                "cascade_kind": self.spec["kind"],
+                "cascade_has_fallback": bool(self.spec.get("fallback")),
+                "media": [],
+                "options": {},
+                "health": {"reachable": self.state == "ready"},
+                "rss_bytes": self.rss_bytes,
+            }
 
     def decide(self, body, path="/v1/systemone"):
         child_body, reply = child_request(path, body)
@@ -709,14 +729,15 @@ class CascadeRunner:
         return response
 
     def stop(self):
-        proc, self.process = self.process, None
+        proc, _ = self.detach()
         Runner._terminate(proc)
-        self.state = "idle"
 
     def detach(self):
-        proc, self.process = self.process, None
-        self.state = "idle"
-        return proc, 0
+        with self.lock:
+            self.gen += 1
+            proc, self.process = self.process, None
+            self.state = "idle"
+            return proc, 0
 
     unload = stop
 
@@ -1000,6 +1021,8 @@ class Fleet:
                 member = self.runners.get(level["model"])
                 if member is None or member.status()["state"] != "ready":
                     raise RuntimeError(f"cascade member {level['model']} is not loaded")
+                if isinstance(member, AttachedServerRunner):
+                    raise RuntimeError(f"cascade member {level['model']} is a Comparison model")
                 members[level["model"]] = member.base_url
             if name in self.runners:
                 raise RuntimeError(f"model {name} is already loaded")
@@ -1009,7 +1032,8 @@ class Fleet:
             runner.start(members)
         except Exception:
             with self.lock:
-                self.runners.pop(name, None)
+                if self.runners.get(name) is runner:
+                    self.runners.pop(name)
             raise
         self.event("info", f"cascade ready: {name}")
         return self.status()

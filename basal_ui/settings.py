@@ -697,10 +697,30 @@ def schedules() -> list[dict]:
 
 
 @_locked
-def set_schedules(rows: list[dict]) -> None:
-    value = load()
-    value["schedules"] = rows
-    save(value)
+def update_schedules(change):
+    data = load()
+    rows = schedules()
+    before = {row.get("id") for row in rows}
+    result = change(rows)
+    data["schedules"] = rows
+    processed = data.get("schedule_processed")
+    if isinstance(processed, dict):
+        for schedule_id in before - {row.get("id") for row in rows}:
+            processed.pop(schedule_id, None)
+    save(data)
+    return result
+
+
+@_locked
+def schedule_processed(schedule_id: str) -> dict:
+    data = load()
+    processed = data.get("schedule_processed")
+    if not isinstance(processed, dict):
+        processed = {}
+        for row in schedule_history():
+            if row.get("file") is not None and "size" in row and "mtime" in row:
+                processed.setdefault(row.get("schedule"), {})[row["file"]] = [row["size"], row["mtime"]]
+    return dict(processed.get(schedule_id, {}))
 
 
 def schedule_history_path() -> Path:
@@ -718,7 +738,7 @@ def schedule_history() -> list[dict]:
 
 @_locked
 def schedule_runs(schedule_id: str, cursor: int = 0) -> dict:
-    rows = [row for row in schedule_history() if row.get("schedule") == schedule_id]
+    rows = [row for row in reversed(schedule_history()) if row.get("schedule") == schedule_id]
     offset = max(0, cursor)
     return {"runs": rows[offset : offset + 100], "next_cursor": offset + 100 if offset + 100 < len(rows) else None}
 
@@ -727,6 +747,17 @@ def schedule_runs(schedule_id: str, cursor: int = 0) -> dict:
 def append_schedule_run(row: dict) -> None:
     path = schedule_history_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if row.get("file") is not None and "size" in row and "mtime" in row:
+        data = load()
+        processed = data.get("schedule_processed")
+        if not isinstance(processed, dict):
+            processed = {}
+            for old in schedule_history():
+                if old.get("file") is not None and "size" in old and "mtime" in old:
+                    processed.setdefault(old.get("schedule"), {})[old["file"]] = [old["size"], old["mtime"]]
+        processed.setdefault(row["schedule"], {})[row["file"]] = [row["size"], row["mtime"]]
+        data["schedule_processed"] = processed
+        save(data)
     encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
     try:
         current = path.read_text(encoding="utf-8")

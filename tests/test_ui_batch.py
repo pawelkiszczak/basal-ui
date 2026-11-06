@@ -216,3 +216,47 @@ def test_batch_preset_route_unavailable_when_engine_feature_is_missing(monkeypat
 
     monkeypatch.setitem(engine.FEATURES, "presets", lambda: False)
     assert client.get("/api/batch/presets").json()["available"] is False
+
+
+@pytest.mark.parametrize("comparison", [False, True])
+def test_scheduled_batch_records_decisions_but_manual_batch_does_not(client, child, tmp_path, comparison):
+    model = "mini"
+    if comparison:
+        from basal_ui.fleet import AttachedServerRunner
+
+        runner = AttachedServerRunner({"id": "srv", "name": "local", "base_url": child.url}, {"id": "remote"}, settings)
+        runner.state = "ready"
+        client.fleet.runners[runner.model] = runner
+        model = runner.model
+    inputs, outputs = tmp_path / "input", tmp_path / "output"
+    inputs.mkdir()
+    outputs.mkdir()
+    source = inputs / "one.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+    definition = {
+        "id": "nightly",
+        "model": model,
+        "input_dir": str(inputs),
+        "output_dir": str(outputs),
+        "interval": {"every_minutes": 1},
+    }
+    assert client.post("/api/schedules", json=definition).status_code == 201
+    scheduler = client.app.state.schedules
+    scheduler.run_due(1000)
+    job = client.fleet.jobs.get("batch")
+    job.thread.join(30)
+    assert not job.thread.is_alive() and job.state()["phase"] == "done"
+    scheduler.run_due(1001)
+    history = client.get("/api/history", params={"source": "schedule"}).json()["items"]
+    assert len(history) == 1 and history[0]["model"] == model
+    assert client.get("/api/stats").json()["models"][model]["requests"] == 1
+    endpoints = client.get("/api/traffic").json()["endpoints"]
+    assert [(row["endpoint"], row["method"], row["requests"]) for row in endpoints] == [("/api/schedules", "RUN", 1)]
+    run = client.get("/api/schedules/nightly/runs").json()["runs"][0]
+    assert run["model"] == model and run["duration"] >= 0 and run["rows"] == 1 and run["errors"] == 0
+    assert client.post("/api/batch", json={"id": model, "input": str(source)}).status_code == 202
+    job = client.fleet.jobs.get("batch")
+    job.thread.join(30)
+    assert not job.thread.is_alive() and job.state()["phase"] == "done"
+    assert len(client.get("/api/history", params={"source": "schedule"}).json()["items"]) == 1
+    assert client.get("/api/stats").json()["models"][model]["requests"] == 1

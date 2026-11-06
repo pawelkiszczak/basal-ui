@@ -1,4 +1,4 @@
-"""Per-model statistics of the decisions basal-ui answered (playground, API, MCP) and the benchmark results, kept in
+"""Per-model statistics of recorded Decisions and benchmark results, kept in
 <settings stem>.stats.json next to the settings file (merged under the settings lock: several basal-ui processes on
 one settings file add up)."""
 

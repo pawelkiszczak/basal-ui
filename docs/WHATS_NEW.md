@@ -1,5 +1,12 @@
 # Unreleased
 
+- Scheduled Batch drains each due scan in order, records Decisions in History and Usage, retains processed-file
+  signatures across history rotation, and protects source files from output aliases. Schedule updates are atomic;
+  recent run history includes model and duration. Schedules remain editable with unloaded models, and selecting
+  **None** removes a saved preset. Daily catch-up also handles missed slots before today's scheduled time.
+
+- Cancelling Cascade startup stops its router safely; Comparison models cannot be Cascade members or reach the API server through a Cascade. Comparison requests read stored keys without blocking the API event loop.
+
 - Optionally unload idle models after a configured number of minutes; remembered models remain available for auto-load.
 - Fix idle unloading at the configured deadline when floating-point timestamp subtraction rounds below the timeout.
 - Calibration fits and compares the layout in one snapshot of active or saved load settings, including its model revision and mode. Invalid model metadata leaves fitted files available and shows the shipped calibration as unavailable. Imported and fitted files are labelled, layout mismatches are flagged, and saved-row refits preserve the original layout.

@@ -320,17 +320,24 @@ requests, [in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SE
 concurrency and, for a `--mode fast-exit` model, an early-exit level. On Engine 2.5, **Preset** adds the Engine's
 ready questions to state-only JSONL lines, and **Language** selects `auto` (detect from the state), `pl` or `en`.
 The progress, the summary (items, errors, seconds, items per second, server p50, accuracy over the items with `gold`)
-and the answers page by page are shown; **Download answers** saves the output file. Batch requests go straight to the
-model's basal-serve: they are not counted in the statistics or the history. One batch runs at a time; its log is
+and the answers page by page are shown; **Download answers** saves the output file. Manual Batch Decisions are not
+counted in the statistics or the history. One batch runs at a time; its log is
 **Logs → job:batch**. Engine 2.4.1 keeps these preset controls disabled with the installed-engine reason.
 
 **Batch → Schedules** watches an absolute input folder for matching JSONL files and runs each new or changed file
 through the selected ready model. Choose a filename pattern, output folder, concurrency and either an interval in
 minutes or a local daily time. Outputs use `<stem>.answers.jsonl`; existing outputs are skipped unless overwrite is
 enabled. Preset and language settings follow the manual Batch controls. Schedules can be paused, resumed, edited,
-deleted or run immediately; run history records completions, failures and skips. The model is never loaded
+deleted or run immediately; each due scan drains matching files in name order before waiting for the next interval.
+Scheduled Decisions are recorded in History and Usage with source `schedule`; Recent traffic attributes them to
+`RUN /api/schedules` as scheduled invocations, not HTTP management requests. Run history records the model, duration,
+rows, errors, completions and skips. Processed file signatures survive run-history rotation. The model is never loaded
 automatically. A daily schedule missed while the app is closed runs after restart only when **Catch up missed daily
-run** is enabled. Three consecutive failures pause the schedule until it is resumed or edited.
+run** is enabled. Catch-up can run before today's configured time when a previous daily slot was missed, without
+consuming today's later slot. Three consecutive failures pause the schedule until it is resumed or edited.
+
+Schedules remain editable while their model is unloaded; saving never loads it. Select **None** in **Preset** to remove
+an earlier preset.
 
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
@@ -383,7 +390,7 @@ Optionally set **Unload idle models after minutes** in **Settings → Memory & s
 The 15-minute or one-hour window shows **input tokens processed per second**, not generated output tokens, and
 requests/s, request-weighted mean latency, error rate, per-minute traffic and public endpoint attribution. These are
 recorded child-inference attempts from Playground, the API server and MCP, not all HTTP traffic: UI polling,
-pre-inference authentication/validation rejections, Batch, benchmarks and private Inference tests do not contribute.
+pre-inference authentication/validation rejections, manual Batch, benchmarks and private Inference tests do not contribute.
 
 Recent traffic is in memory in this app process only, starts at observation, and is not restored from lifetime
 statistics or merged from other processes. Rates use observed elapsed time rather than inventing a full prior

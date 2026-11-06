@@ -1593,3 +1593,159 @@ def test_idle_scan_skips_cascade_and_comparison(tmp_path, monkeypatch):
     monkeypatch.setattr("basal_ui.fleet.httpx.get", lambda *a, **k: pytest.fail("unexpected health probe"))
     fleet.unload_idle(time.monotonic() + 120)
     assert set(fleet.runners) == {cascade.model, comparison.model, "member"}
+
+
+def test_cascade_cancelled_before_spawn_preserves_replacement(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui import fleet as fleet_module
+
+    fleet = make_fleet(tmp_path)
+    member = Runner()
+    member.state, member.model, member.base_url = "ready", "member", "http://localhost:1234"
+    fleet.runners["member"] = member
+    spec = {
+        "name": "route",
+        "kind": "escalate",
+        "levels": [{"model": "member"}],
+        "fallback": {"url": "https://example.com", "model": "fallback"},
+    }
+    monkeypatch.setattr(engine, "feature", lambda name: True)
+    monkeypatch.setattr(settings, "cascades", lambda: [spec])
+    entered, release = threading.Event(), threading.Event()
+
+    def get_secret(_):
+        entered.set()
+        assert release.wait(5)
+        return None
+
+    monkeypatch.setattr(settings, "get_secret", get_secret)
+    monkeypatch.setattr(Runner, "_poll_health", lambda *args: None)
+    monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda *a, **k: pytest.fail("cancelled cascade spawned"))
+    errors = []
+
+    def start():
+        try:
+            fleet.start_cascade("route")
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        fleet.unload("route", forget=False)
+        replacement = Runner()
+        with fleet.lock:
+            fleet.runners["route"] = replacement
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert errors == ["cascade start cancelled"]
+    assert fleet.runners["route"] is replacement
+
+
+def test_cascade_unloaded_during_health_check_does_not_become_ready(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui import fleet as fleet_module
+
+    fleet = make_fleet(tmp_path)
+    member = Runner()
+    member.state, member.model, member.base_url = "ready", "member", "http://localhost:1234"
+    fleet.runners["member"] = member
+    spec = {"name": "route", "kind": "escalate", "levels": [{"model": "member"}]}
+    monkeypatch.setattr(engine, "feature", lambda name: True)
+    monkeypatch.setattr(settings, "cascades", lambda: [spec])
+    monkeypatch.setattr(Runner, "_poll_health", lambda *args: None)
+    entered, release = threading.Event(), threading.Event()
+    terminated = []
+
+    class Process:
+        stdout = ()
+        pid = 12345
+        returncode = None
+
+        def poll(self):
+            return None
+
+    proc = Process()
+    monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(Runner, "_terminate", lambda p: terminated.append(p) if p is not None else None)
+
+    def health(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(fleet_module.httpx, "get", health)
+    errors = []
+
+    def start():
+        try:
+            fleet.start_cascade("route")
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        runner = fleet.runners["route"]
+        fleet.unload("route", forget=False)
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert errors == ["cascade start cancelled"]
+    assert runner.state == "idle" and "route" not in fleet.runners
+    assert terminated == [proc]
+
+
+def test_cascade_rejects_comparison_member_before_start(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui.fleet import AttachedServerRunner
+
+    app, fleet = app_for(tmp_path, [])
+    comparison = AttachedServerRunner({"id": "external", "base_url": "http://localhost"}, {"id": "model"}, settings)
+    comparison.state = "ready"
+    fleet.runners[comparison.model] = comparison
+    spec = {"name": "route", "kind": "escalate", "levels": [{"model": comparison.model}]}
+    monkeypatch.setattr(engine, "feature", lambda name: True)
+    monkeypatch.setattr(settings, "cascades", lambda: [spec])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/cascades/route/start")
+        assert response.status_code == 409
+        assert response.json()["code"] == "CASCADE_COMPARISON_MEMBER"
+        assert "Comparison model" in response.json()["detail"]
+        assert "route" not in fleet.runners
+
+
+def test_comparison_secret_read_does_not_block_event_loop():
+    import asyncio
+
+    from basal_ui.fleet import AttachedServerRunner
+
+    entered, release, timed_out = threading.Event(), threading.Event(), threading.Event()
+
+    def secret(_):
+        entered.set()
+        if not release.wait(3):
+            timed_out.set()
+        return "key"
+
+    runner = AttachedServerRunner(
+        {"id": "external", "base_url": "http://example.test"}, {"id": "model"}, SimpleNamespace(get_secret=secret)
+    )
+
+    async def run():
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"answers": {}}))
+        async with httpx.AsyncClient(transport=transport) as client:
+            task = asyncio.create_task(runner.adecide(client, {"state": "text", "questions": {}}))
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+                assert not timed_out.is_set()
+            finally:
+                release.set()
+            assert (await task).status_code == 200
+
+    asyncio.run(run())

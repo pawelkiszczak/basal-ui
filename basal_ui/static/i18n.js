@@ -4,6 +4,10 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Duration": "Czas trwania",
+  "Schedule": "Harmonogram",
+  "schedule": "harmonogram",
+  "code:CASCADE_COMPARISON_MEMBER": "Modeli porównawczych nie można używać jako poziomów kaskady.",
   "Unload idle models after minutes (empty = off)": "Wyładuj nieaktywne modele po minutach (puste = wyłączone)",
   "Unloaded after {minutes} idle minutes at {time}": "Wyładowano po {minutes} min bezczynności o {time}",
   " Options": " Opcje",
@@ -265,9 +269,9 @@ const PL = {
   "Errors": "Błędy",
   "Est. memory": "Szacowana pamięć",
   "Estimated memory": "Szacowana pamięć",
-  "Every decision this app answered: playground, API and MCP.": "Wszystkie decyzje obsłużone przez aplikację: Playground, API i MCP.",
+  "Every recorded Decision, including scheduled Batch runs.": "Wszystkie zapisane decyzje, w tym zaplanowane zadania wsadowe.",
   "Every loaded model stops; clients of the API server get 404 until a model is loaded again.": "Wszystkie załadowane modele zostaną zatrzymane; klienci serwera API otrzymają 404 do czasu ponownego załadowania modelu.",
-  "Every recorded decision (playground, API and MCP) is deleted.": "Wszystkie zapisane decyzje (Playground, API i MCP) zostaną usunięte.",
+  "Every recorded Decision is deleted.": "Wszystkie zapisane decyzje zostaną usunięte.",
   "Evidence spans": "Fragmenty dowodowe",
   "Evidence spans are read from state text and cannot be used with media: {questions}.": "Zakresy dowodów są odczytywane z tekstu stanu i nie mogą być używane z multimediami: {questions}.",
   "Evidence spans are read from the state text.": "Fragmenty dowodowe pochodzą z tekstu stanu.",

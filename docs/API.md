@@ -111,11 +111,15 @@ filename-only glob `pattern` (default `*.jsonl`), `concurrency` (1–256), `inte
 `preset` and `lang`. Invalid definitions return HTTP 400.
 
 `POST /api/schedules/{id}/run` starts the next eligible file immediately; `GET /api/schedules/{id}/runs?cursor=0`
-returns up to 100 history records and `next_cursor`. A schedule processes files only when their size or modification
-time changes. The output is `<output_dir>/<stem>.answers.jsonl`; existing outputs are skipped unless overwrite is
+returns up to 100 history records newest-first and `next_cursor`. A schedule processes files only when their size or
+modification time changes. The output is `<output_dir>/<stem>.answers.jsonl`; existing outputs are skipped unless overwrite is
 enabled. A model that is not loaded is recorded as skipped and is never loaded automatically. Batch jobs remain
 cancellable through `DELETE /api/batch` and visible under `GET /api/status` → `jobs.batch`. Three consecutive failed
-runs pause the schedule. History is appended to `schedules.jsonl` beside the settings file and retained up to 1 MiB.
+runs pause the schedule. A due scan drains files in name order before the next interval. Run history includes model,
+duration, rows and errors; it is retained up to 1 MiB in `schedules.jsonl`. Processed file signatures persist separately
+in settings. Scheduled Decisions are recorded in History and Usage with source `schedule`; manual Batch remains
+unrecorded. Enabled daily catch-up uses the latest missed slot even before today's scheduled time; catching up does
+not consume today's later slot.
 
 ### Memory settings and idle-unload status
 
@@ -251,10 +255,11 @@ The local UI app (not the API-server gateway) exposes `GET /api/traffic?minutes=
 `GET /api/traffic?minutes=60`. Unsupported integer windows return HTTP 400 with an English error; invalid query syntax
 uses FastAPI's HTTP 422 response. This is an in-memory, process-local view of **recorded Decision attempts**, not all
 HTTP traffic. An attempted child forward that fails (including a transport/connection error) counts as a request and
-an error; its latency includes the failed attempt. UI polling, UI/gateway rejections before a child forward, Batch,
+an error; its latency includes the failed attempt. UI polling, UI/gateway rejections before a child forward, manual Batch,
 benchmarks and private Inference tests do not contribute. Playground is attributed to `POST /api/decide`; gateway
 rows retain the public `POST` path (`/v1/systemone`, `/v1/basal`, `/v1/decisions` or `/decisions`) rather than the
-translated child path. MCP uses `CALL /mcp` (one invocation, not necessarily one HTTP request).
+translated child path. MCP uses `CALL /mcp` (one invocation, not necessarily one HTTP request). Scheduled Decisions use
+`RUN /api/schedules`, a logical attribution for scheduled invocations, not HTTP management requests.
 
 ```json
 {

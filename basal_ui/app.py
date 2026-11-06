@@ -131,6 +131,8 @@ def create_app(
     from .schedules import Schedules
 
     def start_scheduled_batch(spec, source, output):
+        if output.resolve() == source.resolve():
+            raise RuntimeError("output must not be the input file")
         if not spec["overwrite"] and output.exists():
             raise RuntimeError(f"output already exists: {output}")
         if not output.parent.is_dir() or not os.access(output.parent, os.W_OK):
@@ -182,6 +184,7 @@ def create_app(
             None,
             spec.get("preset"),
             spec.get("lang", "auto"),
+            "schedule",
         )
 
     schedules = schedules or Schedules(settings_mod, fleet, start_batch or start_scheduled_batch)
@@ -985,6 +988,8 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(404, f"cascade {name!r} not found") from exc
         except RuntimeError as exc:
+            if "Comparison model" in str(exc):
+                return JSONResponse({"detail": str(exc), "code": "CASCADE_COMPARISON_MEMBER"}, status_code=409)
             code = "CASCADE_MEMBER_NOT_LOADED" if "member" in str(exc) else "CASCADE_START_FAILED"
             raise HTTPException(409, {"code": code, "detail": str(exc)}) from exc
 
@@ -1196,8 +1201,6 @@ def create_app(
         think_reason = None if family_ok else load_options.THINK_REASON
         think_code, think_params = load_options.option_message_fields(think_reason)
         unavailable = load_options.unavailable_options()
-        adapter_reason = load_options.adapter_unavailable()
-        adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
         adapter_root = Path(settings_mod.models_dir()) / "adapters" / variant.id.replace("/", "--")
         adapters = sorted(str(path) for path in adapter_root.glob("*/lora") if (path / "adapter_config.json").is_file())
         return {
@@ -1210,9 +1213,6 @@ def create_app(
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
             "unavailable": unavailable,
-            "adapter_reason": adapter_reason,
-            "adapter_reason_code": adapter_code,
-            "adapter_reason_params": adapter_params,
             "adapters": adapters,
             "think": {
                 "model": family_ok,
@@ -2041,9 +2041,7 @@ def create_app(
     @app.put("/api/schedules/{schedule_id}")
     def update_schedule(schedule_id: str, body: dict = Body(...)):
         try:
-            current = schedules.get(schedule_id)
-            spec = schedule_definition({**current, **body, "id": schedule_id})
-            return schedules.update(schedule_id, spec)
+            return schedules.update(schedule_id, body, schedule_definition)
         except KeyError as exc:
             raise HTTPException(404, "schedule not found") from exc
 

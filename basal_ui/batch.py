@@ -1,6 +1,7 @@
 """Batch inference from basal-ui: basal-run over a JSONL file (simple items or full /v1/systemone requests) against a
-loaded model's private basal-serve; the answers go to a JSONL file, one line per input line. The requests go straight
-to the child: they are not counted in the statistics or the history (as benchmarks). A Comparison model is reached
+loaded model's private basal-serve; the answers go to a JSONL file, one line per input line. Manual Batch requests go
+straight to the child and are not counted in statistics or history. Scheduled requests use
+the same proxy to record Decisions through Fleet. A Comparison model is reached
 through a private loopback proxy for the job's lifetime: basal-run sends neither a model name nor an API key, and the
 proxy adds both (and the Decisions translation of a hosted server) through the model's runner."""
 
@@ -19,8 +20,8 @@ def default_output(input_path) -> Path:
 
 
 @contextlib.contextmanager
-def _comparison_proxy(runner):
-    """A loopback /v1/systemone that answers through runner.decide -> its base URL."""
+def _batch_proxy(runner, fleet=None, model_id=None):
+    """A loopback /v1/systemone forwarding to the runner or through Fleet for scheduled Decisions."""
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -29,7 +30,11 @@ def _comparison_proxy(runner):
         def do_POST(self):
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-                response = runner.decide(body)
+                response = (
+                    fleet.decide(model_id, body, source="schedule", endpoint="/api/schedules", method="RUN")
+                    if fleet
+                    else runner.decide(body)
+                )
                 status, content = response.status_code, response.content
             except Exception as exc:  # noqa: BLE001 — basal-run records the line's error
                 status, content = 502, json.dumps({"error": str(exc), "code": "UPSTREAM_ERROR"}).encode()
@@ -50,14 +55,24 @@ def _comparison_proxy(runner):
 
 
 def run_batch(
-    job, fleet, model_id, input_path, output_path, concurrency=16, early_exit=None, preset=None, lang="auto"
+    job,
+    fleet,
+    model_id,
+    input_path,
+    output_path,
+    concurrency=16,
+    early_exit=None,
+    preset=None,
+    lang="auto",
+    source=None,
 ) -> dict:
     """The batch job: basal-run in its own process (it writes the output file at the end); a cancel stops it."""
     runner = fleet.ready(model_id)
     total = sum(1 for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip())
     job.progress("running", 0, total)
     comparison = (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison"
-    with _comparison_proxy(runner) if comparison else contextlib.nullcontext(runner.base_url) as base_url:
+    proxy = _batch_proxy(runner, fleet, model_id) if source == "schedule" else _batch_proxy(runner)
+    with proxy if comparison or source == "schedule" else contextlib.nullcontext(runner.base_url) as base_url:
         args = [
             "--input",
             str(input_path),
