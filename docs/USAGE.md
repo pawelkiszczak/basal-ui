@@ -134,7 +134,13 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   and supported Thinking / early-exit controls, keeping the model and example selectors visible in the toolbar. Question names must be
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
-  and must be attached again.
+  and must be attached again. **Fetch URL** beside State opens a dialog for a public HTTP(S) address. The app fetches
+  anonymously and fills the state for review; it does not send the page until you submit the Decision. HTML is reduced
+  to its title, headings, paragraphs, lists and table rows; JSON stays structured and plain text stays text. Responses
+  are limited to 4 MiB and extracted text to 200,000 characters. The note below State shows the original and final URL,
+  content type, byte count and truncation status; History keeps the source URL and Replay restores it as read-only
+  metadata. Unsafe destinations are refused; the exact SSRF policy (including DNS-rebinding protection) is documented in
+  [API.md](API.md#fetching-a-url-into-playground-state).
   Choice, multi and non-boolean act options use inline key/description rows with add, remove, move-up/down and
   key-visibility controls. Key-only options are supported; untouched structured descriptions and list-form option
   keys retain their request semantics. Renaming an act outcome keeps its cost-matrix column attached to that outcome.
