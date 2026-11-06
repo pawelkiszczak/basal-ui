@@ -47,6 +47,29 @@ def _child_metrics(text, model, metadata):
     return lines
 
 
+def _group_metrics(lines):
+    types = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) == 4 and parts[:2] == ["#", "TYPE"]:
+            types[parts[2]] = parts[3]
+    families = {}
+    for line in lines:
+        if line.startswith(("# HELP ", "# TYPE ")):
+            name = line.split(None, 3)[2]
+            families.setdefault(name, ([], []))[0].append(line)
+        else:
+            name = re.split(r"[\s{]", line, maxsplit=1)[0]
+            family = name
+            for suffix in ("_bucket", "_sum", "_count"):
+                kind = types.get(name[: -len(suffix)]) if name.endswith(suffix) else None
+                if name not in types and (kind == "histogram" or (kind == "summary" and suffix != "_bucket")):
+                    family = name[: -len(suffix)]
+                    break
+            families.setdefault(family, ([], []))[1].append(line)
+    return [line for headers, samples in families.values() for line in (*headers, *samples)]
+
+
 def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0.1"):
     """The gateway's ASGI app. keys: basal_ui.auth.ApiKeys or None (no key required)."""
     from starlette.applications import Starlette
@@ -160,7 +183,10 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
                     lines.extend(_child_metrics(response.text, model, metadata))
             except (httpx.HTTPError, KeyError, RuntimeError):
                 continue
-        return Response("\n".join(lines) + "\n", headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"})
+        return Response(
+            "\n".join(_group_metrics(lines)) + "\n",
+            headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
+        )
 
     mcp_routes, mcp_run = [], None
     if mcp:

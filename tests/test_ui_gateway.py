@@ -407,7 +407,10 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
     child.metrics_reply = (
         200,
         "text/plain; version=0.0.4",
-        '# HELP engine_hits Hits\n# TYPE engine_hits counter\nengine_hits{kind="a}b"} 3\nengine_active 1\n',
+        '# HELP engine_hits Hits\n# TYPE engine_hits counter\nengine_hits{kind="a}b"} 3\n'
+        "# HELP engine_duration Duration\n# TYPE engine_duration histogram\n"
+        'engine_duration_bucket{le="1"} 2\nengine_duration_bucket{le="+Inf"} 3\n'
+        "engine_duration_sum 2.5\nengine_duration_count 3\nengine_active 1\n",
     )
     fleet.stats.record(
         model,
@@ -416,6 +419,7 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
         endpoint='/v1/"test',
         method="POST",
     )
+    fleet.stats.record("b/two", {"answers": {}, "usage": {"input_tokens": 4}}, 500, endpoint="/v1/other")
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         response = client.get("/metrics")
         assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
@@ -429,14 +433,44 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
         assert f"basal_ui_questions_total{{{label}}} 1" in lines
         assert f"basal_ui_errors_total{{{label}}} 0" in lines
         assert f"basal_ui_input_tokens_total{{{label}}} 7" in lines
+        assert 'basal_ui_requests_total{model="b/two"} 1' in lines
+        assert 'basal_ui_input_tokens_total{model="b/two"} 4' in lines
         assert f'basal_ui_latency_seconds{{{label},quantile="0.95"}} 0.25' in lines
         assert f"basal_ui_latency_seconds_avg{{{label}}} 0.25" in lines
         assert r'basal_ui_traffic_requests_total{endpoint="/v1/\"test",method="POST"} 1' in lines
+        assert 'basal_ui_traffic_requests_total{endpoint="/v1/other",method="POST"} 1' in lines
         assert "basal_ui_models_loaded 2" in lines
         assert f'engine_hits{{kind="a}}b",{label}}} 3' in lines
         assert 'engine_active{model="b/two"} 1' in lines
         assert lines.count("# HELP engine_hits Hits") == 1
         assert lines.count("# TYPE engine_hits counter") == 1
+        for model_label in (label, 'model="b/two"'):
+            assert f'engine_hits{{kind="a}}b",{model_label}}} 3' in lines
+            assert f'engine_duration_bucket{{le="1",{model_label}}} 2' in lines
+            assert f'engine_duration_bucket{{le="+Inf",{model_label}}} 3' in lines
+            assert f"engine_duration_sum{{{model_label}}} 2.5" in lines
+            assert f"engine_duration_count{{{model_label}}} 3" in lines
+
+        families = {
+            **{f"basal_ui_{key}_total": ("counter",) for key in ("requests", "questions", "errors", "input_tokens")},
+            **{f"basal_ui_traffic_{key}_total": ("gauge",) for key in ("requests", "errors")},
+            "engine_hits": ("counter", "HELP"),
+            "engine_duration": ("histogram", "HELP"),
+        }
+        for name, (kind, *help_) in families.items():
+            metadata = [f"# TYPE {name} {kind}"]
+            if help_:
+                metadata.append(f"# HELP {name} {'Hits' if name == 'engine_hits' else 'Duration'}")
+            assert all(lines.count(line) == 1 for line in metadata)
+            sample_names = (name, *(f"{name}_{suffix}" for suffix in ("bucket", "sum", "count")))
+            indices = [
+                i
+                for i, line in enumerate(lines)
+                if line in metadata or any(line.startswith(f"{sample}{{") for sample in sample_names)
+            ]
+            assert len(indices) > len(metadata)
+            assert indices == list(range(indices[0], indices[-1] + 1))
+            assert all(lines.index(line) < indices[len(metadata)] for line in metadata)
         child.metrics_reply = (404, "text/plain", "missing")
         assert "engine_active" not in client.get("/metrics").text
         child.metrics_reply = (200, "application/json", '{"bad": 1}')
