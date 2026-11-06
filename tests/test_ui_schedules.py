@@ -394,3 +394,28 @@ def test_three_scan_failures_pause_schedule(tmp_path, monkeypatch):
     rows = runner.runs("nightly")["runs"]
     assert len(rows) == 3
     assert all(row["error"] == "cannot scan" and row["rows"] == 0 and row["errors"] == 1 for row in rows)
+
+
+def test_run_duration_excludes_delay_until_next_scheduler_poll(tmp_path, monkeypatch):
+    from basal_ui import jobs
+
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    inputs, outputs = tmp_path / "in", tmp_path / "out"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "one.jsonl").write_text('{"state":"x"}')
+    clock = [1000]
+    monkeypatch.setattr(jobs.time, "time", lambda: clock[0])
+    fleet = Fleet()
+
+    def start(*_):
+        fleet._job = jobs.Job("batch", "basal/mini", "duration", jobs.LogBuffer())
+        clock[0] = 1002
+        fleet._job.finish("done", {"items": 1, "errors": 0})
+        return fleet._job.state()
+
+    runner = schedules.Schedules(settings, fleet, start)
+    spec = runner.create(definition(inputs, outputs))
+    runner.run_due(1000)
+    runner.run_due(2000)
+    assert runner.runs(spec["id"])["runs"][0]["duration"] == 2

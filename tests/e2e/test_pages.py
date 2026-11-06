@@ -979,16 +979,22 @@ def test_models_tabs_and_manager_loaded_section(page, text_model):
     sync_api.expect(page.locator("#suggestedTab")).to_have_attribute("aria-selected", "true")
 
 
-def test_batch_view_runs_a_file_and_lists_the_answers(page, text_model, tmp_path):
+def test_batch_view_runs_a_file_and_lists_the_answers(page, ui, text_model, tmp_path):
     view(page, "batch")
     page.select_option("#batchModel", text_model["id"])
     page.fill("#batchInput", str(EXAMPLES / "questions.jsonl"))
     page.fill("#batchOutput", str(tmp_path / "answers.jsonl"))
     page.fill("#batchConcurrency", "4")
-    page.click("#runBatch")
+    with page.expect_response(
+        lambda response: response.url.endswith("/api/batch") and response.request.method == "POST"
+    ) as started:
+        page.click("#runBatch")
+    assert started.value.status == 202
+    job = ui.wait_job("batch")
+    assert job["phase"] == "done", job
+    assert job["result"]["items"] == 20 and job["result"]["errors"] == 0
     sync_api.expect(page.locator("#downloadBatch")).to_be_visible()
     sync_api.expect(page.locator("#batchRows tbody tr")).to_have_count(20)
-    sync_api.expect(page.locator("#batchSummary")).to_contain_text("20 items")
 
 
 # the language buttons reload the page: until the new page's scripts run, LANG and statusCache do not exist

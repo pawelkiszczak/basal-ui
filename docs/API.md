@@ -18,6 +18,10 @@ only on a host whose users you trust. Backend URLs and interpreters set in a mod
 
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
 
+Job entries in `GET /api/status` include Unix-second `started` and `finished` timestamps. `finished` is `null` until
+completion, failure or cancellation. Scheduled run durations use these timestamps rather than including the delay
+until the scheduler's next poll.
+
 `GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
 `{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
 selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting

@@ -185,6 +185,7 @@ class Job:
         self.kind, self.model, self.label, self.log = kind, model, label, log
         self.phase, self.done, self.total, self.error = "starting", 0, 0, None
         self.running, self.started, self.result = True, time.time(), None
+        self.finished = None
         self.cancel = threading.Event()
         self.lock = threading.Lock()
         self.thread = None
@@ -200,6 +201,7 @@ class Job:
     def finish(self, phase, result=None, error=None):
         with self.lock:
             self.phase, self.result, self.error, self.running = phase, result, error, False
+            self.finished = time.time()
 
     def state(self) -> dict:
         with self.lock:
@@ -216,6 +218,7 @@ class Job:
                 "error": self.error,
                 "running": self.running,
                 "started": self.started,
+                "finished": self.finished,
                 "result": self.result,
             }
 

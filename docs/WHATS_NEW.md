@@ -1,5 +1,7 @@
 # Unreleased
 
+- Keep tab labels readable on hover in dark themes, including orange Logs tabs.
+
 - Scheduled Batch drains each due scan in order, records Decisions in History and Usage, retains processed-file
   signatures across history rotation, and protects source files from output aliases. Schedule updates are atomic;
   recent run history includes model and duration. Schedules remain editable with unloaded models, and selecting
