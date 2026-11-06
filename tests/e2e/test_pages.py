@@ -157,6 +157,25 @@ def test_dashboard_default_records_real_decisions_and_resets_model_traffic(brows
         sync_api.expect(endpoint_row).to_contain_text("POST")
         sync_api.expect(endpoint_row).to_contain_text("1")
 
+        def idle_status(route):
+            response = route.fetch()
+            status = response.json()
+            status["models"] = [model for model in status["models"] if model["id"] != model_id]
+            status["idle_unloads"] = {model_id: {"code": "idle_unload", "minutes": 1, "at": 1_700_000_000}}
+            route.fulfill(response=response, json=status)
+
+        page.route("**/api/status", idle_status)
+        sync_api.expect(page.locator("#trafficModels")).to_contain_text("Unloaded after 1 idle minutes", timeout=WAIT)
+        sync_api.expect(endpoint_row).to_be_visible()
+        manager_tab(page, "library")
+        sync_api.expect(page.locator("#diskModels")).to_contain_text("Unloaded after 1 idle minutes")
+        disk_button = page.locator("#diskModels .model-card-open").first
+        disk_button.focus()
+        page.wait_for_timeout(2500)
+        sync_api.expect(disk_button).to_be_focused()
+        view(page, "dashboard")
+        page.unroute_all(behavior="wait")
+
         page.select_option("#trafficWindow", "60")
         sync_api.expect(page.locator("#traffic-requests")).not_to_have_text("—", timeout=WAIT)
         sync_api.expect(page.locator("#traffic-requests-note")).to_contain_text("1")
