@@ -724,7 +724,7 @@ class Fleet:
                     or runner.temporary
                     or runner.state != "ready"
                     or runner.last_used is None
-                    or now - max(runner.last_used, self.idle_settings_changed) < timeout * 60
+                    or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
                     or not runner.base_url
                 ):
                     continue
@@ -751,7 +751,7 @@ class Fleet:
                     or self.idle_settings_generation != settings_generation
                     or runner.state != "ready"
                     or runner.last_used != last_used
-                    or now - max(runner.last_used, self.idle_settings_changed) < timeout * 60
+                    or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
                     or type(health.get("running")) is not int
                     or health["running"] != 0
                     or type(health.get("queued")) is not int

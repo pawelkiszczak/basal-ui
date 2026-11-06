@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import math
 import os
 import struct
 import sys
@@ -1268,6 +1269,33 @@ def test_idle_timeout_changes_restart_countdown(tmp_path, monkeypatch, instant_s
             deadline = fleet.idle_settings_changed + minutes * 60
             fleet.unload_idle(deadline - 0.001)
             assert "mini" in states(client)
+        fleet.unload_idle(deadline)
+        assert "mini" not in states(client)
+
+
+@pytest.mark.parametrize("latest", ["last_used", "settings"])
+def test_idle_unload_at_float_deadline(tmp_path, monkeypatch, instant_start, latest):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        start = math.nextafter(32.0, math.inf)
+        runner.last_used = start if latest == "last_used" else 0.0
+        fleet.idle_settings_changed = start if latest == "settings" else 0.0
+        deadline = start + 60
+        fleet.unload_idle(math.nextafter(deadline, -math.inf))
+        assert "mini" in states(client)
         fleet.unload_idle(deadline)
         assert "mini" not in states(client)
 
