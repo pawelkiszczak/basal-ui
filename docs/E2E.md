@@ -65,9 +65,9 @@ graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA G
 
 ## Reviewed roadmap verification, 2026-11-06
 
-Executable code: [`0a6102e`](https://github.com/pawelkiszczak/basal-ui/commit/0a6102e), on
-`integration/reviewed-roadmap`, based on `dev` at `6297401`. Later changes in this verification record only update
-documentation and screenshots. This is combined verification, not a release or permission to merge the feature stack.
+Application code: [`0a6102e`](https://github.com/pawelkiszczak/basal-ui/commit/0a6102e); final compact-fixture E2E
+harness: [`0827bf1`](https://github.com/pawelkiszczak/basal-ui/commit/0827bf1), on `integration/reviewed-roadmap`,
+based on `dev` at `6297401`. This is combined verification, not a release or permission to merge the feature stack.
 
 The selected roots are [#38](https://github.com/pawelkiszczak/basal-ui/pull/38) at `445437b`,
 [#56](https://github.com/pawelkiszczak/basal-ui/pull/56) at `70239d8`,
@@ -77,9 +77,23 @@ were applied with source-commit attribution, not their stacked snapshot trees. T
 and the historical combined tree in draft #54, were not imported.
 
 Host: Apple M4 Max, 128 GiB RAM, macOS 27.0.1 arm64. The Engine 2.5.1 environment uses Python 3.13.11,
-MLX 0.32.4, mlx-lm 0.32.2, Playwright 1.64.1 and the Engine's MLX/media extras. Model tests use the cached
-`Remek/basal-2.0-mini-MLX-8bit`, `Remek/basal-2.0-mini` bf16 and `Remek/basal-omni-pico`, with
-`HF_HUB_OFFLINE=1`; no model weights were downloaded.
+MLX 0.32.4, mlx-lm 0.32.2, Playwright 1.64.1 and the Engine's MLX/media extras. The earlier runtime smokes and
+screenshots used `Remek/basal-2.0-mini-MLX-8bit`, `Remek/basal-2.0-mini` bf16 and `Remek/basal-omni-pico`.
+
+After the original shared cache became unavailable, the user authorized smaller test-model downloads. The final
+fixtures live only in `~/.cache/basal-ui-reviewed-tests/hub`; the original cache links were not rewritten. Weight
+SHA-256 values, safetensors headers, snapshot-local links and offline catalogue discovery were checked. The three
+immutable snapshots contain 5,766,082,418 bytes (5.37 GiB), including their small root metadata files:
+
+| Fixture | Snapshot revision | Snapshot bytes |
+|---|---|---:|
+| `Remek/basal-1.5-mini-MLX-fp4` — primary text and MLX Inspect | `28eb7bfff211f111dcd18bbb72f23fab546f7472` | 1,044,403,963 |
+| `Remek/basal-2.0-mini` — BF16, second model and Inspect | `d0875117f69a24598b9390af5c76bb401a1d0ff9` | 3,196,810,260 |
+| `Remek/basal-omni-pico` — recurrent model | `e02f23527c7fe6025fa2ea57747b2cf187c5960e` | 1,524,868,195 |
+
+Prepared-kernel caches and thinking assets were excluded; no max, ultra, 4.5B or GGUF weights were downloaded.
+A separate native-process smoke loaded each fixture, answered a real Decision, restarted the primary model with
+`mlx_packed` preserved, and shut down without surviving children. Full E2E qualification uses `HF_HUB_OFFLINE=1`.
 
 `make lint` passed on the combined source tree.
 
@@ -87,15 +101,20 @@ MLX 0.32.4, mlx-lm 0.32.2, Playwright 1.64.1 and the Engine's MLX/media extras. 
 |---|---|---|
 | Python for unit tests | 3.13.11 | 3.10.19 |
 | Final unit suite | 483 passed | 475 passed, 8 skipped |
-| Last full E2E attempt, before final browser corrections | 128 passed, 2 skipped, 3 failed | Invalid MLX environment on Python 3.10 |
-| Python prepared for the final real-model/Chromium gate | 3.13.11 | 3.13.11 |
-| Final full E2E gate | Rerun blocked by unavailable weights | Rerun blocked by unavailable weights |
+| Final full E2E gate | 129 passed, 3 skipped | 124 passed, 8 skipped |
+| Python for real-model/Chromium qualification | 3.13.11 | 3.13.11 |
 
 The Engine's MLX extra requires Python 3.11 or later in its dependency markers. The first Engine 2.4.1 runtime
-attempt therefore could not load the requested MLX port on Python 3.10; a separate Python 3.13.11 environment was
-prepared and its MLX imports verified. The eight Python 3.10 unit skips are the four Engine-2.5 preset cases,
-two adapter cases, MCP model routing and the int8 mode. The two Engine 2.5.1 E2E skips were thinking without a
-cached 4.5B/vLLM model and early exit without CUDA/basal-1.0 bf16.
+attempt therefore could not load the requested MLX port on Python 3.10; its real-model gate uses a separate
+Python 3.13.11 environment. The eight Python 3.10 unit skips are the four Engine-2.5 preset cases, two adapter
+cases, MCP model routing and the int8 mode. The three Engine 2.5.1 E2E skips are thinking without a cached
+4.5B/vLLM model, early exit without CUDA/basal-1.0 bf16, and microphone recording without downloaded audio-capable
+weights. Earlier qualification exercised Chromium's fake-device recording; physical microphone capture remains
+unqualified.
+
+The eight Engine 2.4.1 runtime skips are the same three fixture/hardware limitations, MLX Inspect unavailable in
+that Engine, three context-policy cases unsupported by its `/v1/models`, and recurrent Qwen3.5 serving unavailable
+in its MLX mode.
 
 Additional runtime proof on this code:
 
@@ -130,10 +149,16 @@ calibration status fixture, the real dark-tab hover contrast bug, and a Batch UI
 finished within five seconds. The synthetic fixture was removed while retaining the real Saved/Active layout test;
 Batch verification now waits for the submitted job to complete. Product errors were not suppressed.
 
-**The final full gate has not passed.** During verification the cached Remek model weight links became unresolvable:
-the shared `~/.cache/huggingface/hub/blobs` directory does not exist, while repository blob links point into it.
-The final real-model reruns, publication of the new combined verification PR, and closure of the superseded tracks
-are blocked until the weights are accessible again. No cache links were rewritten and no models were downloaded.
+The first compact-fixture attempts exposed four E2E assumptions: a redundant models-directory PUT raced with
+remembered-model auto-load; two Models-page interactions did not enable **Older models** for the basal-1.5 fixture;
+and Inspect correctly refused a basal-1.5 Decision against a basal-2.0 inspector. The harness now avoids the
+redundant mutation, uses the real filter, and serves the same BF16 weights it inspects. The actual directory-change
+protection and incompatible-weight refusal remain intact. All five focused Backend/lifecycle/browser scenarios passed.
+
+One concurrent Engine 2.5.1 attempt also returned HTTP 503 during Backend hardware refresh. Its underlying probe
+exception was not captured, so the cause remains unknown. No retry, timeout extension or error suppression was added.
+A temporary diagnostic captured successful fresh hardware subprocesses with exit code 0 and valid `BASAL_HW` JSON;
+the final full qualifications ran serially and both passed. Temporary diagnostic code was removed afterward.
 
 These checks do not qualify CUDA, CPU-only Linux, Windows, physical microphone capture, fine-tuning quality or model
 accuracy. The dedicated hardware gate issues [#2](https://github.com/pawelkiszczak/basal-ui/issues/2) and
