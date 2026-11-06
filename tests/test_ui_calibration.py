@@ -2,6 +2,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from basal import calibrate
@@ -248,6 +249,98 @@ TASK = {
         "intent": {"type": "classify", "labels": {"complaint": "a complaint", "praise": "praise"}, "gold": "complaint"}
     },
 }
+
+
+@pytest.mark.parametrize("route", ["listing", "fit", "card"])
+def test_calibration_keeps_revision_and_layout_together_during_load(tmp_path, monkeypatch, route):
+    saved = tmp_path / "saved-rev"
+    active = tmp_path / "active-rev"
+    for model in (saved, active):
+        model.mkdir()
+        (model / "basal.json").write_text('{"layout":"canonical"}')
+        (model / "README.md").write_text("local model")
+        for name in ("CALIBRATION.json", "CALIBRATION.qfirst.json"):
+            (model / name).write_text(json.dumps(FITTED))
+    (saved / "CALIBRATION.qfirst.json").write_text(json.dumps({**FITTED, "temperature_per_prim": {"choice": 9}}))
+    settings.set_load_options("mini", {"revision": "saved-rev", "layout": "canonical"})
+    fleet, app = make_app(tmp_path)
+    runner = Runner(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu", settings_mod=settings)
+    runner.state, runner.model, runner.mode, runner.options = (
+        "ready",
+        "mini",
+        "eager",
+        {"revision": "active-rev", "layout": "qfirst"},
+    )
+
+    def downloaded(variant, cache_dir, revision=None):
+        with fleet.lock:
+            fleet.runners["mini"] = runner
+        return {"saved-rev": saved, "active-rev": active}[revision]
+
+    def fit(argv):
+        model = argv[argv.index("--model") + 1]
+        layout = argv[argv.index("--layout") + 1] if "--layout" in argv else "canonical"
+        Path(argv[argv.index("--out") + 1]).write_text(
+            json.dumps({**FITTED, "fitted_on": {"model": model, "layout": layout}})
+        )
+
+    monkeypatch.setattr(calibrate, "main", fit)
+    labelled = tmp_path / "labelled.jsonl"
+    labelled.write_text(json.dumps(TASK) + "\n")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        monkeypatch.setattr(catalog, "is_downloaded", downloaded)
+        if route == "listing":
+            response = client.get("/api/calibrations", params={"id": "mini"})
+            assert response.status_code == 200
+            shipped = response.json()["shipped"]
+            context = shipped["context"]
+            observed = (str(Path(shipped["file"]).parent), context["revision"], context["layout"])
+        elif route == "card":
+            response = client.get("/api/models/card", params={"id": "mini"})
+            assert response.status_code == 200
+            card = response.json()
+            assert card["local_dir"] == str(saved)
+            assert card["shipped_calibration"]["temperature_per_prim"] == FITTED["temperature_per_prim"]
+            observed = (card["local_dir"], "saved-rev", "canonical")
+        else:
+            response = client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)})
+            assert response.status_code == 202
+            job = wait_job(client)
+            assert job["phase"] == "done", job["error"]
+            fitted = json.loads(Path(job["result"]["file"]).read_text())["fitted_on"]
+            observed = (fitted["model"], Path(fitted["model"]).name, fitted["layout"])
+        assert observed in {
+            (str(saved), "saved-rev", "canonical"),
+            (str(active), "active-rev", "qfirst"),
+        }
+
+
+def test_exited_runner_uses_saved_calibration_settings(tmp_path, monkeypatch, config):
+    settings.set_load_options("mini", {"revision": "saved-rev", "layout": "canonical"})
+    fleet, app = make_app(tmp_path)
+    runner = Runner(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu", settings_mod=settings)
+    runner.state, runner.model, runner.mode, runner.options = (
+        "ready",
+        "mini",
+        "eager",
+        {"revision": "active-rev", "layout": "qfirst"},
+    )
+    runner.process = SimpleNamespace(poll=lambda: 1, returncode=1)
+    monkeypatch.setattr(
+        catalog, "is_downloaded", lambda variant, cache_dir, revision=None: config if revision == "saved-rev" else None
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        fleet.runners["mini"] = runner
+        try:
+            response = client.get("/api/calibrations", params={"id": "mini"})
+            assert response.status_code == 200
+            shipped = response.json()["shipped"]
+            assert shipped["file"] == str(config / "CALIBRATION.json")
+            assert shipped["context"]["revision"] == "saved-rev"
+            assert shipped["context"]["layout"] == "canonical"
+            assert shipped["context"]["active"] is False
+        finally:
+            runner.process = None
 
 
 def test_a_bad_input_is_refused_with_its_line_before_any_model_starts(tmp_path, monkeypatch):
@@ -555,7 +648,7 @@ def test_canonical_default_needs_no_layout_capability(tmp_path, monkeypatch, con
         assert "--layout" not in calls[-1]
 
 
-@pytest.mark.parametrize("metadata", ['{"layout":"unknown"}', "{"])
+@pytest.mark.parametrize("metadata", ['{"layout":"unknown"}', "{", "[]", "null"])
 def test_invalid_model_layout_keeps_calibration_listing_available(tmp_path, config, metadata):
     (config / "basal.json").write_text(metadata)
     directory = settings.calibrations_dir("mini")
