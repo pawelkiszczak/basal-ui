@@ -168,3 +168,34 @@ def test_logs_clear_old_lines_when_source_buffer_generation_changes(page):
     page.evaluate("() => loadLogs()")
     page.wait_for_function("() => document.querySelector('#logOutput').textContent.includes('new buffer line')")
     assert "old buffer line" not in page.locator("#logOutput").inner_text()
+
+
+def test_calibration_tracks_real_saved_and_active_layout(page, ui, text_model):
+    model = text_model["id"]
+    ui.unload(model)
+    ui.put("/api/models/options", {"id": model, "options": {"layout": "canonical"}})
+    test_pages.manager_tab(page, "calibration")
+    page.select_option("#calibrationModel", model)
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')"
+    )
+    page.evaluate("id => openLoadOptions(id, false, 'save')", model)
+    page.locator("#opt-layout").evaluate("el => el.closest('details').open = true")
+    page.select_option("#opt-layout", "qfirst")
+    page.locator("#optionsApply").click()
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')"
+    )
+    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"
+    ui.post("/api/load", {"id": model, "options": {"layout": "canonical"}})
+    ui.wait_model(model)
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')", timeout=30000
+    )
+    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "canonical"
+    page.screenshot(path="/tmp/basal-issue-19-calibration.png")
+    ui.unload(model)
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')", timeout=30000
+    )
+    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"

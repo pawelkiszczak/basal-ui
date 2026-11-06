@@ -506,6 +506,7 @@ def test_mixed_media_presets_keep_indexes_fallback_and_json_marks(page):
 
 
 def test_bundled_element_preset_without_original_bytes_restores_and_unlinks(page):
+    page.wait_for_function("() => examples.some(e => e.id === 'media-01-checkout-elements')")
     index = page.evaluate("() => examples.findIndex(e=>e.id==='media-01-checkout-elements')")
     page.select_option("#examples", str(index))
     assert page.evaluate("() => selectedMedia[0].elements.question") == "click_target"
@@ -520,6 +521,7 @@ def test_bundled_element_preset_without_original_bytes_restores_and_unlinks(page
     page.locator('[data-mark="0"]').click()
     page.wait_for_function("() => document.querySelector('.elements-dialog canvas').width===800")
     page.locator(".elements-save").click()
+    page.locator(".elements-dialog").wait_for(state="detached")
     assert page.evaluate("() => Boolean(selectedMedia[0].originalData)")
     page.evaluate(
         "() => [...document.querySelectorAll('.question')].find(c=>$('.q-name',c).value==='click_target').querySelector('.remove-question').click()"

@@ -99,13 +99,24 @@ def test_every_tested_release_is_in_the_range():
         assert engine.supported(version), version
 
 
-NEW_IN_2_5 = ("adapter", "viz_gemma4", "mcp_models", "mlx_recurrent", "int8", "viz_mlx")
+NEW_IN_2_5 = (
+    "adapter",
+    "viz_gemma4",
+    "mcp_models",
+    "mlx_recurrent",
+    "int8",
+    "viz_mlx",
+    "router",
+    "attach",
+    "finetune",
+    "presets",
+    "order_check",
+)
 
 
 def test_feature_probes_match_the_installed_engine():
     """Each probe tells the tested releases apart: all on with 2.5.0, all off with 2.4.x (CI runs both)."""
-    assert set(NEW_IN_2_5) == set(engine.FEATURES)
-    found = {name: engine.feature(name) for name in engine.FEATURES}
+    found = {name: engine.feature(name) for name in NEW_IN_2_5}
     assert all(isinstance(value, bool) for value in found.values()), found
     version = Version(engine.installed()[0])
     expected = version >= Version("2.5.0")

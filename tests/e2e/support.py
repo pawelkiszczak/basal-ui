@@ -68,8 +68,11 @@ class UI:
                     raise RuntimeError(f"basal-ui exited ({self.proc.returncode}): {self.root / 'basal-ui.log'}")
                 try:
                     if self.http.get("/api/status").status_code == 200:
-                        if os.environ.get("BASAL_E2E_MODELS_DIR"):
-                            self.put("/api/settings", {"models_dir": os.environ["BASAL_E2E_MODELS_DIR"]})
+                        models_dir = os.environ.get("BASAL_E2E_MODELS_DIR")
+                        if models_dir:
+                            current = Path(self.get("/api/settings")["models_dir"]).resolve()
+                            if current != Path(models_dir).resolve():
+                                self.put("/api/settings", {"models_dir": models_dir})
                         return self
                 except httpx.HTTPError:
                     pass

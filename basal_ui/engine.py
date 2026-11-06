@@ -1,5 +1,6 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import functools
 import importlib.metadata
 import importlib.util
 import inspect
@@ -88,6 +89,7 @@ def _parameter(module, attribute, name):
 
 
 FEATURES = {
+    "calibrate_layout": lambda: "--layout" in calibrate_flags(),
     "adapter": lambda: _spec("basal.adapter") is not None,  # --adapter (rkinas/basal#52, 2.5.0)
     # basal-viz reads Gemma 4 basal-omni (rkinas/basal#75); basal_ui.inspect imports basal.viz anyway
     "viz_gemma4": lambda: hasattr(importlib.import_module("basal.viz"), "is_gemma4"),
@@ -99,7 +101,30 @@ FEATURES = {
     "int8": lambda: "int8" in importlib.import_module("basal.server").MODES,
     # basal-viz --mode mlx / mlx-q8 reads the MLX engine's layers (2.5.0: basal/viz.py mlx_lens)
     "viz_mlx": lambda: hasattr(importlib.import_module("basal.viz"), "mlx_lens"),
+    "router": lambda: _spec("basal.router") is not None,  # basal-router: Cascades (2.5.0)
+    "attach": lambda: _spec("basal.attach") is not None,  # basal-attach: Attached models (2.5.0)
+    "finetune": lambda: _spec("basal.finetune") is not None,  # basal-finetune (2.5.0; its peft extra is separate)
+    "presets": lambda: _spec("basal.presets") is not None,  # basal-run --preset / --lang (2.5.0)
+    "order_check": lambda: _spec("basal.ordercheck") is not None,  # basal-bench --order-check (2.5.0)
 }
+
+
+def _flags(module):
+    """The long options of an Engine console script's argparse parser (`<module>.parser()`)."""
+    ap = importlib.import_module(module).parser()
+    return frozenset(s for action in ap._actions for s in action.option_strings if s.startswith("--")) - {"--help"}
+
+
+@functools.cache
+def serve_flags():
+    """The flags the installed basal-serve takes: the version probe of the load options that are plain flags."""
+    return _flags("basal.server")
+
+
+@functools.cache
+def calibrate_flags():
+    """The flags the installed basal-calibrate takes."""
+    return _flags("basal.calibrate")
 
 
 def feature(name):

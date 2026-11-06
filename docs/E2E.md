@@ -63,6 +63,142 @@ the hardware allows.
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
 
+## Reviewed roadmap verification, 2026-11-06
+
+Application code: [`0a6102e`](https://github.com/pawelkiszczak/basal-ui/commit/0a6102e); full compact-fixture E2E
+harness: [`0827bf1`](https://github.com/pawelkiszczak/basal-ui/commit/0827bf1), published at `5a61955` on
+`integration/reviewed-roadmap`,
+based on `dev` at `6297401`. This is combined verification, not a release or permission to merge the feature stack.
+
+The selected roots are [#38](https://github.com/pawelkiszczak/basal-ui/pull/38) at `445437b`,
+[#56](https://github.com/pawelkiszczak/basal-ui/pull/56) at `70239d8`,
+[#55](https://github.com/pawelkiszczak/basal-ui/pull/55) at `fa231ba`, and
+[#57](https://github.com/pawelkiszczak/basal-ui/pull/57) at `d07ce01`. Only the topic commits from #41–#43 and #45–#53
+were applied with source-commit attribution, not their stacked snapshot trees. The older duplicates #39, #40 and #44,
+and the historical combined tree in draft #54, were not imported.
+
+Host: Apple M4 Max, 128 GiB RAM, macOS 27.0.1 arm64. The Engine 2.5.1 environment uses Python 3.13.11,
+MLX 0.32.4, mlx-lm 0.32.2, Playwright 1.64.1 and the Engine's MLX/media extras. The earlier runtime smokes and
+screenshots used `Remek/basal-2.0-mini-MLX-8bit`, `Remek/basal-2.0-mini` bf16 and `Remek/basal-omni-pico`.
+
+After the original shared cache became unavailable, the user authorized smaller test-model downloads. The final
+fixtures live only in `~/.cache/basal-ui-reviewed-tests/hub`; the original cache links were not rewritten. Weight
+SHA-256 values, safetensors headers, snapshot-local links and offline catalogue discovery were checked. The three
+immutable snapshots contain 5,766,082,418 bytes (5.37 GiB), including their small root metadata files:
+
+| Fixture | Snapshot revision | Snapshot bytes |
+|---|---|---:|
+| `Remek/basal-1.5-mini-MLX-fp4` — primary text and MLX Inspect | `28eb7bfff211f111dcd18bbb72f23fab546f7472` | 1,044,403,963 |
+| `Remek/basal-2.0-mini` — BF16, second model and Inspect | `d0875117f69a24598b9390af5c76bb401a1d0ff9` | 3,196,810,260 |
+| `Remek/basal-omni-pico` — recurrent model | `e02f23527c7fe6025fa2ea57747b2cf187c5960e` | 1,524,868,195 |
+
+Prepared-kernel caches and thinking assets were excluded; no max, ultra, 4.5B or GGUF weights were downloaded.
+A separate native-process smoke loaded each fixture, answered a real Decision, restarted the primary model with
+`mlx_packed` preserved, and shut down without surviving children. Full E2E qualification uses `HF_HUB_OFFLINE=1`.
+
+`make lint` passed on the combined source tree.
+
+| Check | Engine 2.5.1 | Engine 2.4.1 |
+|---|---|---|
+| Python for unit tests | 3.13.11 | 3.10.19 |
+| Final unit suite | 483 passed | 475 passed, 8 skipped |
+| Full E2E gate at `5a61955` | 129 passed, 3 skipped | 124 passed, 8 skipped |
+| Python for real-model/Chromium qualification | 3.13.11 | 3.13.11 |
+
+The Engine's MLX extra requires Python 3.11 or later in its dependency markers. The first Engine 2.4.1 runtime
+attempt therefore could not load the requested MLX port on Python 3.10; its real-model gate uses a separate
+Python 3.13.11 environment. The eight Python 3.10 unit skips are the four Engine-2.5 preset cases, two adapter
+cases, MCP model routing and the int8 mode. The three Engine 2.5.1 E2E skips are thinking without a cached
+4.5B/vLLM model, early exit without CUDA/basal-1.0 bf16, and microphone recording without downloaded audio-capable
+weights. Earlier qualification exercised Chromium's fake-device recording; physical microphone capture remains
+unqualified.
+
+The eight Engine 2.4.1 runtime skips are the same three fixture/hardware limitations, MLX Inspect unavailable in
+that Engine, three context-policy cases unsupported by its `/v1/models`, and recurrent Qwen3.5 serving unavailable
+in its MLX mode.
+
+Additional runtime proof on this code:
+
+- A real Cascade over the MLX mini and MPS mini answered with `answered_by: escalated`. A discovered Comparison
+  member was rejected with HTTP 409 `CASCADE_COMPARISON_MEMBER`. Unloading a native member removed the Cascade
+  and terminated its router while leaving the other native model ready. Chromium showed Comparison models excluded
+  from both member pickers.
+- One due Schedule scan drained `a.jsonl` then `b.jsonl` before the next daily slot. Another Schedule used an
+  authenticated Comparison server backed by a second real UI/Engine process. All three Decisions appeared in History
+  and Usage, with source `schedule` and Recent traffic attribution `RUN /api/schedules`. Manual Batch did not add
+  records. Restart preserved processed signatures and did not rewrite the outputs.
+- A real daily Schedule caught up before its configured `23:59` time after a previous day's slot was missed; the
+  otherwise identical Schedule with catch-up disabled did not run. Explicit-clock regression checks also cover
+  retaining today's later slot after catching up.
+- Chromium reproduced and then verified removal of a saved preset by selecting **None**, and editing a Schedule
+  while its model was unloaded without changing its model or loading it. English and Polish scheduled History
+  filters rendered the real Decisions.
+- Chromium imported a real shipped MLX calibration into the isolated settings directory, preserved its layout and
+  certified thresholds, selected the imported file, and retained that selection after a failed import. The old
+  calibration UI check tied to a growing row count, fixed table-column index and English error wording was removed;
+  the API calibration regressions and this runtime proof cover the consumer behavior.
+- The inactive Logs job-tab hover was measured in actual Chromium in both skins and themes. Dark orange used
+  `rgb(241, 233, 226)` on `rgb(64, 43, 34)`, with contrast 11.03:1 after the correction. The diagnostic used a real
+  Jobs log source and did not require a model. Scheduled duration regression checks use real Job completion timestamps
+  and exclude the delay until the next scheduler poll.
+- `make screenshots` regenerated 13 PNGs and the tour GIF; the captures were visually inspected. Component crops hide
+  the fixed navigation while capturing so it does not cover their content. All isolated smoke servers shut down
+  without surviving model children.
+
+The initial missing Chromium headless-shell executable was installed. The next full run exposed an obsolete synthetic
+calibration status fixture, the real dark-tab hover contrast bug, and a Batch UI test assuming that real inference
+finished within five seconds. The synthetic fixture was removed while retaining the real Saved/Active layout test;
+Batch verification now waits for the submitted job to complete. Product errors were not suppressed.
+
+The first compact-fixture attempts exposed four E2E assumptions: a redundant models-directory PUT raced with
+remembered-model auto-load; two Models-page interactions did not enable **Older models** for the basal-1.5 fixture;
+and Inspect correctly refused a basal-1.5 Decision against a basal-2.0 inspector. The harness now avoids the
+redundant mutation, uses the real filter, and serves the same BF16 weights it inspects. The actual directory-change
+protection and incompatible-weight refusal remain intact. All five focused Backend/lifecycle/browser scenarios passed.
+
+One concurrent Engine 2.5.1 attempt also returned HTTP 503 during Backend hardware refresh. Its underlying probe
+exception was not captured, so the cause remains unknown. No retry, timeout extension or error suppression was added.
+A temporary diagnostic captured successful fresh hardware subprocesses with exit code 0 and valid `BASAL_HW` JSON;
+the final full qualifications ran serially and both passed. Temporary diagnostic code was removed afterward.
+
+These checks do not qualify CUDA, CPU-only Linux, Windows, physical microphone capture, fine-tuning quality or model
+accuracy. The dedicated hardware gate issues [#2](https://github.com/pawelkiszczak/basal-ui/issues/2) and
+[#3](https://github.com/pawelkiszczak/basal-ui/issues/3) remain separate requirements.
+
+### CPU-only Linux attempt, 2026-11-06
+
+Once the local Docker daemon became available, the same published application was exercised in an isolated
+Debian 12 aarch64 container on OrbStack Linux `7.2.12-orbstack-00394-gbecdd6130068`: 16 visible CPU cores,
+16,818,020,352 bytes RAM, Python 3.13.11, CPU-only Torch 2.14.1, Engine 2.5.1, Playwright 1.64.1 and
+Chromium 156.0.8078.4. Both source and the existing compact-model cache were mounted read-only; no additional
+weights or global VM changes were needed. The primary fixture was `Remek/basal-2.0-mini` BF16.
+
+A native `eager`/`cpu` smoke loaded in 11.12 seconds, answered a real Decision with `cards` and HTTP 200 in
+6.77 seconds, returned child health HTTP 200, and exited without surviving children.
+
+The full Linux E2E attempt at `5a61955` produced **103 passed, 13 skipped, 16 failed** in 6077.77 seconds.
+This is a failed qualification, not a green CPU release gate:
+
+- Five direct calibration/inspection/benchmark starts were refused with HTTP 409:
+  `4.6 GiB loaded + 4.6 GiB needed > 7.4 GiB (9.4 GiB budget − 2.0 GiB kept free)`.
+  The default memory protection was not weakened.
+- Six direct Decision calls returned HTTP 502 `basal-serve: timed out`; the native forwarding timeout is
+  120 seconds. Two Playground result waits also expired at 120 seconds, and an Inspect iframe did not become
+  ready within its 600-second wait. No timeout extension or retry was added.
+- The bundled image-preset check inspected original bytes before asynchronous Save completed. Its test now waits
+  for the real example to be available and for the editor dialog to detach after Save. The isolated case passed on
+  Linux and on both macOS Engine environments. Application behavior and the save/unlink assertions are unchanged.
+- The 390-pixel Dashboard check observed `scrollY` changing from 1924 to 1903. A follow-up real Chromium diagnostic
+  preserved endpoint position, selection and `scrollY` across five polls, but did not reproduce that change.
+  Its cause remains unknown; neither the assertion nor application rendering was changed.
+
+Seven skips require a second runnable Llama-family CPU fixture; the remaining skips are three Apple/MLX cases,
+thinking, early exit and missing audio-capable weights. The cached experimental recurrent Pico was not substituted
+for the Llama-family fixture. The original full-run counts remain unchanged by the later focused test correction;
+no passing full CPU rerun is claimed. Issue [#3](https://github.com/pawelkiszczak/basal-ui/issues/3) remains open,
+as do CUDA qualification and the other hardware-specific limits above.
+
+
 ## Stage gate, engine 2.5.1, 2026-11-02
 
 `stage` at [`9e96e4b`](https://github.com/pawelkiszczak/basal-ui/commit/9e96e4b) (merged

@@ -262,3 +262,40 @@ def test_mode_comparison_runs_basal_bench_and_reserves_its_memory(tmp_path, monk
             "mode": "ollama",
             "error": "basal-bench exited (1): no Ollama server",
         }
+
+
+def test_identity_gate_runs_engine_tool_and_saves_gate_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+    monkeypatch.setattr(
+        "basal_ui.options.available_modes",
+        lambda *args: [{"mode": "fast", "available": True, "reason": None}],
+    )
+    rows = [{"path": "plain", "gate": "pass", "max_dp": 0.001}, {"path": "soam", "gate": "FAIL", "max_dp": 0.02}]
+    seen = []
+
+    def fake_tool(job, module, argv, out_path=None, **kwargs):
+        seen.extend(argv)
+        with open(out_path, "w") as out:
+            json.dump({"rows": rows}, out)
+        return {"rows": rows}
+
+    monkeypatch.setattr(bench, "run_tool", fake_tool)
+    app, fleet = make_app(tmp_path, monkeypatch, variants=[BF16])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/benchmark", json={"id": "bf16", "kind": "identity", "dtype": "bf16"})
+        assert response.status_code == 202, response.text
+        result = finished(client)["result"]
+        assert seen[:6] == ["--identity", "--model", str(tmp_path), "--dtype", "bfloat16", "--out"]
+        assert result["rows"] == rows and result["pass"] is False
+        assert result["engine"] and fleet.reserved == {}
+
+
+def test_order_check_is_refused_without_engine_feature(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+    monkeypatch.setitem(engine.FEATURES, "order_check", lambda: False)
+    app, _ = make_app(tmp_path, monkeypatch, variants=[BF16])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/benchmark", json={"id": "bf16", "kind": "order_check"})
+        assert response.status_code == 400 and "Engine 2.5" in response.json()["detail"]

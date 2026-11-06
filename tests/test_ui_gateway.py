@@ -77,6 +77,33 @@ def test_model_is_required_and_must_be_loaded_in_both_error_envelopes(fleet):
     assert fleet.calls == []
 
 
+def test_models_endpoint_marks_cascade_kind(fleet):
+    runner = Runner()
+    runner.state, runner.model, runner.ready_at = "ready", "tri", 1700000000.0
+    runner.models_entry = {"name": "tri", "kind": "cascade", "levels": []}
+    fleet.runners["tri"] = runner
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.get("/v1/models")
+    cascade = next(item for item in response.json()["data"] if item["id"] == "tri")
+    assert cascade["kind"] == "cascade"
+    assert next(item for item in response.json()["models"] if item["name"] == "tri")["kind"] == "cascade"
+
+
+def test_comparison_runners_are_not_exposed_by_api_gateway(fleet):
+    from basal_ui.fleet import AttachedServerRunner
+
+    server = {"id": "private", "name": "External", "base_url": "http://127.0.0.1:11434"}
+    comparison = AttachedServerRunner(server, {"id": "remote"}, settings)
+    comparison.state = "ready"
+    fleet.runners[comparison.model] = comparison
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        listing = client.get("/v1/models").json()
+        health = client.get("/health").json()
+    assert "private/remote" not in {entry["id"] for entry in listing["data"]}
+    assert "private/remote" not in {entry["name"] for entry in listing["models"]}
+    assert "private/remote" not in health["models"]
+
+
 def test_gateway_rejects_untrusted_host_on_forwarding_routes(fleet):
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         response = client.post("/v1/systemone", json={"model": "a/one"}, headers={"Host": "evil.example"})
@@ -191,6 +218,9 @@ def test_keys_guard_every_route_and_stats_need_the_admin_key(fleet, tmp_path):
         user = {"Authorization": "Bearer user-secret"}
         assert client.post("/v1/systemone", json={"model": "a/one", "state": "s"}, headers=user).status_code == 200
         assert client.get("/v1/stats", headers=user).status_code == 403
+        assert client.get("/metrics", headers=user).status_code == 403
+        assert client.get("/metrics").status_code == 401
+        assert client.get("/metrics", headers={"X-API-Key": "admin-secret"}).status_code == 200
         stats = client.get("/v1/stats", headers={"X-API-Key": "admin-secret"})
         assert stats.status_code == 200 and stats.json()["models"]["a/one"]["requests"] == 2
         preflight = client.options(
@@ -393,3 +423,127 @@ def test_port_in_use_is_reported_and_lan_url_is_used_for_all_interfaces(fleet, m
     assert gateway.status()["url"] == "http://192.0.2.10:8123"
     gateway.status()
     assert calls == [1]
+
+
+def test_metrics_combines_stats_and_ready_children(fleet, child):
+    model = 'a/"one\\line\nnext'
+    runner = fleet.runners.pop("a/one")
+    runner.model, runner.base_url = model, child.url
+    fleet.runners[model] = runner
+    fleet.runners["b/two"].base_url = child.url
+    child.metrics_reply = (
+        200,
+        "text/plain; version=0.0.4",
+        '# HELP engine_hits Hits\n# TYPE engine_hits counter\nengine_hits{kind="a}b"} 3\n'
+        "# HELP engine_duration Duration\n# TYPE engine_duration histogram\n"
+        'engine_duration_bucket{le="1"} 2\nengine_duration_bucket{le="+Inf"} 3\n'
+        "engine_duration_sum 2.5\nengine_duration_count 3\nengine_active 1\n",
+    )
+    fleet.stats.record(
+        model,
+        {"answers": {"q": {"type": "choice"}}, "usage": {"input_tokens": 7}},
+        250,
+        endpoint='/v1/"test',
+        method="POST",
+    )
+    fleet.stats.record("b/two", {"answers": {}, "usage": {"input_tokens": 4}}, 500, endpoint="/v1/other")
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.get("/metrics")
+        assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
+        lines = response.text.splitlines()
+        for key in ("requests", "questions", "errors", "input_tokens"):
+            assert lines.count(f"# TYPE basal_ui_{key}_total counter") == 1
+        for key in ("requests", "errors"):
+            assert lines.count(f"# TYPE basal_ui_traffic_{key}_total gauge") == 1
+        label = r'model="a/\"one\\line\nnext"'
+        assert f"basal_ui_requests_total{{{label}}} 1" in lines
+        assert f"basal_ui_questions_total{{{label}}} 1" in lines
+        assert f"basal_ui_errors_total{{{label}}} 0" in lines
+        assert f"basal_ui_input_tokens_total{{{label}}} 7" in lines
+        assert 'basal_ui_requests_total{model="b/two"} 1' in lines
+        assert 'basal_ui_input_tokens_total{model="b/two"} 4' in lines
+        assert f'basal_ui_latency_seconds{{{label},quantile="0.95"}} 0.25' in lines
+        assert f"basal_ui_latency_seconds_avg{{{label}}} 0.25" in lines
+        assert r'basal_ui_traffic_requests_total{endpoint="/v1/\"test",method="POST"} 1' in lines
+        assert 'basal_ui_traffic_requests_total{endpoint="/v1/other",method="POST"} 1' in lines
+        assert "basal_ui_models_loaded 2" in lines
+        assert f'engine_hits{{kind="a}}b",{label}}} 3' in lines
+        assert 'engine_active{model="b/two"} 1' in lines
+        assert lines.count("# HELP engine_hits Hits") == 1
+        assert lines.count("# TYPE engine_hits counter") == 1
+        for model_label in (label, 'model="b/two"'):
+            assert f'engine_hits{{kind="a}}b",{model_label}}} 3' in lines
+            assert f'engine_duration_bucket{{le="1",{model_label}}} 2' in lines
+            assert f'engine_duration_bucket{{le="+Inf",{model_label}}} 3' in lines
+            assert f"engine_duration_sum{{{model_label}}} 2.5" in lines
+            assert f"engine_duration_count{{{model_label}}} 3" in lines
+
+        families = {
+            **{f"basal_ui_{key}_total": ("counter",) for key in ("requests", "questions", "errors", "input_tokens")},
+            **{f"basal_ui_traffic_{key}_total": ("gauge",) for key in ("requests", "errors")},
+            "engine_hits": ("counter", "HELP"),
+            "engine_duration": ("histogram", "HELP"),
+        }
+        for name, (kind, *help_) in families.items():
+            metadata = [f"# TYPE {name} {kind}"]
+            if help_:
+                metadata.append(f"# HELP {name} {'Hits' if name == 'engine_hits' else 'Duration'}")
+            assert all(lines.count(line) == 1 for line in metadata)
+            sample_names = (name, *(f"{name}_{suffix}" for suffix in ("bucket", "sum", "count")))
+            indices = [
+                i
+                for i, line in enumerate(lines)
+                if line in metadata or any(line.startswith(f"{sample}{{") for sample in sample_names)
+            ]
+            assert len(indices) > len(metadata)
+            assert indices == list(range(indices[0], indices[-1] + 1))
+            assert all(lines.index(line) < indices[len(metadata)] for line in metadata)
+        child.metrics_reply = (404, "text/plain", "missing")
+        assert "engine_active" not in client.get("/metrics").text
+        child.metrics_reply = (200, "application/json", '{"bad": 1}')
+        assert "engine_active" not in client.get("/metrics").text
+
+
+def test_configured_admin_secret_authenticates_real_gateway_and_is_not_persisted(tmp_path, monkeypatch):
+    secret = "operator-admin-secret"
+    monkeypatch.setenv("BASAL_UI_ADMIN_KEY", secret)
+    stats = Stats(tmp_path / "stats.json")
+    fleet = Fleet(lambda: tmp_path, lambda: "cpu", settings, lambda: HW, stats=stats)
+    _, user_secret = settings.create_key("operator")
+    port = free_port()
+    settings.update_serve({"enabled": True, "port": port, "require_key": True})
+    gateway = Gateway(fleet, settings, stats)
+    try:
+        assert gateway.start()["running"]
+        url = f"http://127.0.0.1:{port}/metrics"
+        assert httpx.get(url).status_code == 401
+        assert httpx.get(url, headers={"Authorization": f"Bearer {user_secret}"}).status_code == 403
+        response = httpx.get(url, headers={"Authorization": f"Bearer {secret}"})
+        assert response.status_code == 200
+        assert "basal_ui_models_loaded 0" in response.text
+        assert secret not in (tmp_path / "settings.json").read_text()
+        key_file = settings._keys_path()
+        assert secret not in key_file.read_text()
+        assert hashlib.sha256(secret.encode()).hexdigest() in key_file.read_text()
+    finally:
+        gateway.stop()
+        settings.remove_keys_file()
+        stats.close()
+
+
+def test_metrics_scrape_only_native_children(fleet, child):
+    from basal_ui.fleet import AttachedServerRunner, CascadeRunner
+
+    cascade = CascadeRunner({"name": "route", "kind": "blend", "levels": []}, settings, fleet.event)
+    comparison = AttachedServerRunner({"id": "remote", "base_url": child.url}, {"id": "model"}, settings)
+    cascade.state = comparison.state = "ready"
+    cascade.base_url = child.url
+    fleet.runners.update({cascade.model: cascade, comparison.model: comparison})
+    fleet.runners["a/one"].base_url = child.url
+    child.metrics_reply = (200, "text/plain", "engine_active 1\n")
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        result = client.get("/metrics").text
+    assert 'engine_active{model="a/one"} 1' in result
+    assert 'engine_active{model="route"}' not in result
+    assert 'engine_active{model="remote/model"}' not in result
+    assert "basal_ui_models_loaded 3" in result

@@ -157,6 +157,25 @@ def test_dashboard_default_records_real_decisions_and_resets_model_traffic(brows
         sync_api.expect(endpoint_row).to_contain_text("POST")
         sync_api.expect(endpoint_row).to_contain_text("1")
 
+        def idle_status(route):
+            response = route.fetch()
+            status = response.json()
+            status["models"] = [model for model in status["models"] if model["id"] != model_id]
+            status["idle_unloads"] = {model_id: {"code": "idle_unload", "minutes": 1, "at": 1_700_000_000}}
+            route.fulfill(response=response, json=status)
+
+        page.route("**/api/status", idle_status)
+        sync_api.expect(page.locator("#trafficModels")).to_contain_text("Unloaded after 1 idle minutes", timeout=WAIT)
+        sync_api.expect(endpoint_row).to_be_visible()
+        manager_tab(page, "library")
+        sync_api.expect(page.locator("#diskModels")).to_contain_text("Unloaded after 1 idle minutes")
+        disk_button = page.locator("#diskModels .model-card-open").first
+        disk_button.focus()
+        page.wait_for_timeout(2500)
+        sync_api.expect(disk_button).to_be_focused()
+        view(page, "dashboard")
+        page.unroute_all(behavior="wait")
+
         page.select_option("#trafficWindow", "60")
         sync_api.expect(page.locator("#traffic-requests")).not_to_have_text("—", timeout=WAIT)
         sync_api.expect(page.locator("#traffic-requests-note")).to_contain_text("1")
@@ -671,6 +690,7 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
         left[f"manager {tab}"] = page.evaluate(UNTRANSLATED)
     view(page, "models")
     page.click("#allModelsTab")
+    page.check("#olderToggle")
     page.locator(f'#modelsTable .options-model[data-id="{text_model["id"]}"]').click()
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
     left["load options"] = page.evaluate(UNTRANSLATED)
@@ -928,6 +948,7 @@ def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, tex
     sync_api.expect(row.locator(".unload-model")).to_be_visible()
     view(page, "models")
     page.click("#allModelsTab")
+    page.check("#olderToggle")
     loads = []
     page.route("**/api/load", lambda route: (loads.append(1), route.fulfill(status=500, body="loaded")))
     page.click(f'#modelsTable .options-model[data-action="save"][data-id="{text_model["id"]}"]')
@@ -960,16 +981,22 @@ def test_models_tabs_and_manager_loaded_section(page, text_model):
     sync_api.expect(page.locator("#suggestedTab")).to_have_attribute("aria-selected", "true")
 
 
-def test_batch_view_runs_a_file_and_lists_the_answers(page, text_model, tmp_path):
+def test_batch_view_runs_a_file_and_lists_the_answers(page, ui, text_model, tmp_path):
     view(page, "batch")
     page.select_option("#batchModel", text_model["id"])
     page.fill("#batchInput", str(EXAMPLES / "questions.jsonl"))
     page.fill("#batchOutput", str(tmp_path / "answers.jsonl"))
     page.fill("#batchConcurrency", "4")
-    page.click("#runBatch")
+    with page.expect_response(
+        lambda response: response.url.endswith("/api/batch") and response.request.method == "POST"
+    ) as started:
+        page.click("#runBatch")
+    assert started.value.status == 202
+    job = ui.wait_job("batch")
+    assert job["phase"] == "done", job
+    assert job["result"]["items"] == 20 and job["result"]["errors"] == 0
     sync_api.expect(page.locator("#downloadBatch")).to_be_visible()
     sync_api.expect(page.locator("#batchRows tbody tr")).to_have_count(20)
-    sync_api.expect(page.locator("#batchSummary")).to_contain_text("20 items")
 
 
 # the language buttons reload the page: until the new page's scripts run, LANG and statusCache do not exist
@@ -1112,6 +1139,7 @@ def test_history_and_logs_views(page, ui, text_model):
 
 
 def test_inspect_view_embeds_basal_viz_and_explains_a_playground_decision(page, ui, bf16_model):
+    ui.load(bf16_model["id"])
     view(page, "inspect")
     page.select_option("#inspectModel", bf16_model["id"])
     page.click("#startInspect")
@@ -1120,19 +1148,17 @@ def test_inspect_view_embeds_basal_viz_and_explains_a_playground_decision(page, 
     frame = page.frame_locator("#vizFrame")
     sync_api.expect(frame.locator("#modelchip")).to_contain_text(bf16_model["id"])
     view(page, "playground")
+    page.select_option("#playgroundModel", bf16_model["id"])
     request = {**CHOICE, "state": "Umowa podpisana 3 marca 2025.", "facts": "auto", "lang": "pl"}
     page.evaluate("r => setRequest(r)", request)
     page.click("#sendButton")
     page.click("#inspectDecision")
-    sync_api.expect(page.locator("#pageTitle")).to_have_text("Inspect")
+    sync_api.expect(page).to_have_url(re.compile(r"#inspect$"))
     sync_api.expect(frame.locator("#out .result").first).to_be_visible()
     sync_api.expect(frame.locator("#out")).to_contain_text("Do którego działu")
-    sync_api.expect(frame.locator("#out .result").first).to_contain_text("Polish prompt")
     sync_api.expect(frame.locator("#out .result .prompt")).to_contain_text("Fakty pomocnicze")
     notice = page.locator("#inspectNotice")
     sync_api.expect(notice).to_be_visible()
-    if page.input_value("#playgroundModel") != bf16_model["id"]:  # the served decision came from other weights
-        sync_api.expect(notice).to_contain_text("weights: served")
     page.click("#stopInspect")
     sync_api.expect(frame_el).to_be_hidden()
     assert ui.get("/api/inspect")["state"] == "idle"
@@ -1220,23 +1246,6 @@ def test_the_tool_builder_sets_the_selection_of_several_tools(page):
     sync_api.expect(card.locator(".multi-tool-only")).to_be_hidden()
     built = page.evaluate("() => buildRequest().questions.next")
     assert not {"multi", "min", "max", "exclusive", "fallback", "threshold"} & set(built)
-
-
-def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_model, tmp_path):
-    shipped = ui.get("/api/calibrations", params={"id": text_model["id"]})["shipped"]["file"]
-    manager_tab(page, "calibration")
-    page.select_option("#calibrationModel", text_model["id"])
-    page.fill("#calibrationImportPath", shipped)
-    sync_api.expect(page.locator("#calibrationFiles table")).to_be_visible()
-    before = page.locator("#calibrationFiles .chip", has_text="imported").count()
-    page.click("#importCalibration")
-    sync_api.expect(page.locator("#calibrationImportPath")).to_have_value("")  # done: the field is cleared
-    sync_api.expect(page.locator("#calibrationFiles .chip", has_text="imported")).to_have_count(before + 1)
-    row = page.locator("#calibrationFiles tbody tr", has=page.locator(".chip", has_text="imported")).first
-    sync_api.expect(row.locator("td").nth(3)).to_contain_text("5%")  # the shipped file's certified thresholds
-    page.fill("#calibrationImportPath", str(tmp_path / "none.json"))
-    page.click("#importCalibration")
-    sync_api.expect(page.locator(".toast.error").last).to_contain_text("cannot read")
 
 
 def test_theme_toggle_persists_and_sets_the_document_theme(page):

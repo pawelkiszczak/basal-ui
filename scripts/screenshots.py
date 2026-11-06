@@ -141,14 +141,18 @@ def screenshots(browser, second_model):
     print("docs/images/batch.png")
     show(page, "playground")
     page.click("#generateRequestCode")
-    page.locator("#requestCode").screenshot(path=str(OUT / "api-examples.png"))
+    page.locator("#requestCode").screenshot(
+        path=str(OUT / "api-examples.png"), style=".sidebar { visibility: hidden; }"
+    )
     print("docs/images/api-examples.png")
     selectors = page.locator("#decisionCompare .dt-model")
     selectors.nth(0).select_option(MODEL)
     selectors.nth(1).select_option(second_model)
     page.click("#dt-run")
     page.wait_for_function("() => document.querySelectorAll('#decisionCompare .dt-raw').length === 2")
-    page.locator("#decisionCompare").screenshot(path=str(OUT / "model-comparison.png"))
+    page.locator("#decisionCompare").screenshot(
+        path=str(OUT / "model-comparison.png"), style=".sidebar { visibility: hidden; }"
+    )
     print("docs/images/model-comparison.png")
     context.close()
 

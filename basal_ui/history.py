@@ -1,4 +1,4 @@
-"""The decisions basal-ui answered (playground, API, MCP) with their requests and responses, newest kept: a JSONL file
+"""Recorded Decisions with their requests and responses, newest kept: a JSONL file
 <settings stem>.history.jsonl next to the settings file (0600; media bytes are replaced by their size)."""
 
 import json

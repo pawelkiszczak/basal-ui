@@ -103,6 +103,7 @@ function renderModels(data) {
   backendSelect.value=recommendationBackend;
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
+  renderAttachControl();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
@@ -200,11 +201,11 @@ function renderDiskModels() {
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.attached?`<span class="chip">${t('Attached')}</span>${m.uncalibrated?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span>${idleUnloadText(statusCache?.idle_unloads?.[m.id])}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
-  $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
   renderManagerSummary();
 }
+function idleUnloadText(reason){return reason?.code==='idle_unload'?`<span class="muted">${esc(t('Unloaded after {minutes} idle minutes at {time}',{minutes:reason.minutes,time:new Date(reason.at*1000).toLocaleString()}))}</span>`:'';}
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
@@ -223,6 +224,31 @@ function renderModelLoader() {
   }).join(''):`<p class="muted">${t(inspecting?'Download a bf16 model first':'Nothing downloaded yet')}</p>`;
   if(container.innerHTML!==html)container.innerHTML=html;
 }
+async function renderAttachControl() {
+  const card=$('#attachCard');
+  try{
+    const data=await api('/api/attach');
+    card.hidden=!data.available;
+    $('#attachBase').innerHTML=(data.bases||[]).map(base=>`<option value="${esc(base)}">${esc(base)}</option>`).join('');
+  }catch{card.hidden=true;}
+}
+$('#attachModel').onclick=()=>act(async()=>{
+  const base=$('#attachBase').value;
+  await api('/api/attach',{method:'POST',body:JSON.stringify({base})});
+  toast(t('Attach job started'));
+  await refreshStatus();
+});
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.remove-attached');
+  if(!button)return;
+  act(async()=>{
+    const id=button.dataset.id;
+    if(!await confirmDialog({title:t('Remove attached model?'),description:t('{model} will be removed from disk.',{model:id}),confirmLabel:t('Remove'),destructive:true}))return;
+    await api(`/api/attach/${encodeURIComponent(id)}`,{method:'DELETE'});
+    toast(t('Attached model removed'));
+    await loadModels();
+  });
+});
 $('#openModelLoader').onclick=()=>{$('#modelLoaderDialog').showModal();renderModelLoader();};
 document.addEventListener('click',event=>{
   const button=event.target.closest('.use-loaded-model');if(!button)return;
@@ -348,6 +374,110 @@ async function selectMedia(files) {
     renderSelectedMedia(); syncRequest();
   } catch (error) { if (selection === mediaSelection) showMediaError(error.message); }
 }
+
+const AUDIO_LIMIT_BYTES=20*1024*1024;
+let audioRecording=null;
+function encodeWav(buffer) {
+  const frames=Math.min(buffer.length,Math.floor((AUDIO_LIMIT_BYTES-44)/2)), channels=buffer.numberOfChannels, bytes=new ArrayBuffer(44+frames*2), view=new DataView(bytes);
+  const text=(offset,value)=>[...value].forEach((char,index)=>view.setUint8(offset+index,char.charCodeAt(0)));
+  text(0,'RIFF');view.setUint32(4,36+frames*2,true);text(8,'WAVE');text(12,'fmt ');view.setUint32(16,16,true);
+  view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,buffer.sampleRate,true);
+  view.setUint32(28,buffer.sampleRate*2,true);view.setUint16(32,2,true);view.setUint16(34,16,true);
+  text(36,'data');view.setUint32(40,frames*2,true);
+  const samples=Array.from({length:channels},(_,channel)=>buffer.getChannelData(channel));
+  for(let frame=0;frame<frames;frame++){
+    let sample=0;for(const channel of samples)sample+=channel[frame];
+    sample=Math.max(-1,Math.min(1,sample/channels));
+    view.setInt16(44+frame*2,sample<0?sample*0x8000:sample*0x7fff,true);
+  }
+  return new Blob([bytes],{type:'audio/wav'});
+}
+const recordingButton=()=>{
+  let button=$('#recordAudio');
+  if(!button){
+    button=document.createElement('button');button.id='recordAudio';button.type='button';button.className='btn';
+    button.dataset.variant='outline';button.hidden=true;
+    const status=document.createElement('span');status.id='recordingStatus';status.className='muted';
+    status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+    const controls=document.createElement('div');controls.className='controls media-record-controls';
+    controls.append(button,status);$('#mediaInput').after(controls);
+    button.addEventListener('click',()=>audioRecording?stopAudioRecording():startAudioRecording());
+  }
+  return button;
+};
+const recordingStatus=()=>$('#recordingStatus');
+function recordingUi(status='',label='Record',disabled=false) {
+  const button=recordingButton();button.hidden=!loadedMedia.includes('audio');button.textContent=t(label);button.disabled=disabled;
+  recordingStatus().textContent=status;
+}
+function stopAudioRecording() {
+  const session=audioRecording;if(!session||session.stopping)return;
+  session.stopping=true;clearInterval(session.clock);clearTimeout(session.timeout);
+  if(!session.stream){
+    session.cancelled=true;audioRecording=null;recordingUi();return;
+  }
+  recordingUi(t('Preparing audio…'),'Preparing audio…',true);
+  if(session.recorder?.state!=='inactive')session.recorder.stop();
+}
+async function startAudioRecording() {
+  if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia){
+    showMediaError(t('Microphone access requires a secure context (HTTPS or localhost).'));return;
+  }
+  showMediaError();
+  const session={stream:null,recorder:null,context:null,chunks:[],stopping:false,cancelled:false,clock:null,timeout:null};
+  audioRecording=session;recordingUi(t('Waiting for microphone permission…'),'Cancel recording');
+  try{
+    session.stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    if(session.cancelled||audioRecording!==session){session.stream.getTracks().forEach(track=>track.stop());return;}
+    if(!window.MediaRecorder||!window.AudioContext)throw new Error(t('Audio recording is unavailable in this browser.'));
+    session.context=new AudioContext();
+    const maxSeconds=Math.floor((AUDIO_LIMIT_BYTES-44)/(2*session.context.sampleRate));
+    const recorder=session.recorder=new MediaRecorder(session.stream);
+    const started=Date.now();
+    recorder.ondataavailable=event=>{if(event.data.size)session.chunks.push(event.data);};
+    recorder.onerror=()=>{showMediaError(t('The microphone recording failed.'));stopAudioRecording();};
+    recorder.onstop=async()=>{
+      session.stream.getTracks().forEach(track=>track.stop());
+      clearInterval(session.clock);clearTimeout(session.timeout);
+      try{
+        if(!session.cancelled&&session.chunks.length){
+          const recorded=new Blob(session.chunks,{type:recorder.mimeType});
+          const decoded=await session.context.decodeAudioData(await recorded.arrayBuffer());
+          const file=new File([encodeWav(decoded)],`recording-${Date.now()}.wav`,{type:'audio/wav'});
+          await selectMedia([file]);recordingStatus().textContent=t('Recording added as an audio attachment.');
+        }
+      }catch(error){showMediaError(error.message||t('Could not process the microphone recording.'));recordingStatus().textContent='';}
+      finally{
+        session.stream.getTracks().forEach(track=>track.stop());
+        await session.context.close();
+        if(audioRecording===session)audioRecording=null;
+        recordingUi(recordingStatus().textContent);
+      }
+    };
+    recorder.start(1000);
+    recordingUi(t('Recording · {time} remaining',{time:formatRecordingTime(maxSeconds)}),'Stop recording');
+    session.clock=setInterval(()=>{
+      const remaining=Math.max(0,maxSeconds-Math.floor((Date.now()-started)/1000));
+      recordingStatus().textContent=t('Recording · {time} remaining',{time:formatRecordingTime(remaining)});
+    },1000);
+    session.timeout=setTimeout(stopAudioRecording,maxSeconds*1000);
+  }catch(error){
+    session.stream?.getTracks().forEach(track=>track.stop());
+    if(audioRecording===session)audioRecording=null;
+    await session.context?.close();
+    recordingUi();
+    const message=error.name==='NotAllowedError'||error.name==='PermissionDeniedError'
+      ?t('Microphone permission was denied. Allow microphone access in your browser settings and try again.')
+      :error.name==='NotFoundError'?t('No microphone was found.'):error.message||t('Could not start microphone recording.');
+    showMediaError(message);
+  }
+}
+function formatRecordingTime(seconds) {
+  return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;
+}
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&audioRecording){event.preventDefault();stopAudioRecording();}
+});
 function renderDashboard() {
   window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
 }
@@ -444,6 +574,11 @@ $('#importPresets').onchange=()=>act(async()=>{
   for(const kind of ['load','request'])for(const [name,value] of Object.entries(data[kind]||{})){await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value})});count++;}
   await loadPresets();toast(t('Imported {count} presets',{count}));$('#importPresets').value='';
 });
+$('#importPresetsUrl').onclick=()=>act(async()=>{
+  const url=prompt(t('Enter a presets file URL'));if(!url)return;
+  await api('/api/presets/import-url',{method:'POST',body:JSON.stringify({url})});
+  await loadPresets();toast(t('Presets imported from URL'));
+});
 $('#examples').insertAdjacentHTML('afterend',`<button type="button" id="saveRequestPreset">${t('Save request…')}</button><button type="button" id="deleteRequestPreset">${t('Delete request')}</button>`);
 $('#saveRequestPreset').onclick=()=>promptPresetName('request');
 $('#deleteRequestPreset').onclick=()=>act(async()=>{const v=$('#examples').value;if(!v.startsWith('preset:'))return toast(t('Choose a saved request first'),'error');await deletePreset('request',v.slice(7));$('#examples').value='';});
@@ -482,6 +617,7 @@ function criteriaText(q, type) {
 }
 function parseStructuredText(text) { const trimmed=text.trim(); if(trimmed.startsWith('{')||trimmed.startsWith('[')) { try{return JSON.parse(trimmed);}catch{}} return text; }
 let questionFieldId=0;
+let playgroundSourceUrl=null;
 const qField=(label,input,help='',cls='')=>{const id=`question-field-${++questionFieldId}`;return `<div class="qf${cls?` ${cls}`:''}"><label id="${id}-label" for="${id}">${t(label)}</label>${input.replace(/<(input|textarea|select)\b/,`<$1 id="${id}" aria-labelledby="${id}-label"`)}${help?`<small class="muted">${t(help)}</small>`:''}</div>`};
 const qNum=(f,v,attrs='')=>`<input class="input" type="number" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" ${attrs}>`;
 const qText=(f,v,ph='')=>`<input class="input" type="text" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" placeholder="${esc(t(ph))}">`;
@@ -517,6 +653,7 @@ function renderTypeFields(card, type, q) {
   else if(type==='tool'){
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
+      +`<div class="controls"><button type="button" class="btn import-mcp">${t('Import from MCP server')}</button><button type="button" class="btn shortlist-tools">${t('Shortlist to K for this question')}</button></div>${q.mcp_url?`<small class="muted">${t('MCP source: {url}',{url:esc(q.mcp_url)})}</small>`:''}`
       +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
@@ -719,7 +856,7 @@ function buildRequest() {
   }
   if([...document.querySelectorAll('.q-name')].some(input=>!input.checkValidity()))throw new Error(t('Question names must be non-blank and unique.'));
   const stateInput=$('#stateInput'), state=stateInput._requestState;
-  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields()};
+  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields(),...(playgroundSourceUrl?{source_url:playgroundSourceUrl}:{})};
 }
 function syncRequest(force=false, keys=['media','detail']) {
   window.RequestCode.invalidate();
@@ -775,6 +912,8 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
     else if(b.dataset.costMode){setCostMode(card,b.dataset.costMode);syncRequest();}
     else if(b.matches('.add-action')){card._costRows=readCostRows(card);card._costRows.push({action:'',costs:{}});renderCostMatrix(card,true);syncRequest();}
     else if(b.matches('.remove-action')){card._costRows=readCostRows(card);card._costRows.splice(Number(b.dataset.row),1);renderCostMatrix(card,true);syncRequest();}
+    else if(b.matches('.import-mcp'))openMcpImport(card);
+    else if(b.matches('.shortlist-tools'))shortlistQuestionTools(card);
   });
   $('#questions').append(card); updateMediaEvidence(); syncRequest();
 }
@@ -788,7 +927,7 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
   };
   if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||req.state==null||
      !Object.hasOwn(req,'questions')||!req.questions||typeof req.questions!=='object'||Array.isArray(req.questions))return preserveJson();
-  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model']);
+  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model','source_url']);
   const media=Array.isArray(req.media)?req.media:[];
   let restored=[];
   try {
@@ -817,6 +956,9 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
     selectedModel=req.model;localStorage.setItem('basal-ui.model',selectedModel);$('#playgroundModel').value=selectedModel;
     const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);
   }
+  playgroundSourceUrl=typeof req.source_url==='string'?req.source_url:null;
+  const sourceNote=$('#playgroundSourceNote');if(sourceNote){sourceNote.textContent=playgroundSourceUrl?t('Source URL: {url}',{url:playgroundSourceUrl}):'';sourceNote.hidden=!playgroundSourceUrl;}
+  const fetchControl=$('#fetchUrlButton');if(fetchControl)fetchControl.hidden=Boolean(playgroundSourceUrl);
   const stateInput=$('#stateInput');
   stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state??'',null,2);
   stateInput._requestState={text:stateInput.value,value:structuredClone(req.state??'')};
@@ -904,6 +1046,7 @@ function decisionBase(answer,q) {
 // text decisions with the served option orders; a media answer ("text"), one fitted on other option orders or an act
 // question shape the calibration was not validated for ("unvalidated") and uncalibrated probabilities get no claim.
 function certificateGap(answer, entry) {
+  if(answer.calibrated===false)return t(entry?.kind==='comparison'?'this comparison answer is not calibrated':'this Cascade answer is not calibrated');
   if(entry?.calibration_warning)return `calibration warning: ${entry.calibration_warning}`;
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
@@ -943,7 +1086,10 @@ function automatedChips(automated) {
 function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
+  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),answer.calibrated===false?'':automatedChips(answer.automated));
+  if(answer.answered_by)parts.push(`<span class="chip">${t('Answered by')} ${esc(answer.answered_by)}</span>`);
+  if(answer.level!=null)parts.push(`<span class="chip">${t('Cascade level')} ${esc(answer.level)}</span>`);
+  if(answer.model)parts.push(`<span class="chip">${t('Answer model')} ${esc(answer.model)}</span>`);
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
@@ -1075,6 +1221,16 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
+function renderComparedResults(data, request) {
+  const column=(slot)=>{
+    const answers=slot.response?.answers||{}, entry=modelEntry(slot.model);
+    const panels=Object.entries(answers).map(([name,answer])=>DecisionTools.answerPanel(name,answer,request.questions?.[name]||{},entry)).join('');
+    const error=slot.error||slot.response?.error;
+    return `<section class="comparison-answer"><div class="section-head"><strong>${esc(slot.model)}</strong><span>${t('Latency')}: ${num(slot.latency_ms,0)} ms</span></div>${slot.model.includes('/')&&entry?.kind==='comparison'?`<p class="muted">${t('Not calibrated')}</p>`:''}${error?`<div class="error-box">${esc(error)}</div>`:panels||`<div class="empty">${t('No answers returned.')}</div>`}</section>`;
+  };
+  $('#results').innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">${column(data.primary)}${column(data.comparison)}</div>`;
+  $('#rawResponse').textContent=JSON.stringify(data,null,2);$('#rawDetails').hidden=false;
+}
 function showDecideError(message) { $('#decideError').textContent=message; $('#decideError').hidden=false; }
 async function sendDecision() {
   $('#decideError').hidden=true; $('#results').innerHTML='';
@@ -1094,7 +1250,15 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
+  try {
+    if(selectedComparisonModel){
+      const response=await api('/api/compare',{method:'POST',body:JSON.stringify({...request,compare_model:selectedComparisonModel})});
+      renderComparedResults(response,request);
+    }else{
+      const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)});
+      renderResults(response,request,mediaSnapshot);
+    }
+  }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
 }
@@ -1111,6 +1275,97 @@ $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
 $('#stateInput').addEventListener('input',()=>{$('#stateInput')._requestState=undefined;syncRequest();});
+const fetchStateLabel=$('label[for="stateInput"]'), fetchStateField=fetchStateLabel?.closest('.field');
+if(fetchStateField){
+  const fetchButton=document.createElement('button');fetchButton.type='button';fetchButton.id='fetchUrlButton';fetchButton.className='btn';fetchButton.textContent=t('Fetch URL');
+  fetchStateLabel.insertAdjacentElement('afterend',fetchButton);
+  const sourceNote=document.createElement('p');sourceNote.id='playgroundSourceNote';sourceNote.className='muted';sourceNote.hidden=true;
+  $('#stateInput').insertAdjacentElement('afterend',sourceNote);
+  const dialog=document.createElement('dialog');dialog.id='fetchUrlDialog';dialog.className='confirm-dialog';
+  dialog.innerHTML=`<form method="dialog"><h3>${t('Fetch URL')}</h3><label for="fetchUrlInput">${t('Public HTTP(S) URL')}</label><input id="fetchUrlInput" class="input" type="url" required placeholder="https://example.com"><div id="fetchUrlError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><button type="button" id="fetchUrlCancel">${t('Cancel')}</button><button type="submit" id="fetchUrlSubmit" class="primary">${t('Fetch')}</button></div></form>`;
+  document.body.append(dialog);
+  let fetchController=null;
+  fetchButton.onclick=()=>{dialog.showModal();$('#fetchUrlInput').focus();};
+  const closeFetch=()=>{fetchController?.abort();fetchController=null;dialog.close();};
+  $('#fetchUrlCancel').onclick=closeFetch;
+  dialog.addEventListener('cancel',()=>{fetchController?.abort();fetchController=null;});
+  dialog.querySelector('form').onsubmit=async event=>{
+    event.preventDefault();const url=$('#fetchUrlInput').value.trim(),submit=$('#fetchUrlSubmit'),error=$('#fetchUrlError');
+    if(!url)return;
+    fetchButton.disabled=true;fetchController=new AbortController();submit.disabled=true;submit.textContent=t('Fetching…');error.hidden=true;
+    try{
+      const result=await api('/api/fetch',{method:'POST',body:JSON.stringify({url}),signal:fetchController.signal});
+      playgroundSourceUrl=result.url;
+      const state=$('#stateInput');state.value=typeof result.state==='string'?result.state:JSON.stringify(result.state,null,2);
+      state.dispatchEvent(new Event('input',{bubbles:true}));state._requestState={text:state.value,value:structuredClone(result.state)};
+      sourceNote.textContent=t('Fetched {bytes} bytes · {contentType} · source URL: {sourceUrl} · final URL: {url}{truncated}',{bytes:result.bytes,contentType:result.content_type,sourceUrl:result.url,url:result.final_url,truncated:result.truncated?` · ${t('truncated')}`:''});
+      sourceNote.hidden=false;syncRequest();dialog.close();
+    }catch(e){
+      if(e.name!=='AbortError'){error.textContent=e.message;error.hidden=false;}
+    }finally{fetchController=null;fetchButton.disabled=false;submit.disabled=false;submit.textContent=t('Fetch');}
+  };
+}
+const mcpImportDialog=document.createElement('dialog');
+mcpImportDialog.id='mcpImportDialog';mcpImportDialog.className='confirm-dialog';
+mcpImportDialog.innerHTML=`<form method="dialog"><h3>${t('Import from MCP server')}</h3><label for="mcpImportUrl">${t('MCP server URL')}</label><input id="mcpImportUrl" class="input" type="url" required placeholder="http://localhost:8000/mcp"><label for="mcpImportToken">${t('Bearer token (not saved)')}</label><input id="mcpImportToken" class="input" type="password" autocomplete="off"><div class="controls"><button type="button" id="mcpImportFetch">${t('Load tools')}</button><button type="button" id="mcpSelectAll">${t('Select all')}</button><button type="button" id="mcpSelectNone">${t('Select none')}</button></div><p id="mcpImportCount" class="muted"></p><div id="mcpImportError" class="error-box" role="alert" hidden></div><div id="mcpImportTools" class="mcp-import-tools"></div><div class="dialog-actions"><button type="button" id="mcpImportCancel">${t('Cancel')}</button><button type="button" id="mcpImportApply" class="primary" disabled>${t('Import selected')}</button></div></form>`;
+document.body.append(mcpImportDialog);
+mcpImportDialog.querySelector('form').addEventListener('submit',event=>{event.preventDefault();$('#mcpImportFetch').click();});
+let mcpImportCard=null,mcpImportTools=[];
+function selectedMcpTools(){return [...mcpImportDialog.querySelectorAll('[data-mcp-tool]:checked')].map(input=>mcpImportTools[Number(input.dataset.mcpTool)]);}
+function renderMcpImportCount(){
+  const count=selectedMcpTools().length,note=$('#mcpImportCount');
+  note.textContent=count>255?t('The Engine accepts at most 255 tools.'):count>50?t('{count} tools selected; the Engine recommends shortlisting to 50.',{count}):t('{count} tools selected.',{count});
+  $('#mcpImportApply').disabled=count===0||count>255;
+}
+function openMcpImport(card){
+  mcpImportCard=card;$('#mcpImportUrl').value=card._extra.mcp_url||'';
+  $('#mcpImportToken').value='';$('#mcpImportTools').replaceChildren();mcpImportTools=[];
+  $('#mcpImportError').hidden=true;$('#mcpImportCount').textContent='';
+  mcpImportDialog.showModal();$('#mcpImportUrl').focus();
+}
+$('#mcpImportCancel').onclick=()=>mcpImportDialog.close();
+mcpImportDialog.addEventListener('cancel',()=>{$('#mcpImportToken').value='';});
+mcpImportDialog.addEventListener('close',()=>{$('#mcpImportToken').value='';});
+$('#mcpSelectAll').onclick=()=>{mcpImportDialog.querySelectorAll('[data-mcp-tool]').forEach(input=>input.checked=true);renderMcpImportCount();};
+$('#mcpSelectNone').onclick=()=>{mcpImportDialog.querySelectorAll('[data-mcp-tool]').forEach(input=>input.checked=false);renderMcpImportCount();};
+mcpImportDialog.addEventListener('change',event=>{if(event.target.matches('[data-mcp-tool]'))renderMcpImportCount();});
+$('#mcpImportUrl').addEventListener('input',()=>{mcpImportTools=[];$('#mcpImportTools').replaceChildren();$('#mcpImportCount').textContent='';$('#mcpImportApply').disabled=true;});
+$('#mcpImportFetch').onclick=async()=>{
+  const url=$('#mcpImportUrl').value.trim(),token=$('#mcpImportToken').value,button=$('#mcpImportFetch'),error=$('#mcpImportError');
+  if(!url)return;
+  button.disabled=true;button.textContent=t('Loading…');error.hidden=true;
+  mcpImportTools=[];$('#mcpImportTools').replaceChildren();$('#mcpImportCount').textContent='';$('#mcpImportApply').disabled=true;
+  try{
+    const result=await api('/api/mcp/tools',{method:'POST',body:JSON.stringify({url,...(token?{token}:{})})});
+    mcpImportTools=result.tools||[];
+    $('#mcpImportTools').innerHTML=mcpImportTools.map((tool,index)=>`<label class="mcp-import-tool"><input type="checkbox" data-mcp-tool="${index}" checked><span><strong>${esc(tool.name)}</strong>${tool.description?`<small>${esc(tool.description)}</small>`:''}</span></label>`).join('');
+    renderMcpImportCount();
+  }catch(e){error.textContent=e.message;error.hidden=false;}
+  finally{button.disabled=false;button.textContent=t('Load tools');$('#mcpImportToken').value='';}
+};
+$('#mcpImportApply').onclick=()=>{
+  const card=mcpImportCard;if(!card)return;
+  const selected=selectedMcpTools(),field=$('[data-f="tools"]',card);let current=[];
+  try{current=field.value.trim()?JSON.parse(field.value):[];}catch{toast(t('Fix the tools JSON before importing.'),'error');return;}
+  if(!Array.isArray(current)){toast(t('Tools must be a JSON array.'),'error');return;}
+  if(current.length+selected.filter(tool=>!current.some(existing=>existing?.name===tool.name)).length>255){toast(t('The Engine accepts at most 255 tools.'),'error');return;}
+  const byName=new Map(current.map(tool=>[tool?.name,tool]));
+  selected.forEach(tool=>byName.set(tool.name,{name:tool.name,description:tool.description||'',inputSchema:tool.inputSchema||{}}));
+  field.value=JSON.stringify([...byName.values()],null,2);card._extra.mcp_url=$('#mcpImportUrl').value.trim();
+  mcpImportDialog.close();$('#mcpImportToken').value='';renderTypeFields(card,'tool',parseQuestionCard(card,'tool')[1]);syncRequest();
+};
+async function shortlistQuestionTools(card){
+  const field=$('[data-f="tools"]',card);let tools;
+  try{tools=JSON.parse(field.value);}catch{toast(t('Fix the tools JSON before shortlisting.'),'error');return;}
+  if(!Array.isArray(tools)){toast(t('Tools must be a JSON array.'),'error');return;}
+  const requested=window.prompt(t('Shortlist size (1–255)'), '40');if(requested===null)return;
+  const k=Number(requested);
+  if(!Number.isInteger(k)||k<1||k>255){toast(t('Enter a whole number from 1 to 255.'),'error');return;}
+  try{
+    const result=await api('/api/tools/shortlist',{method:'POST',body:JSON.stringify({tools,query:$('.q-instructions-input',card).value,k})});
+    field.value=JSON.stringify(result.tools,null,2);syncRequest();
+  }catch(error){toast(error.message,'error');}
+}
 $('#editJsonToggle').addEventListener('change',()=>{
   if($('#editJsonToggle').checked){
     try {$('#requestJson').value=JSON.stringify(buildRequest(),null,2);showMediaError();}
@@ -1137,7 +1392,10 @@ $('#langSelect').addEventListener('change',()=>syncRequest(false,REQUEST_OPTION_
 ['#thinkSelect','#thinkTextToggle','#earlyExitSelect'].forEach(s=>$(s).addEventListener('change',()=>syncRequest(false,REQUEST_OPTION_KEYS)));
 $('#mediaLightboxClose').addEventListener('click',()=>$('#mediaLightbox').close());
 $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox'))$('#mediaLightbox').close();});
-window.addEventListener('beforeunload',()=>selectedMedia.forEach(item=>URL.revokeObjectURL(item.url)));
+window.addEventListener('beforeunload',()=>{
+  audioRecording?.stream?.getTracks().forEach(track=>track.stop());
+  selectedMedia.forEach(item=>URL.revokeObjectURL(item.url));
+});
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
@@ -1282,7 +1540,7 @@ async function copyText(text, success=t('Copied to clipboard')) {
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
-let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
+let selectedModel=localStorage.getItem('basal-ui.model')||'', selectedComparisonModel=localStorage.getItem('basal-ui.comparison-model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
@@ -1300,15 +1558,29 @@ function renderManagerSummary() {
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
+let lastAttachedJobRefresh=null;
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  const attachJob=s.jobs?.attach;
+  if(attachJob){
+    const progress=s.downloads?.[$('#attachBase').value];
+    $('#attachBase').disabled=attachJob.running;
+    $('#attachModel').disabled=attachJob.running;
+    $('#attachJob').textContent=attachJob.running?`${t('Attaching {model}',{model:attachJob.model})}${progress?` · ${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}`:''}`:attachJob.phase==='error'?t('Failed: {error}',{error:attachJob.error}):attachJob.phase==='done'?t('Attached model ready'):'';
+    if(!attachJob.running&&attachJob.phase==='done'&&lastAttachedJobRefresh!==attachJob.started){
+      lastAttachedJobRefresh=attachJob.started;
+      loadModels();
+    }
+  }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
-  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
+  const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(signature!==rowsSignature&&$('#calibrationModel').value)loadCalibrations();
   rowsSignature=signature;
-  if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
+  const primaryReady=ready.filter(m=>m.kind!=='comparison');
+  if(!primaryReady.some(m=>m.id===selectedModel))selectedModel=primaryReady[0]?.id||'';
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
@@ -1324,7 +1596,7 @@ function renderStatus(s) {
   if($('#modelLoaderDialog').open)renderModelLoader();
   renderInference(s);
   renderPlaygroundModels(ready);
-  renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
+  renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderFineTuneState(s.jobs?.finetune); renderBatchState(s.jobs?.batch,ready);
   renderInspectState(s.inspect,s.jobs?.inspect);
   if(serveData)renderServeStatus(s);
   loadStats();
@@ -1365,35 +1637,108 @@ function renderInference(s) {
   $('#inferenceNow').innerHTML=rows.length?rows.join(''):`<div class="inference-row idle"><span class="status-dot"></span><span class="muted">${esc(idle)}</span></div>`;
 }
 function renderLoadedRows(models) {
+  setupCascadeUI();
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
-    const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='cascade'?`<span class="badge">${t('Cascade')}</span>`:m.kind==='comparison'?`<span class="badge">${t('Comparison')}</span>`:''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const health=m.health, load=m.kind==='comparison'?t('Decision server'):m.kind==='cascade'?t('router process'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
-    const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
+    const actions=m.kind==='comparison'?'':m.kind==='cascade'?`<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Stop cascade')}</button>`:`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
     return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
   }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`;
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
+  if(Date.now()-cascadeRefreshAt>3000){cascadeRefreshAt=Date.now();renderCascadeDefinitions();}
+}
+let cascadeRefreshAt=0;
+function setupCascadeUI() {
+  if($('#cascadePanel'))return;
+  $('#loadedModels').insertAdjacentHTML('beforebegin',`<section class="card" id="cascadePanel"><div class="section-head"><h3>${t('Cascades')}</h3><button type="button" id="newCascade">${t('New cascade')}</button></div><div id="cascadeRows"></div></section>`);
+  document.body.insertAdjacentHTML('beforeend',`<dialog id="cascadeDialog"><form method="dialog" id="cascadeForm"><h2>${t('New cascade')}</h2><label>${t('Name')}<input id="cascadeName" required pattern="[a-z0-9][a-z0-9-]{0,39}"></label><label>${t('Cascade kind')}<select id="cascadeKind"><option value="escalate">${t('Escalate')}</option><option value="blend">${t('Blend')}</option></select></label><fieldset><legend>${t('Levels, in order')}</legend><div id="cascadeLevels"></div><button type="button" id="addCascadeLevel">${t('Add level')}</button></fieldset><label id="cascadeWeightsLabel">${t('Blend weights')}<input id="cascadeWeights" value="1,1"></label><details><summary>${t('LLM fallback (optional)')}</summary><label>${t('Fallback URL')}<input id="cascadeFallbackUrl" type="url" placeholder="https://host/v1"></label><label>${t('Fallback model')}<input id="cascadeFallbackModel"></label><label>${t('Fallback below')}<input id="cascadeFallbackBelow" type="number" min="0.01" max="1" step="0.01" value="0.5"></label><label>${t('Fallback timeout (seconds)')}<input id="cascadeFallbackTimeout" type="number" min="1" value="60"></label><label>${t('Fallback max tokens')}<input id="cascadeFallbackTokens" type="number" min="1" value="8192"></label><label>${t('Fallback API key')}<input id="cascadeFallbackKey" type="password" autocomplete="off"></label></details><div class="controls"><button type="button" id="cancelCascade">${t('Cancel')}</button><button type="submit" class="primary">${t('Create cascade')}</button></div><p id="cascadeError" class="error-box" hidden></p></form></dialog>`);
+  const dialog=$('#cascadeDialog');
+  let cascadeMembers=[];
+  // one row per level: its model and, for an escalate cascade, the top probability under which the next level asks
+  const levelRows=()=>[...$('#cascadeLevels').querySelectorAll('.cascade-level')];
+  const syncLevels=()=>{
+    const rows=levelRows(),blend=$('#cascadeKind').value==='blend';
+    rows.forEach((row,i)=>{
+      row.querySelector('.cascade-below').hidden=blend||i===rows.length-1;
+      row.querySelector('.cascade-remove').disabled=rows.length<=2;
+      row.querySelector('.cascade-level-name').textContent=t('Level {n}',{n:i+1});
+    });
+    $('#cascadeWeightsLabel').hidden=!blend;
+  };
+  const addLevel=model=>{
+    $('#cascadeLevels').insertAdjacentHTML('beforeend',`<div class="cascade-level controls"><span class="cascade-level-name"></span><select class="cascade-model" aria-label="${esc(t('Model'))}">${cascadeMembers.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')}</select><label class="cascade-below">${t('Escalate below')}<input type="number" min="0.01" max="1" step="0.01" value="0.8"></label><button type="button" class="cascade-remove">${t('Remove')}</button></div>`);
+    const row=levelRows().at(-1);
+    if(model)row.querySelector('.cascade-model').value=model;
+    row.querySelector('.cascade-remove').onclick=()=>{row.remove();syncLevels();};
+    syncLevels();
+  };
+  $('#newCascade').onclick=()=>{
+    cascadeMembers=readyModels().filter(m=>m.kind!=='cascade'&&m.kind!=='comparison');
+    $('#cascadeLevels').innerHTML='';
+    addLevel(cascadeMembers[0]?.id);addLevel(cascadeMembers[1]?.id||cascadeMembers[0]?.id);
+    $('#cascadeError').hidden=true;dialog.showModal();
+  };
+  $('#addCascadeLevel').onclick=()=>addLevel(cascadeMembers[levelRows().length]?.id||cascadeMembers[0]?.id);
+  $('#cancelCascade').onclick=()=>dialog.close();
+  $('#cascadeKind').onchange=syncLevels;
+  $('#cascadeForm').onsubmit=async event=>{
+    event.preventDefault();
+    const kind=$('#cascadeKind').value,rows=levelRows();
+    const levels=rows.map((row,i)=>{
+      const level={model:row.querySelector('.cascade-model').value};
+      if(kind==='escalate'&&i<rows.length-1)level.below=Number(row.querySelector('.cascade-below input').value);
+      return level;
+    });
+    const body={name:$('#cascadeName').value,kind,levels};
+    if(kind==='blend')body.weights=$('#cascadeWeights').value.split(',').map(Number);
+    const fallbackUrl=$('#cascadeFallbackUrl').value.trim();
+    if(fallbackUrl)body.fallback={url:fallbackUrl,model:$('#cascadeFallbackModel').value.trim(),below:Number($('#cascadeFallbackBelow').value),timeout:Number($('#cascadeFallbackTimeout').value),max_tokens:Number($('#cascadeFallbackTokens').value),key:$('#cascadeFallbackKey').value||null};
+    try{await api('/api/cascades',{method:'POST',body:JSON.stringify(body)});dialog.close();$('#cascadeForm').reset();await renderCascadeDefinitions();}
+    catch(error){$('#cascadeError').textContent=error.message;$('#cascadeError').hidden=false;}
+  };
+  renderCascadeDefinitions();
+}
+async function renderCascadeDefinitions() {
+  const target=$('#cascadeRows');if(!target)return;
+  try{
+    $('#newCascade').disabled=false;
+    const data=await api('/api/cascades'),loaded=new Set((statusCache?.models||[]).filter(m=>m.kind==='cascade').map(m=>m.id));
+    target.innerHTML=data.cascades.length?data.cascades.map(c=>`<div class="model-row"><strong>${esc(c.name)}</strong><span class="badge">${t('Cascade')} · ${esc(c.kind)}</span><span>${esc(c.levels.map(x=>x.model).join(' → '))}</span><button type="button" data-cascade-action="${loaded.has(c.name)?'stop':'start'}" data-cascade="${esc(c.name)}">${loaded.has(c.name)?t('Stop cascade'):t('Start cascade')}</button><button type="button" data-cascade-delete="${esc(c.name)}">${t('Delete')}</button></div>`).join(''):`<p class="muted">${t('No Cascades defined.')}</p>`;
+    target.querySelectorAll('[data-cascade-action]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}/${button.dataset.cascadeAction}`,{method:'POST'});await refreshStatus();await renderCascadeDefinitions();}));
+    target.querySelectorAll('[data-cascade-delete]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/cascades/${encodeURIComponent(button.dataset.cascadeDelete)}`,{method:'DELETE'});await renderCascadeDefinitions();}));
+  }catch(error){$('#newCascade').disabled=true;target.innerHTML=`<p class="muted">${esc(error.message)}</p>`;}  // engine 2.4.1: the reason
 }
 function renderPlaygroundModels(ready) {
-  const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media]));
+  const primary=ready.filter(m=>m.kind!=='comparison'), comparisons=ready.filter(m=>m.kind==='comparison');
+  const select=$('#playgroundModel');
+  if(!$('#playgroundCompareModel'))select.insertAdjacentHTML('afterend',`<select class="select" id="playgroundCompareModel" aria-label="${esc(t('Compare with'))}"><option value="">${t('No comparison')}</option></select>`);
+  const second=$('#playgroundCompareModel'),signature=JSON.stringify([primary.map(m=>[m.id,m.kind]),comparisons.map(m=>m.id)]);
+  if(!second.dataset.bound){second.dataset.bound='1';second.onchange=()=>{selectedComparisonModel=second.value;localStorage.setItem('basal-ui.comparison-model',selectedComparisonModel);};}
   if(signature!==playgroundSignature){
     playgroundSignature=signature;
-    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    select.innerHTML=primary.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    second.innerHTML=`<option value="">${t('No comparison')}</option>`+comparisons.map(m=>`<option value="${esc(m.id)}">${esc(m.id)} · ${t('Comparison')}</option>`).join('');
   }
-  select.value=selectedModel; select.disabled=!ready.length;
-  $('#playgroundForm').disabled=!ready.length; $('#playgroundHint').hidden=Boolean(ready.length);
-  setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
-  setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
-  DecisionTools.refreshModels(ready);
+  if(!primary.some(m=>m.id===selectedModel))selectedModel=primary[0]?.id||'';
+  select.value=selectedModel; select.disabled=!primary.length;
+  if(!comparisons.some(m=>m.id===selectedComparisonModel))selectedComparisonModel='';
+  second.value=selectedComparisonModel;
+  $('#playgroundForm').disabled=!primary.length; $('#playgroundHint').hidden=Boolean(primary.length);
+  setPlaygroundMedia(primary.find(m=>m.id===selectedModel)?.media||[]);
+  setPlaygroundExperimental(primary.find(m=>m.id===selectedModel));
+  DecisionTools.refreshModels(primary);
 }
 function setPlaygroundMedia(kinds) {
-  if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
+  if(JSON.stringify(kinds)===JSON.stringify(loadedMedia)){recordingButton().hidden=!kinds.includes('audio');return;}
+  if(audioRecording&&!kinds.includes('audio'))stopAudioRecording();
   loadedMedia=kinds; renderSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
+  recordingButton().hidden=!kinds.includes('audio');
 }
 $('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
@@ -1436,13 +1781,27 @@ $('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
 <details class="manager-help"><summary>${t('How this measurement runs')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
+$('#benchmarkResults').insertAdjacentHTML('beforebegin',`<div class="bench-params"><div class="qf-row"><label for="identityDtype">${t('Identity gate dtype')}</label><select id="identityDtype"><option value="fp32">fp32</option><option value="bf16">bf16</option></select><button type="button" id="runIdentity">${t('Identity gate')}</button><button type="button" id="runOrderCheck">${t('Order check')}</button></div><p class="muted" id="engineCheckReason"></p></div>`);
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
 $('#benchmarkSet').onchange=()=>{localStorage.setItem('basal-ui.benchmarkSet',$('#benchmarkSet').value);updateBenchmarkForm();};
 $('#benchmarkPath').oninput=()=>localStorage.setItem('basal-ui.benchmarkPath',$('#benchmarkPath').value);
 $('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels());};
-$('#benchmarkModel').onchange=()=>{updateBenchmarkForm();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+$('#benchmarkModel').onchange=()=>{updateBenchmarkForm();updateEngineCheckAvailability();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+async function updateEngineCheckAvailability() {
+  const id=$('#benchmarkModel').value;
+  if(!id)return;
+  try{
+    const d=await api(`/api/benchmark/availability?id=${encodeURIComponent(id)}`);
+    $('#runIdentity').disabled=!d.identity.available; $('#runIdentity').title=d.identity.reason||'';
+    $('#runOrderCheck').disabled=!d.order_check.available; $('#runOrderCheck').title=d.order_check.reason||'';
+    $('#engineCheckReason').textContent=[!d.identity.available?`${t('Identity gate')}: ${d.identity.reason}`:'',!d.order_check.available?`${t('Order check')}: ${d.order_check.reason}`:''].filter(Boolean).join(' · ');
+  }catch(error){$('#engineCheckReason').textContent=error.message;}
+}
+$('#runIdentity').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#benchmarkModel').value,kind:'identity',dtype:$('#identityDtype').value})});toast(t('Identity gate started'));await refreshStatus();});
+$('#runOrderCheck').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#benchmarkModel').value,kind:'order_check'})});toast(t('Order check started'));await refreshStatus();});
+updateEngineCheckAvailability();
 let benchModelsSignature='', comparisonFor='';
 function updateBenchmarkForm() {
   const kind=$('#benchmarkKind').value;
@@ -1483,7 +1842,7 @@ function renderBenchmarkState(bench, ready) {
     benchModelsSignature=signature;
     select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
     if(ids.includes(current))select.value=current;
-    updateBenchmarkForm(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
+    updateBenchmarkForm(); updateEngineCheckAvailability(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
   }
   const running=Boolean(bench?.running);
   $('#runBenchmark').disabled=running||!ids.length; $('#cancelBenchmark').hidden=!running;
@@ -1494,6 +1853,12 @@ function renderBenchmarkState(bench, ready) {
 function benchmarkRow(x) {
   const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
   if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}</td></tr>`;}
+  if(kind==='identity'||kind==='order_check'){
+    const rows=kind==='identity'?(x.rows||[]):Object.entries(x.by_k||{}).map(([k,v])=>({path:`${k} options`,...v}));
+    const detail=rows.map(r=>`<tr><td>${esc(r.path||'—')}</td><td>${esc(r.gate||'—')}</td><td>${r.max_dp==null?'—':Number(r.max_dp).toExponential(2)}</td></tr>`).join('');
+    const max=rows.length?Math.max(...rows.map(r=>Number(r.max_dp)||0)).toExponential(2):'—';
+    return `<tr>${head}<td colspan="7"><details><summary><span class="badge ${x.pass===false?'fit-tight':'fit-fits'}">${x.pass===false?t('Failed'):t('Passed')}</span> · ${esc(x.dtype||'')} · ${t('max |Δp|')} ${max}</summary><table class="mini-table"><thead><tr><th>${t('Path')}</th><th>${t('Gate')}</th><th>${t('max |Δp|')}</th></tr></thead><tbody>${detail}</tbody></table></details></td></tr>`;
+  }
   if(kind==='modes'){
     const f=(v,d=1)=>v==null||Number.isNaN(Number(v))?'—':Number(v).toFixed(d);
     const rows=(x.modes||[]).map(m=>m.error?`<tr><td>${esc(m.mode)}</td><td colspan="8"><span class="reason wide">${esc(m.error)}</span></td></tr>`:`<tr><td>${esc(m.mode)}</td><td>${f(m.lat1_ms)}</td><td>${f(m.lat2_ms)}</td><td>${f(m.lat2_p95_ms)}</td><td>${f(m.dec_s)}</td><td>${m.agree==null?`ref`:f(m.agree,3)}</td><td>${m.acc==null?'—':pct(m.acc)}</td><td>${f(m.load_s)}</td><td>${f(m.mem_gb,2)}</td></tr>`).join('');
@@ -1509,7 +1874,26 @@ function renderBenchmarkResults() {
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
 $('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
+$('#calibrationBlock').insertAdjacentHTML('beforeend',`<section class="manager-help" id="fineTunePanel"><h3>${t('Fine-tune')}</h3><p class="muted">${t('Fine-tune a model on labelled decisions')}</p><p class="muted">${t('tested on Apple Silicon with basal-omni-pico; other GPUs untested')}</p><p id="fineTuneAvailability" class="reason"></p><div class="manager-fields"><label class="manager-field">${t('Model')}<select id="fineTuneModel"></select></label><label class="manager-field">${t('Labelled JSONL')}<input id="fineTuneInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><label>${t('Output name')}<input id="fineTuneName" type="text" value="adapted"></label><label>${t('Epochs')}<input id="fineTuneEpochs" type="number" min="0.1" step="0.1" value="2"></label><label>${t('Learning rate')}<input id="fineTuneLr" type="number" min="0.000001" step="0.00001" value="0.0001"></label><label>${t('LoRA rank')}<input id="fineTuneRank" type="number" min="1" step="1" value="16"></label><label>${t('LoRA alpha')}<input id="fineTuneAlpha" type="number" min="1" step="1" value="32"></label><label>${t('Holdout fraction')}<input id="fineTuneHoldout" type="number" min="0.01" max="0.99" step="0.01" value="0.25"></label><label>${t('Maximum prompt length')}<input id="fineTuneMaxLen" type="number" min="1" step="1" value="2048"></label><label>${t('Maximum steps (optional)')}<input id="fineTuneMaxSteps" type="number" min="1" step="1"></label><label><input id="fineTuneGrad" type="checkbox"> ${t('Gradient checkpointing')}</label></div><div class="manager-actions"><button type="button" id="runFineTune">${t('Start fine-tuning')}</button><button type="button" id="cancelFineTune" hidden>${t('Cancel fine-tuning')}</button><span id="fineTuneProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Afinetune">${t('Logs')}</a></div><div id="fineTuneResults"></div></section>`);
+let fineTuneSignature='', fineTuneResultSignature='';
+function renderFineTuneModels(){
+  const select=$('#fineTuneModel'), rows=modelData.filter(m=>m.downloaded&&m.port==='bf16'&&(m.family==='attached'||m.family.startsWith('basal-'))), signature=JSON.stringify(rows.map(m=>m.id));
+  if(signature!==fineTuneSignature){fineTuneSignature=signature;const current=select.value;select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('Download a model first')}</option>`;if(rows.some(m=>m.id===current))select.value=current;loadFineTuneResults();}
+}
+$('#fineTuneModel').onchange=loadFineTuneResults;
+async function loadFineTuneResults(){
+  const id=$('#fineTuneModel').value;if(!id)return;
+  try{const d=await api(`/api/finetune?id=${encodeURIComponent(id)}`);$('#fineTuneAvailability').textContent=d.available?'':d.reason||'';$('#runFineTune').disabled=!d.available;$('#fineTuneResults').innerHTML=(d.results||[]).map(f=>`<article class="card"><h4>${esc(f.name)}</h4><p>${t('Training decisions')}: ${esc(f.train_decisions)} · ${t('Held-out lines')}: ${esc(f.heldout_lines)} · ${t('Scored')}: ${esc(f.scored)}</p><p>${t('Top-1 held-out accuracy before')}: ${f.top1_before==null?'—':pct(f.top1_before)} · ${t('Top-1 held-out accuracy after')}: ${f.top1_after==null?'—':pct(f.top1_after)}</p></article>`).join('');}catch(e){$('#fineTuneAvailability').textContent=e.message;}
+}
+$('#runFineTune').onclick=()=>act(async()=>{const body={id:$('#fineTuneModel').value,input:$('#fineTuneInput').value.trim(),out_name:$('#fineTuneName').value.trim(),epochs:Number($('#fineTuneEpochs').value),lr:Number($('#fineTuneLr').value),rank:Number($('#fineTuneRank').value),alpha:Number($('#fineTuneAlpha').value),holdout:Number($('#fineTuneHoldout').value),max_len:Number($('#fineTuneMaxLen').value),grad_checkpointing:$('#fineTuneGrad').checked};if($('#fineTuneMaxSteps').value)body.max_steps=Number($('#fineTuneMaxSteps').value);await api('/api/finetune',{method:'POST',body:JSON.stringify(body)});toast(t('Fine-tuning started'));await refreshStatus();});
+$('#cancelFineTune').onclick=()=>act(async()=>{await api('/api/finetune',{method:'DELETE'});await refreshStatus();});
+function renderFineTuneState(job){
+  const running=Boolean(job?.running);$('#cancelFineTune').hidden=!running;$('#runFineTune').disabled=running||!$('#fineTuneModel').value||$('#fineTuneAvailability').textContent!=='';
+  $('#fineTuneProgress').textContent=!job?'':running?`${shortName(job.model)} · ${t(job.phase)}…`:job.phase==='error'?t('Failed: {error}',{error:job.error}):job.phase==='cancelled'?t('Cancelled'):job.phase==='done'?t('Completed'):'';
+  const signature=`${job?.started||''}:${job?.phase||''}`;if(!running&&job?.phase==='done'&&signature!==fineTuneResultSignature){fineTuneResultSignature=signature;loadFineTuneResults();}
+}
 $('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;};
+renderFineTuneModels();
 $('#calCompare').onchange();
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
@@ -1517,7 +1901,7 @@ $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInp
 document.querySelectorAll('#calibrationBlock input[type=checkbox]').forEach(i=>{i.setAttribute('role','switch');setChecked(i,i.checked);});
 document.body.append($('#reportDialog'));  // a modal inside a hidden view would block the page without showing
 $('#reportClose').onclick=()=>$('#reportDialog').close();
-let calibrationRunning=false, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0;
+let calibrationRunning=false, calibrationBlocked=true, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0;
 function renderCalibrationModels() {
   const select=$('#calibrationModel'), current=select.value||localStorage.getItem('basal-ui.calibrationModel')||'', rows=modelData.filter(m=>m.downloaded);
   const signature=JSON.stringify(rows.map(m=>m.id));
@@ -1527,7 +1911,8 @@ function renderCalibrationModels() {
     if(rows.some(m=>m.id===current))select.value=current;
     loadCalibrations();
   }
-  $('#runCalibration').disabled=calibrationRunning||!rows.length;
+  $('#runCalibration').disabled=calibrationRunning||calibrationBlocked||!rows.length;
+  renderFineTuneModels();
 }
 $('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);loadCalibrations();};
 $('#runCalibration').onclick=()=>act(async()=>{
@@ -1557,7 +1942,7 @@ function allThresholds(f) {
 }
 function renderCalibrationState(job) {
   const running=Boolean(job?.running);
-  $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||!$('#calibrationModel').value;
+  $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||calibrationBlocked||!$('#calibrationModel').value;
   $('#calibrationProgress').textContent=!job?'':running?`${shortName(job.model)} · ${ts(job.phase,job.phase_code,job.phase_params)}…`:job.phase==='error'?`${t('Failed: {error}',{error:job.error})}`:job.phase==='cancelled'?t('Cancelled'):['done','done_with_warnings'].includes(job.phase)?`${job.phase==='done_with_warnings'?t('Completed with warnings'):t('Completed (see report for certification)')}: ${shortName(job.result?.file||'')}${job.result?.warnings?.length?' · '+job.result.warnings.join(' · '):''}`:'';
   if(calibrationRunning&&!running)loadCalibrations();
   if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';$('#reportDialog').showModal();}
@@ -1566,6 +1951,7 @@ function renderCalibrationState(job) {
 async function loadCalibrations() {
   const id=$('#calibrationModel').value, sequence=++calibrationSequence, files=$('#calibrationFiles');
   files.innerHTML='';
+  calibrationBlocked=true; $('#runCalibration').disabled=true;
   files.setAttribute('aria-busy','true');
   $('#importCalibration').disabled=true;
   if(!id){files.removeAttribute('aria-busy');return;}
@@ -1587,21 +1973,27 @@ function thresholdCell(thresholds) {
 }
 function renderCalibrationFiles(id, d) {
   const loaded=(statusCache?.models||[]).find(m=>m.id===id);
+  const layout=d.shipped?.context?.layout;
+  calibrationBlocked=!layout||(!d.calibrate_layout&&(layout!=='canonical'||d.default_layout&&d.default_layout!==layout));
+  $('#runCalibration').disabled=calibrationRunning||calibrationBlocked;
   const row=(f,value,label)=>{
     const fitted=f?.fitted_on&&typeof f.fitted_on==='object'?f.fitted_on:null, gates=f?.gates||{};
     const automated=Object.entries(gates.automated_at||{}).map(([k,v])=>`${(Number(k)*100).toFixed(0)}%: ${pct(v)} at ${pct(gates.automated_error?.[k])} error`).join(' · ');
     const checked=(d.selected||'')===value;
-    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
+    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${esc(f?.layout||'—')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
   };
-  const ctx=d.shipped?.context||{}, context=d.shipped?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
+  const ctx=d.shipped?.context, available=d.shipped?.file&&ctx, context=available?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
   const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
-  const shipped=d.shipped?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
-  $('#calibrationFiles').innerHTML=`<p class="muted">${context}<br>${selection}</p><div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
+  const shipped=available?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
+  const reason=layout&&calibrationBlocked?t('The installed Engine cannot calibrate this layout'):'';
+  const mismatch=d.layout_mismatch_code?ts('Selected calibration layout differs from the load settings; certified thresholds will not apply.',d.layout_mismatch_code):'';
+  $('#calibrationFiles').innerHTML=`<p class="muted">${context}<br>${selection}<br>${t('Fit layout')}: ${esc(layout||'—')}</p>${!available&&d.shipped?.error?`<p class="reason">${esc(d.shipped.error)}</p>`:''}${reason?`<p class="reason">${esc(reason)}</p>`:''}${mismatch?`<p class="reason">${esc(mismatch)}</p>`:''}<div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Layout')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
     if(!radio)continue;
-    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;
-    radio.closest('tr').lastElementChild.append(' ',button);
+    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;button.disabled=!d.calibrate_layout&&(f.layout!=='canonical'||d.default_layout&&d.default_layout!=='canonical');
+    const cell=radio.closest('tr').lastElementChild; cell.append(' ',button);
+    if(button.disabled){const reason=document.createElement('span');reason.className='reason';reason.textContent=t('The installed Engine cannot calibrate this layout');cell.append(' ',reason);}
   }
   $('#calibrationFiles').querySelectorAll('[data-refit]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
@@ -1614,7 +2006,7 @@ function renderCalibrationFiles(id, d) {
     const sequence=++calibrationSequence, data=await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})});
     if(!calibrationCurrent(id,sequence))return;
     renderCalibrationFiles(id,data);
-    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus();
+    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus(); await loadModels();
   }));
   $('#calibrationFiles').querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
@@ -1626,13 +2018,18 @@ function renderCalibrationFiles(id, d) {
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
 const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
 const OPTION_SECTIONS=[
-  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed']],
+  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed','prepared','compile_scope','graph_memory_gb']],
+  ['MLX',['mlx_forward','mlx_compute']],
   ['Determinism & orders',['deterministic','orders','auto_tau','auto_band']],
+  ['Readout',['order_average','reread','reread_combine','reread_max_tokens','reread_image']],
   ['Batching',['max_batch','wait_ms','batch_window_ms','soam']],
-  ['Caching',['state_cache_gb','prefix_cache']],
-  ['Scheduling',['scheduler','long_lane','long_tokens','long_share','long_slice_ms']],
+  ['Caching',['state_cache_gb','state_cache_lock','state_cache_bits','prefix_cache']],
+  ['Scheduling',['scheduler','long_lane','long_lane_gdn','long_tokens','long_share','long_slice_ms','rank_max_candidates']],
   ['Context',['layout','context_overflow','truncate_head','max_len']],
   ['Kernels (CUDA graph engine)',['gemma_attn','merge','lean','tree','batches','readout_layer','template_prefix','fp8_accum']],
+  ['Quantization',['fp8_scaling','fp8_bf16_layers','quant_load','nvfp4_amax','nvfp4_scope']],
+  ['vLLM',['vllm_overlap']],
+  ['Gemma 4',['global_attn']],
   ['Calibration',['strict_calibration']],
   ['Experimental',['think','think_tokens','think_python','think_url','think_calibration','think_model','think_adapter','think_memory','think_max_len','think_log','early_exit']],
 ];
@@ -1682,7 +2079,7 @@ const OPTION_FIELDS={
   truncate_head:{label:'Kept from the beginning',kind:'percent'},
   max_len:{label:'Max length (vLLM / SGLang)',kind:'num',attrs:'min="512" max="131072" step="512"',placeholder:'API server setting'},
   revision:{label:'Model revision',kind:'text',placeholder:'latest (main)'},
-  adapter:{label:'LoRA adapter directory (merged at load)',kind:'text',placeholder:'/path/to/adapter'},
+  adapter:{label:'LoRA adapter directory (merged at load)',kind:'select'},
   think:{label:'Thinking (reason before low-margin decisions)',kind:'bool'},
   think_tokens:{label:'Reasoning tokens',kind:'num',attrs:'min="1" step="32"',think:true},
   think_python:{label:'Python with vLLM',kind:'text',placeholder:'basal-ui’s Python',think:true},
@@ -1694,6 +2091,27 @@ const OPTION_FIELDS={
   think_max_len:{label:'vLLM context',kind:'num',attrs:'min="512" step="512"',think:true},
   think_log:{label:'vLLM log file',kind:'text',placeholder:'basal-think-vllm.log',think:true},
   early_exit:{label:'Early exit (default policy)',kind:'select',values:['off','0.999','0.995','0.99','0.98']},
+  prepared:{label:'Prepared kernels',kind:'text',placeholder:'auto, off or a directory',modes:GRAPH_MODES},
+  compile_scope:{label:'Compile scope',kind:'select',values:['model','layer'],modes:GRAPH_MODES},
+  graph_memory_gb:{label:'Graph memory (GiB)',kind:'num',attrs:'min="1" step="0.5"',placeholder:'free memory at start-up',modes:GRAPH_MODES},
+  mlx_forward:{label:'MLX forward',kind:'select',values:['mlx-lm','basal'],modes:['mlx','mlx-q8']},
+  mlx_compute:{label:'MLX compute',kind:'select',values:['auto','bf16'],modes:['mlx','mlx-q8']},
+  order_average:{label:'Average K option orders',kind:'num',attrs:'min="2" step="1"',placeholder:'off'},
+  reread:{label:'Reread uncertain answers below',kind:'num',attrs:'min="0.05" max="1" step="0.05"',placeholder:'off'},
+  reread_combine:{label:'Reread combination',kind:'select',values:['mean','second']},
+  reread_max_tokens:{label:'Reread requests up to (tokens)',kind:'num',attrs:'min="1" step="128"'},
+  reread_image:{label:'Reread images at (soft tokens)',kind:'num',attrs:'min="70" step="70"',placeholder:'off'},
+  state_cache_lock:{label:'State cache under the launch lock',kind:'bool'},
+  state_cache_bits:{label:'State cache precision',kind:'select',values:[[16,'16-bit'],[8,'8-bit (about 1.7x more states)']],numeric:true},
+  long_lane_gdn:{label:'Long-request lane on Qwen3.5 (opt-in)',kind:'bool'},
+  rank_max_candidates:{label:'Rank candidates per request',kind:'num',attrs:'min="1" step="500"'},
+  fp8_scaling:{label:'FP8 scaling',kind:'select',values:['auto','row','block'],modes:['fp8']},
+  fp8_bf16_layers:{label:'bf16 edge layers',kind:'num',attrs:'min="0" step="1"',modes:['fp8','nvfp4','int8']},
+  quant_load:{label:'Quantise from',kind:'select',values:[['gpu','GPU memory'],['cpu','host memory']],modes:['fp8','nvfp4','int8']},
+  nvfp4_amax:{label:'NVFP4 amax file',kind:'text',placeholder:'the model’s NVFP4_AMAX.json',modes:['nvfp4']},
+  nvfp4_scope:{label:'NVFP4 scope',kind:'select',values:['all','mlp'],modes:['nvfp4']},
+  vllm_overlap:{label:'Overlapping engine calls (opt-in)',kind:'bool',modes:['vllm']},
+  global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],modes:GRAPH_MODES},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
@@ -1708,7 +2126,7 @@ const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
   if(f.kind==='bool')return `<label><input type="checkbox" role="switch" id="${id}"${value?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(t(f.label))}</label>`;
-  const listed=(f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
+  const listed=(key==='adapter'?[[null,'None'],...(optionsState.data.adapters||[]).map(path=>[path,path])]:f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
@@ -1749,9 +2167,14 @@ function updateOptionVisibility() {
   if(!think.model)notes.push(ts(think.reason,think.reason_code,think.reason_params));
   else if(!think.vllm)notes.push(t('vLLM is not installed in basal-ui’s environment: give the Python of one that has it, or the URL of a running think server.'));
   if(mode!=='fast-exit')notes.push(t('Early exit needs --mode fast-exit (the exit heads of basal-1.0, bf16 on a CUDA GPU).'));
-  // LoRA adapters at load: only with an engine that takes --adapter (basal-ui's feature probe)
-  const adapterBox=$('#opt-adapter'), adapterReason=optionsState.data.adapter_reason;
-  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); if(adapterReason){adapterBox.value='';adapterBox.title=ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params);}else adapterBox.title='';}
+  // engine-gated options (the adapter, the engine 2.5 switches): the installed basal-serve lacks the flag
+  for(const [key,reason] of Object.entries(optionsState.data.unavailable||{})){
+    const el=$(`#opt-${key}`);
+    if(!el)continue;
+    el.disabled=true;
+    el.title=t(reason);
+    if(el.type==='checkbox')el.checked=Boolean(optionsState.data.defaults[key]);else el.value=optionValue(optionsState.data.defaults[key]);
+  }
   $('#optExperimentalNote').textContent=notes.join(' ');
 }
 function collectOptions() {
@@ -1764,7 +2187,7 @@ function collectOptions() {
     if(f.kind==='bool')out[key]=el.checked;
     else if(f.kind==='percent')out[key]=Number(el.value)===Math.round(d.defaults[key]*100)?d.defaults[key]:Number(el.value)/100;
     else if(f.kind==='num')out[key]=el.value===''?d.defaults[key]:Number(el.value);
-    else if(f.kind==='select')out[key]=el.value===''?null:el.value;
+    else if(f.kind==='select')out[key]=el.value===''?null:(f.numeric?Number(el.value):el.value);
     else out[key]=el.value.trim()||d.defaults[key];
   }
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));
@@ -1793,7 +2216,7 @@ $('#optionsApply').onclick=async()=>{
   const {id,media,restart,save,data,initialMode}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
   $('#optionsApply').disabled=true;
   try{
-    if(remember||data.saved&&!initialMode)await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});
+    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();return;}
     if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
     else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
@@ -1870,7 +2293,7 @@ async function toggleHistory(row) {
 }
 function historyDetailRow(x) {
   const tr=document.createElement('tr'); tr.className='history-detail';
-  tr.innerHTML=`<td colspan="7"><div class="history-panes"><div><strong>${t('Recorded request')}</strong><pre class="history-request"></pre></div><div><strong>${t('Response')}</strong><pre class="history-response"></pre></div></div><div class="controls"><button type="button" class="copy-request">${t('Copy request')}</button><button type="button" class="replay-request">${t('Replay in Playground')}</button></div><div class="history-replay-error error-box" role="alert" hidden></div></td>`;
+  tr.innerHTML=`<td colspan="7"><div class="history-panes"><div><strong>${t('Recorded request')}</strong><pre class="history-request"></pre></div><div><strong>${t('Response')}</strong><pre class="history-response"></pre></div></div>${x.request?.source_url?`<p class="muted">${t('Source URL: {url}',{url:esc(x.request.source_url)})}</p>`:''}<div class="controls"><button type="button" class="copy-request">${t('Copy request')}</button><button type="button" class="replay-request">${t('Replay in Playground')}</button></div><div class="history-replay-error error-box" role="alert" hidden></div></td>`;
   $('.history-request',tr).textContent=JSON.stringify(x.request,null,2);
   $('.history-response',tr).textContent=JSON.stringify(x.response,null,2);
   $('.copy-request',tr).onclick=()=>copyText(JSON.stringify(x.request,null,2),t('Request copied'));
@@ -1895,7 +2318,7 @@ $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.tog
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
 $('#clearHistory').onclick=()=>act(async()=>{
-  if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded decision (playground, API and MCP) is deleted.'),confirmLabel:t('Clear history'),destructive:true}))return;
+  if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted.'),confirmLabel:t('Clear history'),destructive:true}))return;
   const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
 });
 async function loadLogs() {
@@ -1937,11 +2360,26 @@ function answerBest(a) {
   return a.type||null;
 }
 let batchRowsLoaded=0, batchRunning=false, batchResult=null;
+let batchPresetAvailable=false;
+async function loadBatchPresets() {
+  const select=$('#batchPreset'), lang=$('#batchLang'), reason=$('#batchPresetReason');
+  try {
+    const data=await api('/api/batch/presets');
+    batchPresetAvailable=data.available;
+    if(data.available)select.innerHTML=`<option value="">${t('None')}</option>`+data.presets.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    select.disabled=lang.disabled=!data.available;
+    reason.hidden=data.available;
+    if(!data.available)reason.textContent=t('Presets need Engine 2.5. Installed Engine: {version}',{version:data.reason?.match(/installed: ([^)]+)/)?.[1]||'unknown'});
+  } catch(error) {
+    batchPresetAvailable=false; select.disabled=lang.disabled=true; reason.hidden=false; reason.textContent=error.message;
+  }
+}
+loadBatchPresets();
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
 function renderBatchState(job, ready) {
-  const select=$('#batchModel'), current=select.value, ids=ready.map(m=>m.id);
-  if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
+  const select=$('#batchModel'), current=select.value, allowed=ready.filter(m=>m.kind!=='cascade'||(m.cascade_kind==='escalate'&&!m.cascade_has_fallback)), ids=allowed.map(m=>m.id);
+  if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=allowed.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:m.kind==='comparison'?` · ${t('Comparison')}`:''}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
   if(ids.includes(current))select.value=current; else if(ids.includes(selectedModel))select.value=selectedModel;
   const levels=modelEntry(select.value)?.early_exit||[], ee=$('#batchEarlyExit');
   if(JSON.stringify([...ee.options].map(o=>o.value))!==JSON.stringify(['',...levels]))ee.innerHTML=['',...levels].map(l=>`<option value="${esc(l)}">${l?`${t('early exit')} ${esc(l)}`:t('no early exit')}</option>`).join('');
@@ -1970,6 +2408,7 @@ $('#runBatch').onclick=()=>act(async()=>{
   const body={id:$('#batchModel').value,input:$('#batchInput').value.trim(),concurrency:Number($('#batchConcurrency').value)||16};
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
+  if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
   await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
   $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
   toast(t('Batch started')); await refreshStatus();
@@ -2049,10 +2488,11 @@ function inspectDecision(request) {
   const frame=$('#vizFrame'), send=()=>frame.contentWindow.postMessage({request:handoff.body},location.origin);
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
-const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, and MCP.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],settings:['12 / SETTINGS','Settings','Manage memory, storage, defaults, and appearance.']};
+const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every recorded Decision, including scheduled Batch runs.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, and MCP.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],settings:['12 / SETTINGS','Settings','Manage memory, storage, defaults, and appearance.']};
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
+  if(name!=='playground'&&audioRecording)stopAudioRecording();
   const wasDashboard=!$('#dashboard').hidden;
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
@@ -2106,9 +2546,42 @@ selectManagerTab(new URLSearchParams(location.search).get('managerTab')||localSt
 function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
 $('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
 selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
+function updateDecisionServerConsent(){
+  const input=$('#decisionServerUrl'),field=$('#decisionServerConsentField');
+  let host='';
+  try{host=new URL(input.value).hostname;}catch{}
+  const local=host==='localhost'||host==='127.0.0.1'||host==='::1'||host.startsWith('127.');
+  field.hidden=!host||local;
+  field.lastChild.textContent=host?` ${t('I consent to sending request data to {host}',{host})}`:t('I consent to sending request data to this host');
+}
+async function loadDecisionServers(){
+  try{
+    const data=await api('/api/decision-servers'),list=$('#decisionServerList');
+    list.innerHTML=data.servers.length?data.servers.map(server=>`<div class="disk-row"><div class="disk-info"><strong>${esc(server.name)}</strong> <span class="badge">${esc(server.state)}</span><div class="muted">${esc(server.url)}</div><div class="muted">${(server.models||[]).map(model=>esc(model.id||model.name)).join(', ')||t('No models reported')}</div></div><button type="button" data-delete-decision-server="${esc(server.id)}">${t('Delete')}</button></div>`).join(''):`<p class="muted">${t('No Decision servers attached.')}</p>`;
+    list.querySelectorAll('[data-delete-decision-server]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/decision-servers/${encodeURIComponent(button.dataset.deleteDecisionServer)}`,{method:'DELETE'});await Promise.all([loadDecisionServers(),refreshStatus()]);}));
+  }catch(error){$('#decisionServerError').textContent=error.message;$('#decisionServerError').hidden=false;}
+}
+$('#decisionServerUrl').addEventListener('input',updateDecisionServerConsent);
+$('#addDecisionServer').onclick=()=>act(async()=>{
+  const name=$('#decisionServerName').value.trim(),url=$('#decisionServerUrl').value.trim(),key=$('#decisionServerKey').value,consent=$('#decisionServerConsent').checked;
+  $('#decisionServerError').hidden=true;
+  const body={name,url,...(key?{key}:{}),consent};
+  await api('/api/decision-servers',{method:'POST',body:JSON.stringify(body)});
+  $('#decisionServerKey').value='';$('#decisionServerName').value='';$('#decisionServerUrl').value='';$('#decisionServerConsent').checked=false;updateDecisionServerConsent();
+  await Promise.all([loadDecisionServers(),refreshStatus()]);
+});
+loadDecisionServers();
+let decisionServerStates='';
+document.addEventListener('app:status',event=>{  // a server's readiness and model list change after it is added
+  const states=(event.detail.models||[]).filter(m=>m.kind==='comparison').map(m=>`${m.id}:${m.state}`).join('|');
+  if(states!==decisionServerStates){decisionServerStates=states;loadDecisionServers();}
+});
+updateDecisionServerConsent();
+
 async function loadMemorySettings(){
   try{
     const d=await api('/api/memory'), budget=$('input#memoryBudget');
+    $('#idleUnload').value=d.settings.idle_unload_minutes??'';
     budget.placeholder=t('Hardware budget: {size} GiB',{size:(d.hardware_budget_bytes/2**30).toFixed(1)});
     for(const [input,bytes] of [[budget,d.settings.budget_bytes],[$('#memoryReserve'),d.settings.reserve_bytes]]){
       input.value=bytes==null?'':String(Number((bytes/2**30).toFixed(3)));
@@ -2119,7 +2592,7 @@ async function loadMemorySettings(){
 $('#saveMemory').onclick=async()=>{
   const bytesOf=input=>{const value=input.value.trim();if(value===input.dataset.shown&&input.dataset.bytes!==undefined)return input.dataset.bytes===''?null:Number(input.dataset.bytes);return value===''?null:Math.round(Number(value)*2**30);};
   try{
-    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0})});
+    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0,idle_unload_minutes:$('#idleUnload').value===''?null:Number($('#idleUnload').value)})});
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };
@@ -2127,3 +2600,42 @@ showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();
  (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();})();
+const schedulePanel=document.createElement('section');
+schedulePanel.className='card';
+schedulePanel.id='schedulePanel';
+schedulePanel.innerHTML=`<div class="tabs" role="tablist" aria-label="${t('Batch')}"><button type="button" role="tab" id="batchRunTab" aria-selected="true">${t('Batch run')}</button><button type="button" role="tab" id="batchSchedulesTab" aria-selected="false">${t('Schedules')}</button></div><div id="scheduleManager" hidden><h2>${t('Scheduled Batch')}</h2><div id="scheduleList" aria-live="polite"></div><form id="scheduleForm" class="controls"><input id="scheduleName" class="input" placeholder="${t('Name')}" aria-label="${t('Name')}"><select id="scheduleModel" class="select" aria-label="${t('Model')}"></select><input id="scheduleInputDir" class="input" placeholder="${t('Input folder')}" aria-label="${t('Input folder')}"><input id="schedulePattern" class="input" value="*.jsonl" aria-label="${t('File pattern')}"><input id="scheduleOutputDir" class="input" placeholder="${t('Output folder')}" aria-label="${t('Output folder')}"><input id="scheduleConcurrency" class="input" type="number" min="1" max="256" value="16" aria-label="${t('Concurrency')}"><select id="scheduleIntervalType" class="select" aria-label="${t('Interval')}"><option value="every">${t('Every N minutes')}</option><option value="daily">${t('Daily at')}</option></select><input id="scheduleEvery" class="input" type="number" min="1" value="60" aria-label="${t('Every N minutes')}"><input id="scheduleDaily" class="input" type="time" value="09:00" aria-label="${t('Daily at')}"><label><input id="scheduleOverwrite" type="checkbox"> ${t('Allow overwriting output')}</label><label><input id="scheduleCatchUp" type="checkbox"> ${t('Catch up missed daily run')}</label><label><input id="schedulePaused" type="checkbox"> ${t('Paused')}</label><select id="schedulePreset" class="select" aria-label="${t('Preset')}"><option value="">${t('None')}</option></select><select id="scheduleLang" class="select" aria-label="${t('Language')}"><option value="auto">auto</option><option value="pl">pl</option><option value="en">en</option></select><button class="btn primary" type="submit">${t('Save schedule')}</button><button class="btn" id="scheduleCancelEdit" type="button" hidden>${t('Cancel')}</button><p id="scheduleError" class="error-box" role="alert" hidden></p></form></div>`;
+const batchCard=$('#batch > .card');
+const scheduleTabs=schedulePanel.querySelector('.tabs');
+batchCard.before(scheduleTabs);  // not a .card: path-inspector.js wraps the first card of #batch
+schedulePanel.hidden=true;
+$('#batch').append(schedulePanel);
+const scheduleRunTab=$('#batchRunTab'), scheduleTab=$('#batchSchedulesTab'), scheduleManager=$('#scheduleManager');
+const batchRunView=()=>batchCard.closest('.path-inspector-layout')||batchCard;
+scheduleRunTab.onclick=()=>{batchRunView().hidden=false;schedulePanel.hidden=scheduleManager.hidden=true;scheduleRunTab.setAttribute('aria-selected','true');scheduleTab.setAttribute('aria-selected','false');};
+scheduleTab.onclick=()=>{batchRunView().hidden=true;schedulePanel.hidden=scheduleManager.hidden=false;scheduleRunTab.setAttribute('aria-selected','false');scheduleTab.setAttribute('aria-selected','true');loadSchedules();};
+let editingSchedule=null,schedulePresetData=[];
+async function loadSchedules(){
+  try{
+    const [data,presets]=await Promise.all([api('/api/schedules'),api('/api/batch/presets')]);
+    schedulePresetData=presets.available?presets.presets:[];
+    const presetSelect=$('#schedulePreset'), chosen=presetSelect.value;
+    presetSelect.innerHTML=`<option value="">${t('None')}</option>`+schedulePresetData.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    if(schedulePresetData.includes(chosen))presetSelect.value=chosen;
+    const models=readyModels().filter(m=>m.kind!=='cascade'||(m.cascade_kind==='escalate'&&!m.cascade_has_fallback));
+    const modelSelect=$('#scheduleModel'), old=modelSelect.value;
+    modelSelect.innerHTML=models.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
+    if(models.some(m=>m.id===old))modelSelect.value=old;
+    $('#scheduleList').innerHTML=data.schedules.length?data.schedules.map(s=>`<article class="model-row"><strong>${esc(s.id)}</strong><span>${esc(s.model)} · ${esc(s.input_dir)} · ${esc(s.pattern)} → ${esc(s.output_dir)}</span><span class="badge">${s.paused?t('Paused'):t('Active')}</span>${s.paused_reason?`<span class="reason">${esc(s.paused_reason)}</span>`:''}<div class="controls"><button type="button" data-schedule-edit="${esc(s.id)}">${t('Edit')}</button><button type="button" data-schedule-pause="${esc(s.id)}">${s.paused?t('Resume'):t('Pause')}</button><button type="button" data-schedule-run="${esc(s.id)}">${t('Run now')}</button><button type="button" data-schedule-delete="${esc(s.id)}">${t('Delete')}</button></div><div data-schedule-runs="${esc(s.id)}"></div></article>`).join(''):`<p class="muted">${t('No schedules yet.')}</p>`;
+    for(const s of data.schedules){
+      const runs=await api(`/api/schedules/${encodeURIComponent(s.id)}/runs`);
+      const node=document.querySelector(`[data-schedule-runs="${CSS.escape(s.id)}"]`);
+      node.innerHTML=runs.runs.length?`<h3>${t('Recent runs')}</h3>`+runs.runs.slice(0,5).map(r=>`<p class="muted">${new Date(r.at*1000).toLocaleString()} · ${esc(r.file||'')} · ${r.skipped?`${t('Skipped')}: ${esc(r.skipped)}`:r.error?`${t('Error')}: ${esc(r.error)}`:`${esc(r.rows??'—')} ${t('rows')} · ${t('Errors')}: ${esc(r.errors??'—')}`} · ${t('Model')}: ${esc(r.model||s.model)} · ${t('Duration')}: ${esc(r.duration??'—')} ${t('seconds')} · ${esc(r.output||'')}</p>`).join(''):'';
+    }
+    $('#scheduleList').querySelectorAll('[data-schedule-pause]').forEach(button=>button.onclick=()=>act(async()=>{const s=data.schedules.find(row=>row.id===button.dataset.schedulePause);await api(`/api/schedules/${encodeURIComponent(s.id)}`,{method:'PUT',body:JSON.stringify({paused:!s.paused,paused_reason:null})});await loadSchedules();}));
+    $('#scheduleList').querySelectorAll('[data-schedule-run]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/schedules/${encodeURIComponent(button.dataset.scheduleRun)}/run`,{method:'POST'});toast(t('Batch started'));await refreshStatus();await loadSchedules();}));
+    $('#scheduleList').querySelectorAll('[data-schedule-delete]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/schedules/${encodeURIComponent(button.dataset.scheduleDelete)}`,{method:'DELETE'});await loadSchedules();}));
+    $('#scheduleList').querySelectorAll('[data-schedule-edit]').forEach(button=>button.onclick=()=>{const s=data.schedules.find(row=>row.id===button.dataset.scheduleEdit);editingSchedule=s.id;$('#scheduleName').value=s.id;$('#scheduleName').disabled=true;const modelSelect=$('#scheduleModel');if(![...modelSelect.options].some(option=>option.value===s.model))modelSelect.add(new Option(s.model,s.model));modelSelect.value=s.model;$('#scheduleInputDir').value=s.input_dir;$('#schedulePattern').value=s.pattern;$('#scheduleOutputDir').value=s.output_dir;$('#scheduleConcurrency').value=s.concurrency;$('#scheduleIntervalType').value=s.interval.every_minutes?'every':'daily';$('#scheduleEvery').value=s.interval.every_minutes||60;$('#scheduleDaily').value=s.interval.daily_at||'09:00';$('#scheduleOverwrite').checked=s.overwrite;$('#scheduleCatchUp').checked=s.catch_up;$('#schedulePaused').checked=s.paused;$('#schedulePreset').value=s.preset||'';$('#scheduleLang').value=s.lang||'auto';$('#scheduleCancelEdit').hidden=false;});
+  }catch(error){$('#scheduleList').innerHTML=`<p class="error-box">${esc(error.message)}</p>`;}
+}
+$('#scheduleForm').onsubmit=event=>act(async()=>{event.preventDefault();const body={model:$('#scheduleModel').value,input_dir:$('#scheduleInputDir').value.trim(),pattern:$('#schedulePattern').value,output_dir:$('#scheduleOutputDir').value.trim(),concurrency:Number($('#scheduleConcurrency').value),interval:$('#scheduleIntervalType').value==='daily'?{daily_at:$('#scheduleDaily').value}:{every_minutes:Number($('#scheduleEvery').value)},overwrite:$('#scheduleOverwrite').checked,catch_up:$('#scheduleCatchUp').checked,paused:$('#schedulePaused').checked,lang:$('#scheduleLang').value,preset:$('#schedulePreset').value||null};try{if(editingSchedule)await api(`/api/schedules/${encodeURIComponent(editingSchedule)}`,{method:'PUT',body:JSON.stringify(body)});else await api('/api/schedules',{method:'POST',body:JSON.stringify({id:$('#scheduleName').value.trim(),...body})});$('#scheduleError').hidden=true;editingSchedule=null;$('#scheduleName').disabled=false;event.target.reset();$('#schedulePattern').value='*.jsonl';$('#scheduleConcurrency').value='16';$('#scheduleEvery').value='60';$('#scheduleDaily').value='09:00';$('#scheduleCancelEdit').hidden=true;await loadSchedules();}catch(error){$('#scheduleError').textContent=error.message;$('#scheduleError').hidden=false;}});
+$('#scheduleCancelEdit').onclick=()=>{editingSchedule=null;$('#scheduleName').disabled=false;$('#scheduleForm').reset();$('#schedulePattern').value='*.jsonl';$('#scheduleCancelEdit').hidden=true;};

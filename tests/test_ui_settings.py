@@ -219,22 +219,28 @@ def test_loaded_models_keep_load_order_update_media_and_migrate_the_single_model
 
 def test_memory_settings_validate_budget_and_reserve(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
-    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 2 * 1024**3}
+    assert settings.memory_settings() == {
+        "budget_bytes": None,
+        "reserve_bytes": 2 * 1024**3,
+        "idle_unload_minutes": None,
+    }
     for patch in (
         {"budget_bytes": 1024**3 - 1},
         {"budget_bytes": "8G"},
         {"reserve_bytes": -1},
         {"reserve_bytes": 1.5},
         {"swap": 1},
+        *({"idle_unload_minutes": v} for v in (0, -1, 1.5, "1", True)),
     ):
         with pytest.raises(ValueError):
             settings.update_memory(patch)
     assert settings.update_memory({"budget_bytes": 1024**3, "reserve_bytes": 0}) == {
         "budget_bytes": 1024**3,
         "reserve_bytes": 0,
+        "idle_unload_minutes": None,
     }
     assert settings.update_memory({"budget_bytes": None})["budget_bytes"] is None
-    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0}
+    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0, "idle_unload_minutes": None}
 
 
 def test_cross_process_settings_updates_do_not_lose_keys(tmp_path, monkeypatch):
@@ -304,3 +310,22 @@ def test_the_first_catalog_check_reports_no_new_models_then_only_new_ones(tmp_pa
     assert settings.update_seen_ids(["a", "b", "c"]) == ["c"]
     settings.mark_models_seen(["c"])
     assert settings.update_seen_ids(["a", "b", "c"]) == []
+
+
+def test_cascades_validate_shape_and_store_secrets_owner_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    base = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+    with pytest.raises(ValueError, match="at least two"):
+        settings.set_cascade({**base, "levels": [{"model": "a/one", "below": 0.8}]})
+    with pytest.raises(ValueError, match="blend weights"):
+        settings.set_cascade({**base, "kind": "blend", "weights": [1]})
+    spec = settings.set_cascade(
+        {**base, "fallback": {"url": "https://example.test/v1", "model": "chat", "key": "secret"}}
+    )
+    assert spec["levels"] == base["levels"]
+    assert "key" not in spec["fallback"]
+    assert settings.get_secret("cascade:tri") == "secret"
+    assert settings.secrets_path().stat().st_mode & 0o777 == 0o600
+    assert "secret" not in json.dumps(settings.cascades())
+    settings.set_secret("cascade:tri", None)
+    assert settings.get_secret("cascade:tri") is None
