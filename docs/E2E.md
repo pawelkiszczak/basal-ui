@@ -65,8 +65,9 @@ graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA G
 
 ## Reviewed roadmap verification, 2026-11-06
 
-Application code: [`0a6102e`](https://github.com/pawelkiszczak/basal-ui/commit/0a6102e); final compact-fixture E2E
-harness: [`0827bf1`](https://github.com/pawelkiszczak/basal-ui/commit/0827bf1), on `integration/reviewed-roadmap`,
+Application code: [`0a6102e`](https://github.com/pawelkiszczak/basal-ui/commit/0a6102e); full compact-fixture E2E
+harness: [`0827bf1`](https://github.com/pawelkiszczak/basal-ui/commit/0827bf1), published at `5a61955` on
+`integration/reviewed-roadmap`,
 based on `dev` at `6297401`. This is combined verification, not a release or permission to merge the feature stack.
 
 The selected roots are [#38](https://github.com/pawelkiszczak/basal-ui/pull/38) at `445437b`,
@@ -101,7 +102,7 @@ A separate native-process smoke loaded each fixture, answered a real Decision, r
 |---|---|---|
 | Python for unit tests | 3.13.11 | 3.10.19 |
 | Final unit suite | 483 passed | 475 passed, 8 skipped |
-| Final full E2E gate | 129 passed, 3 skipped | 124 passed, 8 skipped |
+| Full E2E gate at `5a61955` | 129 passed, 3 skipped | 124 passed, 8 skipped |
 | Python for real-model/Chromium qualification | 3.13.11 | 3.13.11 |
 
 The Engine's MLX extra requires Python 3.11 or later in its dependency markers. The first Engine 2.4.1 runtime
@@ -163,6 +164,40 @@ the final full qualifications ran serially and both passed. Temporary diagnostic
 These checks do not qualify CUDA, CPU-only Linux, Windows, physical microphone capture, fine-tuning quality or model
 accuracy. The dedicated hardware gate issues [#2](https://github.com/pawelkiszczak/basal-ui/issues/2) and
 [#3](https://github.com/pawelkiszczak/basal-ui/issues/3) remain separate requirements.
+
+### CPU-only Linux attempt, 2026-11-06
+
+Once the local Docker daemon became available, the same published application was exercised in an isolated
+Debian 12 aarch64 container on OrbStack Linux `7.2.12-orbstack-00394-gbecdd6130068`: 16 visible CPU cores,
+16,818,020,352 bytes RAM, Python 3.13.11, CPU-only Torch 2.14.1, Engine 2.5.1, Playwright 1.64.1 and
+Chromium 156.0.8078.4. Both source and the existing compact-model cache were mounted read-only; no additional
+weights or global VM changes were needed. The primary fixture was `Remek/basal-2.0-mini` BF16.
+
+A native `eager`/`cpu` smoke loaded in 11.12 seconds, answered a real Decision with `cards` and HTTP 200 in
+6.77 seconds, returned child health HTTP 200, and exited without surviving children.
+
+The full Linux E2E attempt at `5a61955` produced **103 passed, 13 skipped, 16 failed** in 6077.77 seconds.
+This is a failed qualification, not a green CPU release gate:
+
+- Five direct calibration/inspection/benchmark starts were refused with HTTP 409:
+  `4.6 GiB loaded + 4.6 GiB needed > 7.4 GiB (9.4 GiB budget − 2.0 GiB kept free)`.
+  The default memory protection was not weakened.
+- Six direct Decision calls returned HTTP 502 `basal-serve: timed out`; the native forwarding timeout is
+  120 seconds. Two Playground result waits also expired at 120 seconds, and an Inspect iframe did not become
+  ready within its 600-second wait. No timeout extension or retry was added.
+- The bundled image-preset check inspected original bytes before asynchronous Save completed. Its test now waits
+  for the real example to be available and for the editor dialog to detach after Save. The isolated case passed on
+  Linux and on both macOS Engine environments. Application behavior and the save/unlink assertions are unchanged.
+- The 390-pixel Dashboard check observed `scrollY` changing from 1924 to 1903. A follow-up real Chromium diagnostic
+  preserved endpoint position, selection and `scrollY` across five polls, but did not reproduce that change.
+  Its cause remains unknown; neither the assertion nor application rendering was changed.
+
+Seven skips require a second runnable Llama-family CPU fixture; the remaining skips are three Apple/MLX cases,
+thinking, early exit and missing audio-capable weights. The cached experimental recurrent Pico was not substituted
+for the Llama-family fixture. The original full-run counts remain unchanged by the later focused test correction;
+no passing full CPU rerun is claimed. Issue [#3](https://github.com/pawelkiszczak/basal-ui/issues/3) remains open,
+as do CUDA qualification and the other hardware-specific limits above.
+
 
 ## Stage gate, engine 2.5.1, 2026-11-02
 
