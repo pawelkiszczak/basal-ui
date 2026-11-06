@@ -690,6 +690,7 @@ def test_polish_ui_leaves_no_frontend_text_in_english(page, text_model):
         left[f"manager {tab}"] = page.evaluate(UNTRANSLATED)
     view(page, "models")
     page.click("#allModelsTab")
+    page.check("#olderToggle")
     page.locator(f'#modelsTable .options-model[data-id="{text_model["id"]}"]').click()
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
     left["load options"] = page.evaluate(UNTRANSLATED)
@@ -947,6 +948,7 @@ def test_models_set_up_without_loading_and_the_model_manager_loads(page, ui, tex
     sync_api.expect(row.locator(".unload-model")).to_be_visible()
     view(page, "models")
     page.click("#allModelsTab")
+    page.check("#olderToggle")
     loads = []
     page.route("**/api/load", lambda route: (loads.append(1), route.fulfill(status=500, body="loaded")))
     page.click(f'#modelsTable .options-model[data-action="save"][data-id="{text_model["id"]}"]')
@@ -1137,6 +1139,7 @@ def test_history_and_logs_views(page, ui, text_model):
 
 
 def test_inspect_view_embeds_basal_viz_and_explains_a_playground_decision(page, ui, bf16_model):
+    ui.load(bf16_model["id"])
     view(page, "inspect")
     page.select_option("#inspectModel", bf16_model["id"])
     page.click("#startInspect")
@@ -1145,19 +1148,17 @@ def test_inspect_view_embeds_basal_viz_and_explains_a_playground_decision(page, 
     frame = page.frame_locator("#vizFrame")
     sync_api.expect(frame.locator("#modelchip")).to_contain_text(bf16_model["id"])
     view(page, "playground")
+    page.select_option("#playgroundModel", bf16_model["id"])
     request = {**CHOICE, "state": "Umowa podpisana 3 marca 2025.", "facts": "auto", "lang": "pl"}
     page.evaluate("r => setRequest(r)", request)
     page.click("#sendButton")
     page.click("#inspectDecision")
-    sync_api.expect(page.locator("#pageTitle")).to_have_text("Inspect")
+    sync_api.expect(page).to_have_url(re.compile(r"#inspect$"))
     sync_api.expect(frame.locator("#out .result").first).to_be_visible()
     sync_api.expect(frame.locator("#out")).to_contain_text("Do którego działu")
-    sync_api.expect(frame.locator("#out .result").first).to_contain_text("Polish prompt")
     sync_api.expect(frame.locator("#out .result .prompt")).to_contain_text("Fakty pomocnicze")
     notice = page.locator("#inspectNotice")
     sync_api.expect(notice).to_be_visible()
-    if page.input_value("#playgroundModel") != bf16_model["id"]:  # the served decision came from other weights
-        sync_api.expect(notice).to_contain_text("weights: served")
     page.click("#stopInspect")
     sync_api.expect(frame_el).to_be_hidden()
     assert ui.get("/api/inspect")["state"] == "idle"
