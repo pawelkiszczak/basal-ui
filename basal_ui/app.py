@@ -1372,16 +1372,59 @@ def create_app(
         """Return bounded, read-only facts about a path used by Batch."""
         from . import paths
 
+        preset = body.get("preset")
+        if preset not in (None, ""):
+            from . import engine
+
+            if not isinstance(preset, str):
+                raise HTTPException(400, "preset must be a string")
+            if not engine.feature("presets"):
+                raise HTTPException(400, "Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if preset not in names():
+                raise HTTPException(400, f"unknown preset {preset!r}")
+        else:
+            preset = None
         try:
-            return paths.check(body.get("path"), body.get("kind"))
+            return paths.check(body.get("path"), body.get("kind"), preset)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/batch/presets")
+    def get_batch_presets():
+        from . import engine
+
+        available = engine.feature("presets")
+        if not available:
+            return {
+                "available": False,
+                "presets": [],
+                "langs": [],
+                "reason": f"needs engine 2.5 (installed: {engine.status()['version']})",
+            }
+        from basal.presets import names
+
+        return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
 
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
         from . import batch
 
         model_id = body.get("id")
+        preset = body.get("preset")
+        lang = body.get("lang", "auto")
+        if preset is not None:
+            from . import engine
+
+            if not engine.feature("presets"):
+                raise HTTPException(400, "Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if not isinstance(preset, str) or preset not in names():
+                raise HTTPException(400, f"unknown preset {preset!r}")
+        if lang not in ("auto", "pl", "en"):
+            raise HTTPException(400, "lang must be one of auto, pl, en")
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(
@@ -1397,7 +1440,14 @@ def create_app(
                 item = json.loads(line)
             except ValueError:
                 item = None
-            if not isinstance(item, dict) or not ("questions" in item or "options" in item):
+            is_state_only = (
+                preset
+                and isinstance(item, dict)
+                and "state" in item
+                and "questions" not in item
+                and "question" not in item
+            )
+            if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
                 raise HTTPException(
                     400,
                     f"{source.name}: line {n} is neither a simple item (state, question, "
@@ -1440,6 +1490,8 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
+                preset,
+                lang,
             )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc

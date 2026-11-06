@@ -47,11 +47,21 @@ def _count(file, lines, pending, budget, decoder):
     return LINE_CAP, True
 
 
-def _row_shape(item):
+def _row_shape(item, preset=None):
     if "state" not in item:
         return None, "row must contain state"
     questions = item.get("questions")
-    if "questions" in item:
+    if preset and "questions" not in item and "question" not in item:
+        from basal.presets import questions as preset_questions
+
+        questions = preset_questions(preset, state=item["state"])
+        shape = {
+            "format": "request",
+            "questions": len(questions),
+            "types": sorted({q.get("type", "?") for q in questions.values()})[:FIELD_CAP],
+        }
+        labelled = "gold" in item
+    elif "questions" in item:
         if not isinstance(questions, dict) or not questions:
             return None, "questions must be a non-empty object"
         if any(not isinstance(question, dict) for question in questions.values()):
@@ -90,7 +100,7 @@ def _row_shape(item):
     )
 
 
-def _read_jsonl(file, result):
+def _read_jsonl(file, result, preset=None):
     first, budget = None, COUNT_CAP
     while budget > 0:
         line = file.readline(min(FIRST_LINE_CAP + 1, budget))
@@ -120,7 +130,7 @@ def _read_jsonl(file, result):
         return "not_json"
     if not isinstance(item, dict):
         return "not_json"
-    shape, error = _row_shape(item)
+    shape, error = _row_shape(item, preset)
     if shape is None:
         result["schema_error"] = error
         return "invalid_schema"
@@ -128,7 +138,7 @@ def _read_jsonl(file, result):
     return None
 
 
-def _problem(path, kind, result):
+def _problem(path, kind, result, preset=None):
     if kind == "output":
         parent_ok = path.parent.is_dir() and os.access(path.parent, os.W_OK)
         exists = path.exists()
@@ -151,7 +161,7 @@ def _problem(path, kind, result):
     try:
         with _open(path) as file:
             result["size"] = os.fstat(file.fileno()).st_size
-            return _read_jsonl(file, result)
+            return _read_jsonl(file, result, preset)
     except UnicodeDecodeError:
         return "not_text"
     except IsADirectoryError:
@@ -160,7 +170,7 @@ def _problem(path, kind, result):
         return "unreadable"
 
 
-def check(path, kind):
+def check(path, kind, preset=None):
     """Inspect one actual JSONL input or output file path without writing to it."""
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {', '.join(KINDS)}")
@@ -178,7 +188,7 @@ def check(path, kind):
             "is_file": resolved.is_file(),
             "is_dir": resolved.is_dir(),
         }
-        code = _problem(resolved, kind, result)
+        code = _problem(resolved, kind, result, preset)
     except PermissionError:
         result, code = unknown, "not_writable" if kind == "output" else "unreadable"
     except (OSError, RuntimeError):

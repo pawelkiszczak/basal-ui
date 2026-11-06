@@ -4,7 +4,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from basal_ui import settings
+from basal_ui import engine, settings
 from basal_ui.app import create_app
 from basal_ui.fleet import Fleet, Runner
 from basal_ui.hardware import Hardware
@@ -113,3 +113,86 @@ def test_batch_refuses_bad_input(client, tmp_path, body, status, message):
     body = {**body, "input": {"GOOD": str(good), "BAD": str(bad)}.get(body["input"], body["input"])}
     response = client.post("/api/batch", json=body)
     assert response.status_code == status and message in response.json()["detail"]
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_batch_presets_api_lists_engine_names(client):
+    from basal.presets import names
+
+    response = client.get("/api/batch/presets")
+    assert response.status_code == 200
+    assert response.json() == {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+
+
+def test_batch_presets_api_reports_feature_unavailable(monkeypatch, client):
+
+    monkeypatch.setitem(engine.FEATURES, "presets", lambda: False)
+    response = client.get("/api/batch/presets")
+    assert response.status_code == 200
+    assert response.json()["available"] is False
+    assert response.json()["presets"] == response.json()["langs"] == []
+    assert "needs engine 2.5" in response.json()["reason"]
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_batch_preset_argv_and_no_preset_argv(client, tmp_path, monkeypatch):
+    from basal.presets import names
+
+    from basal_ui import batch
+
+    captured = []
+    monkeypatch.setattr(batch, "run_tool", lambda job, module, argv: captured.append(argv) or {"items": 1, "errors": 0})
+    for i, body in enumerate(({"preset": names()[0], "lang": "pl"}, {}, {"preset": names()[0]})):
+        source = tmp_path / f"preset-{i}.jsonl"
+        source.write_text(
+            '{"state":"A user asks for help."}\n' if i != 1 else '{"state":"s","question":"q","options":["a","b"]}\n'
+        )
+        response = client.post("/api/batch", json={"id": "mini", "input": str(source), **body})
+        assert response.status_code == 202
+        assert wait_batch(client)["phase"] == "done"
+    assert ["--preset", names()[0], "--lang", "pl"] == captured[0][-4:]
+    assert "--preset" not in captured[1] and "--lang" not in captured[1]
+    assert ["--preset", names()[0]] == captured[2][-2:]
+    assert "--lang" not in captured[2]
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_state_only_batch_input_requires_preset_and_path_preview_accepts_it(client, tmp_path, monkeypatch):
+    from basal.presets import names
+
+    from basal_ui import batch
+
+    preset = names()[0]
+
+    monkeypatch.setattr(batch, "run_tool", lambda job, module, argv: {"items": 1, "errors": 0})
+    source = tmp_path / "states.jsonl"
+    source.write_text('{"state":"A user asks for help."}\n')
+    assert client.post("/api/batch", json={"id": "mini", "input": str(source)}).status_code == 400
+    no_preset_preview = client.post("/api/paths/check", json={"path": str(source), "kind": "jsonl"})
+    assert no_preset_preview.json()["ok"] is False
+    preview = client.post("/api/paths/check", json={"path": str(source), "kind": "jsonl", "preset": preset})
+    assert preview.status_code == 200
+    assert preview.json()["ok"] is True and preview.json()["first"]["questions"] > 0
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "preset": preset})
+    assert response.status_code == 202 and wait_batch(client)["phase"] == "done"
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_batch_rejects_unknown_preset(client, tmp_path):
+    source = tmp_path / "items.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "preset": "missing"})
+    assert response.status_code == 400 and "unknown preset" in response.json()["detail"]
+
+
+def test_batch_rejects_unsupported_preset_language(client, tmp_path):
+    source = tmp_path / "items.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "lang": "de"})
+    assert response.status_code == 400 and "lang must be one of" in response.json()["detail"]
+
+
+def test_batch_preset_route_unavailable_when_engine_feature_is_missing(monkeypatch, client):
+
+    monkeypatch.setitem(engine.FEATURES, "presets", lambda: False)
+    assert client.get("/api/batch/presets").json()["available"] is False

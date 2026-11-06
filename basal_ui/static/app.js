@@ -1937,6 +1937,21 @@ function answerBest(a) {
   return a.type||null;
 }
 let batchRowsLoaded=0, batchRunning=false, batchResult=null;
+let batchPresetAvailable=false;
+async function loadBatchPresets() {
+  const select=$('#batchPreset'), lang=$('#batchLang'), reason=$('#batchPresetReason');
+  try {
+    const data=await api('/api/batch/presets');
+    batchPresetAvailable=data.available;
+    if(data.available)select.innerHTML=`<option value="">${t('None')}</option>`+data.presets.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    select.disabled=lang.disabled=!data.available;
+    reason.hidden=data.available;
+    if(!data.available)reason.textContent=t('Presets need Engine 2.5. Installed Engine: {version}',{version:data.reason?.match(/installed: ([^)]+)/)?.[1]||'unknown'});
+  } catch(error) {
+    batchPresetAvailable=false; select.disabled=lang.disabled=true; reason.hidden=false; reason.textContent=error.message;
+  }
+}
+loadBatchPresets();
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
 function renderBatchState(job, ready) {
@@ -1970,6 +1985,7 @@ $('#runBatch').onclick=()=>act(async()=>{
   const body={id:$('#batchModel').value,input:$('#batchInput').value.trim(),concurrency:Number($('#batchConcurrency').value)||16};
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
+  if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
   await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
   $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
   toast(t('Batch started')); await refreshStatus();

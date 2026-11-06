@@ -42,12 +42,23 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Batch presets
+
+`GET /api/batch/presets` returns the Engine's ready question names and supported language values:
+`{"available":true,"presets":["..."],"langs":["auto","pl","en"]}`. On Engine 2.4.1 it returns
+`available: false`, empty lists, and a `reason`; it does not import the 2.5-only preset module.
+
+`POST /api/batch` accepts optional `preset` (one of those names) and `lang` (`auto`, `pl` or `en`). `auto` is the
+default and is inferred by `basal-run` from each state's language; explicit `pl` or `en` passes `--lang`. With a
+preset selected, JSONL lines containing only `state` are accepted and basal-run supplies that preset's questions.
+Unknown presets or unsupported language values return HTTP 400.
+
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:
 
 ```json
-{"path":"/Users/me/requests.jsonl","kind":"jsonl"}
+{"path":"/Users/me/requests.jsonl","kind":"jsonl","preset":"triage"}
 ```
 
 `kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
@@ -59,6 +70,8 @@ inspects the first non-empty row for request/label shape, question types and a p
 every request in the file. Scanning stops at 100,000 non-empty rows or 64 MiB; the first row must fit within 1 MiB.
 A blank prefix exhausting the scan limit is not reported as an empty file. Preview text is limited to 300 characters
 plus an ellipsis when truncated.
+When the selected Batch preset is included as `preset`, a state-only first row is previewed as a request using that
+preset's questions. Without it, the same row is unsuitable.
 
 For output, the response reports parent-directory existence, writability and whether an existing file would be
 overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
