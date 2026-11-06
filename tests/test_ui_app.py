@@ -1577,3 +1577,19 @@ def test_decision_server_requires_consent_for_hosted_external_url(tmp_path):
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "CONSENT_REQUIRED"
     assert "api.typesafe.ai" in response.json()["detail"]["detail"]
+
+
+def test_idle_scan_skips_cascade_and_comparison(tmp_path, monkeypatch):
+    from basal_ui.fleet import AttachedServerRunner, CascadeRunner
+
+    fleet = make_fleet(tmp_path)
+    cascade = CascadeRunner({"name": "route", "kind": "blend", "levels": [{"model": "member"}]}, settings, fleet.event)
+    member = Runner()
+    member.state, member.last_used, member.base_url = "ready", 0, "http://localhost"
+    comparison = AttachedServerRunner({"id": "remote", "base_url": "http://localhost"}, {"id": "model"}, settings)
+    cascade.state = comparison.state = "ready"
+    fleet.runners = {cascade.model: cascade, comparison.model: comparison, "member": member}
+    monkeypatch.setattr(settings, "memory_settings", lambda: {"idle_unload_minutes": 1})
+    monkeypatch.setattr("basal_ui.fleet.httpx.get", lambda *a, **k: pytest.fail("unexpected health probe"))
+    fleet.unload_idle(time.monotonic() + 120)
+    assert set(fleet.runners) == {cascade.model, comparison.model, "member"}

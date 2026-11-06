@@ -1093,6 +1093,8 @@ class Fleet:
         with self.lock:
             candidates = list(self.runners.items())
         for model_id, runner in candidates:
+            if isinstance(runner, (CascadeRunner, AttachedServerRunner)):
+                continue
             with self.lock, runner.lock:
                 timeout = self.settings_mod.memory_settings()["idle_unload_minutes"]
                 if (
@@ -1100,6 +1102,10 @@ class Fleet:
                     or self.stopping
                     or self.engine_addon_installing
                     or self.runners.get(model_id) is not runner
+                    or any(
+                        isinstance(other, CascadeRunner) and any(level["model"] == model_id for level in other.levels)
+                        for other in self.runners.values()
+                    )
                     or model_id in self.draining
                     or self.leases.get(runner)
                     or runner.temporary
@@ -1126,6 +1132,10 @@ class Fleet:
                     or self.stopping
                     or self.engine_addon_installing
                     or self.runners.get(model_id) is not runner
+                    or any(
+                        isinstance(other, CascadeRunner) and any(level["model"] == model_id for level in other.levels)
+                        for other in self.runners.values()
+                    )
                     or model_id in self.draining
                     or self.leases.get(runner)
                     or runner.gen != gen

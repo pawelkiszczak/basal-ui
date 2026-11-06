@@ -529,3 +529,21 @@ def test_configured_admin_secret_authenticates_real_gateway_and_is_not_persisted
         gateway.stop()
         settings.remove_keys_file()
         stats.close()
+
+
+def test_metrics_scrape_only_native_children(fleet, child):
+    from basal_ui.fleet import AttachedServerRunner, CascadeRunner
+
+    cascade = CascadeRunner({"name": "route", "kind": "blend", "levels": []}, settings, fleet.event)
+    comparison = AttachedServerRunner({"id": "remote", "base_url": child.url}, {"id": "model"}, settings)
+    cascade.state = comparison.state = "ready"
+    cascade.base_url = child.url
+    fleet.runners.update({cascade.model: cascade, comparison.model: comparison})
+    fleet.runners["a/one"].base_url = child.url
+    child.metrics_reply = (200, "text/plain", "engine_active 1\n")
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        result = client.get("/metrics").text
+    assert 'engine_active{model="a/one"} 1' in result
+    assert 'engine_active{model="route"}' not in result
+    assert 'engine_active{model="remote/model"}' not in result
+    assert "basal_ui_models_loaded 3" in result
