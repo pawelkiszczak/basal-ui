@@ -219,22 +219,28 @@ def test_loaded_models_keep_load_order_update_media_and_migrate_the_single_model
 
 def test_memory_settings_validate_budget_and_reserve(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
-    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 2 * 1024**3}
+    assert settings.memory_settings() == {
+        "budget_bytes": None,
+        "reserve_bytes": 2 * 1024**3,
+        "idle_unload_minutes": None,
+    }
     for patch in (
         {"budget_bytes": 1024**3 - 1},
         {"budget_bytes": "8G"},
         {"reserve_bytes": -1},
         {"reserve_bytes": 1.5},
         {"swap": 1},
+        *({"idle_unload_minutes": v} for v in (0, -1, 1.5, "1", True)),
     ):
         with pytest.raises(ValueError):
             settings.update_memory(patch)
     assert settings.update_memory({"budget_bytes": 1024**3, "reserve_bytes": 0}) == {
         "budget_bytes": 1024**3,
         "reserve_bytes": 0,
+        "idle_unload_minutes": None,
     }
     assert settings.update_memory({"budget_bytes": None})["budget_bytes"] is None
-    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0}
+    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0, "idle_unload_minutes": None}
 
 
 def test_cross_process_settings_updates_do_not_lose_keys(tmp_path, monkeypatch):

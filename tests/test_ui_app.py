@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import math
 import os
 import struct
 import sys
@@ -44,6 +45,7 @@ def instant_start(monkeypatch):
                 if not self.temporary:
                     settings.remember_loaded(assessment.variant.id, media)
                 self.state, self.media, self.ready_at = "ready", (["image", "audio"] if media else []), time.time()
+                self.last_used = time.monotonic()
                 self.serve_snapshot = {"log_decisions": "", "max_len": 4096, "calibration": None}
 
     monkeypatch.setattr(Runner, "_start", start)
@@ -879,14 +881,16 @@ def test_memory_routes_validate_and_report_the_hardware_budget(tmp_path):
     app, _ = app_for(tmp_path, [], hw=Hardware("cpu", "cpu", 16 * 1024**3, None, None, frozenset(), 5))
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/api/memory").json() == {
-            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3},
+            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3, "idle_unload_minutes": None},
             "hardware_budget_bytes": 16 * 1024**3,
             "available_bytes": 5,
         }
         assert client.put("/api/memory", json={"budget_bytes": 1024}).status_code == 400
         assert client.put("/api/memory", json={"reserve_bytes": -1}).status_code == 400
-        saved = client.put("/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}).json()
-        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}
+        saved = client.put(
+            "/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": None}
+        ).json()
+        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": None}
         assert client.get("/api/status").json()["memory"]["budget_bytes"] == 8 * 1024**3
 
 
@@ -1178,3 +1182,162 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_idle_unload_lifecycle(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert fleet.idle_thread.is_alive()
+        assert client.get("/api/memory").json()["settings"]["idle_unload_minutes"] is None
+        assert client.put("/api/memory", json={"idle_unload_minutes": 1}).status_code == 200
+        assert client.post("/api/load", json={"id": "mini"}).status_code == 202
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        assert client.put("/api/memory", json={"idle_unload_minutes": 0}).status_code == 400
+        assert client.put("/api/memory", json={"idle_unload_minutes": None}).status_code == 200
+        fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
+        assert "mini" in states(client)
+        assert client.put("/api/memory", json={"idle_unload_minutes": 1}).status_code == 200
+        with fleet.lease("mini"):
+            fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
+            assert "mini" in states(client)
+        fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
+        assert "mini" not in states(client)
+        assert client.get("/api/status").json()["idle_unloads"]["mini"]["code"] == "idle_unload"
+        assert settings.last_models()[0]["id"] == "mini"
+        assert "unloaded after 1 idle minutes" in fleet.logs["mini"].text()
+    assert not fleet.idle_thread.is_alive()
+
+
+def test_idle_unload_rechecks_health_and_timeout(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    health = {"status": "ok", "running": 1, "queued": 0}
+
+    def get_health(*args, **kwargs):
+        return httpx.Response(200, json=health, request=httpx.Request("GET", "http://localhost/health"))
+
+    monkeypatch.setattr("basal_ui.fleet.httpx.get", get_health)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        now = max(runner.last_used, fleet.idle_settings_changed) + 61
+        for counters in ({"running": 1, "queued": 0}, {"running": 0, "queued": 1}, {"running": None, "queued": 0}):
+            health.update(counters)
+            fleet.unload_idle(now)
+            assert "mini" in states(client)
+        health.update(running=0, queued=0)
+
+        def disable_during_health(*args, **kwargs):
+            client.put("/api/memory", json={"idle_unload_minutes": None})
+            return get_health()
+
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", disable_during_health)
+        fleet.unload_idle(now)
+        assert "mini" in states(client)
+
+
+def test_idle_timeout_changes_restart_countdown(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        runner.last_used -= 600
+        for minutes in (3, 1):
+            assert client.put("/api/memory", json={"idle_unload_minutes": minutes}).status_code == 200
+            deadline = fleet.idle_settings_changed + minutes * 60
+            fleet.unload_idle(deadline - 0.001)
+            assert "mini" in states(client)
+        fleet.unload_idle(deadline)
+        assert "mini" not in states(client)
+
+
+@pytest.mark.parametrize("latest", ["last_used", "settings"])
+def test_idle_unload_at_float_deadline(tmp_path, monkeypatch, instant_start, latest):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        start = math.nextafter(32.0, math.inf)
+        runner.last_used = start if latest == "last_used" else 0.0
+        fleet.idle_settings_changed = start if latest == "settings" else 0.0
+        deadline = start + 60
+        fleet.unload_idle(math.nextafter(deadline, -math.inf))
+        assert "mini" in states(client)
+        fleet.unload_idle(deadline)
+        assert "mini" not in states(client)
+
+
+def test_idle_unload_releases_fleet_lock_while_terminating(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    entered, release = threading.Event(), threading.Event()
+
+    def terminate(proc):
+        entered.set()
+        assert release.wait(5)
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        runner.est_memory_bytes = 123
+        monkeypatch.setattr(Runner, "_terminate", staticmethod(terminate))
+        worker = threading.Thread(target=fleet.unload_idle, args=(fleet.idle_settings_changed + 60,))
+        worker.start()
+        try:
+            assert entered.wait(3)
+            assert fleet.lock.acquire(timeout=1)
+            try:
+                assert "mini" not in fleet.runners
+                assert fleet.retiring[runner] == 123
+            finally:
+                fleet.lock.release()
+            with pytest.raises(KeyError), fleet.lease("mini"):
+                pass
+        finally:
+            release.set()
+            worker.join(5)
+        assert not worker.is_alive()
+        assert runner not in fleet.retiring

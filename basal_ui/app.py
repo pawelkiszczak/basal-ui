@@ -181,6 +181,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app):
+        fleet.start_idle_timer()
         auto_load_thread = None
         if settings_mod.load().get("auto_load") and settings_mod.last_models():
             auto_load_thread = threading.Thread(target=_auto_load, daemon=True)
@@ -188,6 +189,7 @@ def create_app(
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
         yield
+        await asyncio.to_thread(fleet.stop_idle_timer)
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:
@@ -365,7 +367,12 @@ def create_app(
     @app.put("/api/memory")
     def put_memory(body: dict = Body(...)):
         try:
-            settings_mod.update_memory(body)
+            with fleet.lock:
+                old_timeout = settings_mod.memory_settings()["idle_unload_minutes"]
+                updated = settings_mod.update_memory(body)
+                if updated["idle_unload_minutes"] != old_timeout:
+                    fleet.idle_settings_generation += 1
+                    fleet.idle_settings_changed = time.monotonic()
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return get_memory()
