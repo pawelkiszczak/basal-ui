@@ -63,6 +63,82 @@ the hardware allows.
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
 
+## Reviewed roadmap verification, 2026-11-06
+
+Executable code: [`0a6102e`](https://github.com/pawelkiszczak/basal-ui/commit/0a6102e), on
+`integration/reviewed-roadmap`, based on `dev` at `6297401`. Later changes in this verification record only update
+documentation and screenshots. This is combined verification, not a release or permission to merge the feature stack.
+
+The selected roots are [#38](https://github.com/pawelkiszczak/basal-ui/pull/38) at `445437b`,
+[#56](https://github.com/pawelkiszczak/basal-ui/pull/56) at `70239d8`,
+[#55](https://github.com/pawelkiszczak/basal-ui/pull/55) at `fa231ba`, and
+[#57](https://github.com/pawelkiszczak/basal-ui/pull/57) at `d07ce01`. Only the topic commits from #41–#43 and #45–#53
+were applied with source-commit attribution, not their stacked snapshot trees. The older duplicates #39, #40 and #44,
+and the historical combined tree in draft #54, were not imported.
+
+Host: Apple M4 Max, 128 GiB RAM, macOS 27.0.1 arm64. The Engine 2.5.1 environment uses Python 3.13.11,
+MLX 0.32.4, mlx-lm 0.32.2, Playwright 1.64.1 and the Engine's MLX/media extras. Model tests use the cached
+`Remek/basal-2.0-mini-MLX-8bit`, `Remek/basal-2.0-mini` bf16 and `Remek/basal-omni-pico`, with
+`HF_HUB_OFFLINE=1`; no model weights were downloaded.
+
+`make lint` passed on the combined source tree.
+
+| Check | Engine 2.5.1 | Engine 2.4.1 |
+|---|---|---|
+| Python for unit tests | 3.13.11 | 3.10.19 |
+| Final unit suite | 483 passed | 475 passed, 8 skipped |
+| Last full E2E attempt, before final browser corrections | 128 passed, 2 skipped, 3 failed | Invalid MLX environment on Python 3.10 |
+| Python prepared for the final real-model/Chromium gate | 3.13.11 | 3.13.11 |
+| Final full E2E gate | Rerun blocked by unavailable weights | Rerun blocked by unavailable weights |
+
+The Engine's MLX extra requires Python 3.11 or later in its dependency markers. The first Engine 2.4.1 runtime
+attempt therefore could not load the requested MLX port on Python 3.10; a separate Python 3.13.11 environment was
+prepared and its MLX imports verified. The eight Python 3.10 unit skips are the four Engine-2.5 preset cases,
+two adapter cases, MCP model routing and the int8 mode. The two Engine 2.5.1 E2E skips were thinking without a
+cached 4.5B/vLLM model and early exit without CUDA/basal-1.0 bf16.
+
+Additional runtime proof on this code:
+
+- A real Cascade over the MLX mini and MPS mini answered with `answered_by: escalated`. A discovered Comparison
+  member was rejected with HTTP 409 `CASCADE_COMPARISON_MEMBER`. Unloading a native member removed the Cascade
+  and terminated its router while leaving the other native model ready. Chromium showed Comparison models excluded
+  from both member pickers.
+- One due Schedule scan drained `a.jsonl` then `b.jsonl` before the next daily slot. Another Schedule used an
+  authenticated Comparison server backed by a second real UI/Engine process. All three Decisions appeared in History
+  and Usage, with source `schedule` and Recent traffic attribution `RUN /api/schedules`. Manual Batch did not add
+  records. Restart preserved processed signatures and did not rewrite the outputs.
+- A real daily Schedule caught up before its configured `23:59` time after a previous day's slot was missed; the
+  otherwise identical Schedule with catch-up disabled did not run. Explicit-clock regression checks also cover
+  retaining today's later slot after catching up.
+- Chromium reproduced and then verified removal of a saved preset by selecting **None**, and editing a Schedule
+  while its model was unloaded without changing its model or loading it. English and Polish scheduled History
+  filters rendered the real Decisions.
+- Chromium imported a real shipped MLX calibration into the isolated settings directory, preserved its layout and
+  certified thresholds, selected the imported file, and retained that selection after a failed import. The old
+  calibration UI check tied to a growing row count, fixed table-column index and English error wording was removed;
+  the API calibration regressions and this runtime proof cover the consumer behavior.
+- The inactive Logs job-tab hover was measured in actual Chromium in both skins and themes. Dark orange used
+  `rgb(241, 233, 226)` on `rgb(64, 43, 34)`, with contrast 11.03:1 after the correction. The diagnostic used a real
+  Jobs log source and did not require a model. Scheduled duration regression checks use real Job completion timestamps
+  and exclude the delay until the next scheduler poll.
+- `make screenshots` regenerated 13 PNGs and the tour GIF; the captures were visually inspected. Component crops hide
+  the fixed navigation while capturing so it does not cover their content. All isolated smoke servers shut down
+  without surviving model children.
+
+The initial missing Chromium headless-shell executable was installed. The next full run exposed an obsolete synthetic
+calibration status fixture, the real dark-tab hover contrast bug, and a Batch UI test assuming that real inference
+finished within five seconds. The synthetic fixture was removed while retaining the real Saved/Active layout test;
+Batch verification now waits for the submitted job to complete. Product errors were not suppressed.
+
+**The final full gate has not passed.** During verification the cached Remek model weight links became unresolvable:
+the shared `~/.cache/huggingface/hub/blobs` directory does not exist, while repository blob links point into it.
+The final real-model reruns, publication of the new combined verification PR, and closure of the superseded tracks
+are blocked until the weights are accessible again. No cache links were rewritten and no models were downloaded.
+
+These checks do not qualify CUDA, CPU-only Linux, Windows, physical microphone capture, fine-tuning quality or model
+accuracy. The dedicated hardware gate issues [#2](https://github.com/pawelkiszczak/basal-ui/issues/2) and
+[#3](https://github.com/pawelkiszczak/basal-ui/issues/3) remain separate requirements.
+
 ## Stage gate, engine 2.5.1, 2026-11-02
 
 `stage` at [`9e96e4b`](https://github.com/pawelkiszczak/basal-ui/commit/9e96e4b) (merged
