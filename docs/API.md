@@ -23,6 +23,9 @@ These routes live on the **UI port** (default `7860`), not the external API-serv
 selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
 a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
 
+`GET /api/calibrations?id=…` lists each file’s `layout`, the active or saved layout in `shipped.context`, `layout_mismatch` and its message code, the model `default_layout`, and the `calibrate_layout` Engine capability. `POST /api/calibrate` uses that active or saved layout and returns `calibration_layout_unsupported` if the Engine lacks the required layout flag, including a canonical override of a non-canonical model default. Refit uses the original file layout.
+Each calibration listing, fit, and model-card shipped calibration uses one snapshot of the active or saved load settings for revision, mode, and layout. Invalid or non-object model layout metadata leaves `default_layout` null and reports `shipped.error`; fitted files remain available in the listing.
+
 Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
 `est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
 `media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies are

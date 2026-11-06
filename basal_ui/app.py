@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -699,7 +699,8 @@ def create_app(
     def get_model_card(id: str):
         variant = find_variant(id)
         cache_dir = settings_mod.models_dir()
-        local_dir = catalog.is_downloaded(variant, cache_dir, revision=effective_revision(variant))
+        active, mode, options = calibration_settings(variant)
+        local_dir = catalog.is_downloaded(variant, cache_dir, revision=options.get("revision"))
         assessment = catalog.assess(variant, hw())
         loaded = next((m.get("entry") for m in fleet.status()["models"] if m["id"] == variant.id), None)
         from huggingface_hub import scan_cache_dir
@@ -712,7 +713,7 @@ def create_app(
             )
         except (CacheNotFound, OSError, ValueError):
             revisions = []
-        revision = served_revision(variant) or "main"
+        revision = options.get("revision") or "main"
         readme = None
         if local_dir and (Path(local_dir) / "README.md").is_file():
             readme = (Path(local_dir) / "README.md").read_text(encoding="utf-8", errors="replace")[:20000]
@@ -742,9 +743,9 @@ def create_app(
             from . import calibration
 
             try:
-                path, _ = resolve_shipped_calibration(variant, local_dir, assessment)
+                path, _ = resolve_shipped_calibration(variant, local_dir, assessment, active, mode, options)
                 shipped_calibration = calibration.summary(path) if path.is_file() else None
-            except (OSError, ValueError, KeyError) as exc:
+            except (OSError, ValueError, KeyError, AttributeError) as exc:
                 shipped_calibration = {"error": str(exc)}
         return {
             "id": variant.id,
@@ -1081,35 +1082,30 @@ def create_app(
         """The revision the model is loaded at (load option), None for the default branch."""
         return settings_mod.load_options(variant.id).get("revision")
 
-    def effective_revision(variant):
+    def calibration_settings(variant):
         with fleet.lock:
             runner = fleet.runners.get(variant.id)
-        return (
-            runner.options.get("revision")
-            if runner is not None and runner.status()["state"] == "ready"
-            else served_revision(variant)
-        )
+            if runner is not None:
+                with runner.lock:
+                    state = runner.status()
+                    if state["state"] == "ready":
+                        return True, state["mode"], state["options"]
+        return False, None, dict(settings_mod.load_options(variant.id))
 
-    def resolve_shipped_calibration(variant, local_dir, assessment):
+    def resolve_shipped_calibration(variant, local_dir, assessment, active, mode, options):
         from basal.prompt import model_layout
         from basal.server import MODES
 
         from . import calibration
 
-        with fleet.lock:
-            runner = fleet.runners.get(variant.id)
-        active = runner is not None and runner.status()["state"] == "ready"
-        saved = settings_mod.load_options(variant.id)
-        options = load_options.validate(runner.options if active else saved, assessment.mode)
-        mode = runner.mode if active else options.get("mode") or assessment.mode or "eager"
+        options = load_options.validate(options, assessment.mode)
+        mode = mode if active else options.get("mode") or assessment.mode or "eager"
         quant = options.get("quant") or MODES[mode][1]
         preset, adapter_dir = options.get("vllm_preset"), options.get("adapter")
         layout = options.get("layout") or model_layout(local_dir)
         path = calibration.shipped_file(local_dir, mode, preset, quant, layout, adapter_dir)
         context = {
-            "revision": (runner.options.get("revision") if active else options.get("revision"))
-            or variant.base_revision
-            or "default",
+            "revision": options.get("revision") or variant.base_revision or "default",
             "mode": mode,
             "quant": quant,
             "preset": preset if mode == "vllm" else None,
@@ -1130,7 +1126,13 @@ def create_app(
         from . import calibration
 
         variant = find_variant(body.get("id"))
-        local_dir = downloaded(variant)
+        from basal.prompt import model_layout
+
+        active, mode, selected_options = calibration_settings(variant)
+        local_dir = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=selected_options.get("revision"))
+        if not local_dir:
+            raise HTTPException(400, f"download {variant.id} first")
+        local_dir = Path(local_dir)
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(400, "input must be the path of a labelled JSONL file (docs/CALIBRATION.md)")
@@ -1202,13 +1204,31 @@ def create_app(
                 raise ValueError
         except (TypeError, ValueError):
             raise HTTPException(400, "targets must be a list of max_error values between 0 and 1") from None
-        if from_rows:  # a refit of saved rows runs no engine: no load options, no memory check
-            assessment, options = catalog.assess(variant, hw()), {}
+        if active:
+            selected_options["mode"] = mode
+        if from_rows:  # a refit of saved rows runs no engine and needs no memory check
+            assessment, options = catalog.assess(variant, hw()), selected_options
         else:
             try:
-                assessment, options = prepare(variant, False, settings_mod.load_options(variant.id))
+                assessment, options = prepare(variant, False, selected_options)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+        if from_rows:
+            name = source.name.removesuffix(".rows.jsonl")
+            original = source.with_name(name + ".json")
+            try:
+                options = {"layout": calibration.summary(original)["layout"]}
+            except (OSError, ValueError):
+                options = {"layout": "canonical"}
+        layout = options.get("layout") or model_layout(local_dir)
+        if (layout != "canonical" or model_layout(local_dir) != layout) and not engine.feature("calibrate_layout"):
+            return JSONResponse(
+                {
+                    "detail": "The installed Engine cannot calibrate this layout",
+                    "code": "calibration_layout_unsupported",
+                },
+                status_code=400,
+            )
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
         label = f"{variant.id} on {source.name}" + (" (engine in process: task questions)" if in_process else "")
         reserve = in_process and not from_rows
@@ -1255,26 +1275,39 @@ def create_app(
         return state
 
     def calibrations_response(variant):
+        from basal.prompt import model_layout
+
         from . import calibration
 
-        revision = effective_revision(variant)
-        local_dir = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=revision)
+        active, mode, options = calibration_settings(variant)
+        local_dir = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=options.get("revision"))
         shipped = None
+        default_layout = None
         if local_dir:
             try:
+                default_layout = model_layout(local_dir)
                 assessment = catalog.assess(variant, hw())
-                path, context = resolve_shipped_calibration(variant, local_dir, assessment)
+                path, context = resolve_shipped_calibration(variant, local_dir, assessment, active, mode, options)
                 shipped = {"file": str(path), "context": context}
                 try:
                     shipped.update(calibration.summary(path))
                 except (OSError, ValueError) as exc:
                     shipped["error"] = str(exc)
-            except (OSError, ValueError, KeyError) as exc:
+            except (OSError, ValueError, KeyError, AttributeError) as exc:
                 shipped = {"error": str(exc)}
+        selected = settings_mod.calibration_selection().get(variant.id)
+        files = calibration.listing(variant.id, settings_mod, local_dir)
+        selected_file = next((f for f in files if f["file"] == selected), None)
+        layout = (shipped or {}).get("context", {}).get("layout")
+        mismatch = bool(selected_file and layout and selected_file.get("layout") and selected_file["layout"] != layout)
         return {
-            "selected": settings_mod.calibration_selection().get(variant.id),
-            "files": calibration.listing(variant.id, settings_mod, local_dir),
+            "selected": selected,
+            "files": files,
             "shipped": shipped,
+            "layout_mismatch": mismatch,
+            "layout_mismatch_code": "calibration_layout_mismatch" if mismatch else None,
+            "calibrate_layout": engine.feature("calibrate_layout"),
+            "default_layout": default_layout,
         }
 
     @app.post("/api/calibrations/import")

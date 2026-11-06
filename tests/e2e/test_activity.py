@@ -168,3 +168,90 @@ def test_logs_clear_old_lines_when_source_buffer_generation_changes(page):
     page.evaluate("() => loadLogs()")
     page.wait_for_function("() => document.querySelector('#logOutput').textContent.includes('new buffer line')")
     assert "old buffer line" not in page.locator("#logOutput").inner_text()
+
+
+def test_calibration_layout_refresh_and_refit_capability(page):
+    test_pages.manager_tab(page, "calibration")
+    state = {"layout": "canonical"}
+
+    def calibrations(route):
+        route.fulfill(
+            json={
+                "selected": None,
+                "calibrate_layout": False,
+                "default_layout": "canonical",
+                "shipped": {"file": "shipped", "context": {"layout": state["layout"], "mode": "eager"}},
+                "files": [
+                    {"file": "canonical", "layout": "canonical", "rows": "canonical.rows.jsonl", "when": 1},
+                    {"file": "qfirst", "layout": "qfirst", "rows": "qfirst.rows.jsonl", "when": 1},
+                ],
+            }
+        )
+
+    page.route("**/api/calibrations?id=layout-test", calibrations)
+    page.evaluate("""() => {
+      modelData=[{id:'layout-test',downloaded:true}]; calibrationSignature=''; renderCalibrationModels();
+    }""")
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')"
+    )
+    assert page.locator('[data-refit="canonical.rows.jsonl"]').is_enabled()
+    assert page.locator('[data-refit="qfirst.rows.jsonl"]').is_disabled()
+    assert page.locator("tr", has=page.locator('[data-refit="qfirst.rows.jsonl"]')).locator(".reason").is_visible()
+    state["layout"] = "qfirst"
+    page.evaluate(
+        """() => renderStatus({...statusCache, models:[{id:'layout-test',state:'ready',options:{layout:'qfirst'}}]})"""
+    )
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')"
+    )
+    assert page.locator("#runCalibration").is_disabled()
+    assert page.locator('[data-refit="canonical.rows.jsonl"]').is_enabled()
+    state["layout"] = "canonical"
+    page.evaluate("() => renderStatus({...statusCache, models:[]})")
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')"
+    )
+    assert page.locator("#runCalibration").is_enabled()
+    page.route("**/api/models/options", lambda route: route.fulfill(json={}))
+    state["layout"] = "qfirst"
+    page.evaluate("""() => {
+      optionsState={id:'layout-test',save:true,data:{},media:false};
+      collectOptions=()=>({layout:'qfirst'}); document.querySelector('#loadOptions').showModal();
+    }""")
+    page.locator("#optionsApply").click()
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')"
+    )
+    assert page.locator("#runCalibration").is_disabled()
+
+
+def test_calibration_tracks_real_saved_and_active_layout(page, ui, text_model):
+    model = text_model["id"]
+    ui.unload(model)
+    ui.put("/api/models/options", {"id": model, "options": {"layout": "canonical"}})
+    test_pages.manager_tab(page, "calibration")
+    page.select_option("#calibrationModel", model)
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')"
+    )
+    page.evaluate("id => openLoadOptions(id, false, 'save')", model)
+    page.locator("#opt-layout").evaluate("el => el.closest('details').open = true")
+    page.select_option("#opt-layout", "qfirst")
+    page.locator("#optionsApply").click()
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')"
+    )
+    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"
+    ui.post("/api/load", {"id": model, "options": {"layout": "canonical"}})
+    ui.wait_model(model)
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')", timeout=30000
+    )
+    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "canonical"
+    page.screenshot(path="/tmp/basal-issue-19-calibration.png")
+    ui.unload(model)
+    page.wait_for_function(
+        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')", timeout=30000
+    )
+    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"
