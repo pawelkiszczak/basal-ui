@@ -133,6 +133,8 @@ def create_app(
         current = hw()
         assessment = catalog.assess(variant, current)
         merged = load_options.validate(options, assessment.mode)
+        if merged["graph_memory_gb"]:  # the sized graphs replace the fixed graph-engine estimate
+            assessment = catalog.assess(variant, current, merged)
         if media:
             modes = {m["mode"]: m for m in load_options.available_media_modes(assessment, current)}
             chosen = modes.get(merged["mode"] or "eager")
@@ -837,8 +839,7 @@ def create_app(
         packed_code, packed_params = load_options.option_message_fields(packed_reason)
         think_reason = None if family_ok else load_options.THINK_REASON
         think_code, think_params = load_options.option_message_fields(think_reason)
-        adapter_reason = load_options.adapter_unavailable()
-        adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
+        unavailable = load_options.unavailable_options()
         return {
             "modes": load_options.available_modes(variant, current, assessment),
             "options": merged,
@@ -848,9 +849,7 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
-            "adapter_reason": adapter_reason,
-            "adapter_reason_code": adapter_code,
-            "adapter_reason_params": adapter_params,
+            "unavailable": unavailable,
             "think": {
                 "model": family_ok,
                 "vllm": "vllm" in current.engines,
