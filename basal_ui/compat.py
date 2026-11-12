@@ -349,6 +349,14 @@ COMPARISON_UNSUPPORTED_FIELDS = {
 }
 
 
+# Allow rounding drift in upstream probability distributions without modifying them.
+COMPARISON_PROBABILITY_TOLERANCE = 1e-3
+
+
+def _comparison_options(question):
+    return question.get("criteria") or (question.get("levels") if question.get("type") == "score" else None)
+
+
 def comparison_request(body, image_input=False, option_limit=26, hosted=False):
     """Validate the comparison subset before forwarding, including the normal System One boundary."""
 
@@ -370,7 +378,7 @@ def comparison_request(body, image_input=False, option_limit=26, hosted=False):
         for field in COMPARISON_UNSUPPORTED_FIELDS:
             if field in question:
                 return refuse(f"Comparison models do not support questions.{name}.{field}")
-        options = question.get("options", question.get("choices", question.get("criteria")))
+        options = _comparison_options(question)
         if (
             question.get("type") in ("choice", "score")
             and isinstance(options, (dict, list))
@@ -408,7 +416,7 @@ def comparison_response(data, request, model):
             raise ValueError("missing or invalid answer")
         result = {"type": kind, "calibrated": False}
         probabilities = answer.get("probabilities")
-        options = question.get("criteria") or (question.get("levels") if kind == "score" else None)
+        options = _comparison_options(question)
         if kind in ("choice", "score"):
             if isinstance(options, dict):
                 keys = set(options)
@@ -429,6 +437,9 @@ def comparison_response(data, request, model):
                 not isinstance(probabilities, dict)
                 or set(probabilities) != keys
                 or any(not number(value) or not 0 <= value <= 1 for value in probabilities.values())
+                or not math.isclose(
+                    math.fsum(probabilities.values()), 1.0, rel_tol=0.0, abs_tol=COMPARISON_PROBABILITY_TOLERANCE
+                )
             ):
                 raise ValueError("invalid probabilities")
             result["probabilities"] = probabilities
@@ -463,8 +474,16 @@ def comparison_response(data, request, model):
                 value = probabilities["true"]
             if not number(value) or (kind == "noul" and not 0 <= value <= 1):
                 raise ValueError("invalid answer value")
-            if kind == "score" and not 0 <= value <= len(keys) - 1:
+            if kind == "score" and (probabilities is None or not 0 <= value <= len(keys) - 1):
                 raise ValueError("invalid score")
+            if (
+                kind == "noul"
+                and probabilities is not None
+                and not math.isclose(
+                    value, probabilities["true"], rel_tol=0.0, abs_tol=COMPARISON_PROBABILITY_TOLERANCE
+                )
+            ):
+                raise ValueError("inconsistent noul")
             result[field] = value
         confidence = answer.get("confidence")
         if confidence is not None:
@@ -506,7 +525,10 @@ def systemone_to_decisions(body):
         raise ValueError("Decisions servers require a text state")
     questions = []
     for name, question in body["questions"].items():
-        extra = set(question) - {"type", "instructions", "criteria", "option_keys"}
+        allowed = {"type", "instructions", "criteria", "option_keys"}
+        if question.get("type") == "score":
+            allowed.add("levels")
+        extra = set(question) - allowed
         if extra:
             raise ValueError(f"Decisions servers cannot preserve questions.{name}.{sorted(extra)[0]}")
         if "option_keys" in question and question["option_keys"] not in ("show", "hide"):
@@ -516,7 +538,7 @@ def systemone_to_decisions(body):
             raise ValueError(f"questions.{name}.instructions must be text for a Decisions server")
         kind = question.get("type")
         item = {"name": name, "instructions": instructions}
-        criteria = question.get("criteria")
+        criteria = _comparison_options(question) if kind == "score" else question.get("criteria")
         if kind == "choice":
             if question.get("option_keys") == "hide" and isinstance(criteria, dict):
                 if any(not isinstance(v, str) or not v for v in criteria.values()) or len(

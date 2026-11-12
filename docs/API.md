@@ -52,6 +52,8 @@ the pair is not a cross-file transaction.
 
 `GET /api/status` marks model rows `kind: basal` or `kind: comparison`; a Comparison row may include `reported_memory_bytes` and never consumes the basal budget. Comparison models may be sent to the UI's `/api/decide` and `/api/batch` only. Requests outside the comparison subset return `UNSUPPORTED_FOR_COMPARISON` before upstream inference; Comparison Batch includes the source line in the refusal. Playground and Comparison Batch Decisions are recorded with `server` in History and attributed to the Comparison model in Usage and rolling traffic. Ordinary basal Batch remains unrecorded.
 
+Comparison choice and score responses must include a complete probability distribution over the requested options. Distributions must total 1 within an absolute tolerance of 0.001; a reported noul value must agree with its true probability within the same tolerance. Probabilities are not normalized or rewritten; invalid responses return 502.
+
 The API server gateway `/v1/models`, health, explicit model routing and MCP exclude Comparison models. For an endpoint ending in `/v1/decisions`, a 404 on `/v1/models` uses the server display name as the upstream model name; only the representable subset is translated.
 
 ### Batch path inspection

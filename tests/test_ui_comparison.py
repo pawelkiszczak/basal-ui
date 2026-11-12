@@ -886,3 +886,90 @@ def test_comparison_truncation_is_preserved_and_diagnostics_omitted(app_client, 
     child.reply["usage"]["truncated"]["head_tokens"] = "secret-for-test"
     response = client.post("/api/decide", json={**BODY, "model": model["id"]})
     assert response.status_code == 502 and "secret-for-test" not in response.text
+
+
+def test_score_levels_limit_applies_before_decide_and_batch(app_client, child, tmp_path):
+    client, fleet = app_client
+    _, model = attach(client, child)
+    for question in (
+        {"type": "score", "levels": ["low", "medium", "high"]},
+        {"type": "score", "levels": {"low": "Low", "medium": "Medium", "high": "High"}},
+        {"type": "score", "criteria": ["low", "medium", "high"], "options": ["low", "high"]},
+    ):
+        request = {"state": "synthetic", "questions": {"q": question}}
+        response = client.post("/api/decide", json={**request, "model": model["id"]})
+        assert response.status_code == 400 and response.json()["code"] == "UNSUPPORTED_FOR_COMPARISON"
+        assert "3 options" in response.text and "limit is 2" in response.text
+        source = tmp_path / "score.jsonl"
+        source.write_text(json.dumps(BODY) + "\n\n" + json.dumps(request) + "\n")
+        response = client.post("/api/batch", json={"id": model["id"], "input": str(source)})
+        assert response.status_code == 400 and "line 3" in response.text and "limit is 2" in response.text
+        assert not fleet.jobs.states().get("batch", {}).get("running")
+    assert child.seen == []
+
+
+def test_comparison_distributions_and_noul_consistency(app_client, child):
+    client, fleet = app_client
+    _, model = attach(client, child)
+    choice = {"type": "choice", "choice": "cards", "probabilities": {"cards": 0.8, "loans": 0.2}}
+    score_question = {"type": "score", "levels": ["Low", "High"]}
+    invalid = [
+        (CARDS_BODY["questions"]["q"], {**choice, "probabilities": {"cards": 0.0, "loans": 0.0}}),
+        (CARDS_BODY["questions"]["q"], {**choice, "probabilities": {"cards": 0.8, "loans": 0.4}}),
+        (score_question, {"type": "score", "score": 0.7}),
+        (score_question, {"type": "score", "score": 0.7, "probabilities": {"0": 0.3, "1": 0.9}}),
+        ({"type": "noul"}, {"type": "noul", "noul": 0.1, "probabilities": {"true": 0.9, "false": 0.1}}),
+        ({"type": "noul"}, {"type": "noul", "noul": 0.0, "probabilities": {"true": 0.0, "false": 0.0}}),
+    ]
+    for question, answer in invalid:
+        child.reply = {"answers": {"q": answer}}
+        response = client.post(
+            "/api/decide", json={"state": "synthetic", "questions": {"q": question}, "model": model["id"]}
+        )
+        assert response.status_code == 502 and response.json()["code"] == "UPSTREAM_ERROR"
+    tolerated = {"type": "noul", "noul": 0.8006, "probabilities": {"true": 0.8, "false": 0.1997}}
+    child.reply = {"answers": {"q": tolerated}}
+    response = client.post(
+        "/api/decide", json={"state": "synthetic", "questions": {"q": {"type": "noul"}}, "model": model["id"]}
+    )
+    assert response.status_code == 200 and response.json()["answers"]["q"] == {**tolerated, "calibrated": False}
+    records = fleet.history.list(model=model["id"])
+    assert [record["status"] for record in records].count(502) == len(invalid)
+    assert fleet.stats.snapshot()["models"][model["id"]]["errors"] == len(invalid)
+    assert fleet.stats.traffic_snapshot(15)["requests"] == len(invalid) + 1
+
+
+def test_hosted_score_levels_use_existing_decisions_translation(app_client, child):
+    client, _ = app_client
+    child.models_status = 404
+    child.reply = {
+        "answers": [
+            {
+                "name": "q",
+                "type": "score",
+                "score": 0.7,
+                "probabilities": [{"label": "Low", "probability": 0.3}, {"label": "High", "probability": 0.7}],
+            }
+        ]
+    }
+    _, model = attach(client, child, url=child.url + "/v1/decisions")
+    question = {"type": "score", "instructions": "Rate", "levels": ["Low", "High"]}
+    response = client.post(
+        "/api/decide", json={"state": "synthetic", "questions": {"q": question}, "model": model["id"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["answers"]["q"]["probabilities"] == {"0": 0.3, "1": 0.7}
+    assert child.seen[-1][1]["questions"][0]["levels"] == [{"label": "Low"}, {"label": "High"}]
+
+
+def test_score_criteria_precedence_and_rounding_are_preserved(app_client, child):
+    client, _ = app_client
+    _, model = attach(client, child)
+    question = {"type": "score", "criteria": ["low", "high"], "levels": ["low", "medium", "high"]}
+    answer = {"type": "score", "score": 0.7, "probabilities": {"0": 0.3, "1": 0.7004}}
+    child.reply = {"answers": {"q": answer}}
+    response = client.post(
+        "/api/decide", json={"state": "synthetic", "questions": {"q": question}, "model": model["id"]}
+    )
+    assert response.status_code == 200 and response.json()["answers"]["q"] == {**answer, "calibrated": False}
+    assert child.seen[-1][1]["questions"]["q"] == question
