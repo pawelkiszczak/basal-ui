@@ -1509,6 +1509,14 @@ def create_app(
 
             for n, line in lines:
                 item = json.loads(line)
+                if "questions" in item and "gold" in item:
+                    raise HTTPException(
+                        400,
+                        {
+                            "code": "UNSUPPORTED_FOR_COMPARISON",
+                            "detail": f"{source.name}: line {n}: basal-run does not grade gold on full requests; use simple items",
+                        },
+                    )
                 permitted = (
                     {"id", "state", "questions", "early_exit", "gold"}
                     if "questions" in item

@@ -283,8 +283,11 @@ with their log and any report written before failure retained.
 **Batch** runs `basal-run` from the app: a loaded model, an input JSONL file (simple items or full `/v1/systemone`
 requests, [in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SERVING.md#inference-on-a-jsonl-file)), the output file (default `<stem>.answers.jsonl` next to it, e.g. `items.jsonl` → `items.answers.jsonl`), the
 concurrency and, for a `--mode fast-exit` model, an early-exit level. The progress, the summary (items, errors,
-seconds, items per second, server p50, accuracy over the items with `gold`) and the answers page by page are shown;
+seconds, items per second, server p50, accuracy over simple items with `gold`) and the answers page by page are shown;
 **Download answers** saves the output file. Ordinary basal Batch requests go straight to the model's basal-serve and are not counted in statistics or History. Comparison Batch uses a private loopback proxy to supply the upstream model name and key, and each Comparison Decision is recorded in History, Usage and Dashboard traffic with its server name. Comparison Batch validates every non-empty JSONL line before starting, and identifies the actual line number for refusals. The Batch view keeps the latest accuracy by model and input for this browser session. One batch runs at a time; its log is **Logs → job:batch**.
+
+The Engine grades `gold` only on simple items. Comparison Batch refuses `gold` on full requests instead of silently
+ignoring the label; convert those rows to simple items when accuracy is needed.
 
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample

@@ -482,7 +482,7 @@ class ComparisonRunner:
     def __init__(self, server, entry, key):
         self.server, self.key = server, key
         self.model_name = entry.get("id") or entry.get("name")
-        self.model = self.id = f"{server['id']}/{self.model_name}"
+        self.model = self.id = f"comparison:{server['id']}/{self.model_name}"
         self.state, self.error, self.process = "ready", None, None
         self.base_url = server["base_url"]
         self.model_repo = None
@@ -685,12 +685,12 @@ class Fleet:
                     for name, runner in self.runners.items()
                     if isinstance(runner, ComparisonRunner) and runner.server is server
                 }
-                wanted = {f"{server_id}/{entry.get('id') or entry.get('name')}" for entry in entries}
+                wanted = {f"comparison:{server_id}/{entry.get('id') or entry.get('name')}" for entry in entries}
                 if valid:
                     for name in old - wanted:
                         self.runners.pop(name)
                     for entry in entries:
-                        name = f"{server_id}/{entry.get('id') or entry.get('name')}"
+                        name = f"comparison:{server_id}/{entry.get('id') or entry.get('name')}"
                         runner = self.runners.get(name)
                         if runner is None:
                             self.runners[name] = ComparisonRunner(server, entry, key)

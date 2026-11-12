@@ -86,6 +86,7 @@ def test_attach_decide_accounting_gateway_and_detach(app_client, child, tmp_path
     client, fleet = app_client
     server, model = attach(client, child)
     model_id = model["id"]
+    assert model_id.startswith("comparison:")
     assert model["entry"]["kind"] == "comparison" and model["reported_memory_bytes"] == 12345
     assert model["est_memory_bytes"] == 0
     assert "secret-for-test" not in client.get("/api/status").text + client.get("/api/decision-servers").text
@@ -114,6 +115,7 @@ def test_attach_decide_accounting_gateway_and_detach(app_client, child, tmp_path
     assert client.delete(f"/api/decision-servers/{server['id']}").status_code == 200
     assert settings.decision_servers() == [] and settings.decision_secret(server["id"]) is None
     assert model_id not in fleet.runners
+    assert fleet.stats.snapshot()["models"][model_id]["requests"] == 1
 
 
 def test_consent_and_refusals_precede_upstream(app_client, child):
@@ -152,6 +154,9 @@ def test_batch_real_subprocess_preflight_and_accounting(app_client, child, tmp_p
     refused = client.post("/api/batch", json={"id": model_id, "input": str(source)})
     assert refused.status_code == 400 and "line 3" in refused.text and "facts" in refused.text
     assert child.seen == []
+    source.write_text(json.dumps({**BODY, "gold": 0}) + "\n")
+    refused = client.post("/api/batch", json={"id": model_id, "input": str(source)})
+    assert refused.status_code == 400 and "does not grade gold" in refused.text and child.seen == []
     source.write_text(json.dumps(item) + "\n" + json.dumps({**item, "gold": 1}) + "\n")
     assert client.post("/api/batch", json={"id": model_id, "input": str(source)}).status_code == 202
     job = wait_for(

@@ -4,6 +4,7 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "basal-run does not grade gold on full requests; use simple items": "basal-run nie ocenia pól gold w pełnych żądaniach; użyj prostych rekordów",
   "name must be a non-empty string": "Nazwa nie może być pusta",
   "url must be an http(s) URL": "Adres musi być adresem HTTP lub HTTPS",
   "url must be an http(s) URL without credentials, query or fragment": "Adres HTTP lub HTTPS nie może zawierać danych uwierzytelniających, zapytania ani fragmentu",
