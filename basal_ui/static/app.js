@@ -1420,7 +1420,8 @@ function renderInference(s) {
   for(const [kind,j] of Object.entries(s.jobs||{})){
     if(!j.running||!INFERENCE_JOBS[kind])continue;
     const share=j.total?Math.min(100,j.done/j.total*100):null;
-    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong><span class="muted">${esc([j.model,ts(j.phase,j.phase_code,j.phase_params),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
+    const comparison=typeof j.model==='string'&&j.model.startsWith('comparison:');
+    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong>${comparison?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([j.model,ts(j.phase,j.phase_code,j.phase_params),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
   }
   const last=Math.max(0,...Object.values(statsData.models||{}).map(x=>Number(x.last_used)||0));
   const idle=last?t('Idle · last decision {ago} ago',{ago:ago(Date.now()/1000-last)}):t('Idle');

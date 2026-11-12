@@ -546,7 +546,7 @@ class ComparisonRunner:
         return None, payload, headers
 
     def _reply(self, response, body):
-        from .compat import decisions_to_systemone, systemone_media
+        from .compat import comparison_response, decisions_to_systemone, systemone_media
 
         if response.status_code != 200:
             status = response.status_code if response.status_code >= 400 else 502
@@ -559,16 +559,9 @@ class ComparisonRunner:
                 data = response.json()
                 if self.server.get("decisions_url"):
                     data = decisions_to_systemone(data, {**systemone_media(body), "model": self.model_name})
-                if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
-                    raise ValueError("invalid answers")
-                for answer in data["answers"].values():
-                    if not isinstance(answer, dict):
-                        raise ValueError("invalid answer")
-                    answer["calibrated"] = False
-                    answer.pop("automated", None)
-                    answer.pop("calibration", None)
+                data = comparison_response(data, body, self.model_name)
                 response = httpx.Response(200, json=data)
-            except (ValueError, TypeError, KeyError, IndexError):
+            except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
                 response = httpx.Response(
                     502, json={"error": "Invalid Comparison server response", "code": "UPSTREAM_ERROR"}
                 )
@@ -657,25 +650,28 @@ class Fleet:
                                 entries = []
                         elif response.status_code == 404 and server.get("decisions_url"):
                             entries, valid = [{"id": server["name"]}], True
-                    entries = [
-                        {
-                            k: entry[k]
-                            for k in (
-                                "id",
-                                "name",
-                                "modalities",
-                                "input_modalities",
-                                "image",
-                                "max_options",
-                                "memory_bytes",
-                            )
-                            if k in entry
-                        }
-                        for entry in entries
-                        if isinstance(entry, dict)
-                        and isinstance(entry.get("id") or entry.get("name"), str)
-                        and (entry.get("id") or entry.get("name"))
-                    ]
+                    clean = []
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        name = entry.get("id") or entry.get("name")
+                        if not isinstance(name, str) or not name:
+                            continue
+                        model = {"id": name}
+                        for field in ("modalities", "input_modalities"):
+                            if isinstance(entry.get(field), list):
+                                model[field] = [value for value in entry[field] if value in ("text", "image")]
+                        if type(entry.get("image")) is bool:
+                            model["image"] = entry["image"]
+                        if type(entry.get("max_options")) is int and entry["max_options"] > 0:
+                            model["max_options"] = entry["max_options"]
+                        if type(entry.get("memory_bytes")) in (int, float) and 0 <= entry["memory_bytes"] < float(
+                            "inf"
+                        ):
+                            model["memory_bytes"] = entry["memory_bytes"]
+                        clean.append(model)
+                    entries = clean
+
                 except (httpx.HTTPError, OSError, ValueError, TypeError):
                     valid, entries = False, []
                 with self.lock:

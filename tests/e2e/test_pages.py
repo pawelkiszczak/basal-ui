@@ -1777,7 +1777,7 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.unload(second_model["id"])
 
 
-def test_comparison_server_keyboard_attach_and_detach(page, child):
+def test_comparison_server_keyboard_attach_and_detach(page, child, tmp_path):
     child.models = [{"id": "comparison-fixture"}]
     manager_tab(page, "library")
     page.locator("#decisionServerName").fill("Local fixture")
@@ -1813,10 +1813,34 @@ def test_comparison_server_keyboard_attach_and_detach(page, child):
         sync_api.expect(page.locator("#decisionCompare .dt-model-result").nth(1)).to_have_attribute(
             "data-running", "true"
         )
+        sync_api.expect(
+            page.locator("#decisionCompare .dt-model-result").nth(1).locator(".comparison-badge")
+        ).to_be_visible()
         child.reply_status = 500
         child.gate.set()
         sync_api.expect(page.locator("#decisionCompare .dt-model-result").nth(1).locator(".error-box")).to_be_visible()
         sync_api.expect(page.locator("#decisionCompare .dt-model-result").first.locator(".dt-raw")).to_be_visible()
+    finally:
+        child.gate.set()
+    child.reply_status = 200
+    child.post_started.clear()
+    child.gate.clear()
+    source = tmp_path / "batch.jsonl"
+    source.write_text(json.dumps({"state": "synthetic", "question": "Pick", "options": ["a", "b"]}) + "\n")
+    try:
+        view(page, "batch")
+        model = next(
+            o.get_attribute("value")
+            for o in page.locator("#batchModel option").all()
+            if "comparison-fixture" in (o.get_attribute("value") or "")
+        )
+        page.locator("#batchModel").select_option(model)
+        page.locator("#batchInput").fill(str(source))
+        page.locator("#runBatch").click()
+        assert child.post_started.wait(30)
+        manager_tab(page, "library")
+        job = page.locator("#inferenceNow .inference-row").filter(has_text="Batch")
+        sync_api.expect(job.locator(".chip")).to_have_text("Comparison", timeout=10000)
     finally:
         child.gate.set()
     manager_tab(page, "library")

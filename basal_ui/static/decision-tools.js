@@ -158,7 +158,7 @@
     prompt.innerHTML = `<strong>${t('Frozen request snapshot')}</strong><pre>${esc(displayRequest(snapshot))}</pre>`;
     running = true;
     reconcileSelects();
-    grid.innerHTML = models.map(model => `<article class="dt-model-result" data-model="${esc(model.id)}" data-running="true"><h3>${esc(model.id)}</h3><p class="dt-used">${t('This model will receive the frozen request above.')}</p><p class="muted">${t('Running…')}</p></article>`).join('');
+    grid.innerHTML = models.map(model => `<article class="dt-model-result" data-model="${esc(model.id)}" data-running="true"><h3>${esc(modelLabel(model))}</h3>${model.kind==='comparison'?comparisonBadge():''}<p class="dt-used">${t('This model will receive the frozen request above.')}</p><p class="muted">${t('Running…')}</p></article>`).join('');
     try {
       await Promise.all(models.map(async (model, index) => {
         const request = structuredClone(snapshot); request.model = model.id;

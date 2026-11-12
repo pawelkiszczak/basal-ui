@@ -684,3 +684,91 @@ def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path
         assert job["phase"] == "cancelled" and not snapshots[0].exists()
     finally:
         child.gate.set()
+
+
+def test_comparison_projects_metadata_and_success_without_losing_answer(app_client, child):
+    client, fleet = app_client
+    secret = "synthetic-secret"
+    child.models = [
+        {
+            "id": "cards",
+            "memory_bytes": secret,
+            "modalities": [secret, {"token": secret}, "image"],
+            "max_options": secret,
+            "image": secret,
+            "note": secret,
+        }
+    ]
+    child.reply = {
+        "model": secret,
+        "debug": secret,
+        "usage": {"latency_ms": 3, "diagnostic": secret},
+        "answers": {
+            "q": {
+                "type": "choice",
+                "choice": "cards",
+                "probabilities": {"cards": 1.0},
+                "confidence": 1.0,
+                "diagnostic": secret,
+            }
+        },
+    }
+    _, model = attach(client, child, key=secret)
+    assert secret not in client.get("/api/status").text
+    assert model["reported_memory_bytes"] is None and model["entry"]["modalities"] == ["image"]
+    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    assert response.status_code == 200 and secret not in response.text
+    assert response.json()["answers"]["q"]["choice"] == "cards"
+    assert response.json()["answers"]["q"]["probabilities"] == {"cards": 1.0}
+    assert response.json()["usage"] == {"latency_ms": 3}
+    assert secret not in json.dumps(fleet.history.list())
+
+
+def test_missing_or_invalid_comparison_answers_are_recorded_as_failures(app_client, child):
+    client, fleet = app_client
+    _, model = attach(client, child, key="a")
+    for payload in (
+        {"answers": {}},
+        {"answers": {"q": {}}},
+        {"answers": {"q": {"type": "choice", "probabilities": {}}}},
+        {"answers": {"q": {"type": "choice", "probabilities": {"cards": "a"}}}},
+    ):
+        child.reply = payload
+        response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+        assert response.status_code == 502 and response.json()["code"] == "UPSTREAM_ERROR"
+    child.reply = {"answers": {"q": {"type": "choice", "choice": "cards", "probabilities": {"cards": 1.0}}}}
+    assert client.post("/api/decide", json={**BODY, "model": model["id"]}).json()["answers"]["q"]["choice"] == "cards"
+    assert [record["status"] for record in fleet.history.list(model=model["id"])] == [200, 502, 502, 502, 502]
+    assert fleet.stats.snapshot()["models"][model["id"]]["errors"] == 4
+    assert fleet.stats.traffic_snapshot(15)["requests"] == 5
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        ({"type": "noul", "instructions": "Is this true?"}, {"type": "noul", "noul": 0.8, "confidence": 0.8}),
+        (
+            {"type": "score", "instructions": "Rate", "criteria": {"low": "Low", "high": "High"}},
+            {"type": "score", "score": 0.75, "probabilities": {"low": 0.25, "high": 0.75}},
+        ),
+    ],
+)
+def test_comparison_preserves_typed_nonchoice_answers(app_client, child, question, answer):
+    client, _ = app_client
+    _, model = attach(client, child, key="a")
+    child.reply = {"answers": {"q": answer}}
+    response = client.post(
+        "/api/decide", json={"state": "synthetic", "questions": {"q": question}, "model": model["id"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["answers"]["q"] == {**answer, "calibrated": False}
+
+
+def test_malformed_hosted_success_returns_safe_error(app_client, child):
+    client, fleet = app_client
+    child.models_status = 404
+    _, model = attach(client, child, key="synthetic-secret", url=child.url + "/v1/decisions")
+    child.reply = {"answers": ["synthetic-secret"]}
+    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    assert response.status_code == 502 and "synthetic-secret" not in response.text
+    assert fleet.history.list(model=model["id"])[0]["status"] == 502

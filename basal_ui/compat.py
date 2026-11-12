@@ -1,6 +1,7 @@
 """System One request validation and OpenAI Decisions translation for basal-ui's API server."""
 
 import base64
+import math
 import re
 import time
 import uuid
@@ -389,6 +390,71 @@ def comparison_request(body, image_input=False, option_limit=26, hosted=False):
         except (TypeError, ValueError, KeyError) as exc:
             return refuse(str(exc))
     return None
+
+
+def comparison_response(data, request, model):
+    """Keep supported Decision values only; diagnostics can echo upstream credentials."""
+
+    def number(value):
+        return type(value) in (int, float) and math.isfinite(value)
+
+    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+        raise ValueError("invalid answers")
+    answers = {}
+    for name, question in request["questions"].items():
+        answer = data["answers"].get(name)
+        kind = question["type"]
+        if not isinstance(answer, dict) or answer.get("type", kind) != kind:
+            raise ValueError("missing or invalid answer")
+        result = {"type": kind, "calibrated": False}
+        probabilities = answer.get("probabilities")
+        if probabilities is not None:
+            if (
+                not isinstance(probabilities, dict)
+                or not probabilities
+                or any(not isinstance(k, str) or not number(v) or not 0 <= v <= 1 for k, v in probabilities.items())
+            ):
+                raise ValueError("invalid probabilities")
+            result["probabilities"] = probabilities
+        if kind == "choice":
+            for field in ("choice", "answer"):
+                if field in answer:
+                    if not isinstance(answer[field], str):
+                        raise ValueError("invalid choice")
+                    result[field] = answer[field]
+            if not probabilities and "choice" not in result and "answer" not in result:
+                raise ValueError("missing choice")
+        else:
+            field = "noul" if kind == "noul" else "score"
+            value = answer.get(field)
+            if value is not None:
+                if not number(value) or (kind == "noul" and not 0 <= value <= 1):
+                    raise ValueError("invalid answer value")
+                result[field] = value
+            if value is None and not probabilities:
+                raise ValueError("missing answer value")
+        confidence = answer.get("confidence")
+        if confidence is not None:
+            if not number(confidence) or not 0 <= confidence <= 1:
+                raise ValueError("invalid confidence")
+            result["confidence"] = confidence
+        answers[name] = result
+    usage = data.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    fields = (
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "questions",
+        "branches",
+        "second_order_branches",
+        "longest_prompt_tokens",
+    )
+    return {
+        "model": model,
+        "answers": answers,
+        "usage": {k: usage[k] for k in fields if k in usage and number(usage[k])},
+    }
 
 
 def systemone_to_decisions(body):
