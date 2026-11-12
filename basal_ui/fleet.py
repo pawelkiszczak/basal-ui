@@ -404,6 +404,18 @@ class Runner:
                                     entry, path, assessment.mode, self.options, self._calibration(v)
                                 ),
                             }
+                        if entry is not None and "context" not in entry:
+                            from basal.server import parser
+
+                            args, _ = parser().parse_known_args(command[3:])
+                            entry = {
+                                **entry,
+                                "context": {
+                                    "limit": None,
+                                    "overflow": args.context_overflow,
+                                    "truncate_head": args.truncate_head,
+                                },
+                            }
                         with self.lock:
                             if gen != self.gen:
                                 return

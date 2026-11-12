@@ -2,6 +2,8 @@
 opts in to an experimental engine."""
 
 import importlib.util
+import json
+import os
 import re
 import subprocess
 import sys
@@ -9,7 +11,6 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
-from packaging.version import Version
 
 from basal_ui import engine
 
@@ -99,29 +100,77 @@ def test_every_tested_release_is_in_the_range():
         assert engine.supported(version), version
 
 
-NEW_IN_2_5 = ("adapter", "viz_gemma4", "mcp_models", "mlx_recurrent", "int8", "viz_mlx")
+@pytest.mark.parametrize("available", [False, True])
+def test_public_probes_follow_an_isolated_engine_package(tmp_path, available):
+    package = tmp_path / "basal"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    for module in ("adapter", "router", "attach", "finetune", "presets", "ordercheck"):
+        if available:
+            (package / f"{module}.py").write_text("")
+    (package / "viz.py").write_text("mlx_lens = is_gemma4 = True\n" if available else "")
+    (package / "engine.py").write_text(
+        "class MLXBackend:\n    def __init__(self, compute): pass\n" if available else "class MLXBackend: pass\n"
+    )
+    if available:
+        (package / "mcp_server.py").write_text("def http(server, host, models=None): pass\n")
+    parser = (
+        "import argparse\n"
+        "def parser():\n"
+        "    p = argparse.ArgumentParser(description='mentions --imaginary and --layout')\n"
+        "    p.add_argument('--real')\n"
+        "    return p\n"
+    )
+    (package / "server.py").write_text(parser + f"MODES = {('eager', 'int8') if available else ('eager',)!r}\n")
+    (package / "calibrate.py").write_text(parser)
+    script = """\
+import json
+from basal_ui import engine
+names = ('adapter', 'viz_gemma4', 'mcp_models', 'mlx_recurrent', 'int8', 'viz_mlx',
+         'router', 'attach', 'finetune', 'presets', 'order_check')
+print(json.dumps({'features': {name: engine.feature(name) for name in names},
+                  'serve': sorted(engine.serve_flags()), 'calibrate': sorted(engine.calibrate_flags()),
+                  'modes': sorted(engine.serve_modes())}))
+"""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(tmp_path), str(ROOT)))}
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, check=True
+    )
+    observed = json.loads(result.stdout)
+    assert all(value is available for value in observed["features"].values())
+    for command in ("serve", "calibrate"):
+        assert "--real" in observed[command]
+        assert "--imaginary" not in observed[command] and "--layout" not in observed[command]
+    assert "eager" in observed["modes"] and ("int8" in observed["modes"]) is available
 
 
-def test_feature_probes_match_the_installed_engine():
-    """Each probe tells the tested releases apart: all on with 2.5.0, all off with 2.4.x (CI runs both)."""
-    assert set(NEW_IN_2_5) == set(engine.FEATURES)
-    found = {name: engine.feature(name) for name in engine.FEATURES}
-    assert all(isinstance(value, bool) for value in found.values()), found
-    version = Version(engine.installed()[0])
-    expected = version >= Version("2.5.0")
-    if version.release[:2] not in ((2, 4), (2, 5)):
-        pytest.skip(f"engine {version} is not a tested release line")
-    assert found == dict.fromkeys(NEW_IN_2_5, expected)
+def test_installed_console_capabilities_include_common_options():
+    assert "--model" in engine.serve_flags()
+    assert "--model" in engine.calibrate_flags()
+    assert "eager" in engine.serve_modes()
 
 
-def test_a_probe_of_an_engine_module_that_cannot_be_imported_is_off(monkeypatch):
-    real = engine.importlib.import_module
-
-    def import_module(name):
-        if name == "basal.mcp_server":
-            raise ImportError("no mcp")
-        return real(name)
-
-    monkeypatch.setattr(engine.importlib, "import_module", import_module)
-    assert engine.feature("mcp_models") is False
-    assert engine._parameter("basal.engine", "NoSuchBackend.__init__", "compute") is False
+@pytest.mark.parametrize(
+    "name",
+    [
+        "adapter",
+        "viz_gemma4",
+        "mcp_models",
+        "mlx_recurrent",
+        "int8",
+        "viz_mlx",
+        "router",
+        "attach",
+        "finetune",
+        "presets",
+        "order_check",
+    ],
+)
+def test_installed_release_capability(name):
+    version, _ = engine.installed()
+    expected = {"2.4.1": False, "2.5.0": True, "2.5.1": True}
+    if version not in expected:
+        pytest.skip(f"no capability expectation for Engine {version}")
+    if name == "mcp_models":
+        pytest.importorskip("mcp.server.mcpserver", reason="MCP dependency is not installed")
+    assert engine.feature(name) is expected[version]

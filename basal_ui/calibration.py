@@ -214,9 +214,9 @@ def labelled(input_path):
 def engine_flags(flags) -> list[str]:
     """The basal-serve flags basal-calibrate's engine takes (add_engine_args), of a flag list such as
     catalog.serve_args + options.args; basal-serve's own (thinking, --strict-calibration) and --model are dropped."""
-    from basal import calibrate
+    from .engine import calibrate_flags
 
-    known = {s for a in calibrate.parser()._actions for s in a.option_strings}
+    known = calibrate_flags()
     out, keep = [], False
     for token in flags:
         if token.startswith("--"):
