@@ -148,3 +148,29 @@ def test_installed_console_capabilities_include_common_options():
     assert "--model" in engine.serve_flags()
     assert "--model" in engine.calibrate_flags()
     assert "eager" in engine.serve_modes()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "adapter",
+        "viz_gemma4",
+        "mcp_models",
+        "mlx_recurrent",
+        "int8",
+        "viz_mlx",
+        "router",
+        "attach",
+        "finetune",
+        "presets",
+        "order_check",
+    ],
+)
+def test_installed_release_capability(name):
+    version, _ = engine.installed()
+    expected = {"2.4.1": False, "2.5.0": True, "2.5.1": True}
+    if version not in expected:
+        pytest.skip(f"no capability expectation for Engine {version}")
+    if name == "mcp_models":
+        pytest.importorskip("mcp.server.mcpserver", reason="MCP dependency is not installed")
+    assert engine.feature(name) is expected[version]

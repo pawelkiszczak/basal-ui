@@ -255,8 +255,21 @@ def context_of(entry):
     return entry["context"]
 
 
-def known_context_limit(entry):
-    limit = context_of(entry)["limit"]
+def verified_context(model):
+    """Compare reported metadata with the actual child when the child supplies it."""
+    response = httpx.get(model["base_url"] + "/v1/models", timeout=10)
+    response.raise_for_status()
+    child = response.json()["models"][0]
+    entry = model["entry"]
+    for key in ("context", "certified"):
+        if key in child:
+            assert entry[key] == child[key], f"UI changed the child's {key}"
+    print(f"{model['id']}: child context={child.get('context')}, UI context={entry.get('context')}")
+    return context_of(entry)
+
+
+def known_context_limit(model):
+    limit = verified_context(model)["limit"]
     if limit is None:
         pytest.skip("the model's context limit is not reported")
     return limit
