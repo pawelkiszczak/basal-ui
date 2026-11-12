@@ -55,7 +55,7 @@ def child():
         200,
     )
     server.reply = {
-        "answers": {"q": {"type": "choice", "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.8}},
+        "answers": {"q": {"type": "choice", "choice": "0", "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.8}},
         "usage": {"latency_ms": 1.5},
     }
     threading.Thread(target=server.serve_forever, daemon=True).start()

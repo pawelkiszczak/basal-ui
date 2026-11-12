@@ -23,6 +23,11 @@ BODY = {
     "questions": {"q": {"type": "choice", "instructions": "Pick", "criteria": {"0": "a", "1": "b"}}},
 }
 
+CARDS_BODY = {
+    "state": "synthetic",
+    "questions": {"q": {"type": "choice", "instructions": "Pick", "criteria": {"cards": "Cards", "loans": "Loans"}}},
+}
+
 
 def wait_for(condition, timeout=5):
     deadline = time.monotonic() + timeout
@@ -523,17 +528,23 @@ def test_short_key_preserves_discovery_and_answer_identifiers(app_client, child)
     client, fleet = app_client
     child.models = [{"id": "cards", "modalities": ["image"], "max_options": 5}]
     child.reply = {
-        "answers": {"q": {"type": "choice", "choice": "cards", "probabilities": {"cards": 1.0}, "confidence": 1.0}}
+        "answers": {
+            "q": {"type": "choice", "choice": "cards", "probabilities": {"cards": 0.9, "loans": 0.1}, "confidence": 0.9}
+        }
     }
     _, model = attach(client, child, key="a")
     assert model["entry"]["upstream_model"] == "cards"
-    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    response = client.post("/api/decide", json={**CARDS_BODY, "model": model["id"]})
     answer = response.json()["answers"]["q"]
-    assert response.status_code == 200 and answer["choice"] == "cards" and answer["probabilities"] == {"cards": 1.0}
+    assert (
+        response.status_code == 200
+        and answer["choice"] == "cards"
+        and answer["probabilities"] == {"cards": 0.9, "loans": 0.1}
+    )
     assert fleet.history.list()[0]["answers"]["q"]["best"] == "cards"
     child.reply_status = 401
     child.reply = {"error": "Bearer a"}
-    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    response = client.post("/api/decide", json={**CARDS_BODY, "model": model["id"]})
     assert response.status_code == 401 and "Bearer a" not in response.text
 
 
@@ -707,8 +718,8 @@ def test_comparison_projects_metadata_and_success_without_losing_answer(app_clie
             "q": {
                 "type": "choice",
                 "choice": "cards",
-                "probabilities": {"cards": 1.0},
-                "confidence": 1.0,
+                "probabilities": {"cards": 0.9, "loans": 0.1},
+                "confidence": 0.9,
                 "diagnostic": secret,
             }
         },
@@ -716,10 +727,10 @@ def test_comparison_projects_metadata_and_success_without_losing_answer(app_clie
     _, model = attach(client, child, key=secret)
     assert secret not in client.get("/api/status").text
     assert model["reported_memory_bytes"] is None and model["entry"]["modalities"] == ["image"]
-    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    response = client.post("/api/decide", json={**CARDS_BODY, "model": model["id"]})
     assert response.status_code == 200 and secret not in response.text
     assert response.json()["answers"]["q"]["choice"] == "cards"
-    assert response.json()["answers"]["q"]["probabilities"] == {"cards": 1.0}
+    assert response.json()["answers"]["q"]["probabilities"] == {"cards": 0.9, "loans": 0.1}
     assert response.json()["usage"] == {"latency_ms": 3}
     assert secret not in json.dumps(fleet.history.list())
 
@@ -734,10 +745,15 @@ def test_missing_or_invalid_comparison_answers_are_recorded_as_failures(app_clie
         {"answers": {"q": {"type": "choice", "probabilities": {"cards": "a"}}}},
     ):
         child.reply = payload
-        response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+        response = client.post("/api/decide", json={**CARDS_BODY, "model": model["id"]})
         assert response.status_code == 502 and response.json()["code"] == "UPSTREAM_ERROR"
-    child.reply = {"answers": {"q": {"type": "choice", "choice": "cards", "probabilities": {"cards": 1.0}}}}
-    assert client.post("/api/decide", json={**BODY, "model": model["id"]}).json()["answers"]["q"]["choice"] == "cards"
+    child.reply = {
+        "answers": {"q": {"type": "choice", "choice": "cards", "probabilities": {"cards": 0.9, "loans": 0.1}}}
+    }
+    assert (
+        client.post("/api/decide", json={**CARDS_BODY, "model": model["id"]}).json()["answers"]["q"]["choice"]
+        == "cards"
+    )
     assert [record["status"] for record in fleet.history.list(model=model["id"])] == [200, 502, 502, 502, 502]
     assert fleet.stats.snapshot()["models"][model["id"]]["errors"] == 4
     assert fleet.stats.traffic_snapshot(15)["requests"] == 5
@@ -772,3 +788,101 @@ def test_malformed_hosted_success_returns_safe_error(app_client, child):
     response = client.post("/api/decide", json={**BODY, "model": model["id"]})
     assert response.status_code == 502 and "synthetic-secret" not in response.text
     assert fleet.history.list(model=model["id"])[0]["status"] == 502
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        (
+            {"type": "choice", "criteria": {"cards": "Cards", "loans": "Loans"}, "option_keys": "show"},
+            {"type": "choice", "choice": "cards", "probabilities": {"cards": 0.7, "loans": 0.3}},
+        ),
+        (
+            {"type": "choice", "criteria": {"0": "Cards", "1": "Loans"}, "option_keys": "hide"},
+            {"type": "choice", "choice": "0", "probabilities": {"0": 0.7, "1": 0.3}},
+        ),
+        (
+            {"type": "choice", "criteria": ["cards", "loans"]},
+            {"type": "choice", "choice": "cards", "probabilities": {"cards": 0.7, "loans": 0.3}},
+        ),
+        (
+            {"type": "choice", "criteria": [True, False]},
+            {"type": "choice", "choice": True, "probabilities": {"true": 0.7, "false": 0.3}},
+        ),
+        (
+            {"type": "choice", "criteria": [1, 2]},
+            {"type": "choice", "choice": 1, "probabilities": {"1": 0.7, "2": 0.3}},
+        ),
+        (
+            {"type": "score", "criteria": ["Low", "High"]},
+            {"type": "score", "score": 0.7, "probabilities": {"0": 0.3, "1": 0.7}},
+        ),
+        (
+            {"type": "score", "levels": {"low": "Low", "high": "High"}},
+            {"type": "score", "score": 0.7, "probabilities": {"low": 0.3, "high": 0.7}},
+        ),
+    ],
+)
+def test_requested_option_identifiers_are_preserved(app_client, child, question, answer):
+    client, _ = app_client
+    _, model = attach(client, child, key="a")
+    child.reply = {"answers": {"q": answer}}
+    response = client.post(
+        "/api/decide", json={"state": "synthetic", "questions": {"q": question}, "model": model["id"]}
+    )
+    assert response.status_code == 200
+    assert response.json()["answers"]["q"] == {**answer, "calibrated": False}
+
+
+def test_fabricated_or_incomplete_primitive_answers_fail_and_record(app_client, child):
+    client, fleet = app_client
+    _, model = attach(client, child, key="synthetic-secret")
+    choice = {"type": "choice", "choice": "cards", "probabilities": {"cards": 0.8, "loans": 0.2}}
+    invalid = [
+        (CARDS_BODY["questions"]["q"], {**choice, "choice": "synthetic-secret"}),
+        (CARDS_BODY["questions"]["q"], {**choice, "probabilities": {"synthetic-secret": 1.0}}),
+        (CARDS_BODY["questions"]["q"], {"type": "choice", "choice": "cards"}),
+        (CARDS_BODY["questions"]["q"], {"type": "choice", "probabilities": {"cards": 0.5, "loans": 0.5}}),
+        ({"type": "noul"}, {"type": "noul", "probabilities": {"synthetic-secret": 1.0}}),
+        ({"type": "noul"}, {"type": "noul", "noul": 2.0}),
+        ({"type": "score", "criteria": ["Low", "High"]}, {"type": "score", "probabilities": {"0": 0.3, "1": 0.7}}),
+        (
+            {"type": "score", "criteria": ["Low", "High"]},
+            {"type": "score", "score": 0.7, "probabilities": {"0": 0.3, "synthetic-secret": 0.7}},
+        ),
+    ]
+    for question, answer in invalid:
+        child.reply = {"answers": {"q": answer}}
+        response = client.post(
+            "/api/decide", json={"state": "synthetic", "questions": {"q": question}, "model": model["id"]}
+        )
+        assert response.status_code == 502 and "synthetic-secret" not in response.text
+    child.reply = {"answers": {"q": {"type": "choice", "probabilities": {"cards": 0.8, "loans": 0.2}}}}
+    response = client.post("/api/decide", json={**CARDS_BODY, "model": model["id"]})
+    assert response.status_code == 200 and response.json()["answers"]["q"]["choice"] == "cards"
+    child.reply = {"answers": {"q": {"type": "noul", "probabilities": {"true": 0.8, "false": 0.2}}}}
+    response = client.post(
+        "/api/decide", json={"state": "synthetic", "questions": {"q": {"type": "noul"}}, "model": model["id"]}
+    )
+    assert response.status_code == 200 and response.json()["answers"]["q"]["noul"] == 0.8
+    stats = fleet.stats.snapshot()["models"][model["id"]]
+    assert stats["errors"] == len(invalid) and stats["requests"] == len(invalid) + 2
+    assert fleet.stats.traffic_snapshot(15)["requests"] == len(invalid) + 2
+    assert [record["status"] for record in fleet.history.list(model=model["id"])].count(502) == len(invalid)
+
+
+def test_comparison_truncation_is_preserved_and_diagnostics_omitted(app_client, child):
+    client, fleet = app_client
+    _, model = attach(client, child)
+    fields = {"dropped_tokens": 30, "state_tokens": 100, "head_tokens": 50, "tail_tokens": 20}
+    child.reply["usage"]["truncated"] = {**fields, "debug": "secret-for-test"}
+    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    assert response.status_code == 200 and response.json()["usage"]["truncated"] == fields
+    assert "secret-for-test" not in response.text
+    record = client.get("/api/history", params={"model": model["id"]}).json()["items"][0]
+    assert record["truncated"] is True
+    full = client.get(f"/api/history/{record['id']}").json()
+    assert full["response"]["usage"]["truncated"] == fields and "secret-for-test" not in json.dumps(full)
+    child.reply["usage"]["truncated"]["head_tokens"] = "secret-for-test"
+    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    assert response.status_code == 502 and "secret-for-test" not in response.text

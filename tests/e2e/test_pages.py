@@ -1823,6 +1823,32 @@ def test_comparison_server_keyboard_attach_and_detach(page, child, tmp_path):
     finally:
         child.gate.set()
     child.reply_status = 200
+    original_reply = child.reply
+    child.reply = {
+        "answers": {
+            "dept": {
+                "type": "choice",
+                "choice": "cards",
+                "probabilities": {"cards": 0.8, "loans": 0.1, "online": 0.1},
+                "confidence": 0.8,
+            }
+        },
+        "usage": {
+            "truncated": {
+                "dropped_tokens": 30,
+                "state_tokens": 100,
+                "head_tokens": 50,
+                "tail_tokens": 20,
+                "diagnostic": "synthetic-secret",
+            }
+        },
+    }
+    page.locator("#dt-run").click()
+    second = page.locator("#decisionCompare .dt-model-result").nth(1)
+    sync_api.expect(second.locator(".dt-raw")).to_be_visible(timeout=30000)
+    sync_api.expect(second.locator(".error-box")).to_contain_text("dropped 30 of 100 tokens")
+    assert "synthetic-secret" not in second.inner_text()
+    child.reply = original_reply
     child.post_started.clear()
     child.gate.clear()
     source = tmp_path / "batch.jsonl"

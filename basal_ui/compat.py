@@ -408,31 +408,64 @@ def comparison_response(data, request, model):
             raise ValueError("missing or invalid answer")
         result = {"type": kind, "calibrated": False}
         probabilities = answer.get("probabilities")
+        options = question.get("criteria") or (question.get("levels") if kind == "score" else None)
+        if kind in ("choice", "score"):
+            if isinstance(options, dict):
+                keys = set(options)
+            elif isinstance(options, list):
+                keys = (
+                    {str(i) for i in range(len(options))}
+                    if kind == "score"
+                    else {str(value).lower() if isinstance(value, bool) else str(value) for value in options}
+                )
+            else:
+                raise ValueError("missing options")
+            if not keys or any(not isinstance(key, str) for key in keys):
+                raise ValueError("invalid options")
+        else:
+            keys = {"true", "false"}
         if probabilities is not None:
             if (
                 not isinstance(probabilities, dict)
-                or not probabilities
-                or any(not isinstance(k, str) or not number(v) or not 0 <= v <= 1 for k, v in probabilities.items())
+                or set(probabilities) != keys
+                or any(not number(value) or not 0 <= value <= 1 for value in probabilities.values())
             ):
                 raise ValueError("invalid probabilities")
             result["probabilities"] = probabilities
         if kind == "choice":
-            for field in ("choice", "answer"):
-                if field in answer:
-                    if not isinstance(answer[field], str):
-                        raise ValueError("invalid choice")
-                    result[field] = answer[field]
-            if not probabilities and "choice" not in result and "answer" not in result:
-                raise ValueError("missing choice")
+            if probabilities is None:
+                raise ValueError("missing probabilities")
+            choice, alias = answer.get("choice"), answer.get("answer")
+            if choice is not None and alias is not None and choice != alias:
+                raise ValueError("inconsistent choice")
+            choice = choice if choice is not None else alias
+            if choice is None:
+                highest = max(probabilities.values())
+                winners = [key for key, value in probabilities.items() if value == highest]
+                if len(winners) != 1:
+                    raise ValueError("ambiguous choice")
+                choice = winners[0]
+            if isinstance(choice, str):
+                selected_key = choice
+            elif isinstance(options, list) and any(
+                type(choice) is type(value) and choice == value for value in options
+            ):
+                selected_key = str(choice).lower() if isinstance(choice, bool) else str(choice)
+            else:
+                raise ValueError("invalid choice")
+            if selected_key not in keys:
+                raise ValueError("invalid choice")
+            result["choice"] = choice
         else:
             field = "noul" if kind == "noul" else "score"
             value = answer.get(field)
-            if value is not None:
-                if not number(value) or (kind == "noul" and not 0 <= value <= 1):
-                    raise ValueError("invalid answer value")
-                result[field] = value
-            if value is None and not probabilities:
-                raise ValueError("missing answer value")
+            if value is None and kind == "noul" and probabilities is not None:
+                value = probabilities["true"]
+            if not number(value) or (kind == "noul" and not 0 <= value <= 1):
+                raise ValueError("invalid answer value")
+            if kind == "score" and not 0 <= value <= len(keys) - 1:
+                raise ValueError("invalid score")
+            result[field] = value
         confidence = answer.get("confidence")
         if confidence is not None:
             if not number(confidence) or not 0 <= confidence <= 1:
@@ -450,11 +483,16 @@ def comparison_response(data, request, model):
         "second_order_branches",
         "longest_prompt_tokens",
     )
-    return {
-        "model": model,
-        "answers": answers,
-        "usage": {k: usage[k] for k in fields if k in usage and number(usage[k])},
-    }
+    clean_usage = {k: usage[k] for k in fields if k in usage and number(usage[k])}
+    truncated = usage.get("truncated")
+    if truncated is not None and truncated is not False:
+        required = ("dropped_tokens", "state_tokens", "head_tokens", "tail_tokens")
+        if not isinstance(truncated, dict) or any(
+            type(truncated.get(key)) is not int or truncated[key] < 0 for key in required
+        ):
+            raise ValueError("invalid truncation information")
+        clean_usage["truncated"] = {key: truncated[key] for key in required}
+    return {"model": model, "answers": answers, "usage": clean_usage}
 
 
 def systemone_to_decisions(body):
@@ -568,7 +606,7 @@ def decisions_to_systemone(response, original):
             choice = answer.get("choice")
             answers[key] = {
                 "type": "choice",
-                "choice": choice_key(choice) if choice is not None else max(probabilities, key=probabilities.get),
+                "choice": choice_key(choice) if choice is not None else None,
                 "probabilities": probabilities,
                 "confidence": answer.get("confidence"),
             }
