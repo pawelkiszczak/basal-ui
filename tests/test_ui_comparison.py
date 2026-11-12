@@ -136,6 +136,18 @@ def test_consent_and_refusals_precede_upstream(app_client, child):
         assert response.status_code == 400 and response.json()["code"] == "UNSUPPORTED_FOR_COMPARISON", response.text
         if len(body["questions"]["q"].get("criteria", [])) == 3:
             assert "limit is 2" in response.json()["error"]
+    for kind in ("multi", "act", "tool", "classify", "verify", "compress", "extract"):
+        body = {**BODY, "questions": {"q": {"type": kind, "criteria": ["a", "b"]}}}
+        assert (
+            client.post("/api/decide", json={**body, "model": model_id}).json()["code"] == "UNSUPPORTED_FOR_COMPARISON"
+        )
+    for field in ("facts", "evidence", "max_error", "coverage", "ask_if", "depends_on", "multi"):
+        body = {**BODY, "questions": {"q": {**BODY["questions"]["q"], field: True}}}
+        assert (
+            client.post("/api/decide", json={**body, "model": model_id}).json()["code"] == "UNSUPPORTED_FOR_COMPARISON"
+        )
+    malformed = client.post("/api/decide", json={"model": model_id, "questions": {"q": "invalid"}})
+    assert malformed.status_code == 422 and malformed.json()["code"] == "INVALID_REQUEST"
     assert child.seen == []
     child.reply_status = 401
     assert client.post("/api/decide", json={**BODY, "model": model_id}).status_code == 401
