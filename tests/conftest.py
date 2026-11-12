@@ -27,6 +27,7 @@ def child():
         def do_POST(self):
             seen.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
             server.headers.append(dict(self.headers))
+            server.post_started.set()
             gate.wait(30)
             body = json.dumps(server.reply).encode()
             self.send_response(server.reply_status)
@@ -40,7 +41,11 @@ def child():
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.seen, server.gate, server.url = seen, gate, f"http://127.0.0.1:{server.server_address[1]}"
-    server.discovery_started, server.discovery_gate = threading.Event(), threading.Event()
+    server.discovery_started, server.discovery_gate, server.post_started = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
     server.discovery_gate.set()
     server.headers, server.models, server.health_status, server.models_status, server.reply_status = (
         [],

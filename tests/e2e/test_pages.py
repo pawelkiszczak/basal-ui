@@ -1784,6 +1784,10 @@ def test_comparison_server_keyboard_attach_and_detach(page, child):
     page.locator("#decisionServerUrl").fill("https://example.com")
     sync_api.expect(page.locator("#decisionServerConsentField")).to_be_visible()
     sync_api.expect(page.locator("#decisionServerConsentText")).to_contain_text("example.com")
+    page.locator("#decisionServerConsent").check()
+    page.locator("#decisionServerUrl").fill("https://another.example")
+    sync_api.expect(page.locator("#decisionServerConsent")).not_to_be_checked()
+    sync_api.expect(page.locator("#decisionServerConsentText")).to_contain_text("another.example")
     page.locator("#decisionServerUrl").fill(child.url)
     sync_api.expect(page.locator("#decisionServerConsentField")).to_be_hidden()
     page.locator("#addDecisionServer").focus()
@@ -1800,6 +1804,21 @@ def test_comparison_server_keyboard_attach_and_detach(page, child):
     view(page, "playground")
     sync_api.expect(page.locator("#decisionCompare .dt-model").nth(1)).to_contain_text("Comparison")
     assert "Comparison" not in page.locator("#decisionCompare .dt-model").first.inner_text()
+    page.evaluate("request => setRequest(request)", CHOICE)
+    child.gate.clear()
+    try:
+        page.locator("#dt-run").click()
+        page.wait_for_function("() => document.querySelector('#decisionCompare .dt-model-result:first-child .dt-raw')")
+        assert child.post_started.wait(10)
+        sync_api.expect(page.locator("#decisionCompare .dt-model-result").nth(1)).to_have_attribute(
+            "data-running", "true"
+        )
+        child.reply_status = 500
+        child.gate.set()
+        sync_api.expect(page.locator("#decisionCompare .dt-model-result").nth(1).locator(".error-box")).to_be_visible()
+        sync_api.expect(page.locator("#decisionCompare .dt-model-result").first.locator(".dt-raw")).to_be_visible()
+    finally:
+        child.gate.set()
     manager_tab(page, "library")
     button = row.get_by_role("button", name="Detach")
     button.focus()

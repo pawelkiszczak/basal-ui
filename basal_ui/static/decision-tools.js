@@ -160,16 +160,19 @@
     reconcileSelects();
     grid.innerHTML = models.map(model => `<article class="dt-model-result" data-model="${esc(model.id)}" data-running="true"><h3>${esc(model.id)}</h3><p class="dt-used">${t('This model will receive the frozen request above.')}</p><p class="muted">${t('Running…')}</p></article>`).join('');
     try {
-      const settled = await Promise.all(models.map(async model => {
+      await Promise.all(models.map(async (model, index) => {
         const request = structuredClone(snapshot); request.model = model.id;
         const started = performance.now();
-        try { return {model, request, data: await api('/api/decide', {method: 'POST', body: JSON.stringify(request)}), latency: performance.now() - started}; }
-        catch (error) { return {model, request, error, latency: performance.now() - started}; }
+        let data, error;
+        try { data = await api('/api/decide', {method: 'POST', body: JSON.stringify(request)}); }
+        catch (reason) { error = reason; }
+        if (run !== sequence) return;
+        const panel = grid.children[index], latency = performance.now() - started;
+        panel.removeAttribute('data-running');
+        panel.innerHTML = error
+          ? `<h3>${esc(modelLabel(model))}</h3>${model.kind==='comparison'?comparisonBadge():''}<p class="dt-used">${t('Request sent')}: <code>${esc(model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(model.id)})}</summary><pre>${esc(displayRequest(request))}</pre></details><div class="error-box" role="alert">${esc(error.message || String(error))}</div>`
+          : `<h3>${esc(modelLabel(model))}</h3>${model.kind==='comparison'?comparisonBadge():''}<p>${t('Latency')}: ${esc(num(latency, 0))} ms</p>${renderResults(data, request, entries[model.id], mediaSnapshot)}`;
       }));
-      if (run !== sequence) return;
-      grid.innerHTML = settled.map(result => `<article class="dt-model-result" data-model="${esc(result.model.id)}">${result.error
-        ? `<h3>${esc(modelLabel(result.model))}</h3><p class="dt-used">${t('Request sent')}: <code>${esc(result.model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(result.model.id)})}</summary><pre>${esc(displayRequest(result.request))}</pre></details><div class="error-box" role="alert">${esc(result.error.message || String(result.error))}</div>`
-        : `<h3>${esc(modelLabel(result.model))}</h3>${result.model.kind==='comparison'?comparisonBadge():''}<p>${t('Latency')}: ${esc(num(result.latency, 0))} ms</p>${renderResults(result.data, result.request, entries[result.model.id], mediaSnapshot)}`}</article>`).join('');
     } catch (error) {
       if (run === sequence) setError(error.message || String(error));
     } finally {

@@ -16,6 +16,7 @@ import ipaddress
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -1459,9 +1460,8 @@ def create_app(
             )
         source = Path(source).expanduser()
         try:
-            lines = [
-                (n, line) for n, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1) if line.strip()
-            ]
+            source_bytes = source.read_bytes()
+            lines = [(n, line) for n, line in enumerate(source_bytes.decode("utf-8").splitlines(), 1) if line.strip()]
         except (OSError, UnicodeDecodeError) as exc:
             raise HTTPException(400, f"cannot read {source}: {getattr(exc, 'strerror', None) or exc}") from exc
         for n, line in lines:
@@ -1543,6 +1543,16 @@ def create_app(
                     raise HTTPException(
                         400, {"code": error["code"], "detail": f"{source.name}: line {n}: {error['error']}"}
                     )
+        snapshot = None
+        if isinstance(runner, ComparisonRunner):
+            fd, name = tempfile.mkstemp(prefix="basal-ui-comparison-", suffix=".jsonl")
+            snapshot = Path(name)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(source_bytes)
+            except BaseException:
+                snapshot.unlink(missing_ok=True)
+                raise
         try:
             return fleet.start_model_job(
                 "batch",
@@ -1555,13 +1565,21 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
-                *([runner] if isinstance(runner, ComparisonRunner) else []),
+                *([runner, snapshot] if snapshot is not None else []),
                 runner_expected=runner if isinstance(runner, ComparisonRunner) else None,
             )
         except KeyError as exc:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
             raise HTTPException(409, str(exc)) from exc
+        except BaseException:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
+            raise
 
     @app.delete("/api/batch")
     def cancel_batch():

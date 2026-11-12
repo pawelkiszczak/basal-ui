@@ -101,7 +101,12 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         record = request.scope.get("basal.api_key")
         if record is not None and not record.get("admin", False):
             return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
-        return JSONResponse(stats.snapshot())
+        data = stats.snapshot()
+        data["models"] = {key: value for key, value in data["models"].items() if not key.startswith("comparison:")}
+        data["benchmarks"] = {
+            key: value for key, value in data["benchmarks"].items() if not key.startswith("comparison:")
+        }
+        return JSONResponse(data)
 
     mcp_routes, mcp_run = [], None
     if mcp:

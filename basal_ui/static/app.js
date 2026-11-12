@@ -18,7 +18,8 @@ async function api(path, options={}) {
     const detail = typeof data?.detail === 'string' ? data.detail : typeof nested?.detail === 'string' ? nested.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const code=data?.code||nested?.code;
-    const message=code==='UNSUPPORTED_FOR_COMPARISON'?comparisonFailure(raw):code==='CONSENT_REQUIRED'?t('Consent is required to send requests to {host}',{host:raw.split(' ').at(-1)}):code?ts(raw,code,data.params):t(raw);
+    const upstream=raw.match(/^Comparison server returned HTTP (\d+)$/);
+    const message=code==='UNSUPPORTED_FOR_COMPARISON'?comparisonFailure(raw):code==='CONSENT_REQUIRED'?t('Consent is required to send requests to {host}',{host:raw.split(' ').at(-1)}):upstream?t('Comparison server returned HTTP {status}',{status:upstream[1]}):code?ts(t(raw),code,data.params):t(raw);
     const id=response.headers.get('x-request-id');
     throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
   }
@@ -1333,8 +1334,11 @@ function renderDecisionServers(status){
     catch(error){$('#decisionServerError').textContent=error.message;$('#decisionServerError').hidden=false;}
   });
 }
+let decisionConsentHost='';
 function decisionServerConsent(){
   let host='';try{host=new URL($('#decisionServerUrl').value).hostname.toLowerCase().replace(/^\[|\]$/g,'');}catch{}
+  if(host!==decisionConsentHost)$('#decisionServerConsent').checked=false;
+  decisionConsentHost=host;
   const local=host==='localhost'||host==='::1'||/^127(?:\.\d{1,3}){3}$/.test(host)||/^169\.254(?:\.\d{1,3}){2}$/.test(host)||/^fe[89ab][0-9a-f]:/i.test(host);
   $('#decisionServerConsentField').hidden=!host||local;
   $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
@@ -1370,8 +1374,8 @@ function renderStatus(s) {
   const live=models.filter(answering).length;
   $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
   $('#footerDot').className=`status-dot${ready.length?' ready':models.some(m=>m.state==='error')?' error':''}${live?' active':''}`;
-  $('#footerModel').textContent=models.map(m=>shortName(m.id)).join(', ')||t('No model loaded');
-  $('#footerModel').title=models.map(m=>m.id).join(', ')||t('No model loaded');
+  $('#footerModel').textContent=models.map(m=>`${shortName(m.id)}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
+  $('#footerModel').title=models.map(m=>`${m.id}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
   $('#footerUrl').textContent=s.serving?.url||''; $('#footerUrl').hidden=!s.serving?.url;
   const owned=models.filter(m=>m.kind!=='comparison');
   $('#footerUnload').hidden=!owned.length; $('#footerUnload').textContent=owned.length>1?t('Unload all'):t('Unload');
@@ -1411,7 +1415,7 @@ function renderInference(s) {
     const counts=h.running>0||h.queued>0?t('{running} running · {queued} queued',{running:h.running??0,queued:h.queued??0}):tp(inflight.length,'{n} request','{n} requests');
     const sources=Object.entries(bySource).map(([k,n])=>`${t(INFERENCE_SOURCES[k]||k)} ${n}`).join(' · ');
     const longest=inflight.length?t('longest {seconds} s',{seconds:inflight[0].seconds.toFixed(1)}):'';
-    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(m.id)}</strong><span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
+    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(modelLabel(m))}</strong>${m.kind==='comparison'?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
   });
   for(const [kind,j] of Object.entries(s.jobs||{})){
     if(!j.running||!INFERENCE_JOBS[kind])continue;

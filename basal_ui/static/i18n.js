@@ -4,6 +4,10 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Comparison server returned HTTP {status}": "Serwer porównawczy zwrócił HTTP {status}",
+  "Invalid Comparison server response": "Nieprawidłowa odpowiedź serwera porównawczego",
+  "Ordinary basal Batch is not counted in Usage or History. Comparison Batch is recorded in both.": "Zwykłe zadania Batch modelu basal nie są uwzględniane w użyciu ani historii. Zadania Batch modelu porównawczego są zapisywane w obu miejscach.",
+
   "Decisions servers require text descriptions in {field}": "Serwery Decisions wymagają tekstowych opisów w {field}",
   "basal-run does not grade gold on full requests; use simple items": "basal-run nie ocenia pól gold w pełnych żądaniach; użyj prostych rekordów",
   "name must be a non-empty string": "Nazwa nie może być pusta",
@@ -49,7 +53,7 @@ const PL = {
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",
   ") or one": ") lub jedno",
-  "). Batch requests go straight to the model: they are not counted in the statistics or the history.": "). Żądania wsadowe trafiają bezpośrednio do modelu: nie są uwzględniane w statystykach ani historii.",
+  "). Ordinary basal Batch is not counted in Usage or History. Comparison Batch is recorded in both.": "). Zwykłe zadania Batch modelu basal nie są uwzględniane w użyciu ani historii. Zadania Batch modelu porównawczego są zapisywane w obu miejscach.",
   "/path/to/CALIBRATION.custom.json fitted elsewhere": "/path/to/CALIBRATION.custom.json dopasowany gdzie indziej",
   "/path/to/labelled.jsonl": "/ścieżka/do/labelled.jsonl",
   "/path/to/requests.jsonl": "/ścieżka/do/requests.jsonl",

@@ -517,3 +517,170 @@ def test_servers_and_keys_restore_after_restart(app_client, child, tmp_path):
         assert ready["entry"]["server"] == saved["id"]
         assert restarted.post("/api/decide", json={**BODY, "model": model["id"]}).status_code == 200
         assert child.headers[-1]["Authorization"] == "Bearer secret-for-test"
+
+
+def test_short_key_preserves_discovery_and_answer_identifiers(app_client, child):
+    client, fleet = app_client
+    child.models = [{"id": "cards", "modalities": ["image"], "max_options": 5}]
+    child.reply = {
+        "answers": {"q": {"type": "choice", "choice": "cards", "probabilities": {"cards": 1.0}, "confidence": 1.0}}
+    }
+    _, model = attach(client, child, key="a")
+    assert model["entry"]["upstream_model"] == "cards"
+    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    answer = response.json()["answers"]["q"]
+    assert response.status_code == 200 and answer["choice"] == "cards" and answer["probabilities"] == {"cards": 1.0}
+    assert fleet.history.list()[0]["answers"]["q"]["best"] == "cards"
+    child.reply_status = 401
+    child.reply = {"error": "Bearer a"}
+    response = client.post("/api/decide", json={**BODY, "model": model["id"]})
+    assert response.status_code == 401 and "Bearer a" not in response.text
+
+
+def test_malformed_discovery_recovers_and_health_falls_back(app_client, child):
+    client, fleet = app_client
+    child.models = None
+    response = client.post("/api/decision-servers", json={"name": "Local", "url": child.url})
+    server_id = response.json()["servers"][0]["id"]
+    wait_for(
+        lambda: next(
+            (s for s in client.get("/api/status").json()["decision_servers"] if s["state"] == "unavailable"), None
+        )
+    )
+    for health in (405, 403):
+        child.models, child.health_status = [{"id": f"model-{health}"}], health
+        with fleet.lock:
+            assert not fleet.decision_servers[server_id]["polling"]
+            fleet.decision_servers[server_id]["next_poll"] = 0
+        model = wait_for(
+            lambda health=health: next(
+                (
+                    m
+                    for m in client.get("/api/status").json()["models"]
+                    if m["id"].endswith(f"/model-{health}") and m["state"] == "ready"
+                ),
+                None,
+            )
+        )
+        assert model["kind"] == "comparison"
+
+
+def test_gateway_stats_exclude_attached_and_detached_comparisons(app_client, child):
+    client, fleet = app_client
+    server, model = attach(client, child)
+    assert client.post("/api/decide", json={**BODY, "model": model["id"]}).status_code == 200
+    assert client.post("/api/decide", json={**BODY, "model": "basal"}).status_code == 200
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as gateway:
+        assert set(gateway.get("/v1/stats").json()["models"]) == {"basal"}
+        assert client.delete(f"/api/decision-servers/{server['id']}").status_code == 200
+        fleet.stats.flush()
+        assert set(gateway.get("/v1/stats").json()["models"]) == {"basal"}
+        assert model["id"] in client.get("/api/stats").json()["models"]
+        assert fleet.history.list(model=model["id"])[0]["server"] == "Local"
+
+
+def test_batch_proxy_refuses_host_and_origin_and_accepts_local_client(app_client, child):
+    import httpx
+
+    from basal_ui.batch import comparison_proxy
+
+    client, fleet = app_client
+    _, model = attach(client, child)
+    with comparison_proxy(fleet, fleet.runners[model["id"]], model["id"]) as url:
+        for headers in ({"Host": "evil.example"}, {"Origin": "https://evil.example"}, {"Origin": "http://127.0.0.1:1"}):
+            response = httpx.post(
+                url + "/v1/systemone", content=json.dumps(BODY), headers={"Content-Type": "text/plain", **headers}
+            )
+            assert response.status_code == 403
+        assert child.seen == []
+        assert httpx.post(url + "/v1/systemone", json=BODY).status_code == 200
+    assert child.seen[-1][1]["model"] == "provider/model"
+
+
+def test_comparison_batch_uses_private_validated_snapshot(app_client, child, tmp_path, monkeypatch):
+    client, fleet = app_client
+    _, model = attach(client, child)
+    source = tmp_path / "mutable.jsonl"
+    source.write_text(json.dumps({"state": "validated", "question": "Pick", "options": ["a", "b"], "gold": 0}) + "\n")
+    original = fleet.start_model_job
+    snapshots = []
+
+    def mutate(*args, **kwargs):
+        snapshot = args[-1]
+        snapshots.append(snapshot)
+        assert snapshot.stat().st_mode & 0o777 == 0o600
+        source.write_text(
+            json.dumps({"state": "changed", "question": "Pick", "options": ["a", "b"], "facts": True}) + "\n"
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fleet, "start_model_job", mutate)
+    assert client.post("/api/batch", json={"id": model["id"], "input": str(source)}).status_code == 202
+    job = wait_for(
+        lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
+    )
+    assert job["phase"] == "done" and job["result"]["input"] == str(source)
+    assert [item[1]["state"] for item in child.seen] == ["validated"]
+    assert not snapshots[0].exists()
+
+
+def test_comparison_batch_snapshot_is_removed_on_rejected_start_and_failure(app_client, child, tmp_path, monkeypatch):
+    from basal_ui import batch
+
+    client, fleet = app_client
+    _, model = attach(client, child)
+    source = tmp_path / "input.jsonl"
+    source.write_text(json.dumps({"state": "validated", "question": "Pick", "options": ["a", "b"]}) + "\n")
+    snapshots = []
+
+    def reject(*args, **kwargs):
+        snapshots.append(args[-1])
+        raise RuntimeError("busy")
+
+    original = fleet.start_model_job
+    monkeypatch.setattr(fleet, "start_model_job", reject)
+    assert client.post("/api/batch", json={"id": model["id"], "input": str(source)}).status_code == 409
+    assert not snapshots.pop().exists()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(fleet, "start_model_job", original)
+    monkeypatch.setattr(batch, "run_tool", fail)
+
+    def record(*args, **kwargs):
+        snapshots.append(args[-1])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fleet, "start_model_job", record)
+    assert client.post("/api/batch", json={"id": model["id"], "input": str(source)}).status_code == 202
+    job = wait_for(
+        lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
+    )
+    assert job["phase"] == "error" and not snapshots.pop().exists()
+
+
+def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path, monkeypatch):
+    client, fleet = app_client
+    _, model = attach(client, child)
+    source = tmp_path / "input.jsonl"
+    source.write_text(json.dumps({"state": "validated", "question": "Pick", "options": ["a", "b"]}) + "\n")
+    child.gate.clear()
+    original, snapshots = fleet.start_model_job, []
+
+    def capture(*args, **kwargs):
+        snapshots.append(args[-1])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fleet, "start_model_job", capture)
+    try:
+        assert client.post("/api/batch", json={"id": model["id"], "input": str(source)}).status_code == 202
+        wait_for(lambda: bool(child.seen), 30)
+        assert client.delete("/api/batch").status_code == 200
+        child.gate.set()
+        job = wait_for(
+            lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
+        )
+        assert job["phase"] == "cancelled" and not snapshots[0].exists()
+    finally:
+        child.gate.set()

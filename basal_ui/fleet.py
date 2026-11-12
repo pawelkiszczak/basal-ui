@@ -548,31 +548,30 @@ class ComparisonRunner:
     def _reply(self, response, body):
         from .compat import decisions_to_systemone, systemone_media
 
-        if self.key:
-
-            def redact(value):
-                if isinstance(value, str):
-                    return value.replace(self.key, "[redacted]")
-                if isinstance(value, list):
-                    return [redact(item) for item in value]
-                if isinstance(value, dict):
-                    return {redact(k): redact(v) for k, v in value.items()}
-                return value
-
+        if response.status_code != 200:
+            status = response.status_code if response.status_code >= 400 else 502
+            response = httpx.Response(
+                status,
+                json={"error": f"Comparison server returned HTTP {response.status_code}", "code": "UPSTREAM_ERROR"},
+            )
+        else:
             try:
-                response = httpx.Response(response.status_code, json=redact(response.json()))
-            except ValueError:
-                response = httpx.Response(response.status_code, text=response.text.replace(self.key, "[redacted]"))
-        if response.status_code == 200:
-            data = response.json()
-            if self.server.get("decisions_url"):
-                data = decisions_to_systemone(data, {**systemone_media(body), "model": self.model_name})
-            for answer in data.get("answers", {}).values():
-                if isinstance(answer, dict):
+                data = response.json()
+                if self.server.get("decisions_url"):
+                    data = decisions_to_systemone(data, {**systemone_media(body), "model": self.model_name})
+                if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+                    raise ValueError("invalid answers")
+                for answer in data["answers"].values():
+                    if not isinstance(answer, dict):
+                        raise ValueError("invalid answer")
                     answer["calibrated"] = False
                     answer.pop("automated", None)
                     answer.pop("calibration", None)
-            response = httpx.Response(200, json=data)
+                response = httpx.Response(200, json=data)
+            except (ValueError, TypeError, KeyError, IndexError):
+                response = httpx.Response(
+                    502, json={"error": "Invalid Comparison server response", "code": "UPSTREAM_ERROR"}
+                )
         response.extensions["basal.inference"] = True
         return response
 
@@ -644,63 +643,69 @@ class Fleet:
         def poll():
             valid, entries, key = False, [], None
             try:
-                key = self.settings_mod.decision_secret(server_id)
-                headers = {"Authorization": f"Bearer {key}"} if key else {}
-                health = httpx.get(server["base_url"] + "/health", headers=headers, timeout=2)
-                if health.status_code in (200, 404):
-                    response = httpx.get(server["base_url"] + "/v1/models", headers=headers, timeout=2)
-                    if response.status_code == 200:
-                        payload = response.json()
-                        entries = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else []
-                        valid = isinstance(entries, list)
-                    elif response.status_code == 404 and server.get("decisions_url"):
-                        entries, valid = [{"id": server["name"]}], True
-                entries = [
-                    entry
-                    for entry in entries
-                    if isinstance(entry, dict)
-                    and isinstance(entry.get("id") or entry.get("name"), str)
-                    and (entry.get("id") or entry.get("name"))
-                ]
-            except (httpx.HTTPError, OSError, ValueError, TypeError):
-                valid = False
-            if key:
-
-                def redact(value):
-                    if isinstance(value, str):
-                        return value.replace(key, "[redacted]")
-                    if isinstance(value, list):
-                        return [redact(item) for item in value]
-                    if isinstance(value, dict):
-                        return {redact(k): redact(v) for k, v in value.items()}
-                    return value
-
-                entries = [redact(entry) for entry in entries if key not in (entry.get("id") or entry.get("name"))]
-            with self.lock:
-                if self.stopping or self.decision_servers.get(server_id) is not server:
-                    return
-                server["state"] = "ready" if valid else "unavailable"
-                old = {
-                    name
-                    for name, runner in self.runners.items()
-                    if isinstance(runner, ComparisonRunner) and runner.server is server
-                }
-                wanted = {f"comparison:{server_id}/{entry.get('id') or entry.get('name')}" for entry in entries}
-                if valid:
-                    for name in old - wanted:
-                        self.runners.pop(name)
-                    for entry in entries:
-                        name = f"comparison:{server_id}/{entry.get('id') or entry.get('name')}"
-                        runner = self.runners.get(name)
-                        if runner is None:
-                            self.runners[name] = ComparisonRunner(server, entry, key)
-                        else:
-                            runner.update(entry, key)
-                            runner.state = "ready"
-                else:
-                    for name in old:
-                        self.runners[name].state = "unavailable"
-                server["next_poll"], server["polling"] = time.monotonic() + 3, False
+                try:
+                    key = self.settings_mod.decision_secret(server_id)
+                    headers = {"Authorization": f"Bearer {key}"} if key else {}
+                    health = httpx.get(server["base_url"] + "/health", headers=headers, timeout=2)
+                    if health.status_code in (200, 403, 404, 405):
+                        response = httpx.get(server["base_url"] + "/v1/models", headers=headers, timeout=2)
+                        if response.status_code == 200:
+                            payload = response.json()
+                            entries = payload.get("data", payload.get("models")) if isinstance(payload, dict) else None
+                            valid = isinstance(entries, list)
+                            if not valid:
+                                entries = []
+                        elif response.status_code == 404 and server.get("decisions_url"):
+                            entries, valid = [{"id": server["name"]}], True
+                    entries = [
+                        {
+                            k: entry[k]
+                            for k in (
+                                "id",
+                                "name",
+                                "modalities",
+                                "input_modalities",
+                                "image",
+                                "max_options",
+                                "memory_bytes",
+                            )
+                            if k in entry
+                        }
+                        for entry in entries
+                        if isinstance(entry, dict)
+                        and isinstance(entry.get("id") or entry.get("name"), str)
+                        and (entry.get("id") or entry.get("name"))
+                    ]
+                except (httpx.HTTPError, OSError, ValueError, TypeError):
+                    valid, entries = False, []
+                with self.lock:
+                    if self.stopping or self.decision_servers.get(server_id) is not server:
+                        return
+                    server["state"] = "ready" if valid else "unavailable"
+                    old = {
+                        name
+                        for name, runner in self.runners.items()
+                        if isinstance(runner, ComparisonRunner) and runner.server is server
+                    }
+                    wanted = {f"comparison:{server_id}/{entry.get('id') or entry.get('name')}" for entry in entries}
+                    if valid:
+                        for name in old - wanted:
+                            self.runners.pop(name)
+                        for entry in entries:
+                            name = f"comparison:{server_id}/{entry.get('id') or entry.get('name')}"
+                            runner = self.runners.get(name)
+                            if runner is None:
+                                self.runners[name] = ComparisonRunner(server, entry, key)
+                            else:
+                                runner.update(entry, key)
+                                runner.state = "ready"
+                    else:
+                        for name in old:
+                            self.runners[name].state = "unavailable"
+            finally:
+                with self.lock:
+                    if self.decision_servers.get(server_id) is server:
+                        server["next_poll"], server["polling"] = time.monotonic() + 3, False
 
         threading.Thread(target=poll, name=f"basal-ui-decision-server-{server_id}", daemon=True).start()
 
@@ -1128,18 +1133,21 @@ class Fleet:
             try:
                 response = runner.decide(body, path)
             except httpx.HTTPError as exc:
+                message = "Comparison server request failed" if server is not None else f"basal-serve: {exc}"
                 self._record(
                     model_id,
                     body,
                     path,
                     source,
                     502,
-                    {"error": f"basal-serve: {exc}"},
+                    {"error": message},
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
                     server=server,
                 )
+                if server is not None:
+                    raise httpx.RequestError(message) from exc
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
             self._record(
@@ -1166,6 +1174,7 @@ class Fleet:
             try:
                 response = await runner.adecide(client, body, path)
             except httpx.HTTPError as exc:
+                message = "Comparison server request failed" if server is not None else f"basal-serve: {exc}"
                 await asyncio.to_thread(
                     self._record,
                     model_id,
@@ -1173,12 +1182,14 @@ class Fleet:
                     path,
                     source,
                     502,
-                    {"error": f"basal-serve: {exc}"},
+                    {"error": message},
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
                     server=server,
                 )
+                if server is not None:
+                    raise httpx.RequestError(message) from exc
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
             await asyncio.to_thread(
