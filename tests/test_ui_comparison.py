@@ -209,6 +209,18 @@ def test_hosted_decisions_translation_and_failure(app_client, child):
     count = len(child.seen)
     invalid = client.post("/api/decide", json={**BODY, "model": model["id"], "lang": "pl"})
     assert invalid.status_code == 400 and len(child.seen) == count
+    for kind in ("choice", "score"):
+        invalid = client.post(
+            "/api/decide",
+            json={
+                **BODY,
+                "model": model["id"],
+                "questions": {
+                    "q": {"type": kind, "instructions": "Pick", "criteria": {"a": {"structured": True}, "b": "text"}}
+                },
+            },
+        )
+        assert invalid.status_code == 400 and "text descriptions" in invalid.text and len(child.seen) == count
 
 
 def test_detach_and_shutdown_cannot_resurrect_during_discovery(app_client, child):

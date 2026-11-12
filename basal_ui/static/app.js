@@ -33,6 +33,8 @@ function comparisonFailure(raw) {
   if(match)return lead+t('{field} has {count} options; this Comparison model’s limit is {limit}',{field:match[1],count:match[2],limit:match[3]});
   match=reason.match(/^Decisions servers cannot preserve (.+)$/);
   if(match)return lead+t('Decisions servers cannot preserve {field}',{field:match[1]});
+  match=reason.match(/^Decisions servers require text descriptions in (.+)$/);
+  if(match)return lead+t('Decisions servers require text descriptions in {field}',{field:match[1]});
   match=reason.match(/^(questions\..+\.instructions) must be text for a Decisions server$/);
   if(match)return lead+t('{field} must be text for a Decisions server',{field:match[1]});
   match=reason.match(/^(questions\..+\.criteria) must list (choices|score levels)$/);

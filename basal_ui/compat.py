@@ -426,6 +426,8 @@ def systemone_to_decisions(body):
                 choices = [{"value": v} for v in criteria]
             else:
                 raise ValueError(f"questions.{name}.criteria must list choices")
+            if any("description" in choice and not isinstance(choice["description"], str) for choice in choices):
+                raise ValueError(f"Decisions servers require text descriptions in questions.{name}.criteria")
             item.update(type="choice", choices=choices)
         elif kind == "noul":
             if criteria:
@@ -438,6 +440,8 @@ def systemone_to_decisions(body):
                 levels = [{"label": v} for v in criteria]
             else:
                 raise ValueError(f"questions.{name}.criteria must list score levels")
+            if any("description" in level and not isinstance(level["description"], str) for level in levels):
+                raise ValueError(f"Decisions servers require text descriptions in questions.{name}.criteria")
             item.update(type="score", levels=levels)
         else:
             raise ValueError(f"unsupported comparison question type: {kind}")
