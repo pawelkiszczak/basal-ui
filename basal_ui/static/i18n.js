@@ -35,6 +35,7 @@ const PL = {
   "Decision servers": "Serwery decyzji",
   "Attach a server to compare its models in Playground and Batch.": "Dodaj serwer, aby porównywać jego modele w Playground i Batch.",
   "Server URL": "Adres URL serwera",
+  "http://127.0.0.1:11434": "http://127.0.0.1:11434",
   "API key (optional)": "Klucz API (opcjonalnie)",
   "Attach Decision server": "Dodaj serwer decyzji",
   "Decision server": "Serwer decyzji",
