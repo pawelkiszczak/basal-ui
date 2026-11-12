@@ -12,7 +12,9 @@ import re
 import secrets
 import threading
 import time
+import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from huggingface_hub.constants import HF_HUB_CACHE
 
@@ -360,6 +362,88 @@ def stats_path() -> Path:
 
 def history_path() -> Path:
     return _sibling("history.jsonl")
+
+
+def decision_servers() -> list[dict]:
+    value = load().get("decision_servers", [])
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+def _decision_secrets() -> dict:
+    path = _sibling("decision-secrets.json")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} is not a JSON object")
+    return value
+
+
+@_locked
+def decision_secret(server_id: str) -> str | None:
+    return _decision_secrets().get(server_id)
+
+
+@_locked
+def add_decision_server(name: str, url: str, consent: bool, key: str | None = None) -> dict:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be a non-empty string")
+    if not isinstance(url, str):
+        raise ValueError("url must be an http(s) URL")
+    parsed = urlsplit(url.strip())
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("url must be an http(s) URL without credentials, query or fragment")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("url must have a valid port") from exc
+    if not isinstance(consent, bool):
+        raise ValueError("consent must be a boolean")
+    if key is not None and (not isinstance(key, str) or not key.strip()):
+        raise ValueError("key must be a non-empty string")
+    record = {"id": uuid.uuid4().hex, "name": name.strip(), "url": url.strip().rstrip("/"), "consent": consent}
+    data = load()
+    data["decision_servers"] = [*decision_servers(), record]
+    secrets = _decision_secrets()
+    if key:
+        _write_private(_sibling("decision-secrets.json"), json.dumps({**secrets, record["id"]: key}, indent=2))
+    try:
+        save(data)
+    except BaseException:
+        if key:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(secrets, indent=2))
+        raise
+    return record
+
+
+@_locked
+def remove_decision_server(server_id: str) -> bool:
+    data = load()
+    servers = decision_servers()
+    if not any(x.get("id") == server_id for x in servers):
+        return False
+    secrets = _decision_secrets()
+    if server_id in secrets:
+        _write_private(
+            _sibling("decision-secrets.json"),
+            json.dumps({k: v for k, v in secrets.items() if k != server_id}, indent=2),
+        )
+    data["decision_servers"] = [x for x in servers if x.get("id") != server_id]
+    try:
+        save(data)
+    except BaseException:
+        if server_id in secrets:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(secrets, indent=2))
+        raise
+    return True
 
 
 def calibrations_dir(model_id: str) -> Path:

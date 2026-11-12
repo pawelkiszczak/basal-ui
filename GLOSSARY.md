@@ -8,6 +8,15 @@ try it.
 **Decision**:
 The result of evaluating a request's questions against its supplied context, including the evidence and uncertainty available for those answers.
 
+**Decision server**:
+A user-configured external service that answers Decisions and reports the models it offers.
+
+**Comparison model**:
+A model reported by an external Decision server, used for Playground comparison or Batch without a basal calibration certificate.
+
+**Attached model**:
+An Engine-served basal-attach model; distinct from a Comparison model on an external Decision server.
+
 **Replay**:
 Preparing a new request from a recorded decision request for review before submission. A record missing required attachments cannot be replayed completely.
 

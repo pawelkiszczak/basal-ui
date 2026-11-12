@@ -405,7 +405,7 @@ class Manager:
             snapshots = []
             for item in selected:
                 runner = fleet.ready(item["id"])
-                if runner.generation != item["generation"] or fleet.leases.get(runner, 0):
+                if getattr(runner, "generation", None) != item["generation"] or fleet.leases.get(runner, 0):
                     raise RuntimeError("Unload selection changed or is busy; refresh and confirm again")
                 if item["id"] not in variants or not runner.serve_snapshot:
                     raise RuntimeError("Cannot capture the active model configuration")
