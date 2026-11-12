@@ -31,6 +31,12 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
     allowed_hosts = ["*"] if host in ("0.0.0.0", "::") else {host, "127.0.0.1", "localhost", "::1"}
     client: dict = {}
 
+    def api_entries():
+        return [entry for entry in fleet.model_entries() if (entry["entry"] or {}).get("kind") != "comparison"]
+
+    def api_loaded_ids():
+        return [entry["id"] for entry in api_entries()]
+
     def error(path, status, message, code):
         if path in DECISIONS:
             return openai_error(status, message, code)
@@ -55,7 +61,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             return error(path, 400, "malformed JSON", "INVALID_JSON")
         if not isinstance(body, dict):
             return error(path, 400, "request body must be a JSON object", "INVALID_JSON")
-        loaded = fleet.loaded_ids()
+        loaded = api_loaded_ids()
         model = body.get("model")
         if not isinstance(model, str) or not model:
             return error(path, 400, f"model is required; loaded models: {loaded_text(loaded)}", "MODEL_REQUIRED")
@@ -77,7 +83,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         )
 
     async def models(_):
-        entries = fleet.model_entries()
+        entries = api_entries()
         return JSONResponse(
             {
                 "object": "list",
@@ -89,7 +95,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         )
 
     async def health(_):
-        return JSONResponse({"status": "ok", "models": fleet.loaded_ids()})
+        return JSONResponse({"status": "ok", "models": api_loaded_ids()})
 
     async def stats_route(request):
         record = request.scope.get("basal.api_key")
@@ -104,7 +110,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         from basal.mcp_server import http
 
         async def mcp_decide(body):
-            loaded = fleet.loaded_ids()
+            loaded = api_loaded_ids()
             # the tools' `model` argument (engine 2.5.0, list_models names the ids), else the first loaded model
             model = body.pop("model", None) or (loaded[0] if loaded else None)
             if model not in loaded:
@@ -119,7 +125,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             return r.json()
 
         server = SimpleNamespace(decide=mcp_decide, name="basal-ui")
-        mcp_routes, mcp_run = http(server, host, **({"models": fleet.loaded_ids} if feature("mcp_models") else {}))
+        mcp_routes, mcp_run = http(server, host, **({"models": api_loaded_ids} if feature("mcp_models") else {}))
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -240,7 +246,11 @@ class Gateway:
             "require_key": shown["require_key"],
             "mcp": shown["mcp"],
             "mcp_models": feature("mcp_models"),  # MCP tools take `model` and offer list_models (engine 2.5.0)
-            "models": self.fleet.loaded_ids(),
+            "models": [
+                entry["id"]
+                for entry in self.fleet.model_entries()
+                if (entry["entry"] or {}).get("kind") != "comparison"
+            ],
             "restart_required": (snapshot != current) if config["enabled"] else snapshot is not None,
             "error": self.error,
         }

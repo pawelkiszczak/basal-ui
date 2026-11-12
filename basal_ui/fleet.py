@@ -218,6 +218,7 @@ class Runner:
             return {
                 "id": self.model,
                 "model": self.model,
+                "kind": "basal",
                 "repo": self.model_repo,
                 "state": self.state,
                 "mode": self.mode,
@@ -475,6 +476,121 @@ class Runner:
         return response
 
 
+class ComparisonRunner:
+    """A model served by an external Decision server, with no locally owned process."""
+
+    def __init__(self, server, entry, key):
+        self.server, self.key = server, key
+        self.model_name = entry.get("id") or entry.get("name")
+        self.model = self.id = f"{server['id']}/{self.model_name}"
+        self.state, self.error, self.process = "ready", None, None
+        self.base_url = server["base_url"]
+        self.model_repo = None
+        self.ready_at = time.time()
+        self.est_memory_bytes, self.temporary, self.options = 0, False, {}
+        self.log, self.command = LogBuffer(), []
+        self.update(entry, key)
+
+    def update(self, entry, key):
+        self.key = key
+        self.models_entry = {
+            **entry,
+            "name": self.model,
+            "kind": "comparison",
+            "server": self.server["id"],
+            "upstream_model": self.model_name,
+        }
+        modalities = entry.get("modalities") or entry.get("input_modalities") or []
+        self.image_input = isinstance(modalities, list) and "image" in modalities or entry.get("image") is True
+        limit = entry.get("max_options")
+        self.option_limit = limit if type(limit) is int and limit > 0 else 26
+        self.media = ["image"] if self.image_input else []
+        self.reported_memory = entry.get("memory_bytes")
+
+    @property
+    def pid(self):
+        return None
+
+    def status(self):
+        return {
+            "id": self.model,
+            "model": self.model,
+            "state": self.state,
+            "error": None,
+            "kind": "comparison",
+            "entry": self.models_entry,
+            "models_entry": self.models_entry,
+            "base_url": self.base_url,
+            "pid": None,
+            "ready_at": self.ready_at,
+            "est_memory_bytes": 0,
+            "reported_memory_bytes": self.reported_memory,
+            "temporary": False,
+            "media": self.media,
+            "options": {},
+            "health": {"reachable": self.state == "ready"},
+            "rss_bytes": None,
+        }
+
+    def _prepare(self, body):
+        from .compat import comparison_request, systemone_media, systemone_to_decisions
+
+        hosted = bool(self.server.get("decisions_url"))
+        refusal = comparison_request(body, self.image_input, self.option_limit, hosted)
+        if refusal is not None:
+            return refusal, None, None
+        payload = {**systemone_media(body), "model": self.model_name}
+        if hosted:
+            payload = systemone_to_decisions(payload)
+        headers = {"Authorization": f"Bearer {self.key}"} if self.key else {}
+        return None, payload, headers
+
+    def _reply(self, response, body):
+        from .compat import decisions_to_systemone, systemone_media
+
+        if self.key:
+
+            def redact(value):
+                if isinstance(value, str):
+                    return value.replace(self.key, "[redacted]")
+                if isinstance(value, list):
+                    return [redact(item) for item in value]
+                if isinstance(value, dict):
+                    return {redact(k): redact(v) for k, v in value.items()}
+                return value
+
+            try:
+                response = httpx.Response(response.status_code, json=redact(response.json()))
+            except ValueError:
+                response = httpx.Response(response.status_code, text=response.text.replace(self.key, "[redacted]"))
+        if response.status_code == 200:
+            data = response.json()
+            if self.server.get("decisions_url"):
+                data = decisions_to_systemone(data, {**systemone_media(body), "model": self.model_name})
+            for answer in data.get("answers", {}).values():
+                if isinstance(answer, dict):
+                    answer["calibrated"] = False
+                    answer.pop("automated", None)
+                    answer.pop("calibration", None)
+            response = httpx.Response(200, json=data)
+        response.extensions["basal.inference"] = True
+        return response
+
+    def decide(self, body, path="/v1/systemone"):
+        refusal, payload, headers = self._prepare(body)
+        if refusal is not None:
+            return refusal
+        url = self.server.get("decisions_url") or self.base_url + "/v1/systemone"
+        return self._reply(httpx.post(url, json=payload, headers=headers, timeout=120), body)
+
+    async def adecide(self, client, body, path="/v1/systemone"):
+        refusal, payload, headers = await asyncio.to_thread(self._prepare, body)
+        if refusal is not None:
+            return refusal
+        url = self.server.get("decisions_url") or self.base_url + "/v1/systemone"
+        return self._reply(await client.post(url, json=payload, headers=headers, timeout=120), body)
+
+
 class Fleet:
     """The loaded models (one Runner each, in load order), their shared downloads, logs, statistics and history."""
 
@@ -485,6 +601,7 @@ class Fleet:
         self.internal_secret = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.runners: dict[str, Runner] = {}
+        self.decision_servers: dict[str, dict] = {}
         self.logs: dict[str, LogBuffer] = {"basal-ui": LogBuffer()}
         self.engine_addon_installing = False
         self._engine_addon_job_target = None
@@ -499,6 +616,100 @@ class Fleet:
         self._lan_ip = None
         self.retiring: dict[Runner, int | None] = {}  # unloaded runners whose child is still being terminated
         self._rss_cache = (0.0, {})
+
+    def attach_decision_server(self, record):
+        url = record["url"].rstrip("/")
+        hosted = url.endswith("/v1/decisions")
+        server = {
+            **record,
+            "base_url": url[: -len("/v1/decisions")] if hosted else url,
+            "decisions_url": url if hosted else None,
+            "polling": False,
+            "next_poll": 0.0,
+            "state": "starting",
+        }
+        with self.lock:
+            if self.stopping:
+                raise RuntimeError("app is shutting down")
+            self.decision_servers[record["id"]] = server
+        self._poll_decision_server(record["id"])
+
+    def _poll_decision_server(self, server_id):
+        with self.lock:
+            server = self.decision_servers.get(server_id)
+            if self.stopping or server is None or server["polling"] or time.monotonic() < server["next_poll"]:
+                return
+            server["polling"] = True
+
+        def poll():
+            valid, entries, key = False, [], None
+            try:
+                key = self.settings_mod.decision_secret(server_id)
+                headers = {"Authorization": f"Bearer {key}"} if key else {}
+                health = httpx.get(server["base_url"] + "/health", headers=headers, timeout=2)
+                if health.status_code in (200, 404):
+                    response = httpx.get(server["base_url"] + "/v1/models", headers=headers, timeout=2)
+                    if response.status_code == 200:
+                        payload = response.json()
+                        entries = payload.get("data", payload.get("models", [])) if isinstance(payload, dict) else []
+                        valid = isinstance(entries, list)
+                    elif response.status_code == 404 and server.get("decisions_url"):
+                        entries, valid = [{"id": server["name"]}], True
+                entries = [
+                    entry
+                    for entry in entries
+                    if isinstance(entry, dict)
+                    and isinstance(entry.get("id") or entry.get("name"), str)
+                    and (entry.get("id") or entry.get("name"))
+                ]
+            except (httpx.HTTPError, OSError, ValueError, TypeError):
+                valid = False
+            if key:
+
+                def redact(value):
+                    if isinstance(value, str):
+                        return value.replace(key, "[redacted]")
+                    if isinstance(value, list):
+                        return [redact(item) for item in value]
+                    if isinstance(value, dict):
+                        return {redact(k): redact(v) for k, v in value.items()}
+                    return value
+
+                entries = [redact(entry) for entry in entries if key not in (entry.get("id") or entry.get("name"))]
+            with self.lock:
+                if self.stopping or self.decision_servers.get(server_id) is not server:
+                    return
+                server["state"] = "ready" if valid else "unavailable"
+                old = {
+                    name
+                    for name, runner in self.runners.items()
+                    if isinstance(runner, ComparisonRunner) and runner.server is server
+                }
+                wanted = {f"{server_id}/{entry.get('id') or entry.get('name')}" for entry in entries}
+                if valid:
+                    for name in old - wanted:
+                        self.runners.pop(name)
+                    for entry in entries:
+                        name = f"{server_id}/{entry.get('id') or entry.get('name')}"
+                        runner = self.runners.get(name)
+                        if runner is None:
+                            self.runners[name] = ComparisonRunner(server, entry, key)
+                        else:
+                            runner.update(entry, key)
+                            runner.state = "ready"
+                else:
+                    for name in old:
+                        self.runners[name].state = "unavailable"
+                server["next_poll"], server["polling"] = time.monotonic() + 3, False
+
+        threading.Thread(target=poll, name=f"basal-ui-decision-server-{server_id}", daemon=True).start()
+
+    def remove_decision_server(self, server_id):
+        with self.lock:
+            self.decision_servers.pop(server_id, None)
+            for name, runner in list(self.runners.items()):
+                if isinstance(runner, ComparisonRunner) and runner.server["id"] == server_id:
+                    self.runners.pop(name)
 
     def _check_addon_maintenance(self):
         """Reject model/process activity while uv mutates the Engine environment."""
@@ -655,7 +866,13 @@ class Fleet:
             self._check_addon_maintenance()
             if model_id is not None and model_id not in self.runners:
                 raise KeyError(model_id)
-            ids = [model_id] if model_id is not None else list(self.runners)
+            if model_id is not None and isinstance(self.runners[model_id], ComparisonRunner):
+                raise RuntimeError("Comparison models are removed by detaching their Decision server")
+            ids = (
+                [model_id]
+                if model_id is not None
+                else [name for name, runner in self.runners.items() if not isinstance(runner, ComparisonRunner)]
+            )
             if not self.stopping and any(i in self.draining for i in ids):
                 raise RuntimeError("model is unavailable during maintenance")
             retiring = []
@@ -692,6 +909,8 @@ class Fleet:
             current = self.runners.get(model_id)
             if current is None:
                 raise KeyError(model_id)
+            if isinstance(current, ComparisonRunner):
+                raise RuntimeError("Comparison models cannot be restarted")
             if options is None:
                 options = current.options
             proc, est = current.detach()
@@ -726,6 +945,10 @@ class Fleet:
             return True
 
     def status(self):
+        with self.lock:
+            server_ids = tuple(self.decision_servers)
+        for server_id in server_ids:
+            self._poll_decision_server(server_id)
         with self.lock:
             runners = list(self.runners.values())
         rss = self._rss() if any(r.process for r in runners) else {}
@@ -792,7 +1015,11 @@ class Fleet:
         """fn() with no model, job child and download running, atomically with load()."""
         with self.lock:
             self._check_addon_maintenance()
-            if self.runners or self.temporary or self.downloads.any_alive():
+            if (
+                any(not isinstance(r, ComparisonRunner) for r in self.runners.values())
+                or self.temporary
+                or self.downloads.any_alive()
+            ):
                 raise RuntimeError("unload every model before changing the models directory")
             return fn()
 
@@ -805,7 +1032,18 @@ class Fleet:
             return fn()
 
     def _record(
-        self, model_id, body, path, source, status, data, latency_ms, endpoint=None, method="POST", record_traffic=True
+        self,
+        model_id,
+        body,
+        path,
+        source,
+        status,
+        data,
+        latency_ms,
+        endpoint=None,
+        method="POST",
+        record_traffic=True,
+        server=None,
     ):
         """Count and keep the decision; a failed write is logged, never turned into a failed answer."""
         if source == "benchmark":
@@ -817,7 +1055,10 @@ class Fleet:
                 self.stats.record(model_id, data, latency_ms, ok=200 <= status < 300, endpoint=endpoint, method=method)
             if self.history is not None:
                 request = {"model": model_id, **body} if path == "/v1/systemone" else body
-                self.history.append(make_record(model_id, source, request, status, data, latency_ms))
+                record = make_record(model_id, source, request, status, data, latency_ms)
+                if server is not None:
+                    record["server"] = server
+                self.history.append(record)
         except OSError as exc:
             self.event("error", f"decision not recorded: {exc}")
 
@@ -843,10 +1084,13 @@ class Fleet:
                 else:
                     self.leases.pop(runner, None)
 
-    def start_model_job(self, kind, model_id, label, target, *args):
+    def start_model_job(self, kind, model_id, label, target, *args, runner_expected=None):
         # Acquire before scheduling: a queued job already owns its model.
         lease = self.lease(model_id)
-        lease.__enter__()
+        leased = lease.__enter__()
+        if runner_expected is not None and leased is not runner_expected:
+            lease.__exit__(None, None, None)
+            raise RuntimeError("model changed during job preparation")
 
         def run(job, *values):
             try:
@@ -872,7 +1116,14 @@ class Fleet:
                 self.inflight.pop(token, None)
 
     def decide(self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"):
-        with self.lease(model_id) as runner, self.answering(model_id, source):
+        with self.lease(model_id) as runner:
+            return self.decide_runner(runner, model_id, body, path, source, endpoint, method)
+
+    def decide_runner(
+        self, runner, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"
+    ):
+        with self.answering(model_id, source):
+            server = runner.server["name"] if isinstance(runner, ComparisonRunner) else None
             t0 = time.perf_counter()
             try:
                 response = runner.decide(body, path)
@@ -887,6 +1138,7 @@ class Fleet:
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
+                    server=server,
                 )
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
@@ -901,6 +1153,7 @@ class Fleet:
                 endpoint if inferred else None,
                 method,
                 inferred,
+                server,
             )
             return response
 
@@ -908,6 +1161,7 @@ class Fleet:
         self, model_id, body, path="/v1/systemone", source="api", client=None, endpoint=None, method="POST"
     ):
         with self.lease(model_id) as runner, self.answering(model_id, source):
+            server = runner.server["name"] if isinstance(runner, ComparisonRunner) else None
             t0 = time.perf_counter()
             try:
                 response = await runner.adecide(client, body, path)
@@ -923,6 +1177,7 @@ class Fleet:
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
+                    server=server,
                 )
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
@@ -938,6 +1193,7 @@ class Fleet:
                 endpoint if inferred else None,
                 method,
                 inferred,
+                server,
             )
             return response
 
@@ -947,6 +1203,8 @@ class Fleet:
         be interrupted: it is bounded by that wait, and its daemon thread ends with the process."""
         with self.lock:
             self.stopping = True
+            self.decision_servers.clear()
+            self.runners = {k: v for k, v in self.runners.items() if not isinstance(v, ComparisonRunner)}
             temporary = list(self.temporary)
         self.jobs.cancel_all()
         for kind in temporary:

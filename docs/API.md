@@ -42,6 +42,18 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Decision servers
+
+`POST /api/decision-servers` accepts `{"name":"Local", "url":"http://127.0.0.1:11434", "key":null, "consent":false}` and returns 201. `consent: true` is required for hosts other than loopback and link-local; missing consent returns 400 with `CONSENT_REQUIRED`. URLs containing credentials, query strings or fragments are refused. `GET /api/decision-servers` lists server state and reported models without keys; `DELETE /api/decision-servers/{id}` removes the server, its models and key. Secrets are held in an owner-only `<settings stem>.decision-secrets.json` sidecar and are never exported in settings.
+
+Settings and the secret sidecar are each replaced atomically under the settings lock, with rollback on ordinary write
+failures. A process crash between the two replacements can leave a stale sidecar entry or a server without its key;
+the pair is not a cross-file transaction.
+
+`GET /api/status` marks model rows `kind: basal` or `kind: comparison`; a Comparison row may include `reported_memory_bytes` and never consumes the basal budget. Comparison models may be sent to the UI's `/api/decide` and `/api/batch` only. Requests outside the comparison subset return `UNSUPPORTED_FOR_COMPARISON` before upstream inference; Comparison Batch includes the source line in the refusal. Playground and Comparison Batch Decisions are recorded with `server` in History and attributed to the Comparison model in Usage and rolling traffic. Ordinary basal Batch remains unrecorded.
+
+The API server gateway `/v1/models`, health, explicit model routing and MCP exclude Comparison models. For an endpoint ending in `/v1/decisions`, a 404 on `/v1/models` uses the server display name as the upstream model name; only the representable subset is translated.
+
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:

@@ -2,6 +2,7 @@
 
 (() => {
   const entryFacts = (entry, answer) => {
+    if (entry?.kind === 'comparison') return `<p>${t('Comparison confidence is not calibrated')}</p>`;
     const facts = [];
     if (answer?.calibration != null) facts.push(`${t('Decision calibration status')}: ${esc(answer.calibration)}`);
     for (const key of ['calibration', 'calibration_file', 'selected_calibration', 'shipped_calibration']) {
@@ -104,19 +105,20 @@
     const selects = [...document.querySelectorAll('#decisionCompare .dt-model')];
     if (!selects.length) return;
     const old = selects.map(select => select.value), focused = selects.indexOf(document.activeElement);
+    const primary = ready.filter(model => model.kind !== 'comparison');
+    const first = primary.some(model => model.id === old[0]) ? old[0] : primary.some(model => model.id === selectedModel) ? selectedModel : primary[0]?.id || '';
     for (const [index, select] of selects.entries()) {
-      if (select.dataset.modelSignature !== readySignature) {
-        select.innerHTML = ready.map(model => `<option value="${esc(model.id)}">${esc(model.id)}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
-        select.dataset.modelSignature = readySignature;
+      const choices = index === 0 ? primary : ready;
+      const signature = JSON.stringify(choices.map(model => [model.id, model.kind]));
+      if (select.dataset.modelSignature !== signature) {
+        select.innerHTML = choices.map(model => `<option value="${esc(model.id)}">${esc(modelLabel(model))}${model.kind === 'comparison' ? ` · ${t('Comparison')}` : ''}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
+        select.dataset.modelSignature = signature;
       }
-      const first = ready.some(model => model.id === old[0]) ? old[0] : ready.some(model => model.id === selectedModel) ? selectedModel : ready[0]?.id || '';
-      const next = index === 0
-        ? (ready.some(model => model.id === old[index]) ? old[index] : first)
-        : ready.some(model => model.id === old[index] && old[index] !== first) ? old[index] : ready.find(model => model.id !== first)?.id || '';
-      select.value = next || '';
-      select.disabled = ready.length < 2 || running;
+      const next = index === 0 ? first : choices.some(model => model.id === old[index] && old[index] !== first) ? old[index] : choices.find(model => model.id !== first)?.id || '';
+      select.value = next;
+      select.disabled = !first || ready.length < 2 || running;
     }
-    $('#dt-run').disabled = ready.length < 2 || running;
+    $('#dt-run').disabled = !first || ready.length < 2 || running;
     if (focused >= 0) selects[focused].focus();
   }
 
@@ -136,7 +138,7 @@
     const [first, second] = [...document.querySelectorAll('#decisionCompare .dt-model')].map(select => select.value), models = [first, second].map(modelById);
     if (!models[0] || !models[1] || first === second) { setError(t('Choose two different ready models.')); return; }
     const mediaTypes = [...new Set(requestMedia(base).map(media => media?.type).filter(type => type === 'image' || type === 'audio'))];
-    const unsupported = models.map(model => ({id: model.id, types: mediaTypes.filter(type => !(model.media || []).includes(type))})).filter(item => item.types.length);
+    const unsupported = models.filter(model => model.kind !== 'comparison').map(model => ({id: model.id, types: mediaTypes.filter(type => !(model.media || []).includes(type))})).filter(item => item.types.length);
     if (unsupported.length) {
       setError(t('The selected models cannot all accept this request media: {models}. Choose two models that support every listed media type, or remove the media.', {models: unsupported.map(item => `${item.id} (${mediaTitle(item.types)})`).join('; ')}));
       return;
@@ -160,13 +162,14 @@
     try {
       const settled = await Promise.all(models.map(async model => {
         const request = structuredClone(snapshot); request.model = model.id;
-        try { return {model, request, data: await api('/api/decide', {method: 'POST', body: JSON.stringify(request)})}; }
-        catch (error) { return {model, request, error}; }
+        const started = performance.now();
+        try { return {model, request, data: await api('/api/decide', {method: 'POST', body: JSON.stringify(request)}), latency: performance.now() - started}; }
+        catch (error) { return {model, request, error, latency: performance.now() - started}; }
       }));
       if (run !== sequence) return;
       grid.innerHTML = settled.map(result => `<article class="dt-model-result" data-model="${esc(result.model.id)}">${result.error
-        ? `<h3>${esc(result.model.id)}</h3><p class="dt-used">${t('Request sent')}: <code>${esc(result.model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(result.model.id)})}</summary><pre>${esc(displayRequest(result.request))}</pre></details><div class="error-box" role="alert">${esc(result.error.message || String(result.error))}</div>`
-        : `<h3>${esc(result.model.id)}</h3>${renderResults(result.data, result.request, entries[result.model.id], mediaSnapshot)}`}</article>`).join('');
+        ? `<h3>${esc(modelLabel(result.model))}</h3><p class="dt-used">${t('Request sent')}: <code>${esc(result.model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(result.model.id)})}</summary><pre>${esc(displayRequest(result.request))}</pre></details><div class="error-box" role="alert">${esc(result.error.message || String(result.error))}</div>`
+        : `<h3>${esc(modelLabel(result.model))}</h3>${result.model.kind==='comparison'?comparisonBadge():''}<p>${t('Latency')}: ${esc(num(result.latency, 0))} ms</p>${renderResults(result.data, result.request, entries[result.model.id], mediaSnapshot)}`}</article>`).join('');
     } catch (error) {
       if (run === sequence) setError(error.message || String(error));
     } finally {
@@ -180,19 +183,28 @@
   function refreshModels(models) {
     mount();
     const nextReady = Array.isArray(models) ? models.filter(model => model?.id && model.state === 'ready') : [];
-    const signature = JSON.stringify(nextReady.map(model => [model.id, model.media || []]));
+    const signature = JSON.stringify(nextReady.map(model => [model.id, model.kind, model.media || []]));
     if (signature !== readySignature) {
       readySignature = signature;
-      sequence++;
-      running = false;
-      const grid = $('#decisionCompare .dt-grid');
-      if (grid) grid.replaceChildren();
-      $('#decisionCompare .dt-prompt').hidden = true;
+      if (!running) {
+        sequence++;
+        const grid = $('#decisionCompare .dt-grid');
+        if (grid) grid.replaceChildren();
+        $('#decisionCompare .dt-prompt').hidden = true;
+      }
     }
     ready = nextReady;
     reconcileSelects();
   }
 
-  window.DecisionTools = {answerPanel, refreshModels};
+  function selectComparison(id) {
+    const select = document.querySelectorAll('#decisionCompare .dt-model')[1];
+    if (select && ready.some(model => model.id === id)) {
+      select.value = id;
+      select.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+  }
+
+  window.DecisionTools = {answerPanel, refreshModels, selectComparison};
   document.addEventListener('DOMContentLoaded', () => { mount(); refreshModels(readyModels()); });
 })();

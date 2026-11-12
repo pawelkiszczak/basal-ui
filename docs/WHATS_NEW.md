@@ -1,5 +1,7 @@
 # Unreleased
 
+- Attach external Decision servers in Model manager → Library to compare their reported models in Playground or Batch. Comparison Decisions are recorded with server provenance and have no basal calibration or automation certificate; external models are excluded from the API server and basal-only tools.
+
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)

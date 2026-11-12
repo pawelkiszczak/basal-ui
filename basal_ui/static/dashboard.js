@@ -77,7 +77,7 @@
       }
       const usage=state.stats?.models?.[model.id], reachable=model.health?.reachable!==false;
       node.querySelector('.status-dot').className=`status-dot${model.state==='ready'&&reachable?' ready':''}`;
-      text(node.querySelector('strong'),shortName(model.id));text(node.querySelector('.chip'),t(reachable?model.state:'unreachable'));
+      text(node.querySelector('strong'),shortName(model.id));text(node.querySelector('.chip'),`${model.kind==='comparison'?`${t('Comparison')} · `:''}${t(reachable?model.state:'unreachable')}`);
       text(node.querySelector('.traffic-model-requests'),number(state.stats?(usage?.requests??0):null));
       text(node.querySelector('.traffic-model-tokens'),number(state.stats?(usage?.input_tokens??0):null));
       if(container.children[index]!==node)container.insertBefore(node,container.children[index]||null);

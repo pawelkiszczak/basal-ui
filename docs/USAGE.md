@@ -160,13 +160,25 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   because they refer to spans in the state's text; the raw JSON request still rejects evidence with media. Inspect's
   example list leaves the media examples out (the lens reads text only).
 
+## Decision servers and Comparison models
+
+In **Model manager → Library**, attach an external Decision server with a display name, HTTP(S) URL and optional API key. The app reads its `/v1/models` and labels its entries **Comparison**. A URL ending in `/v1/decisions` also supports hosted servers whose model listing returns 404; in that case the display name is the upstream model name. External servers are not started, loaded, unloaded or restarted by basal-ui. An unavailable server is shown in Library and checked again on the existing status cycle. Detach removes its records and key. External memory reported as `memory_bytes` is shown separately and does not enter the basal memory budget.
+
+Requests and attachments sent to non-loopback, non-link-local hosts leave this machine; the attachment form requires explicit consent naming that host, and the management API enforces it too. Optional keys live in an owner-only sidecar next to settings and are not returned by the app. Loopback and link-local hosts do not require consent. A Comparison model appears only in the second Playground comparison slot and Batch. It is not suggested, loaded, calibrated, inspected, benchmarked or served through the API server or MCP. Its confidence is uncalibrated and cannot support an Automatable claim.
+
+Comparison requests reject basal-only fields and question types, too many options and unsupported media before inference. A server must report image input for images; audio is refused. Hosted Decisions translation refuses fields it cannot preserve. The reported `max_options` is used when present; otherwise the conservative limit is 26. The Playground shows a server failure in its own result panel, without hiding the basal result.
+
+![Decision server attachment in Model manager](images/decision-servers.png)
+
+![A basal Decision and a Comparison Decision side by side](images/external-comparison.png)
+
 ## Playground comparison, API examples and calibration evidence
 
 **Compare loaded models** runs the current request against two different ready models. Both receive the same
 frozen state, questions, request settings and ordered attachments, with only `model` changed. Answers are shown
 side by side using their actual question types: a choice, an action or a selected set is not replaced by a generic
 most-probable label. Each panel retains its request snapshot, warnings, usage and raw response; a failure in one
-panel does not hide the other model's answer. Media unsupported by either selected model is refused before sending.
+panel does not hide the other model's answer. Media unsupported by a Comparison model is refused before sending to that server; the basal answer remains independent.
 This is an interactive comparison, not an accuracy or performance benchmark. It creates two real Decisions in
 History and the existing statistics; merely viewing the panel adds none.
 
@@ -272,8 +284,7 @@ with their log and any report written before failure retained.
 requests, [in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SERVING.md#inference-on-a-jsonl-file)), the output file (default `<stem>.answers.jsonl` next to it, e.g. `items.jsonl` → `items.answers.jsonl`), the
 concurrency and, for a `--mode fast-exit` model, an early-exit level. The progress, the summary (items, errors,
 seconds, items per second, server p50, accuracy over the items with `gold`) and the answers page by page are shown;
-**Download answers** saves the output file. Batch requests go straight to the model's basal-serve: they are not
-counted in the statistics or the history. One batch runs at a time; its log is **Logs → job:batch**.
+**Download answers** saves the output file. Ordinary basal Batch requests go straight to the model's basal-serve and are not counted in statistics or History. Comparison Batch uses a private loopback proxy to supply the upstream model name and key, and each Comparison Decision is recorded in History, Usage and Dashboard traffic with its server name. Comparison Batch validates every non-empty JSONL line before starting, and identifies the actual line number for refusals. The Batch view keeps the latest accuracy by model and input for this browser session. One batch runs at a time; its log is **Logs → job:batch**.
 
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
@@ -324,7 +335,7 @@ only partly as resident memory; the estimate is what the budget check uses.
 The 15-minute or one-hour window shows **input tokens processed per second**, not generated output tokens, and
 requests/s, request-weighted mean latency, error rate, per-minute traffic and public endpoint attribution. These are
 recorded child-inference attempts from Playground, the API server and MCP, not all HTTP traffic: UI polling,
-pre-inference authentication/validation rejections, Batch, benchmarks and private Inference tests do not contribute.
+pre-inference authentication/validation rejections, ordinary basal Batch, benchmarks and private Inference tests do not contribute. Comparison Batch Decisions do contribute.
 
 Recent traffic is in memory in this app process only, starts at observation, and is not restored from lifetime
 statistics or merged from other processes. Rates use observed elapsed time rather than inventing a full prior
@@ -392,7 +403,7 @@ file is written) and `--save-rows`, which keeps the uncalibrated probabilities n
 
 ## History and logs
 
-**History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:
+**History** lists every decision basal-ui answered — from the playground, the API server, MCP and Comparison Batch — newest first:
 time, model, source, a preview of the state, the answer of each question with its confidence, latency and HTTP
 status. Filter by model and source, search the state, open a row for the full request and response (its time is a
 button, so rows open from the keyboard and keep focus across refreshes), copy the request
