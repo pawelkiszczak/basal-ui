@@ -19,6 +19,10 @@
   basal-2.0-mini since 2 November) is no longer reported as not downloaded when its local copy lacks them. A download
   takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
+- Add Engine capability probes for router, attach, fine-tuning, presets, order checking, and the declared serve and
+  calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
+- For an Engine that does not report context metadata, show the active overflow policy and truncation share; the
+  context limit remains unknown because the child may impose a backend-specific limit.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication

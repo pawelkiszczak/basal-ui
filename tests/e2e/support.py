@@ -251,8 +251,7 @@ def long_state(tokens):
 
 
 def context_of(entry):
-    """The context policy a child reports in GET /v1/models; the test is skipped on an engine that reports none
-    (basal 2.4.1; 2.5.0 reports it with the certified thresholds)."""
-    if "context" not in (entry or {}):
-        pytest.skip("the engine's GET /v1/models reports no context policy")
+    """The context policy with a known limit, needed by tests that construct an overlong prompt."""
+    if (entry or {}).get("context", {}).get("limit") is None:
+        pytest.skip("the model's context limit is not reported")
     return entry["context"]

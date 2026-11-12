@@ -404,6 +404,19 @@ class Runner:
                                     entry, path, assessment.mode, self.options, self._calibration(v)
                                 ),
                             }
+                        if entry is not None and "context" not in entry:
+                            entry = {
+                                **entry,
+                                "context": {
+                                    "limit": None,
+                                    "overflow": self.options.get(
+                                        "context_overflow", load_options.DEFAULTS["context_overflow"]
+                                    ),
+                                    "truncate_head": self.options.get(
+                                        "truncate_head", load_options.DEFAULTS["truncate_head"]
+                                    ),
+                                },
+                            }
                         with self.lock:
                             if gen != self.gen:
                                 return

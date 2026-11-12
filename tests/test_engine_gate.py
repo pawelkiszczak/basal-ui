@@ -1,15 +1,16 @@
 """basal-ui runs on a supported engine release; anything else is refused with the install command, unless the user
 opts in to an experimental engine."""
 
+import argparse
 import importlib.util
 import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import unquote
 
 import pytest
-from packaging.version import Version
 
 from basal_ui import engine
 
@@ -99,19 +100,47 @@ def test_every_tested_release_is_in_the_range():
         assert engine.supported(version), version
 
 
-NEW_IN_2_5 = ("adapter", "viz_gemma4", "mcp_models", "mlx_recurrent", "int8", "viz_mlx")
+@pytest.mark.parametrize(
+    "feature,module",
+    [
+        ("router", "basal.router"),
+        ("attach", "basal.attach"),
+        ("finetune", "basal.finetune"),
+        ("presets", "basal.presets"),
+        ("order_check", "basal.ordercheck"),
+    ],
+)
+def test_module_capabilities_follow_availability(monkeypatch, feature, module):
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda name: object() if name == module else None)
+    assert engine.feature(feature) is True
+    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda name: None)
+    assert engine.feature(feature) is False
 
 
-def test_feature_probes_match_the_installed_engine():
-    """Each probe tells the tested releases apart: all on with 2.5.0, all off with 2.4.x (CI runs both)."""
-    assert set(NEW_IN_2_5) == set(engine.FEATURES)
-    found = {name: engine.feature(name) for name in engine.FEATURES}
-    assert all(isinstance(value, bool) for value in found.values()), found
-    version = Version(engine.installed()[0])
-    expected = version >= Version("2.5.0")
-    if version.release[:2] not in ((2, 4), (2, 5)):
-        pytest.skip(f"engine {version} is not a tested release line")
-    assert found == dict.fromkeys(NEW_IN_2_5, expected)
+def test_console_capabilities_report_declared_options_and_modes(monkeypatch):
+    serve = argparse.ArgumentParser(description="mentions --imaginary without declaring it")
+    serve.add_argument("--real")
+    calibrate = argparse.ArgumentParser(description="mentions --layout without declaring it")
+    calibrate.add_argument("--input")
+    modules = {
+        "basal.server": SimpleNamespace(parser=lambda: serve, MODES=("eager", "mlx")),
+        "basal.calibrate": SimpleNamespace(parser=lambda: calibrate),
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(engine.importlib, "import_module", modules.__getitem__)
+        engine.serve_flags.cache_clear()
+        engine.calibrate_flags.cache_clear()
+        assert "--real" in engine.serve_flags() and "--imaginary" not in engine.serve_flags()
+        assert "--input" in engine.calibrate_flags() and "--layout" not in engine.calibrate_flags()
+        assert engine.serve_modes() == frozenset({"eager", "mlx"})
+    engine.serve_flags.cache_clear()
+    engine.calibrate_flags.cache_clear()
+
+
+def test_installed_console_capabilities_include_common_options():
+    assert "--model" in engine.serve_flags()
+    assert "--model" in engine.calibrate_flags()
+    assert "eager" in engine.serve_modes()
 
 
 def test_a_probe_of_an_engine_module_that_cannot_be_imported_is_off(monkeypatch):
@@ -124,4 +153,3 @@ def test_a_probe_of_an_engine_module_that_cannot_be_imported_is_off(monkeypatch)
 
     monkeypatch.setattr(engine.importlib, "import_module", import_module)
     assert engine.feature("mcp_models") is False
-    assert engine._parameter("basal.engine", "NoSuchBackend.__init__", "compute") is False
