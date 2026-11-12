@@ -405,16 +405,15 @@ class Runner:
                                 ),
                             }
                         if entry is not None and "context" not in entry:
+                            from basal.server import parser
+
+                            args, _ = parser().parse_known_args(command[3:])
                             entry = {
                                 **entry,
                                 "context": {
                                     "limit": None,
-                                    "overflow": self.options.get(
-                                        "context_overflow", load_options.DEFAULTS["context_overflow"]
-                                    ),
-                                    "truncate_head": self.options.get(
-                                        "truncate_head", load_options.DEFAULTS["truncate_head"]
-                                    ),
+                                    "overflow": args.context_overflow,
+                                    "truncate_head": args.truncate_head,
                                 },
                             }
                         with self.lock:

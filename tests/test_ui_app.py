@@ -1154,9 +1154,10 @@ def test_revision_reaches_cached_check_and_download_but_not_child_flags(tmp_path
     assert "--revision" not in command
 
 
-@pytest.mark.parametrize("native", [True, False])
-def test_loaded_model_metadata_preserves_child_values_and_fills_missing_values(tmp_path, monkeypatch, native):
-    native_context = {"limit": 1234, "overflow": "native", "truncate_head": 0.7}
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("case", ["defaults", "selected", "override"])
+def test_loaded_model_metadata_preserves_child_values_and_fills_missing_values(tmp_path, monkeypatch, native, case):
+    native_context = {"limit": None, "overflow": "native", "truncate_head": 0.7}
     native_certified = {"0.01": {"choice": 0.99}}
     entry = {"name": MINI.id}
     if native:
@@ -1172,7 +1173,11 @@ def test_loaded_model_metadata_preserves_child_values_and_fills_missing_values(t
         lambda url, **kwargs: httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", url)),
     )
     runner = Runner(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu")
-    runner.model, runner.options = MINI.id, {"context_overflow": "refuse", "truncate_head": 0.2}
+    runner.model = MINI.id
+    if case != "defaults":
+        runner.options = {"context_overflow": "refuse", "truncate_head": 0.2}
+    if case == "override":
+        runner.extra_args = ("--context-overflow", "truncate", "--truncate-head", "0.8")
     runner._models_entry = lambda media: (entry, [])
     runner._start(catalog.assess(MINI, HW), runner.gen, cache_dir=tmp_path, serve=settings.serve_settings())
     fleet = make_fleet(tmp_path)
@@ -1181,9 +1186,12 @@ def test_loaded_model_metadata_preserves_child_values_and_fills_missing_values(t
 
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         result = client.get("/v1/models").json()["models"][0]
-    assert result["context"] == (
-        native_context if native else {"limit": None, "overflow": "refuse", "truncate_head": 0.2}
-    )
+    expected = {
+        "defaults": {"limit": None, "overflow": "truncate", "truncate_head": 1 / 3},
+        "selected": {"limit": None, "overflow": "refuse", "truncate_head": 0.2},
+        "override": {"limit": None, "overflow": "truncate", "truncate_head": 0.8},
+    }
+    assert result["context"] == (native_context if native else expected[case])
     assert result["certified"] == (native_certified if native else {"0.05": {"choice": 0.8}})
 
 

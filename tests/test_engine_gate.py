@@ -1,13 +1,13 @@
 """basal-ui runs on a supported engine release; anything else is refused with the install command, unless the user
 opts in to an experimental engine."""
 
-import argparse
 import importlib.util
+import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from urllib.parse import unquote
 
 import pytest
@@ -100,56 +100,51 @@ def test_every_tested_release_is_in_the_range():
         assert engine.supported(version), version
 
 
-@pytest.mark.parametrize(
-    "feature,module",
-    [
-        ("router", "basal.router"),
-        ("attach", "basal.attach"),
-        ("finetune", "basal.finetune"),
-        ("presets", "basal.presets"),
-        ("order_check", "basal.ordercheck"),
-    ],
-)
-def test_module_capabilities_follow_availability(monkeypatch, feature, module):
-    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda name: object() if name == module else None)
-    assert engine.feature(feature) is True
-    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda name: None)
-    assert engine.feature(feature) is False
-
-
-def test_console_capabilities_report_declared_options_and_modes(monkeypatch):
-    serve = argparse.ArgumentParser(description="mentions --imaginary without declaring it")
-    serve.add_argument("--real")
-    calibrate = argparse.ArgumentParser(description="mentions --layout without declaring it")
-    calibrate.add_argument("--input")
-    modules = {
-        "basal.server": SimpleNamespace(parser=lambda: serve, MODES=("eager", "mlx")),
-        "basal.calibrate": SimpleNamespace(parser=lambda: calibrate),
-    }
-    with monkeypatch.context() as patch:
-        patch.setattr(engine.importlib, "import_module", modules.__getitem__)
-        engine.serve_flags.cache_clear()
-        engine.calibrate_flags.cache_clear()
-        assert "--real" in engine.serve_flags() and "--imaginary" not in engine.serve_flags()
-        assert "--input" in engine.calibrate_flags() and "--layout" not in engine.calibrate_flags()
-        assert engine.serve_modes() == frozenset({"eager", "mlx"})
-    engine.serve_flags.cache_clear()
-    engine.calibrate_flags.cache_clear()
+@pytest.mark.parametrize("available", [False, True])
+def test_public_probes_follow_an_isolated_engine_package(tmp_path, available):
+    package = tmp_path / "basal"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    for module in ("adapter", "router", "attach", "finetune", "presets", "ordercheck"):
+        if available:
+            (package / f"{module}.py").write_text("")
+    (package / "viz.py").write_text("mlx_lens = is_gemma4 = True\n" if available else "")
+    (package / "engine.py").write_text(
+        "class MLXBackend:\n    def __init__(self, compute): pass\n" if available else "class MLXBackend: pass\n"
+    )
+    if available:
+        (package / "mcp_server.py").write_text("def http(server, host, models=None): pass\n")
+    parser = (
+        "import argparse\n"
+        "def parser():\n"
+        "    p = argparse.ArgumentParser(description='mentions --imaginary and --layout')\n"
+        "    p.add_argument('--real')\n"
+        "    return p\n"
+    )
+    (package / "server.py").write_text(parser + f"MODES = {('eager', 'int8') if available else ('eager',)!r}\n")
+    (package / "calibrate.py").write_text(parser)
+    script = """\
+import json
+from basal_ui import engine
+names = ('adapter', 'viz_gemma4', 'mcp_models', 'mlx_recurrent', 'int8', 'viz_mlx',
+         'router', 'attach', 'finetune', 'presets', 'order_check')
+print(json.dumps({'features': {name: engine.feature(name) for name in names},
+                  'serve': sorted(engine.serve_flags()), 'calibrate': sorted(engine.calibrate_flags()),
+                  'modes': sorted(engine.serve_modes())}))
+"""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(tmp_path), str(ROOT)))}
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, check=True
+    )
+    observed = json.loads(result.stdout)
+    assert all(value is available for value in observed["features"].values())
+    for command in ("serve", "calibrate"):
+        assert "--real" in observed[command]
+        assert "--imaginary" not in observed[command] and "--layout" not in observed[command]
+    assert "eager" in observed["modes"] and ("int8" in observed["modes"]) is available
 
 
 def test_installed_console_capabilities_include_common_options():
     assert "--model" in engine.serve_flags()
     assert "--model" in engine.calibrate_flags()
     assert "eager" in engine.serve_modes()
-
-
-def test_a_probe_of_an_engine_module_that_cannot_be_imported_is_off(monkeypatch):
-    real = engine.importlib.import_module
-
-    def import_module(name):
-        if name == "basal.mcp_server":
-            raise ImportError("no mcp")
-        return real(name)
-
-    monkeypatch.setattr(engine.importlib, "import_module", import_module)
-    assert engine.feature("mcp_models") is False

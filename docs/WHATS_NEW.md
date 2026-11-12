@@ -21,7 +21,7 @@
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
 - Add Engine capability probes for router, attach, fine-tuning, presets, order checking, and the declared serve and
   calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
-- For an Engine that does not report context metadata, show the active overflow policy and truncation share; the
+- For an Engine that does not report context metadata, show the parsed child overflow policy and truncation share; the
   context limit remains unknown because the child may impose a backend-specific limit.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.

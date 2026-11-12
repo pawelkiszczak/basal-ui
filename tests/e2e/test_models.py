@@ -127,6 +127,11 @@ def test_two_models_answer_behind_one_api_port_with_a_key(ui, text_model, second
         )
         assert not routed.get("isError") and routed["structuredContent"]["model"] == other, routed
         assert any(r["source"] == "mcp" for r in ui.get("/api/history", params={"model": other})["items"])
+        missing = rpc(
+            "tools/call",
+            {"name": "decide", "arguments": {"state": "s", "question": "?", "model": "Remek/not-loaded"}},
+        )
+        assert missing["isError"] and "not loaded" in missing["content"][0]["text"]
 
 
 def test_memory_budget_refuses_a_load_that_does_not_fit(ui, text_model, second_model, hardware):

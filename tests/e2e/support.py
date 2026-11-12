@@ -251,7 +251,12 @@ def long_state(tokens):
 
 
 def context_of(entry):
-    """The context policy with a known limit, needed by tests that construct an overlong prompt."""
-    if (entry or {}).get("context", {}).get("limit") is None:
-        pytest.skip("the model's context limit is not reported")
+    """The context policy, including an unknown limit when the child does not report one."""
     return entry["context"]
+
+
+def known_context_limit(entry):
+    limit = context_of(entry)["limit"]
+    if limit is None:
+        pytest.skip("the model's context limit is not reported")
+    return limit
