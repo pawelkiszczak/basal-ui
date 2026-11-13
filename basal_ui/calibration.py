@@ -10,10 +10,11 @@ import io
 import json
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
-from basal.server import MODES, calibration_file, calibration_mismatch, certified, model_identity
+from basal.server import MODES, calibration_file, calibration_layout, calibration_mismatch, certified, model_identity
 
 from .hardware import free_engine_memory
 
@@ -58,6 +59,44 @@ def load(path) -> dict:
     return cal
 
 
+def rows_provenance(path, original):
+    """Check saved-row identity against its paired calibration before retaining metadata."""
+    try:
+        cal = load(original)
+        fitted = cal.get("fitted_on")
+        if not isinstance(fitted, dict):
+            raise ValueError("paired fitted_on metadata is missing or invalid")
+        layout = fitted.get("layout", "canonical")
+        if layout not in ("canonical", "qfirst", "state_twice"):
+            raise ValueError("paired layout is invalid")
+        if "revision" in fitted and (not isinstance(fitted["revision"], str) or not fitted["revision"]):
+            raise ValueError("revision is invalid")
+        with Path(path).open(encoding="utf-8") as source:
+            header = json.loads(source.readline())
+        if header.get("basal_calibrate_rows") != 1:
+            raise ValueError("saved rows header is invalid")
+        if "revision" in header and (not isinstance(header["revision"], str) or not header["revision"]):
+            raise ValueError("revision is invalid")
+        row_model = header["model"]
+        pair_model = fitted["model"]
+        if not isinstance(row_model, str) or not row_model or not isinstance(pair_model, str) or not pair_model:
+            raise ValueError("model identity is missing")
+        row_name, row_revision = model_identity(row_model, Path(row_model))
+        pair_name, pair_revision = model_identity(pair_model, Path(pair_model))
+        if pair_revision and fitted.get("revision") and pair_revision != fitted["revision"]:
+            raise ValueError("paired model path and revision disagree")
+        if row_revision and header.get("revision") and row_revision != header["revision"]:
+            raise ValueError("saved rows model path and revision disagree")
+        pair_revision = fitted.get("revision") or pair_revision
+        row_revision = header.get("revision") or row_revision
+        if row_name != pair_name or row_revision and pair_revision and row_revision != pair_revision:
+            raise ValueError("model or revision differs between saved rows and paired calibration")
+        revision = pair_revision or row_revision
+        return header, layout, {"model": pair_name, **({"revision": revision} if revision else {})}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(f"cannot verify saved rows provenance: {exc}") from exc
+
+
 def report_warnings(report):
     """Keep engine warning text, including FIT/CERT summaries and strict-check omissions."""
     return list(
@@ -79,6 +118,7 @@ def summary(path, local_dir=None) -> dict:
     out = {
         "warnings": warnings,
         "fitted_on": cal.get("fitted_on"),
+        "layout": calibration_layout(cal),
         "gates": cal.get("gates"),
         "thresholds": certified_table(cal),
         "task_thresholds": cal.get("task_thresholds") or {},
@@ -133,7 +173,10 @@ def served_certified(entry, local_dir, mode, options, selected=None) -> dict:
                 options.get("adapter"),
             )
         )
-        return certified_table(json.loads(path.read_text(encoding="utf-8")))
+        cal = json.loads(path.read_text(encoding="utf-8"))
+        if calibration_layout(cal) != (options.get("layout") or model_layout(Path(local_dir))):
+            return {}
+        return certified_table(cal)
     except (OSError, ValueError, TypeError, AttributeError):
         return {}
 
@@ -149,7 +192,7 @@ def listing(model_id, settings_mod, local_dir=None) -> list[dict]:
         entry = {"file": str(path), "when": path.stat().st_mtime, "rows": str(rows) if rows.is_file() else None}
         try:
             entry.update(summary(path, local_dir))
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
             entry["error"] = str(exc)
         files.append(entry)
     return files
@@ -277,69 +320,185 @@ def run_calibration(
     advanced=None,
 ):
     """Run basal-calibrate, either against a private child or an in-process engine."""
-    writer = _Lines(job.log)
-    advanced = advanced or {}
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    rows_path = Path(out_path).with_suffix(".rows.jsonl")
-    common = ["--model", str(local_dir), "--out", str(out_path), "--targets", ",".join(targets)]
-    for key, flag in (
-        ("min_per_type", "--min-per-type"),
-        ("min_blend", "--min-blend"),
-        ("min_family", "--min-family"),
-        ("min_per_set", "--min-per-set"),
-        ("concurrency", "--concurrency"),
-    ):
-        if key in advanced:
-            common += [flag, str(advanced[key])]
-    reference = advanced.get("reference")
-    if reference:
-        common += ["--reference", str(reference)]
-    compare = advanced.get("compare", "shipped")
-    if compare == "none":
-        common.append("--no-calibration")
-    elif isinstance(compare, str) and compare != "shipped":
-        common += ["--calibration", compare]
-    if advanced.get("strict"):
-        common.append("--strict")
-    if advanced.get("save_rows"):
-        common += ["--save-rows", str(rows_path)]
-    if advanced.get("from_rows"):
-        common.append("--from-rows")
-    if advanced.get("report_only"):
-        common.append("--report-only")
     in_process = engine_args is not None
-    argv = [str(input_path), *common, *(engine_args or ())]
-    if advanced.get("from_rows"):
-        _basal_calibrate(job, argv, writer)
-    elif in_process:
+    private_dir = None
+    try:
+        writer = _Lines(job.log)
+        advanced = advanced or {}
+        public_out = Path(out_path)
+        public_out.parent.mkdir(parents=True, exist_ok=True)
+        private_dir = tempfile.TemporaryDirectory(prefix=".calibration-", dir=public_out.parent)
+        out_path = Path(private_dir.name) / public_out.name
+        rows_path = out_path.with_suffix(".rows.jsonl")
+        from basal.prompt import model_layout
+
         try:
+            default_layout = (
+                model_layout(Path(local_dir))
+                if local_dir is not None and not advanced.get("from_rows")
+                else "canonical"
+            )
+        except (OSError, ValueError, AttributeError):
+            if not advanced.get("from_rows"):
+                raise
+            default_layout = "canonical"
+        layout = (options or {}).get("layout") or default_layout
+        common = ["--out", str(out_path), "--targets", ",".join(targets)]
+        if local_dir is not None and not advanced.get("from_rows"):
+            common[:0] = ["--model", str(local_dir)]
+        if layout != "canonical" or (options or {}).get("layout") == "canonical" and default_layout != layout:
+            common += ["--layout", layout]
+        for key, flag in (
+            ("min_per_type", "--min-per-type"),
+            ("min_blend", "--min-blend"),
+            ("min_family", "--min-family"),
+            ("min_per_set", "--min-per-set"),
+            ("concurrency", "--concurrency"),
+        ):
+            if key in advanced:
+                common += [flag, str(advanced[key])]
+        reference = advanced.get("reference")
+        if reference:
+            common += ["--reference", str(reference)]
+        compare = advanced.get("compare", "shipped")
+        if compare == "none":
+            common.append("--no-calibration")
+        elif isinstance(compare, str) and compare != "shipped":
+            common += ["--calibration", compare]
+        if advanced.get("strict"):
+            common.append("--strict")
+        if advanced.get("save_rows"):
+            common += ["--save-rows", str(rows_path)]
+        if advanced.get("from_rows"):
+            common.append("--from-rows")
+        if advanced.get("report_only"):
+            common.append("--report-only")
+        in_process = engine_args is not None
+        engine_args = engine_args or []
+        if "--layout" in engine_args:
+            index = engine_args.index("--layout")
+            engine_args = engine_args[:index] + engine_args[index + 2 :]
+        argv = [str(input_path), *common, *engine_args]
+        if advanced.get("from_rows"):
+            if advanced.get("rows_no_baseline"):
+                writer.write("warning: saved rows have no recorded baseline; shipped comparison is unavailable\n")
+            from basal.server import load_calibration
+
+            selected = advanced.get("rows_baseline")
+            with tempfile.TemporaryDirectory(prefix="basal-ui-refit-") as temporary:
+                header = dict(advanced["rows_header"])
+                projected = None
+                if selected:
+                    projected, _, reason = load_calibration(
+                        None, header.get("kind"), selected, header.get("quant"), header.get("orders"), layout=layout
+                    )
+                    if reason:
+                        writer.write(
+                            f"warning: {reason}: its thresholds are not compared or kept (as in basal-serve)\n"
+                        )
+                    baseline_path = Path(temporary) / "baseline.json"
+                    baseline_path.write_text(json.dumps(projected), encoding="utf-8")
+                    header["baseline"] = str(baseline_path)
+                else:
+                    header["baseline"] = None
+                projected_rows = Path(temporary) / "input.rows.jsonl"
+                with Path(input_path).open("rb") as source, projected_rows.open("wb") as target:
+                    if json.loads(source.readline()) != advanced["rows_header"]:
+                        raise ValueError("saved rows header changed before refit")
+                    target.write((json.dumps(header) + "\n").encode())
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        job.check()
+                        target.write(chunk)
+                row_argv = [str(projected_rows), *common]
+                if "--calibration" in row_argv:
+                    index = row_argv.index("--calibration")
+                    del row_argv[index : index + 2]
+                output_file = Path(out_path)
+                previous = output_file.stat().st_mtime_ns if output_file.exists() else None
+                try:
+                    _basal_calibrate(job, row_argv, writer)
+                finally:
+                    writer.lines = [
+                        line.replace(str(projected_rows), str(input_path)).replace(
+                            str(Path(temporary) / "baseline.json"), str(selected or "none")
+                        )
+                        for line in writer.lines
+                    ]
+                    if (
+                        not advanced.get("report_only")
+                        and output_file.exists()
+                        and output_file.stat().st_mtime_ns != previous
+                    ):
+                        result = json.loads(output_file.read_text(encoding="utf-8"))
+                        result["baseline"] = str(selected) if projected else "none"
+                        output_file.write_text(
+                            json.dumps(result, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+                        )
+        elif in_process:
             job.progress("calibrating (engine in basal-ui's process)")
             _basal_calibrate(job, argv, writer)
-        finally:
-            if advanced.get("reserve", True):
-                fleet.release("calibrate")
-            free_engine_memory()
-    else:
-        job.progress("starting model")
-        runner = fleet.start_temporary("calibrate", assessment, job.log, options, extra_args=["--no-calibration"])
+        else:
+            job.progress("starting model")
+            runner = fleet.start_temporary(
+                "calibrate", assessment, job.log, options, extra_args=["--no-calibration"], model_path=local_dir
+            )
+            try:
+                while (state := runner.status())["state"] != "ready":
+                    job.check()
+                    if state["state"] == "error":
+                        raise RuntimeError(state["error"])
+                    if state["state"] == "idle":
+                        raise RuntimeError("the temporary basal-serve was stopped")
+                    time.sleep(READY_POLL_S)
+                job.progress("calibrating")
+                _basal_calibrate(job, [str(input_path), "--url", runner.base_url, *common], writer)
+            finally:
+                fleet.stop_temporary("calibrate")
+        job.check()
+        report = (
+            "\n".join(writer.lines)
+            .replace(str(out_path), str(public_out))
+            .replace(str(rows_path), str(public_out.with_suffix(".rows.jsonl")))
+        )
+        if advanced.get("report_only"):
+            return {"file": None, "report": report, "report_only": True}
+        if not Path(out_path).exists():
+            raise RuntimeError("basal-calibrate wrote no file")
+        if advanced.get("from_rows"):
+            cal = json.loads(Path(out_path).read_text(encoding="utf-8"))
+            if layout != "canonical":
+                cal["fitted_on"]["layout"] = layout
+            cal["fitted_on"].update(advanced.get("rows_identity", {}))
+            Path(out_path).write_text(json.dumps(cal, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        elif local_dir is not None:
+            name_snapshot(out_path, local_dir)
+        out_path.with_suffix(".report.txt").write_text(report + "\n", encoding="utf-8")
+        result = summary(out_path)
+        published = []
         try:
-            while (state := runner.status())["state"] != "ready":
-                job.check()
-                if state["state"] == "error":
-                    raise RuntimeError(state["error"])
-                if state["state"] == "idle":
-                    raise RuntimeError("the temporary basal-serve was stopped")
-                time.sleep(READY_POLL_S)
-            job.progress("calibrating")
-            _basal_calibrate(job, [str(input_path), "--url", runner.base_url, *common], writer)
+            for source in (out_path.with_suffix(".report.txt"), rows_path, out_path):
+                if source.exists():
+                    job.check()
+                    source.chmod(0o600)
+                    target = public_out.parent / source.name
+                    os.link(source, target)
+                    published.append((source, target))
+            job.check()
+        except BaseException:
+            for source, target in published:
+                try:
+                    if os.path.samestat(source.stat(), target.stat()):
+                        target.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
+        return {"file": str(public_out), "report": report, "engine_in_process": in_process, **result}
+    finally:
+        try:
+            if private_dir is not None:
+                private_dir.cleanup()
         finally:
-            fleet.stop_temporary("calibrate")
-    job.check()
-    report = "\n".join(writer.lines)
-    if advanced.get("report_only"):
-        return {"file": None, "report": report, "report_only": True}
-    if not Path(out_path).exists():
-        raise RuntimeError("basal-calibrate wrote no file")
-    name_snapshot(out_path, local_dir)
-    Path(out_path).with_suffix(".report.txt").write_text(report + "\n", encoding="utf-8")
-    return {"file": str(out_path), "report": report, "engine_in_process": in_process, **summary(out_path)}
+            if in_process and not (advanced or {}).get("from_rows"):
+                if (advanced or {}).get("reserve", True):
+                    fleet.release("calibrate")
+                free_engine_memory()
