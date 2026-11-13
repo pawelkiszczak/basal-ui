@@ -286,6 +286,14 @@ warning. An empty output field retains Batch's default path without an overwrite
 files/permissions can change before execution. Editing a path clears its old facts, and late checks cannot replace
 the facts for a newer value.
 
+### Schedules
+
+Open **Batch → Schedules** to choose a loaded model, input and output folders, a filename pattern, concurrency, and either a minute/hour interval or a daily local time. Check the folders before saving; use **Preview next request** to inspect the first row of the next unprocessed file. The scheduler validates the same private snapshot it sends to the Engine. The scheduler scans matching files in name order and submits one Batch at a time alongside manual Batch jobs. Each changed file is tracked by canonical path, size and modification time; generated answers and the scheduler's temporary files are excluded from scans. Answers are named `<stem>.answers.jsonl` in the output folder. Existing answers are protected unless overwrite is enabled, and failed or cancelled jobs preserve prior output.
+
+A model that is not loaded produces a skipped history record; the scheduler never loads it. Scheduled Decisions appear in History and Usage with source `schedule`, while native manual Batch retains its existing behavior. The Jobs area and `job:batch` log show progress and support cancellation. **Run now** ignores pause and timing but respects processed-file and overwrite protection. Daily catch-up runs at most one missed slot; it does not replay every missed day. Pause, edit, resume and delete affect future work; a job already running can finish. Three consecutive errors pause the schedule; edit or resume clears that streak. Change an input to make a failed or cancelled file eligible again. If basal-ui stops after publishing an output but before saving its run record, the next start recovers that checkpoint and marks its duration unknown.
+
+The scheduler runs only while basal-ui is running. Definitions, scan clocks and processed signatures survive restarts separately from size-rotated run history. Folder and first-request checks are advisory: files and permissions can change before execution. Comparison models require the separate Comparison feature (PR 60) to be available. Requests with fields basal-run would discard or that the Comparison model does not support are rejected before any request is sent to the upstream server. An accepted scan resumes its remaining files in their original order after a restart. Files arriving later wait for the next interval unless you select Run now. If a resumed scan cannot inspect its folders, it records a failure and waits for its normal cadence before trying again.
+
 ![Read-only Batch path inspector](images/batch.png)
 
 

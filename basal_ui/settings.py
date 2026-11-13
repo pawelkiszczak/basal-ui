@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 from pathlib import Path
@@ -440,11 +441,32 @@ def _user_records(data: dict) -> list[dict]:
 
 
 def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not handle:
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process
+            try:
+                return kernel.WaitForSingleObject(handle, 0) != 0  # WAIT_OBJECT_0: process exited
+            finally:
+                kernel.CloseHandle(handle)
+        except (AttributeError, OSError):
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
+    except OSError:
         return True
     return True
 
@@ -488,3 +510,248 @@ def keys_file(internal_sha256: str) -> Path:
 def remove_keys_file() -> None:
     """Called when basal-ui exits: its API server is gone, so is its key file."""
     _keys_path().unlink(missing_ok=True)
+
+
+def _schedule_settings() -> dict:
+    """Read scheduling state without treating unreadable or corrupt settings as absent."""
+    path = _settings_path()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if path.is_symlink():
+            raise CorruptSettings(f"{path} points to a missing settings file") from None
+        return {}
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise CorruptSettings(f"{path} is not valid JSON (a settings object)") from exc
+    if not isinstance(value, dict):
+        raise CorruptSettings(f"{path} is not valid JSON (a settings object)")
+    return value
+
+
+@_locked
+def schedules() -> list[dict]:
+    value = _schedule_settings().get("schedules", [])
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise ValueError("invalid schedules in settings")
+    return value
+
+
+@_locked
+def update_schedules(change, reset_state_id=None):
+    data = _schedule_settings()
+    rows = data.get("schedules", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("invalid schedules in settings")
+    before = {row.get("id") for row in rows}
+    result = change(rows)
+    data["schedules"] = rows
+    states = data.get("schedule_state")
+    if isinstance(states, dict):
+        for schedule_id in before - {row.get("id") for row in rows}:
+            states.pop(schedule_id, None)
+        if reset_state_id is not None:
+            states.setdefault(reset_state_id, {})["failures"] = 0
+            states[reset_state_id].pop("scan", None)
+    save(data)
+    return result
+
+
+@_locked
+def reserve_schedule(spec, start):
+    """Reserve a job only while its persisted definition still matches."""
+    rows = _schedule_settings().get("schedules", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("invalid schedules in settings")
+    if not any(row == spec for row in rows):
+        return None
+    return start()
+
+
+@_locked
+def complete_schedule_scan(spec, scan):
+    data = _schedule_settings()
+    if spec not in data.get("schedules", []):
+        return
+    state = data.get("schedule_state", {}).get(spec["id"], {})
+    if state.get("scan") == scan:
+        state["last_scan"] = scan["at"]
+        state.pop("scan")
+        save(data)
+
+
+def schedule_history_path() -> Path:
+    path = _settings_path()
+    return path.with_name(f"{path.stem}.schedules.jsonl")
+
+
+@_locked
+def _schedule_history() -> list[dict]:
+    path = schedule_history_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError(f"invalid schedule history: {path}")
+    return rows
+
+
+def _write_schedule_history(rows):
+    encoded = [json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n" for item in rows]
+    if encoded and len(encoded[-1].encode("utf-8")) > 1024 * 1024:
+        raise ValueError("schedule history record exceeds the rotation limit")
+    size, kept = 0, []
+    for line in reversed(encoded):
+        size += len(line.encode("utf-8"))
+        if size > 1024 * 1024:
+            break
+        kept.append(line)
+    _write_private(schedule_history_path(), "".join(reversed(kept)))
+
+
+@_locked
+def schedule_history() -> list[dict]:
+    rows = _schedule_history()
+    data = _schedule_settings()
+    pending = data.get("schedule_history_pending")
+    if pending is not None:
+        if not isinstance(pending, dict) or not isinstance(pending.get("run_id"), str):
+            raise ValueError("invalid pending schedule history")
+        if not any(row.get("run_id") == pending["run_id"] for row in rows):
+            _write_schedule_history([*rows, pending])
+            rows = _schedule_history()
+        data.pop("schedule_history_pending")
+        save(data)
+    return rows
+
+
+@_locked
+def schedule_runs(schedule_id: str, cursor: int = 0) -> dict:
+    rows = [row for row in reversed(schedule_history()) if row.get("schedule") == schedule_id]
+    return {"runs": rows[cursor : cursor + 100], "next_cursor": cursor + 100 if cursor + 100 < len(rows) else None}
+
+
+@_locked
+def schedule_state(schedule_id: str) -> dict:
+    states = _schedule_settings().get("schedule_state", {})
+    if not isinstance(states, dict) or not isinstance(states.get(schedule_id, {}), dict):
+        raise ValueError("invalid schedule state in settings")
+    return states.get(schedule_id, {})
+
+
+@_locked
+def update_schedule_state(schedule_id: str, change, expected_spec=None) -> bool:
+    data = _schedule_settings()
+    if expected_spec is not None and expected_spec not in data.get("schedules", []):
+        return False
+    states = data.get("schedule_state", {})
+    if not isinstance(states, dict) or not isinstance(states.get(schedule_id, {}), dict):
+        raise ValueError("invalid schedule state in settings")
+    state = states.setdefault(schedule_id, {})
+    change(state)
+    data["schedule_state"] = states
+    save(data)
+    return True
+
+
+@_locked
+def append_schedule_run(row: dict, spec: dict, checkpoint: bool = False) -> None:
+    row = dict(row)
+    matched = row.pop("_matched", None)
+    if len((json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")) > 1024 * 1024:
+        raise ValueError("schedule history record exceeds the rotation limit")
+    current = schedule_history()
+    if any(item.get("run_id") == row["run_id"] for item in current):
+        data = _schedule_settings()
+        publications = data.get("schedule_publications")
+        if isinstance(publications, dict) and row["run_id"] in publications:
+            publications.pop(row["run_id"])
+            save(data)
+        return
+    data = _schedule_settings()
+    definitions = data.get("schedules", [])
+    live = next((item for item in definitions if item.get("id") == spec["id"]), None)
+    if live is not None and live.get("_token") == spec.get("_token"):
+        states = data.setdefault("schedule_state", {})
+        state = states.setdefault(spec["id"], {})
+        scan = state.get("scan")
+        if live == spec and isinstance(scan, dict) and scan.get("spec") == spec and matched in scan.get("items", []):
+            scan["items"].remove(matched)
+        if checkpoint:
+            state.setdefault("processed", {})[row["file"]] = [row["size"], row["mtime"]]
+        if row.get("error") and live == spec:
+            state["failures"] = state.get("failures", 0) + 1
+            if state["failures"] >= 3:
+                live.update(paused=True, paused_reason="paused after three consecutive failed runs")
+        elif live == spec and not row.get("skipped") and not row.get("cancelled"):
+            state["failures"] = 0
+    publications = data.get("schedule_publications")
+    if isinstance(publications, dict):
+        publications.pop(row["run_id"], None)
+    data["schedule_history_pending"] = row
+    save(data)
+    _write_schedule_history([*current, row])
+    data.pop("schedule_history_pending")
+    save(data)
+
+
+@_locked
+def begin_schedule_publication(spec: dict, row: dict, temporary: Path) -> None:
+    stat = temporary.stat()
+    data = _schedule_settings()
+    publications = data.setdefault("schedule_publications", {})
+    if not isinstance(publications, dict):
+        raise ValueError("invalid schedule publication state")
+    publications[row["run_id"]] = {
+        "spec": spec,
+        "row": row,
+        "temporary": str(temporary),
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "owner_pid": os.getpid(),
+    }
+    save(data)
+
+
+@_locked
+def recover_schedule_publications() -> None:
+    data = _schedule_settings()
+    publications = data.get("schedule_publications", {})
+    if not isinstance(publications, dict):
+        raise ValueError("invalid schedule publication state")
+    for run_id, intent in list(publications.items()):
+        if (
+            not isinstance(intent, dict)
+            or not isinstance(intent.get("row"), dict)
+            or not isinstance(intent.get("spec"), dict)
+        ):
+            raise ValueError("invalid schedule publication state")
+        row, spec = intent["row"], intent["spec"]
+        owner = intent.get("owner_pid")
+        if type(owner) is not int or owner <= 0:
+            raise ValueError("invalid schedule publication owner")
+        if _alive(owner):
+            continue
+        temporary = Path(intent["temporary"])
+        output = Path(row["output"])
+        if temporary.parent != output.parent or not temporary.name.startswith(".basal-ui-schedule-"):
+            raise ValueError("invalid schedule publication temporary path")
+        try:
+            output_stat = output.stat()
+            published = (output_stat.st_dev, output_stat.st_ino) == (intent["device"], intent["inode"])
+        except FileNotFoundError:
+            published = False
+        if published:
+            recovered = {**row, "duration": None, "reason": "recovered after interruption"}
+            append_schedule_run(recovered, spec, checkpoint=True)
+        else:
+            data = _schedule_settings()
+            data["schedule_publications"].pop(run_id, None)
+            save(data)
+        try:
+            stat = temporary.stat()
+            if (stat.st_dev, stat.st_ino) == (intent["device"], intent["inode"]):
+                temporary.unlink()
+        except FileNotFoundError:
+            pass

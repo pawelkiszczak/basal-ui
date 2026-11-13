@@ -185,6 +185,7 @@ class Job:
         self.kind, self.model, self.label, self.log = kind, model, label, log
         self.phase, self.done, self.total, self.error = "starting", 0, 0, None
         self.running, self.started, self.result = True, time.time(), None
+        self.finished = None
         self.cancel = threading.Event()
         self.lock = threading.Lock()
         self.thread = None
@@ -197,9 +198,15 @@ class Job:
         if self.cancel.is_set():
             raise Cancelled()
 
+    def request_cancel(self):
+        with self.lock:
+            if self.running:
+                self.cancel.set()
+
     def finish(self, phase, result=None, error=None):
         with self.lock:
             self.phase, self.result, self.error, self.running = phase, result, error, False
+            self.finished = time.time()
 
     def state(self) -> dict:
         with self.lock:
@@ -216,6 +223,7 @@ class Job:
                 "error": self.error,
                 "running": self.running,
                 "started": self.started,
+                "finished": self.finished,
                 "result": self.result,
             }
 
@@ -285,14 +293,14 @@ class Jobs:
         job = self.get(kind)
         if job is None:
             return None
-        job.cancel.set()
+        job.request_cancel()
         return job.state()
 
     def cancel_all(self):
         with self.lock:
             jobs = list(self.jobs.values())
         for job in jobs:
-            job.cancel.set()
+            job.request_cancel()
 
     def join(self, timeout: float) -> list[str]:
         """Wait up to timeout seconds for running jobs; -> the kinds still running."""

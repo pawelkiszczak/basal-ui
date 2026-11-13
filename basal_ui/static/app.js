@@ -1895,7 +1895,7 @@ $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.tog
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
 $('#clearHistory').onclick=()=>act(async()=>{
-  if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded decision (playground, API and MCP) is deleted.'),confirmLabel:t('Clear history'),destructive:true}))return;
+  if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted, including scheduled Batch.'),confirmLabel:t('Clear history'),destructive:true}))return;
   const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
 });
 async function loadLogs() {

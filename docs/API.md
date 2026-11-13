@@ -50,7 +50,7 @@ These privileged local routes retain the UI's Host/Origin protections; loopback 
 {"path":"/Users/me/requests.jsonl","kind":"jsonl"}
 ```
 
-`kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
+`kind` is `jsonl`, `output`, `input_dir`, or `output_dir`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
 inspection request returns HTTP 200 even when the file is missing or unsuitable: inspect `ok` and `code`.
 Common facts are `path`, `kind`, `exists`, `is_file`, `is_dir`, `ok` and `code`.
 
@@ -64,6 +64,12 @@ For output, the response reports parent-directory existence, writability and whe
 overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
 Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
 as the other management routes; it is not a filesystem sandbox.
+
+### Scheduled Batch
+
+`GET /api/schedules` lists definitions; `POST /api/schedules` creates one. Supply `model`, absolute `input_dir` and `output_dir`, `pattern`, `concurrency` (1–256), and an `interval` containing either `every_minutes` (1–525600) or `daily_at` (`HH:MM`, local time). Optional booleans are `overwrite`, `catch_up`, and `paused`; `id` may be supplied or generated. `PUT /api/schedules/{id}` updates a definition, `DELETE` removes it, `POST /api/schedules/{id}/pause` and `/resume` change pause state, and `POST /api/schedules/{id}/run` returns `started`, `queued`, `skipped`, `failed`, or `no_new_files`. Run now bypasses pause and due time, but not processed-file or overwrite protection. `GET /api/schedules/{id}/preview` inspects the next unprocessed matching input without inference or writes. `GET /api/schedules/{id}/runs?cursor=0` returns up to 100 latest run records and `next_cursor`.
+
+`GET /api/jobs` returns the same process-local job states as `GET /api/status` under `jobs`. A run records the model, file, actual start and duration, row and error counts, output path and completion, skip, failure or cancellation reason. Definitions, scan clocks and processed signatures are stored in settings; run history uses an owner-only, size-rotated `<settings stem>.schedules.jsonl` sidecar. Unreadable or corrupt history is an error. Changes, resume and edit reset the failure streak; three consecutive errors pause a schedule. Skips and cancellations do not count as errors; cancelled file signatures are not automatically retried. Published output checkpoints are recovered after an interrupted process; recovered records have null duration. Accepted scans retain their remaining file order after restart; later arrivals wait for the next interval unless Run now adds them. A failed resumed scan settles its clock so a missing folder does not retry every timer tick. Run now also scans for newly arrived files during an active job. A changed source is identified by canonical path, size and nanosecond modification time. Comparison models require PR 60; their inputs are preflighted before basal-run so unsupported or discarded fields are rejected without contacting the upstream server. An unloaded model is skipped, never loaded automatically.
 
 ## Several models behind basal-ui
 
