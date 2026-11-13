@@ -390,6 +390,9 @@ file are checked before the run starts), `--report-only` (the run uses the same 
 file is written) and `--save-rows`, which keeps the uncalibrated probabilities next to the file; such a file gets
 **Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check). A refit uses its original calibration file to identify the saved rows’ layout; if it is missing or unreadable, the refit is refused. For legacy rows without a revision, the paired file’s revision is trusted rather than independently verified. Refit remains available without a downloaded model snapshot; an unreadable saved baseline is reported, and mismatched baseline thresholds are excluded while its temperatures are retained. When the Engine cannot accept the required layout flag, the affected fit or refit control explains why it is unavailable.
 
+Newly fitted calibration files, reports and saved rows are published only after successful validation.
+On POSIX systems, these generated files are owner-only (`0600`); existing files are not overwritten.
+
 ## History and logs
 
 **History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:

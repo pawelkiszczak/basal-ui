@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -368,8 +369,10 @@ def test_task_questions_calibrate_with_the_engine_in_process_and_reserve_its_mem
         out = argv[argv.index("--out") + 1]
         with open(out, "w") as f:
             json.dump({**FITTED, "task_thresholds": {"classify": {"0.05": 0.81}}}, f)
+        Path(out).chmod(0o644)
         if "--save-rows" in argv:
             Path(argv[argv.index("--save-rows") + 1]).write_text("{}\n")
+            Path(argv[argv.index("--save-rows") + 1]).chmod(0o644)
 
     monkeypatch.setattr(calibrate, "main", fake_main)
     fleet, app = make_app(tmp_path, APPLE)
@@ -423,6 +426,10 @@ def test_task_questions_calibrate_with_the_engine_in_process_and_reserve_its_mem
         listed = client.get("/api/calibrations", params={"id": "mini"}).json()["files"][0]
         assert listed["task_thresholds"] == {"classify": {"0.05": 0.81}}
         assert listed["rows"] == str(Path(listed["file"]).with_suffix(".rows.jsonl"))
+        if os.name == "posix":
+            output = Path(listed["file"])
+            for path in (output, output.with_suffix(".report.txt"), Path(listed["rows"])):
+                assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_a_calibration_fitted_elsewhere_is_imported_selectable_and_warned_about(tmp_path, config):

@@ -479,6 +479,7 @@ def run_calibration(
             for source in (out_path.with_suffix(".report.txt"), rows_path, out_path):
                 if source.exists():
                     job.check()
+                    source.chmod(0o600)
                     target = public_out.parent / source.name
                     os.link(source, target)
                     published.append((source, target))
