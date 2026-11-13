@@ -46,11 +46,12 @@ These privileged local routes retain the UI's Host/Origin protections; loopback 
 
 `GET /api/batch/presets` returns the Engine's ready question names and supported language values:
 `{"available":true,"presets":["..."],"langs":["auto","pl","en"]}`. On Engine 2.4.1 it returns
-`available: false`, empty lists, and a `reason`; it does not import the 2.5-only preset module.
+`available: false`, empty lists, a `reason`, `reason_code` and installed `version`; it does not import the 2.5-only preset module.
 
 `POST /api/batch` accepts optional `preset` (one of those names) and `lang` (`auto`, `pl` or `en`). `auto` is the
-default and is inferred by `basal-run` from each state's language; explicit `pl` or `en` passes `--lang`. With a
-preset selected, JSONL lines with neither `questions` nor `question` are expanded with the Engine's preset questions into a private temporary input for basal-run. The original input is unchanged.
+default and is inferred by the Engine from each state's language; explicit `pl` or `en` passes `--lang`. With a
+preset selected, JSONL lines with neither `questions` nor `question` are expanded with the Engine's preset questions
+into a private temporary input for basal-run. The original input is unchanged.
 Unknown presets or unsupported language values return HTTP 400.
 
 ### Batch path inspection
@@ -84,7 +85,8 @@ as the other management routes; it is not a filesystem sandbox.
 `{"id":"<downloaded model id>","kind":"order_check"}`. Identity `dtype` is `fp32` or `bf16` (required) and
 requires the fast execution mode to be available for that model and host. `order_check` requires Engine 2.5's
 `order_check` feature probe; otherwise the request returns HTTP 400. Both start the shared `benchmark` job, reserve
-memory while running, write logs under `job:benchmark`, and save results with `GET /api/benchmarks`. The accepted
+memory while running, write logs under `job:benchmark`, and save results with `GET /api/benchmarks`. Identity keeps
+per-path outcomes, deltas and Engine identity; Order check stores the Native report in `report`. The accepted
 benchmark kinds are `benchmark`, `loadtest`, `determinism`, `modes`, `identity` and `order_check`.
 
 ## Several models behind basal-ui

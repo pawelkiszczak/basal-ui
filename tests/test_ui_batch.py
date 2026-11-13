@@ -132,7 +132,7 @@ def test_batch_presets_api_reports_feature_unavailable(monkeypatch, client):
     assert response.status_code == 200
     assert response.json()["available"] is False
     assert response.json()["presets"] == response.json()["langs"] == []
-    assert "needs engine 2.5" in response.json()["reason"]
+    assert response.json()["reason_code"] == "batch_presets_unavailable"
 
 
 @pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
@@ -230,3 +230,36 @@ def test_preset_materializes_native_requests_and_preserves_source(tmp_path, monk
     )
     assert result["input"] == str(source) and source.read_text() == original
     assert not temporary[0].exists()
+
+
+def test_preset_materialization_cancellation_cleans_temp(tmp_path, monkeypatch):
+    from basal_ui import batch
+    from basal_ui.jobs import Cancelled, Job, LogBuffer
+
+    source = tmp_path / "input.jsonl"
+    source.write_text('{"state":"one"}\n{"state":"two"}\n')
+    created = []
+    real_temp = batch.tempfile.TemporaryDirectory
+
+    def temporary(*args, **kwargs):
+        context = real_temp(*args, **kwargs)
+        created.append(Path(context.name))
+        return context
+
+    monkeypatch.setattr(batch.tempfile, "TemporaryDirectory", temporary)
+    monkeypatch.setattr(batch, "run_tool", lambda *a, **k: pytest.fail("cancelled job launched Native tool"))
+    job = Job("batch", "m", "test", LogBuffer())
+    checks = 0
+
+    def check():
+        nonlocal checks
+        checks += 1
+        if checks == 4:
+            raise Cancelled()
+
+    job.check = check
+    fleet = type("Fleet", (), {"ready": lambda self, model: type("Runner", (), {"base_url": "http://localhost"})()})()
+    with pytest.raises(Cancelled):
+        batch.run_batch(job, fleet, "m", source, tmp_path / "out", preset="triage", lang="en")
+    assert created and not created[0].exists()
+    assert source.read_text() == '{"state":"one"}\n{"state":"two"}\n'

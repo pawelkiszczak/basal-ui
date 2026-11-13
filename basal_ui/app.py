@@ -1465,13 +1465,22 @@ def create_app(
             from . import engine
 
             if not isinstance(preset, str):
-                raise HTTPException(400, "preset must be a string")
+                return JSONResponse({"detail": "preset must be a string", "code": "batch_preset_type"}, status_code=400)
             if not engine.feature("presets"):
-                raise HTTPException(400, "Batch presets need Engine 2.5")
+                return JSONResponse(
+                    {"detail": "Batch presets need Engine 2.5", "code": "batch_presets_unavailable"}, status_code=400
+                )
             from basal.presets import names
 
             if preset not in names():
-                raise HTTPException(400, f"unknown preset {preset!r}")
+                return JSONResponse(
+                    {
+                        "detail": f"unknown preset {preset!r}",
+                        "code": "batch_preset_unknown",
+                        "params": {"preset": str(preset)},
+                    },
+                    status_code=400,
+                )
         else:
             preset = None
         try:
@@ -1489,7 +1498,9 @@ def create_app(
                 "available": False,
                 "presets": [],
                 "langs": [],
-                "reason": f"needs engine 2.5 (installed: {engine.status()['version']})",
+                "reason": "Batch presets need Engine 2.5",
+                "reason_code": "batch_presets_unavailable",
+                "version": engine.status()["version"],
             }
         from basal.presets import names
 
@@ -1506,15 +1517,28 @@ def create_app(
             from . import engine
 
             if not engine.feature("presets"):
-                raise HTTPException(400, "Batch presets need Engine 2.5")
+                return JSONResponse(
+                    {"detail": "Batch presets need Engine 2.5", "code": "batch_presets_unavailable"}, status_code=400
+                )
             from basal.presets import names
 
             if not isinstance(preset, str) or preset not in names():
-                raise HTTPException(400, f"unknown preset {preset!r}")
+                return JSONResponse(
+                    {
+                        "detail": f"unknown preset {preset!r}",
+                        "code": "batch_preset_unknown",
+                        "params": {"preset": str(preset)},
+                    },
+                    status_code=400,
+                )
         if not isinstance(lang, str) or lang not in ("auto", "pl", "en"):
-            raise HTTPException(400, "lang must be one of auto, pl, en")
+            return JSONResponse(
+                {"detail": "lang must be one of auto, pl, en", "code": "batch_language_invalid"}, status_code=400
+            )
         if lang != "auto" and preset is None:
-            raise HTTPException(400, "lang requires a preset")
+            return JSONResponse(
+                {"detail": "lang requires a preset", "code": "batch_language_requires_preset"}, status_code=400
+            )
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(
@@ -1530,12 +1554,7 @@ def create_app(
                 item = json.loads(line)
             except ValueError:
                 item = None
-            is_state_only = (
-                preset
-                and isinstance(item, dict)
-                and "questions" not in item
-                and "question" not in item
-            )
+            is_state_only = preset and isinstance(item, dict) and "questions" not in item and "question" not in item
             if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
                 raise HTTPException(
                     400,
@@ -1543,7 +1562,14 @@ def create_app(
                     "options) nor a /v1/systemone request",
                 )
             if is_state_only and not isinstance(item.get("state"), str):
-                raise HTTPException(400, f"{source.name}: line {n} state must be a string")
+                return JSONResponse(
+                    {
+                        "detail": f"{source.name}: line {n} state must be a string",
+                        "code": "batch_state_invalid",
+                        "params": {"file": source.name, "line": n},
+                    },
+                    status_code=400,
+                )
         if not lines:
             raise HTTPException(400, f"{source} has no lines")
         out = Path(body["output"]).expanduser() if body.get("output") else batch.default_output(source)

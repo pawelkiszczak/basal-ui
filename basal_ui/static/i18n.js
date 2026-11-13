@@ -4,6 +4,17 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "code:batch_preset_type": "Preset pytań musi być tekstem",
+  "code:batch_preset_unknown": "Nieznany preset pytań: {preset}",
+  "code:batch_presets_unavailable": "Presety pytań wymagają Engine 2.5",
+  "code:batch_language_invalid": "Wybierz język automatyczny, polski lub angielski",
+  "code:batch_language_requires_preset": "Wybierz preset pytań, aby ustawić język",
+  "code:batch_state_invalid": "{file}: stan w wierszu {line} musi być tekstem",
+  "Model for Engine checks": "Model do kontroli Engine",
+  "Engine question preset": "Preset pytań Engine",
+  "row must contain state": "Wiersz musi zawierać stan",
+  "state must be a string": "Stan musi być tekstem",
+  "row must contain questions or options": "Wiersz musi zawierać pytania lub opcje",
   "Identity gate uses Saved load settings, which can differ from Active load settings.": "Kontrola tożsamości używa zapisanych ustawień ładowania, które mogą różnić się od aktywnych.",
   "Identity gate does not support NVFP4 on this Engine": "Kontrola tożsamości nie obsługuje NVFP4 w tej wersji Engine",
   "needs Engine 2.5": "wymaga Engine 2.5",

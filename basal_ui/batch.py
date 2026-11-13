@@ -19,7 +19,11 @@ def run_batch(
 ) -> dict:
     """The batch job: basal-run in its own process (it writes the output file at the end); a cancel stops it."""
     runner = fleet.ready(model_id)
-    total = sum(1 for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip())
+    total = 0
+    with Path(input_path).open(encoding="utf-8") as source:
+        for line in source:
+            job.check()
+            total += bool(line.strip())
     job.progress("running", 0, total)
     args = [
         "--input",
@@ -44,6 +48,7 @@ def run_batch(
             temporary = Path(directory) / "input.jsonl"
             with Path(input_path).open(encoding="utf-8") as source, temporary.open("w", encoding="utf-8") as target:
                 for line in source:
+                    job.check()
                     if not line.strip():
                         continue
                     item = json.loads(line)
@@ -51,8 +56,10 @@ def run_batch(
                         item["questions"] = questions(preset, None if lang == "auto" else lang, item["state"])
                     target.write(json.dumps(item, ensure_ascii=False) + "\n")
             args[1] = str(temporary)
+            job.check()
             summary = run_tool(job, "run", args)
     else:
+        job.check()
         summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
     if summary is None:
         raise RuntimeError("basal-run printed no summary")

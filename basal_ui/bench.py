@@ -4,6 +4,7 @@ against the model's basal-serve) and engine-mode comparisons (basal-bench); the 
 
 import asyncio
 import json
+import math
 import statistics
 import tempfile
 import time
@@ -351,6 +352,9 @@ def identity_job(job, fleet, variant, local_dir, dtype, options):
             and isinstance(r.get("path"), str)
             and isinstance(r.get("max_dp"), (int, float))
             and not isinstance(r.get("max_dp"), bool)
+            and math.isfinite(r["max_dp"])
+            and r["max_dp"] >= 0
+            and bool(r["path"])
             for r in rows
         )
     ):
@@ -377,6 +381,31 @@ def order_check_job(job, fleet, variant, local_dir):
             result = run_tool(job, "bench", order_args(local_dir, out_json), out_path=out_json)
     finally:
         fleet.release("order_check")
+
+    def valid_block(block):
+        return (
+            isinstance(block, dict)
+            and isinstance(block.get("n"), int)
+            and not isinstance(block["n"], bool)
+            and block["n"] > 0
+            and all(
+                isinstance(block.get(key), (int, float))
+                and not isinstance(block[key], bool)
+                and math.isfinite(block[key])
+                and 0 <= block[key] <= 1
+                for key in ("flip_reversed", "flip_rotated", "flip_any")
+            )
+        )
+
+    if (
+        not valid_block(result)
+        or not isinstance(result.get("mode"), str)
+        or not result["mode"]
+        or not isinstance(result.get("by_k"), dict)
+        or not result["by_k"]
+        or not all(isinstance(key, str) and key and valid_block(block) for key, block in result["by_k"].items())
+    ):
+        raise RuntimeError("invalid order check output")
     stored = {"kind": "order_check", "model": variant.id, "when": time.time(), "report": result}
     if fleet.stats is not None:
         fleet.stats.add_benchmark(variant.id, stored)

@@ -45,7 +45,7 @@
       const text = data.code ? (messages[data.code] || t('Path check failed.')) : t('First non-empty row looks like a supported batch request.');
       let preview = data.first?.preview || '';
       try { preview = JSON.stringify(JSON.parse(preview),null,2); } catch {}
-      target.innerHTML = `<p>${esc(text)}</p>${data.schema_error?`<p>${esc(data.schema_error)}</p>`:''}<p class="mono">${esc(data.path)}</p>${data.lines!=null?`<div class="chips"><span class="chip">${esc(tp(data.lines,'{n} non-empty row','{n} non-empty rows'))}${data.lines_capped?' '+esc(t('(count capped)')):''}</span>${data.first?`<span class="chip">${esc(t(data.first.format==='simple'?'Simple item':'System One request'))}</span><span class="chip">${esc(tp(data.first.questions,'{n} question','{n} questions'))}</span>`:''}</div>`:''}${preview?`<h4>${esc(t('First-row sample'))}</h4><pre>${esc(preview)}</pre>`:''}`;
+      target.innerHTML = `<p>${esc(text)}</p>${data.schema_error?`<p>${esc(t(data.schema_error))}</p>`:''}<p class="mono">${esc(data.path)}</p>${data.lines!=null?`<div class="chips"><span class="chip">${esc(tp(data.lines,'{n} non-empty row','{n} non-empty rows'))}${data.lines_capped?' '+esc(t('(count capped)')):''}</span>${data.first?`<span class="chip">${esc(t(data.first.format==='simple'?'Simple item':'System One request'))}</span><span class="chip">${esc(tp(data.first.questions,'{n} question','{n} questions'))}</span>`:''}</div>`:''}${preview?`<h4>${esc(t('First-row sample'))}</h4><pre>${esc(preview)}</pre>`:''}`;
     };
     const fields = [['jsonl', view.querySelector('#batchInput')], ['output', view.querySelector('#batchOutput')]];
     const check = async (kind, input) => {
