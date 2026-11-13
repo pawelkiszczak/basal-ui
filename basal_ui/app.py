@@ -151,6 +151,10 @@ def create_app(
         elif not assessment.runnable:
             raise ValueError(assessment.reason)
         load_options.check_combination(variant, current, merged, assessment.mode, media)
+        sized = catalog.assess(variant, current, {**merged, "mode": assessment.mode})
+        assessment = dataclasses.replace(
+            assessment, est_memory_bytes=sized.est_memory_bytes, fit=sized.fit, fit_now=sized.fit_now
+        )
         return assessment, load_options.non_default(merged)
 
     auto_load_stop = threading.Event()
@@ -630,6 +634,13 @@ def create_app(
         revisions = (
             {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
         )
+        saved_estimates = {}
+        for item in baseline:
+            try:
+                chosen = load_options.validate((saved or {}).get(item.variant.id), item.mode)
+                saved_estimates[item.variant.id] = catalog.assess(item.variant, current_hw, chosen)
+            except (ValueError, AttributeError):
+                saved_estimates[item.variant.id] = item
         return {
             "source": source,
             "recommendation_backends": installed,
@@ -648,9 +659,9 @@ def create_app(
                     "reason_code": catalog.message_fields(a.reason, "")[0],
                     "reason_params": catalog.message_fields(a.reason, "")[1],
                     "mode": a.mode,
-                    "est_memory_bytes": a.est_memory_bytes,
-                    "fit": a.fit,
-                    "fit_now": a.fit_now,
+                    "est_memory_bytes": saved_estimates[a.variant.id].est_memory_bytes,
+                    "fit": saved_estimates[a.variant.id].fit,
+                    "fit_now": saved_estimates[a.variant.id].fit_now,
                     "media": list(a.variant.media),
                     "media_mode": a.media_mode,
                     "media_reason": a.media_reason,
@@ -694,6 +705,11 @@ def create_app(
         cache_dir = settings_mod.models_dir()
         local_dir = catalog.is_downloaded(variant, cache_dir, revision=effective_revision(variant))
         assessment = catalog.assess(variant, hw())
+        try:
+            saved = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+            assessment = catalog.assess(variant, hw(), saved)
+        except ValueError:
+            pass
         loaded = next((m.get("entry") for m in fleet.status()["models"] if m["id"] == variant.id), None)
         from huggingface_hub import scan_cache_dir
         from huggingface_hub.errors import CacheNotFound
@@ -830,15 +846,14 @@ def create_app(
         saved = settings_mod.load_options(variant.id)
         try:
             merged = load_options.validate(saved, assessment.mode)
-        except ValueError:  # options saved by another basal-ui version
-            merged = dict(load_options.DEFAULTS)
+        except ValueError:  # Keep saved values visible so the user can explicitly reset them.
+            merged = {**load_options.DEFAULTS, **saved}
         family_ok = variant.family == "basal-2.0" and variant.tier == "4.5B"
         packed_reason = load_options.mlx_packed_unavailable(variant, current)
         packed_code, packed_params = load_options.option_message_fields(packed_reason)
         think_reason = None if family_ok else load_options.THINK_REASON
         think_code, think_params = load_options.option_message_fields(think_reason)
-        adapter_reason = load_options.adapter_unavailable()
-        adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
+        unavailable = load_options.unavailable_options()
         return {
             "modes": load_options.available_modes(variant, current, assessment),
             "options": merged,
@@ -848,9 +863,7 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
-            "adapter_reason": adapter_reason,
-            "adapter_reason_code": adapter_code,
-            "adapter_reason_params": adapter_params,
+            "unavailable": unavailable,
             "think": {
                 "model": family_ok,
                 "vllm": "vllm" in current.engines,
@@ -1217,7 +1230,7 @@ def create_app(
         if in_process and not from_rows:
             engine_args = calibration.engine_flags(
                 catalog.serve_args(variant, local_dir, assessment.mode, platform=hw().platform)
-                + load_options.args(options)
+                + load_options.args(options, assessment.mode)
             )
         advanced["reserve"] = reserve
         try:

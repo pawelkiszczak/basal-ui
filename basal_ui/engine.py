@@ -1,5 +1,6 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import functools
 import importlib.metadata
 import importlib.util
 import inspect
@@ -100,6 +101,23 @@ FEATURES = {
     # basal-viz --mode mlx / mlx-q8 reads the MLX engine's layers (2.5.0: basal/viz.py mlx_lens)
     "viz_mlx": lambda: hasattr(importlib.import_module("basal.viz"), "mlx_lens"),
 }
+
+
+def _flags(module):
+    """Long options declared by an Engine console script's parser."""
+    parser = importlib.import_module(module).parser()
+    return frozenset(s for action in parser._actions for s in action.option_strings if s.startswith("--")) - {"--help"}
+
+
+@functools.cache
+def serve_flags():
+    """Long options declared by basal-serve."""
+    return _flags("basal.server")
+
+
+def serve_modes():
+    """Execution modes declared by basal-serve."""
+    return frozenset(importlib.import_module("basal.server").MODES)
 
 
 def feature(name):

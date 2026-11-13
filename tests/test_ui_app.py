@@ -1034,6 +1034,13 @@ def test_presets_validate_and_strip_request_model(tmp_path):
         assert client.get("/api/presets").json() == {"load": {}, "request": {}}
         result = client.put("/api/presets", json={"kind": "load", "name": "cpu", "value": {"mode": "eager"}})
         assert result.status_code == 200 and result.json()["load"]["cpu"] == {"mode": "eager"}  # the non-default ones
+        from basal_ui import engine
+
+        if "--reread" in engine.serve_flags():
+            values = {"reread": 0.7, "reread_image": 280, "order_average": 3, "prepared": "off"}
+            saved = client.put("/api/presets", json={"kind": "load", "name": "new", "value": values})
+            assert saved.json()["load"]["new"] == values
+            assert client.get("/api/presets").json()["load"]["new"] == values
         result = client.put(
             "/api/presets",
             json={

@@ -4,6 +4,7 @@ eager forward, calibration strictness, thinking, early exit). DEFAULTS are basal
 emits only the options that differ from them. Incompatible combinations are not re-checked here: the child refuses
 them with basal-serve's own message, shown on the model's row and in its log."""
 
+import math
 import re
 from types import SimpleNamespace
 
@@ -12,8 +13,8 @@ from basal.gdn_graph import refused as gdn_refused
 from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
-from .catalog import _cuda_graph, _quantized_hardware_reason
-from .engine import feature
+from .catalog import _cuda_graph, _quantized_hardware_reason, graph_memory_bytes, is_graph_backend
+from .engine import feature, serve_flags, serve_modes
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
 # gdn_graph.refused; 2.5.0 lifted the 2.4 refusals of the caches, compact rows and --lean), MLX from 2.5.0 ("mlx_recurrent")
@@ -79,6 +80,28 @@ DEFAULTS = {
     "think_memory": 0.3,
     "think_max_len": 8192,
     "think_log": "basal-think-vllm.log",
+    # the engine 2.5 load options (unavailable_options(): a flag the installed basal-serve lacks is refused)
+    "mlx_forward": "mlx-lm",
+    "mlx_compute": "auto",
+    "order_average": None,
+    "reread": None,
+    "reread_combine": "mean",
+    "reread_max_tokens": 2048,
+    "reread_image": None,
+    "prepared": "auto",
+    "vllm_overlap": False,
+    "global_attn": "flex",
+    "compile_scope": "model",
+    "state_cache_lock": False,
+    "state_cache_bits": 16,
+    "fp8_scaling": "auto",
+    "fp8_bf16_layers": 2,  # basal.engine.FP8_BF16_LAYERS (2.5)
+    "quant_load": "gpu",
+    "graph_memory_gb": None,
+    "nvfp4_amax": None,
+    "nvfp4_scope": "all",
+    "long_lane_gdn": False,
+    "rank_max_candidates": 10_000,  # basal.rank.MAX_CANDIDATES (2.5)
 }
 CHOICES = {
     "quant": (None, "fp8", "nvfp4", "q8"),  # --quant int8 is in basal-serve 2.5.0's choices, validate_quant refuses it
@@ -100,6 +123,16 @@ CHOICES = {
     "vllm_fast_prefill": ("auto", "off"),
     "dtype": ("bfloat16", "float16", "float32"),
     "layout": (None, *LAYOUTS),
+    "mlx_forward": ("mlx-lm", "basal"),
+    "mlx_compute": ("auto", "bf16"),
+    "reread_combine": ("mean", "second"),
+    "global_attn": ("flex", "triton"),
+    "compile_scope": ("model", "layer"),
+    "state_cache_bits": (16, 8),
+    "fp8_scaling": ("auto", "row", "block"),
+    "quant_load": ("gpu", "cpu"),
+    "nvfp4_scope": ("all", "mlp"),
+    "reread_image": (None, 70, 140, 280, 560, 1120),
 }
 BOOLS = (
     "deterministic",
@@ -109,6 +142,9 @@ BOOLS = (
     "think",
     "ple_offload",
     "strict_calibration",
+    "vllm_overlap",
+    "state_cache_lock",
+    "long_lane_gdn",
     "mlx_packed",
 )
 # key: (minimum, maximum, integer, minimum excluded)
@@ -127,6 +163,12 @@ NUMBERS = {
     "think_tokens": (1, None, True, False),
     "think_memory": (0, 1, False, True),
     "think_max_len": (512, None, True, False),
+    "order_average": (2, None, True, False),
+    "reread": (0, 1, False, True),
+    "reread_max_tokens": (1, None, True, False),
+    "fp8_bf16_layers": (0, None, True, False),
+    "graph_memory_gb": (0, None, False, True),
+    "rank_max_candidates": (1, None, True, False),
 }
 TEXTS = (
     "ollama_url",
@@ -139,6 +181,8 @@ TEXTS = (
     "think_model",
     "think_adapter",
     "think_log",
+    "prepared",
+    "nvfp4_amax",
     "adapter",
 )
 ORDERS = re.compile(r"1|2|auto|2le(?:[2-9]|[1-9]\d*)\Z")
@@ -150,8 +194,8 @@ MODE_ORDER = (
     "fast-nocompile",
     "fast-exit",
     "fp8",
-    "nvfp4",
     "int8",
+    "nvfp4",
     "eager",
     "vllm",
     "sglang",
@@ -168,13 +212,24 @@ MODE_ORDER = (
 
 def _number(key, value):
     lo, hi, integer, open_lo = NUMBERS[key]
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or (integer and int(value) != value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or (isinstance(value, float) and not math.isfinite(value))
+        or (integer and int(value) != value)
+        or (
+            key in ("order_average", "reread_max_tokens", "fp8_bf16_layers", "rank_max_candidates")
+            and not isinstance(value, int)
+        )
+    ):
         raise ValueError(f"load option {key} must be {'an integer' if integer else 'a number'}")
     if (value <= lo if open_lo else value < lo) or (hi is not None and value > hi):
         raise ValueError(
             f"load option {key} must be {'above' if open_lo else 'at least'} {lo}"
             + (f" and at most {hi}" if hi is not None else "")
         )
+    if key == "graph_memory_gb":
+        graph_memory_bytes(value)
     return int(value) if integer else float(value)
 
 
@@ -186,6 +241,7 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
     if not isinstance(options, dict):
         raise ValueError("options must be an object")  # noqa: TRY004 — validation exposes a ValueError API
     out = dict(DEFAULTS)
+    unavailable = unavailable_options()
     for key, value in options.items():
         if key not in DEFAULTS:
             raise ValueError(f"unknown load option: {key}")
@@ -193,13 +249,15 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
             if value is not None and value not in MODES:
                 raise ValueError(f"load option mode must be one of {list(MODES)}")
         elif key in CHOICES:
-            if value not in CHOICES[key]:
+            if value not in CHOICES[key] or (
+                key in ("reread_image", "state_cache_bits") and value is not None and type(value) is not int
+            ):
                 raise ValueError(f"load option {key} must be one of {[c for c in CHOICES[key] if c is not None]}")
         elif key in BOOLS:
             if not isinstance(value, bool):
                 raise ValueError(f"load option {key} must be true or false")
         elif key in NUMBERS:
-            value = _number(key, value)
+            value = None if value is None and DEFAULTS[key] is None else _number(key, value)
         elif key == "revision":
             value = (value.strip() or None) if isinstance(value, str) else value
             if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9A-Za-z._/-]{1,64}", value)):
@@ -211,7 +269,7 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
             if value is None and DEFAULTS[key] is not None:
                 value = DEFAULTS[key]
             if key == "adapter" and value is not None:  # a typo or a DoRA adapter: refused before basal-serve starts
-                reason = adapter_unavailable()
+                reason = unavailable.get("adapter")
                 if reason:
                     raise ValueError(f"load option adapter: {reason}")
                 from basal import adapter as adapter_module
@@ -240,6 +298,9 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
         elif key == "eager_attn" and not (isinstance(value, str) and EAGER_ATTN.fullmatch(value)):
             raise ValueError(f"load option eager_attn must be math, auto or sliding=K,full=K with K in {KERNELS}")
         out[key] = value
+    for key, reason in unavailable.items():  # a value saved on a newer engine never reaches basal-serve as a flag
+        if out[key] != DEFAULTS[key]:
+            raise ValueError(f"load option {key}: {reason}")
     if out["quant"] and (out["mode"] or default_mode):
         try:
             validate_quant(out["mode"] or default_mode, out["quant"])
@@ -257,16 +318,43 @@ def _value(v):
     return f"{v:g}" if isinstance(v, float) else str(v)
 
 
-def args(options: dict) -> list[str]:
+def args(options: dict, mode: str) -> list[str]:
     """basal-serve flags of the non-default options; the mode is applied by the runner (serve_args's --mode)."""
+    merged = validate(options)
+    kind, mode_quant, compiled = MODES[mode]
+    quant = merged["quant"] or mode_quant
+    graph = is_graph_backend(mode)
+    applicable = {
+        "prepared": kind in ("graph", "exit") and compiled,
+        "compile_scope": graph and compiled,
+        "global_attn": graph,
+        "graph_memory_gb": graph,
+        "state_cache_lock": graph,
+        "state_cache_bits": graph,
+        "fp8_scaling": graph and quant == "fp8",
+        "fp8_bf16_layers": graph and quant in ("fp8", "nvfp4", "int8"),
+        "quant_load": graph and quant in ("fp8", "nvfp4", "int8"),
+        "nvfp4_amax": graph and quant == "nvfp4",
+        "nvfp4_scope": graph and quant == "nvfp4",
+    }
     flags = []
-    for key, value in non_default(validate(options)).items():
+    for key, value in non_default(merged).items():
+        if key in applicable and not applicable[key]:
+            continue
         flag = "--" + key.replace("_", "-")
         if key in ("mode", "revision"):
             continue
         if key in ("deterministic", "strict_calibration", "mlx_packed"):
             flags.append(flag)
-        elif key in ("soam", "prefix_cache", "long_lane", "ple_offload"):
+        elif key in (
+            "soam",
+            "prefix_cache",
+            "long_lane",
+            "ple_offload",
+            "vllm_overlap",
+            "state_cache_lock",
+            "long_lane_gdn",
+        ):
             flags += [flag, "on" if value else "off"]
         elif key == "think":
             flags += [flag, "auto"]
@@ -357,7 +445,7 @@ def available_modes(v, hw, assessment) -> list[dict]:
         else:  # 2.5.0: MLX serves Qwen3.5 from its bf16 weights, in float32; quantised weights are refused
             reasons["mlx"] = reasons["mlx"] or (None if v.port == "bf16" else MLX_Q8_RECURRENT_REASON)
             reasons["mlx-q8"] = reasons["mlx"] or MLX_Q8_RECURRENT_REASON
-    if not feature("int8"):  # engine 2.4.1 has no --mode int8: that reason first
+    if "int8" not in serve_modes():  # installed parser does not declare this mode
         reasons["int8"] = OPTION_TEMPLATES["mode_int8_engine"]
     hardware_reason = _quantized_hardware_reason(v, hw)
     if hardware_reason:
@@ -367,6 +455,8 @@ def available_modes(v, hw, assessment) -> list[dict]:
     return [
         {
             "mode": m,
+            "kind": MODES[m][0] if m in MODES else None,
+            "compiled": MODES[m][2] if m in MODES else False,
             "available": reasons[m] is None,
             "reason": reasons[m],
             "reason_code": _availability_message(reasons[m])[0],
@@ -447,6 +537,7 @@ OPTION_TEMPLATES = {
     "reason_long_lane": "--long-lane is not available for Qwen3.5 (Gated DeltaNet) models",
     "reason_gdn_quant": "--mode {quant} is not available for Qwen3.5 (Gated DeltaNet) models: the CUDA graph engine serves them in bf16 (--mode fast); --mode vllm runs their FP8 checkpoints",
     "adapter_engine": "LoRA adapters at load need basal engine 2.5.0 or newer",
+    "option_engine": "needs basal engine 2.5.0 or newer",
 }
 RECURRENT_REASON = OPTION_TEMPLATES["reason_recurrent"]
 MLX_RECURRENT_REASON = OPTION_TEMPLATES["reason_mlx_recurrent"]
@@ -493,9 +584,46 @@ def mlx_packed_unavailable(v, hw):
     return None
 
 
-def adapter_unavailable():
-    """Why the adapter load option cannot be used, None when the engine takes --adapter (feature probe)."""
-    return None if feature("adapter") else OPTION_TEMPLATES["adapter_engine"]
+# the load options that are a basal-serve flag of the engine that introduced them (not the flags basal-ui owns:
+# --mode, --media, the think server's); adapter joined them: its reason adds the module probe
+ENGINE_FLAGS = {
+    key: "--" + key.replace("_", "-")
+    for key in (
+        "mlx_forward",
+        "mlx_compute",
+        "order_average",
+        "reread",
+        "reread_combine",
+        "reread_max_tokens",
+        "reread_image",
+        "prepared",
+        "vllm_overlap",
+        "global_attn",
+        "compile_scope",
+        "state_cache_lock",
+        "state_cache_bits",
+        "fp8_scaling",
+        "fp8_bf16_layers",
+        "quant_load",
+        "graph_memory_gb",
+        "nvfp4_amax",
+        "nvfp4_scope",
+        "long_lane_gdn",
+        "rank_max_candidates",
+        "adapter",
+    )
+}
+
+
+def unavailable_options() -> dict[str, str]:
+    """Why each engine-gated load option cannot be used here ({}: every one is available), keyed by option: the
+    installed basal-serve does not declare its flag (engine.serve_flags); the adapter also needs basal.adapter."""
+    unavailable = {
+        key: OPTION_TEMPLATES["option_engine"] for key, flag in ENGINE_FLAGS.items() if flag not in serve_flags()
+    }
+    if not feature("adapter"):
+        unavailable["adapter"] = OPTION_TEMPLATES["adapter_engine"]
+    return unavailable
 
 
 def fp8_unavailable(hw):
@@ -512,7 +640,7 @@ def int8_unavailable(v, hw):
     (int8block.int8_refused)."""
     if not (v.family.startswith("basal-omni") and v.tier == "ultra" and v.port == "bf16"):
         return OPTION_TEMPLATES["mode_int8_model"]
-    if hw.platform == "cuda" and ((hw.cuda_capability or (0, 0)) < (8, 0) or "rocm" in hw.engines):
+    if hw.platform != "cuda" or (hw.cuda_capability or (0, 0)) < (8, 0) or "rocm" in hw.engines:
         return OPTION_TEMPLATES["mode_int8_hardware"]
     return None
 
@@ -520,6 +648,18 @@ def int8_unavailable(v, hw):
 def check_combination(v, hw, options, default_mode, media=False):
     """ValueError for the experimental options this variant or machine cannot use (merged options)."""
     mode = options["mode"] or ("eager" if media else default_mode)
+    from basal import server
+
+    native = None
+    if hasattr(server, "serve_options") or v.recurrent or options["long_lane_gdn"]:
+        try:
+            native = server.parser().parse_args(["--model", v.repo, "--mode", mode, *args(options, mode)])
+            if hasattr(server, "serve_options"):
+                server.serve_options(native)
+            elif getattr(native, "long_lane_gdn", "off") == "on" and native.long_lane != "on":
+                raise ValueError("--long-lane-gdn on needs --long-lane on")
+        except SystemExit as exc:
+            raise ValueError(str(exc)) from None
     if options["mlx_packed"]:
         reason = mlx_packed_unavailable(v, hw)
         if media or mode not in ("mlx", "mlx-q8"):
@@ -553,8 +693,10 @@ def check_combination(v, hw, options, default_mode, media=False):
             options["template_prefix"],
             device=False,
         )
-        if not reason and options["long_lane"]:
-            reason = "--long-lane is not available for Qwen3.5 (Gated DeltaNet) models"
+        # 2.5.1 serves it with --long-lane-gdn on (its bf16 answers agree with float32 a little less often than
+        # eager's); on 2.4.1 validate() refuses the option itself, so the gate here keeps its meaning
+        if not reason and native.long_lane == "on" and getattr(native, "long_lane_gdn", "off") != "on":
+            reason = OPTION_TEMPLATES["reason_long_lane"]
         if reason:
             raise ValueError(reason)
     if v.recurrent and kind == "mlx":  # basal/engine.py MLXBackend (2.5.0): Qwen3.5 in bf16, without the caches

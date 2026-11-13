@@ -323,7 +323,7 @@ class Runner:
             command += ["--max-len", str(serve["max_len"])]
         if not media and assessment.mode == "mps" and self.platform_fn() != "apple" and not self.options.get("device"):
             command += ["--device", "cpu"]
-        return command + load_options.args(self.options) + list(self.extra_args)
+        return command + load_options.args(self.options, assessment.mode) + list(self.extra_args)
 
     def _models_entry(self, media):
         """The child's GET /v1/models entry and, with media, its media kinds (required then, best effort else)."""
