@@ -388,7 +388,7 @@ controls: `--strict` with a `--reference`, `--min-per-type`, `--min-blend`, `--m
 `--concurrency`, the file to compare with (shipped, none: `--no-calibration`, or a path; a path and a `--reference`
 file are checked before the run starts), `--report-only` (the run uses the same engine as a fit, the report opens, no
 file is written) and `--save-rows`, which keeps the uncalibrated probabilities next to the file; such a file gets
-**Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check). A refit uses its original calibration file to identify the saved rows’ layout; if it is missing or unreadable, the refit is refused. Refit remains available without a downloaded model snapshot; a missing or layout-mismatched saved baseline is reported rather than silently omitted. When the Engine cannot accept the required layout flag, the affected fit or refit control explains why it is unavailable.
+**Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check). A refit uses its original calibration file to identify the saved rows’ layout; if it is missing or unreadable, the refit is refused. Refit remains available without a downloaded model snapshot; an unreadable saved baseline is reported, and mismatched baseline thresholds are excluded while its temperatures are retained. When the Engine cannot accept the required layout flag, the affected fit or refit control explains why it is unavailable.
 
 ## History and logs
 

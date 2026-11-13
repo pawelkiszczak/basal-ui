@@ -1219,38 +1219,25 @@ def create_app(
             name = source.name.removesuffix(".rows.jsonl")
             original = source.with_name(name + ".json")
             try:
-                options = {"layout": calibration.rows_layout(original)}
-                fitted = calibration.load(original)["fitted_on"]
-                if any(
-                    key in fitted and (not isinstance(fitted[key], str) or not fitted[key])
-                    for key in ("model", "revision")
-                ):
-                    raise ValueError(f"cannot determine saved rows model identity from {original}")
-                advanced["rows_identity"] = {key: fitted[key] for key in ("model", "revision") if key in fitted}
+                header, layout, identity = calibration.rows_provenance(source, original)
+                options = {"layout": layout}
+                advanced["rows_identity"] = identity
+                advanced["rows_header"] = header
             except ValueError as exc:
                 return JSONResponse({"detail": str(exc), "code": "calibration_rows_layout_unknown"}, status_code=400)
-        if from_rows:
-            try:
-                with source.open(encoding="utf-8") as rows_file:
-                    header = json.loads(rows_file.readline())
-                baseline = header.get("baseline")
-                advanced["rows_no_baseline"] = compare == "shipped" and not baseline
-                if compare == "shipped" and baseline and not Path(baseline).is_file():
-                    raise ValueError(f"saved rows baseline is unavailable: {baseline}")
-                if compare == "none" and baseline:
-                    raise ValueError("the installed Engine cannot omit the saved rows baseline")
-                compared_file = baseline if compare == "shipped" else compare if compare != "none" else None
-                if (
-                    compared_file
-                    and calibration.calibration_layout(calibration.load(compared_file)) != options["layout"]
-                ):
-                    raise ValueError("saved rows and comparison calibration use different layouts")
-            except (OSError, ValueError, TypeError, AttributeError) as exc:
-                return JSONResponse(
-                    {"detail": str(exc), "code": "calibration_rows_baseline_unavailable"}, status_code=400
-                )
+            compare = advanced.get("compare", "shipped")
+            baseline = header.get("baseline") if compare == "shipped" else None if compare == "none" else compare
+            if baseline:
+                try:
+                    calibration.load(baseline)
+                except (OSError, ValueError, TypeError) as exc:
+                    return JSONResponse(
+                        {"detail": str(exc), "code": "calibration_rows_baseline_unavailable"}, status_code=400
+                    )
+            advanced["rows_baseline"] = baseline
+            advanced["rows_no_baseline"] = compare == "shipped" and not baseline
         try:
-            default_layout = model_layout(Path(local_dir)) if local_dir is not None else "canonical"
+            default_layout = model_layout(Path(local_dir)) if local_dir is not None and not from_rows else "canonical"
         except (OSError, ValueError, AttributeError) as exc:
             if not from_rows:
                 raise HTTPException(400, f"cannot determine model layout: {exc}") from exc

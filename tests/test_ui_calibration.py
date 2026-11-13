@@ -480,8 +480,8 @@ def test_from_rows_report_only_skips_child_and_memory_reservation(tmp_path, monk
     monkeypatch.setattr(calibrate, "main", lambda argv: (calls.append(argv), print("rows report")))
     fleet, app = make_app(tmp_path)
     rows = tmp_path / "fit.rows.jsonl"
-    rows.write_text('{"basal_calibrate_rows":1}\n')
-    (tmp_path / "fit.json").write_text(json.dumps(FITTED))
+    rows.write_text('{"basal_calibrate_rows":1,"model":"org/model"}\n')
+    (tmp_path / "fit.json").write_text(json.dumps({**FITTED, "fitted_on": {"model": "org/model"}}))
     settings.update_memory({"reserve_bytes": 1024**4})  # nothing fits: a refit runs no engine, so no check
     with TestClient(app, base_url="http://127.0.0.1") as client:
         response = client.post(
@@ -607,9 +607,9 @@ def test_refit_preserves_the_layout_of_the_original_rows(tmp_path, monkeypatch, 
     monkeypatch.setattr(calibrate, "main", fit)
     _, app = make_app(tmp_path)
     original = tmp_path / "fit.json"
-    original.write_text(json.dumps({**FITTED, "fitted_on": {"layout": "qfirst"}}))
+    original.write_text(json.dumps({**FITTED, "fitted_on": {"model": "org/model", "layout": "qfirst"}}))
     rows = tmp_path / "fit.rows.jsonl"
-    rows.write_text('{"basal_calibrate_rows":1}\n')
+    rows.write_text('{"basal_calibrate_rows":1,"model":"org/model"}\n')
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert (
             client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True}).status_code == 202
@@ -636,10 +636,21 @@ def test_canonical_override_requires_layout_capability(tmp_path, monkeypatch, co
         listing = client.get("/api/calibrations", params={"id": "mini"}).json()
         assert listing["default_layout"] == "qfirst"
         rows = tmp_path / "fit.rows.jsonl"
-        rows.write_text('{"basal_calibrate_rows":1}\n')
-        (tmp_path / "fit.json").write_text(json.dumps({**FITTED, "fitted_on": {"layout": "canonical"}}))
+        rows.write_text('{"basal_calibrate_rows":1,"model":"org/model"}\n')
+        (tmp_path / "fit.json").write_text(
+            json.dumps({**FITTED, "fitted_on": {"model": "org/model", "layout": "canonical"}})
+        )
+        calls = []
+
+        def refit(argv):
+            calls.append(argv)
+            Path(argv[argv.index("--out") + 1]).write_text(json.dumps(FITTED))
+
+        monkeypatch.setattr(calibrate, "main", refit)
         result = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
-        assert result.status_code == 400 and result.json()["code"] == "calibration_layout_unsupported"
+        assert result.status_code == 202
+        assert wait_job(client)["phase"] == "done_with_warnings"
+        assert "--layout" not in calls[0]
 
 
 def test_canonical_default_needs_no_layout_capability(tmp_path, monkeypatch, config):
@@ -681,7 +692,7 @@ def test_invalid_model_layout_keeps_calibration_listing_available(tmp_path, conf
 def test_refit_rejects_unknown_original_layout_before_job(tmp_path, content):
     _, app = make_app(tmp_path)
     rows = tmp_path / "fit.rows.jsonl"
-    rows.write_text('{"basal_calibrate_rows":1}\n')
+    rows.write_text('{"basal_calibrate_rows":1,"model":"org/model"}\n')
     if content is not None:
         (tmp_path / "fit.json").write_text(content)
     with TestClient(app, base_url="http://127.0.0.1") as client:
@@ -716,9 +727,7 @@ def test_missing_model_snapshot_refits_saved_rows_without_engine_or_reservation(
     directory = settings.calibrations_dir("mini")
     directory.mkdir(parents=True)
     original = directory / "original.json"
-    original.write_text(
-        json.dumps({**FITTED, "fitted_on": {"model": "org/model", "revision": "abc", "layout": "qfirst"}})
-    )
+    original.write_text(json.dumps({**FITTED, "fitted_on": {"model": "org/model", "layout": "qfirst"}}))
     rows = original.with_suffix(".rows.jsonl")
     header = {
         "basal_calibrate_rows": 1,
@@ -759,7 +768,7 @@ def test_missing_model_snapshot_refits_saved_rows_without_engine_or_reservation(
         job = wait_job(client)
         assert job["phase"] == "done_with_warnings", job
         fitted = json.loads(Path(job["result"]["file"]).read_text())["fitted_on"]
-        assert (fitted["layout"], fitted["model"], fitted["revision"]) == ("qfirst", "org/model", "abc")
+        assert (fitted["layout"], fitted["model"]) == ("qfirst", "org/model") and "revision" not in fitted
         assert "shipped comparison is unavailable" in job["result"]["report"]
         monkeypatch.setattr(engine, "feature", lambda name: name != "calibrate_layout")
         unsupported = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
@@ -770,18 +779,14 @@ def test_refit_rejects_unavailable_saved_baseline(tmp_path, monkeypatch):
     _, app = make_app(tmp_path)
     monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: None)
     original = tmp_path / "fit.json"
-    original.write_text(json.dumps(FITTED))
+    original.write_text(json.dumps({**FITTED, "fitted_on": {"model": "org/model"}}))
     rows = original.with_suffix(".rows.jsonl")
-    rows.write_text(json.dumps({"basal_calibrate_rows": 1, "baseline": str(tmp_path / "missing.json")}) + "\n")
+    rows.write_text(
+        json.dumps({"basal_calibrate_rows": 1, "model": "org/model", "baseline": str(tmp_path / "missing.json")}) + "\n"
+    )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         result = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
         assert result.status_code == 400 and result.json()["code"] == "calibration_rows_baseline_unavailable"
-        baseline = tmp_path / "baseline.json"
-        baseline.write_text(json.dumps(FITTED))
-        original.write_text(json.dumps({**FITTED, "fitted_on": {"layout": "qfirst"}}))
-        rows.write_text(json.dumps({"basal_calibrate_rows": 1, "baseline": str(baseline)}) + "\n")
-        result = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
-        assert result.status_code == 400 and "different layouts" in result.json()["detail"]
 
 
 def test_in_process_setup_failure_releases_reservation(tmp_path, monkeypatch, config):
@@ -821,3 +826,88 @@ def test_in_process_setup_failure_releases_reservation(tmp_path, monkeypatch, co
         job = wait_job(client)
         assert job["phase"] == "error" and "second job reached the Engine" in job["error"]
         assert freed == [True, True] and "calibrate" not in fleet.reserved
+
+
+@pytest.mark.parametrize(
+    "header,pair",
+    [
+        ({"basal_calibrate_rows": 1}, {"model": "org/model"}),
+        ({"basal_calibrate_rows": 1, "model": "other/model"}, {"model": "org/model"}),
+        ({"basal_calibrate_rows": 1, "model": "org/model"}, {"model": "org/model", "revision": "abc"}),
+        (
+            {"basal_calibrate_rows": 1, "model": "org/model", "revision": "abc"},
+            {"model": "org/model", "revision": "def"},
+        ),
+    ],
+)
+def test_refit_rejects_unverified_original_identity(tmp_path, header, pair):
+    _, app = make_app(tmp_path)
+    original = tmp_path / "identity.json"
+    original.write_text(json.dumps({**FITTED, "fitted_on": {**pair, "layout": "qfirst"}}))
+    rows = original.with_suffix(".rows.jsonl")
+    rows.write_text(json.dumps(header) + "\n")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        result = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert result.status_code == 400 and result.json()["code"] == "calibration_rows_layout_unknown"
+
+
+def test_saved_rows_comparison_modes_use_engine_semantics(tmp_path, monkeypatch):
+    _, app = make_app(tmp_path)
+    original = tmp_path / "source.json"
+    rows = original.with_suffix(".rows.jsonl")
+    original.write_text(json.dumps({**FITTED, "fitted_on": {"model": "org/model", "layout": "qfirst"}}))
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(FITTED))
+    custom = tmp_path / "custom.json"
+    custom.write_text(
+        json.dumps({**FITTED, "temperature_per_prim": {"choice": 1.7}, "fitted_on": {"layout": "qfirst"}})
+    )
+    header = {
+        "basal_calibrate_rows": 1,
+        "fmt": 2,
+        "kind": "mlx",
+        "quant": None,
+        "model": "org/model",
+        "engine": "mlx",
+        "data": "input.jsonl",
+        "requests": 1,
+        "baseline": str(baseline),
+        "orders": 1,
+    }
+    row = {
+        "line": 1,
+        "req": 0,
+        "name": "q",
+        "prim": "choice",
+        "gold": 0,
+        "keys": ["0", "1"],
+        "group": "1",
+        "family": "q",
+        "p": [0.99, 0.01],
+    }
+    rows.write_text(json.dumps(header) + "\n" + json.dumps(row) + "\n")
+    import os
+
+    expanduser = os.path.expanduser
+    monkeypatch.setattr(os.path, "expanduser", lambda value: str(tmp_path) if value == "~" else expanduser(value))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for compare in ("shipped", "none", "~/custom.json"):
+            response = client.post(
+                "/api/calibrate",
+                json={"id": "mini", "input": str(rows), "from_rows": True, "advanced": {"compare": compare}},
+            )
+            assert response.status_code == 202, response.text
+            job = wait_job(client)
+            assert job["phase"] == "done_with_warnings", job
+            result = json.loads(Path(job["result"]["file"]).read_text())
+            assert result["fitted_on"]["layout"] == "qfirst"
+            assert "basal-ui-refit-" not in json.dumps(result) + job["result"]["report"]
+            if compare == "shipped":
+                assert result["baseline"] == str(baseline)
+                assert result["temperature_per_prim"]["choice"] == 1.2
+                assert result["thresholds"]["0.05"]["per_type"]["choice"]["confidence"] is None
+                assert "thresholds are not compared or kept" in job["result"]["report"]
+            elif compare == "none":
+                assert result["baseline"] == "none" and not result["temperature_per_prim"]
+            else:
+                assert result["baseline"] == str(custom) and result["temperature_per_prim"]["choice"] == 1.7

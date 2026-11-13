@@ -183,7 +183,7 @@ def test_calibration_layout_refresh_and_refit_capability(page):
             json={
                 "selected": None,
                 "calibrate_layout": False,
-                "default_layout": "canonical",
+                "default_layout": state.get("default", "canonical"),
                 "shipped": {"file": "shipped", "context": {"layout": state["layout"], "mode": "eager"}},
                 "files": [
                     {"file": "canonical", "layout": "canonical", "rows": "canonical.rows.jsonl", "when": 1},
@@ -200,6 +200,10 @@ def test_calibration_layout_refresh_and_refit_capability(page):
     assert page.locator('[data-refit="canonical.rows.jsonl"]').is_enabled()
     assert page.locator('[data-refit="qfirst.rows.jsonl"]').is_disabled()
     assert page.locator("tr", has=page.locator('[data-refit="qfirst.rows.jsonl"]')).locator(".reason").is_visible()
+    state["default"] = "qfirst"
+    page.evaluate("() => loadCalibrations()")
+    assert page.locator('[data-refit="canonical.rows.jsonl"]').is_enabled()
+    state["default"] = "canonical"
     state["layout"] = "qfirst"
     page.evaluate(
         """id => { renderStatus({...statusCache, models:[{id,state:'ready',options:{layout:'qfirst'}}]}); clearTimeout(pollTimer); }""",
@@ -335,7 +339,7 @@ def test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_mo
     assert not source.exists() and not rows.exists()
     fitted = {
         "temperature_per_prim": {"choice": 1},
-        "fitted_on": {"model": model, "revision": "original", "layout": "qfirst"},
+        "fitted_on": {"model": model, "layout": "qfirst"},
     }
     header = {
         "basal_calibrate_rows": 1,
@@ -369,15 +373,8 @@ def test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_mo
         listing = ui.get("/api/calibrations", params={"id": model})
         assert listing["shipped"] is None
         test_pages.manager_tab(page, "calibration")
-        page.wait_for_function("id => modelData.some(m => m.id === id)", arg=model)
-        page.evaluate(
-            """id => {
-          const model = modelData.find(m => m.id === id);
-          model.downloaded = false; model.has_calibration_rows = true;
-          calibrationSignature = ''; renderCalibrationModels();
-        }""",
-            model,
-        )
+        assert any(m["id"] == model and m["has_calibration_rows"] for m in ui.get("/api/models")["models"])
+        page.evaluate("() => loadModels()")
         page.select_option("#calibrationModel", model)
         button = page.locator(f'[data-refit="{rows}"]')
         button.wait_for()
@@ -392,7 +389,7 @@ def test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_mo
         assert job["phase"] == "done_with_warnings", job
         result_path = Path(job["result"]["file"])
         metadata = json.loads(result_path.read_text())["fitted_on"]
-        assert (metadata["model"], metadata["revision"], metadata["layout"]) == (model, "original", "qfirst")
+        assert (metadata["model"], metadata["layout"]) == (model, "qfirst") and "revision" not in metadata
         assert ui.model(model) is None
     finally:
         if job_started and result_path is None:

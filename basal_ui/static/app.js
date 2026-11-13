@@ -1612,7 +1612,7 @@ function renderCalibrationFiles(id, d) {
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
     if(!radio)continue;
-    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;button.disabled=!f.layout||(!d.calibrate_layout&&(f.layout!=='canonical'||d.default_layout&&d.default_layout!=='canonical'));
+    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;button.disabled=!f.layout||(!d.calibrate_layout&&f.layout!=='canonical');
     const cell=radio.closest('tr').lastElementChild; cell.append(' ',button);
     if(button.disabled){const reason=document.createElement('span');reason.className='reason';reason.textContent=f.layout?t('The installed Engine cannot calibrate this layout'):t('Cannot determine saved rows layout');cell.append(' ',reason);}
   }

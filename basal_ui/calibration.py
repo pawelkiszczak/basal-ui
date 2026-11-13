@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -58,16 +59,42 @@ def load(path) -> dict:
     return cal
 
 
-def rows_layout(path):
-    """The paired calibration identifies the layout of saved rows."""
-    cal = load(path)
-    fitted = cal.get("fitted_on")
-    if not isinstance(fitted, dict):
-        raise ValueError(f"cannot determine saved rows layout from {path}: fitted_on is missing or invalid")
-    layout = fitted.get("layout", "canonical")
-    if layout not in ("canonical", "qfirst", "state_twice"):
-        raise ValueError(f"cannot determine saved rows layout from {path}: invalid layout")
-    return layout
+def rows_provenance(path, original):
+    """Check saved-row identity against its paired calibration before retaining metadata."""
+    try:
+        cal = load(original)
+        fitted = cal.get("fitted_on")
+        if not isinstance(fitted, dict):
+            raise ValueError("paired fitted_on metadata is missing or invalid")
+        layout = fitted.get("layout", "canonical")
+        if layout not in ("canonical", "qfirst", "state_twice"):
+            raise ValueError("paired layout is invalid")
+        if "revision" in fitted and (not isinstance(fitted["revision"], str) or not fitted["revision"]):
+            raise ValueError("revision is invalid")
+        with Path(path).open(encoding="utf-8") as source:
+            header = json.loads(source.readline())
+        if header.get("basal_calibrate_rows") != 1:
+            raise ValueError("saved rows header is invalid")
+        if "revision" in header and (not isinstance(header["revision"], str) or not header["revision"]):
+            raise ValueError("revision is invalid")
+        row_model = header["model"]
+        pair_model = fitted["model"]
+        if not isinstance(row_model, str) or not row_model or not isinstance(pair_model, str) or not pair_model:
+            raise ValueError("model identity is missing")
+        row_name, row_revision = model_identity(row_model, Path(row_model))
+        pair_name, pair_revision = model_identity(pair_model, Path(pair_model))
+        pair_revision = fitted.get("revision") or pair_revision
+        row_revision = header.get("revision") or row_revision
+        baseline = header.get("baseline")
+        if not row_revision and baseline:
+            base_model, base_revision = model_identity(baseline, Path(baseline).parent)
+            if base_revision and base_model == row_name:
+                row_revision = base_revision
+        if row_name != pair_name or row_revision != pair_revision:
+            raise ValueError("model or revision differs between saved rows and paired calibration")
+        return header, layout, {"model": pair_name, **({"revision": pair_revision} if pair_revision else {})}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(f"cannot verify saved rows provenance: {exc}") from exc
 
 
 def report_warnings(report):
@@ -302,7 +329,11 @@ def run_calibration(
         from basal.prompt import model_layout
 
         try:
-            default_layout = model_layout(Path(local_dir)) if local_dir is not None else "canonical"
+            default_layout = (
+                model_layout(Path(local_dir))
+                if local_dir is not None and not advanced.get("from_rows")
+                else "canonical"
+            )
         except (OSError, ValueError, AttributeError):
             if not advanced.get("from_rows"):
                 raise
@@ -347,7 +378,58 @@ def run_calibration(
         if advanced.get("from_rows"):
             if advanced.get("rows_no_baseline"):
                 writer.write("warning: saved rows have no recorded baseline; shipped comparison is unavailable\n")
-            _basal_calibrate(job, argv, writer)
+            from basal.server import load_calibration
+
+            selected = advanced.get("rows_baseline")
+            with tempfile.TemporaryDirectory(prefix="basal-ui-refit-") as temporary:
+                header = dict(advanced["rows_header"])
+                projected = None
+                if selected:
+                    projected, _, reason = load_calibration(
+                        None, header.get("kind"), selected, header.get("quant"), header.get("orders"), layout=layout
+                    )
+                    if reason:
+                        writer.write(
+                            f"warning: {reason}: its thresholds are not compared or kept (as in basal-serve)\n"
+                        )
+                    baseline_path = Path(temporary) / "baseline.json"
+                    baseline_path.write_text(json.dumps(projected), encoding="utf-8")
+                    header["baseline"] = str(baseline_path)
+                else:
+                    header["baseline"] = None
+                projected_rows = Path(temporary) / "input.rows.jsonl"
+                with Path(input_path).open("rb") as source, projected_rows.open("wb") as target:
+                    if json.loads(source.readline()) != advanced["rows_header"]:
+                        raise ValueError("saved rows header changed before refit")
+                    target.write((json.dumps(header) + "\n").encode())
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        job.check()
+                        target.write(chunk)
+                row_argv = [str(projected_rows), *common]
+                if "--calibration" in row_argv:
+                    index = row_argv.index("--calibration")
+                    del row_argv[index : index + 2]
+                output_file = Path(out_path)
+                previous = output_file.stat().st_mtime_ns if output_file.exists() else None
+                try:
+                    _basal_calibrate(job, row_argv, writer)
+                finally:
+                    writer.lines = [
+                        line.replace(str(projected_rows), str(input_path)).replace(
+                            str(Path(temporary) / "baseline.json"), str(selected or "none")
+                        )
+                        for line in writer.lines
+                    ]
+                    if (
+                        not advanced.get("report_only")
+                        and output_file.exists()
+                        and output_file.stat().st_mtime_ns != previous
+                    ):
+                        result = json.loads(output_file.read_text(encoding="utf-8"))
+                        result["baseline"] = str(selected) if projected else "none"
+                        output_file.write_text(
+                            json.dumps(result, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+                        )
         elif in_process:
             job.progress("calibrating (engine in basal-ui's process)")
             _basal_calibrate(job, argv, writer)
