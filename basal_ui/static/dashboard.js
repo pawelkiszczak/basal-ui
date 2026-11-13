@@ -66,10 +66,12 @@
     const queued = ready.every(model=>Number.isFinite(model.health?.queued)) ? ready.reduce((sum,model)=>sum+model.health.queued,0) : null;
     html(q('#trafficActivityCounts'),`<span>${t('Ready models')}: <b>${ready.length}</b></span><span>${t('In flight')}: <b>${inFlight}</b></span><span>${t('Queued')}: <b>${number(queued)}</b></span>`);
     const container=q('#trafficModels'), existing=new Map([...container.querySelectorAll('.traffic-model')].map(node=>[node.dataset.model,node]));
-    if(!models.length){html(container,`<p class="muted">${t('No model loaded')}</p>`);return;}
+    const idle = Object.entries(state.status?.idle_unloads||{}).filter(([id])=>!models.some(model=>model.id===id));
+    if(!models.length && !idle.length){html(container,`<p class="muted">${t('No model loaded')}</p>`);return;}
     container.querySelectorAll(':scope > p').forEach(node=>node.remove());
     models.forEach((model,index)=>{
       let node=existing.get(model.id); existing.delete(model.id);
+      if(node?.dataset.idle){node.remove();node=null;}
       if(!node){
         node=document.createElement('article');node.className='traffic-model';node.dataset.model=model.id;
         node.innerHTML=`<div><span class="status-dot"></span><strong></strong><span class="chip"></span></div><p>${t('Lifetime requests')}: <span class="traffic-model-requests"></span> · ${t('Input tokens')}: <span class="traffic-model-tokens"></span></p>`;
@@ -81,6 +83,13 @@
       text(node.querySelector('.traffic-model-requests'),number(state.stats?(usage?.requests??0):null));
       text(node.querySelector('.traffic-model-tokens'),number(state.stats?(usage?.input_tokens??0):null));
       if(container.children[index]!==node)container.insertBefore(node,container.children[index]||null);
+    });
+    idle.forEach(([id,reason],index)=>{
+      let node=existing.get(id); existing.delete(id);
+      if(!node){node=document.createElement('article');node.className='traffic-model';node.dataset.model=id;}
+      node.dataset.idle='1';
+      text(node,`${id}: ${tp(reason.minutes,'Unloaded after {n} idle minute at {time}','Unloaded after {n} idle minutes at {time}',{time:new Date(reason.at*1000).toLocaleString()})}`);
+      if(container.children[models.length+index]!==node)container.insertBefore(node,container.children[models.length+index]||null);
     });
     existing.forEach(node=>node.remove());
   }

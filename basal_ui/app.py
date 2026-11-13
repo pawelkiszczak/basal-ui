@@ -187,7 +187,9 @@ def create_app(
             auto_load_thread.start()
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
+        fleet.start_idle_timer()
         yield
+        await asyncio.to_thread(fleet.stop_idle_timer)
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:
@@ -365,7 +367,9 @@ def create_app(
     @app.put("/api/memory")
     def put_memory(body: dict = Body(...)):
         try:
-            settings_mod.update_memory(body)
+            with fleet.lock:
+                settings_mod.update_memory(body)
+                fleet.refresh_idle_settings()
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return get_memory()
