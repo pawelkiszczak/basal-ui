@@ -271,8 +271,9 @@ are not fetched. Empty text with image input is accepted if the underlying model
 There must be 1–200 questions. Each requires `type` and non-empty `instructions`; `name` is optional and must be
 unique when provided. Omitted names appear as JSON `null`. A `choice` needs 2–255 values, each a string or boolean;
 values must be unique after converting to strings, and original values (including booleans) are restored in answers.
-When a fallback returns no option log probabilities, the selected choice is preserved and `probabilities` and
-`confidence` are `null`; clients requiring a numeric distribution must handle this explicitly. Router-provided
+A fallback preserves the selected choice even if its returned option probabilities favor a different option. When a
+fallback returns no option log probabilities, `probabilities` and `confidence` are `null`; clients requiring a numeric
+distribution must handle this explicitly. Router-provided
 `answered_by`, `level`, `model` and `calibrated` fields are retained when available.
 A `score` needs 2–10 levels. These Decisions limits may exceed basal's own per-prompt-format option limit: prompt format
 1 supports 2–10 options and format 2 supports 2–255 (the `ollama` mode limit is 20). The serving format must still

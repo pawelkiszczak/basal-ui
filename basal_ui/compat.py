@@ -297,16 +297,25 @@ def decision_response(result, spec, values):
         if typ == "predicate":
             answers.append({"type": typ, "name": name, "probability": ans["noul"]})
         elif typ == "choice":
-            if ans.get("probabilities") is None:
-                choices = {str(v).lower() if isinstance(v, bool) else str(v): v for v in values[key]}
-                if ans.get("choice") not in choices:
-                    raise ValueError("choice is not in the request")
-                chosen, probs = choices[ans["choice"]], None
+            probabilities = ans["probabilities"]
+            fallback = ans.get("answered_by") == "fallback"
+            if fallback and ans.get("calibrated") is not False:
+                raise ValueError("fallback answer must be uncalibrated")
+            choices = {str(v).lower() if isinstance(v, bool) else str(v): v for v in values[key]}
+            if probabilities is None:
+                if not fallback or ans["confidence"] is not None:
+                    raise ValueError("missing choice probabilities")
+                probs = None
             else:
                 probs = [
-                    {"value": v, "probability": ans["probabilities"][str(v).lower() if isinstance(v, bool) else str(v)]}
+                    {"value": v, "probability": probabilities[str(v).lower() if isinstance(v, bool) else str(v)]}
                     for v in values[key]
                 ]
+            if fallback:
+                if ans.get("choice") not in choices:
+                    raise ValueError("choice is not in the request")
+                chosen = choices[ans["choice"]]
+            else:
                 chosen = max(probs, key=lambda p: p["probability"])["value"]
             answers.append(
                 {"type": typ, "name": name, "choice": chosen, "probabilities": probs, "confidence": ans["confidence"]}

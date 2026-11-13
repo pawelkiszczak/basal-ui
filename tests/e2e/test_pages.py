@@ -1791,14 +1791,34 @@ def test_cascade_router_keyboard_focus_protocol_and_attribution(browser, isolate
         pytest.skip("the installed Engine has no router")
     first, second = text_model["id"], second_model["id"]
     isolated_ui.load(first)
+    memory = isolated_ui.status()["memory"]
+    second_assessment = next(model for model in isolated_ui.get("/api/models")["models"] if model["id"] == second)
+    estimate = second_assessment["est_memory_bytes"]
+    if estimate is not None and memory["committed_bytes"] + estimate > memory["budget_bytes"] - memory["reserve_bytes"]:
+        pytest.skip(
+            f"Cascade needs two models: {memory['committed_bytes']} committed + {estimate} estimated bytes exceeds "
+            f"the {memory['budget_bytes'] - memory['reserve_bytes']} byte memory budget after reserve"
+        )
     isolated_ui.load(second)
     received = []
+    send_logprobs = threading.Event()
 
     class Fallback(BaseHTTPRequestHandler):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             received.append((self.path, self.headers.get("Authorization"), body.get("model")))
-            result = json.dumps({"choices": [{"message": {"content": '{"answer":"A"}'}}]}).encode()
+            choice = {"message": {"content": '{"answer":"A"}'}}
+            if send_logprobs.is_set():
+                choice["logprobs"] = {
+                    "content": [
+                        {
+                            "token": '{"answer": "A"}',
+                            "logprob": -2.0,
+                            "top_logprobs": [{"token": '{"answer": "B"}', "logprob": -0.1}],
+                        }
+                    ]
+                }
+            result = json.dumps({"choices": [choice]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(result)))
@@ -1823,11 +1843,40 @@ def test_cascade_router_keyboard_focus_protocol_and_attribution(browser, isolate
         manager_tab(page, "library")
         page.locator("#newCascade").focus()
         page.keyboard.press("Enter")
-        page.locator("#cascadeName").fill("e2e-route")
-        page.locator("#cascadeKind").select_option("blend")
+        page.locator("#cascadeName").fill("e2e-blend-keyboard")
+        page.locator("#cascadeFallback summary").focus()
+        page.keyboard.press("Enter")
+        page.locator("#cascadeFallbackUrl").fill("not-a-url")
+        page.locator("#cascadeFallbackBelow").fill("0")
+        kind = page.locator("#cascadeKind")
+        kind.focus()
+        page.keyboard.press("b")
+        sync_api.expect(kind).to_have_value("blend")
         sync_api.expect(page.locator("#cascadeFallback")).to_be_hidden()
         sync_api.expect(page.locator("#cascadeFallbackUnavailable")).to_be_visible()
-        page.locator("#cascadeKind").select_option("escalate")
+        assert page.locator("#cascadeFallback input:disabled").count() == 6
+        page.locator("#cascadeName").focus()
+        kind.focus()
+        page.keyboard.press("e")
+        sync_api.expect(kind).to_have_value("escalate")
+        assert page.locator("#cascadeFallbackUrl").input_value() == "not-a-url"
+        assert page.locator("#cascadeFallbackBelow").input_value() == "0"
+        assert page.locator("#cascadeFallback input:disabled").count() == 0
+        page.locator("#cascadeName").focus()
+        kind.focus()
+        page.keyboard.press("b")
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/cascades") and response.request.method == "POST"
+        ) as created:
+            page.locator("#cascadeForm button[type=submit]").focus()
+            page.keyboard.press("Enter")
+        assert created.value.status == 201 and created.value.request.post_data_json.get("fallback") is None
+        sync_api.expect(page.locator("#cascadeDialog")).to_be_hidden()
+        saved = next(row for row in isolated_ui.get("/api/cascades")["cascades"] if row["name"] == "e2e-blend-keyboard")
+        assert saved["kind"] == "blend" and saved["fallback"] is None
+        page.locator("#newCascade").focus()
+        page.keyboard.press("Enter")
+        page.locator("#cascadeName").fill("e2e-route")
         sync_api.expect(page.locator("#cascadeFallback")).to_be_visible()
         page.locator(".cascade-threshold input").first.fill("1")
         page.locator("#cascadeForm button[type=submit]").focus()
@@ -1996,6 +2045,14 @@ def test_cascade_router_keyboard_focus_protocol_and_attribution(browser, isolate
                 if name == "e2e-fallback":
                     assert answer["probabilities"] is None and answer["confidence"] is None
                     assert received[-1] == ("/v1/chat/completions", "Bearer synthetic-secret", "controlled")
+                    send_logprobs.set()
+                    for path in ("/v1/decisions", "/decisions"):
+                        response = gateway.post(path, json={**decisions, "model": name})
+                        assert response.status_code == 200, response.text
+                        conflict = response.json()["answers"][0]
+                        assert conflict["answered_by"] == "fallback" and conflict["calibrated"] is False
+                        assert conflict["choice"] == "cards"
+                        assert conflict["probabilities"][0]["probability"] < conflict["probabilities"][1]["probability"]
 
         batch_file = isolated_ui.root / "cascade-input.jsonl"
         batch_file.write_text(json.dumps(CHOICE) + "\n", encoding="utf-8")

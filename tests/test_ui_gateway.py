@@ -431,7 +431,8 @@ def test_cascade_gateway_protocols_and_missing_fallback_probabilities(tmp_path, 
         received.append((request.url.path, body))
         if body["state"] == "error":
             return httpx.Response(422, json={"error": "bad input", "code": "INVALID_REQUEST"})
-        fallback = body["state"] == "fallback"
+        state = body["state"]
+        fallback = state.startswith("fallback")
         answer = {
             "type": "choice",
             "choice": "invoice",
@@ -440,6 +441,20 @@ def test_cascade_gateway_protocols_and_missing_fallback_probabilities(tmp_path, 
             "answered_by": "fallback" if fallback else "escalated",
             "calibrated": False,
         }
+        if state in ("fallback_conflict", "native_conflict"):
+            answer.update(probabilities={"invoice": 0.1, "receipt": 0.9}, confidence=0.9)
+        if state == "fallback_boolean":
+            answer.update(choice="false", probabilities={"true": 0.9, "false": 0.1}, confidence=0.9)
+        if state in ("ordinary_missing", "fallback_missing"):
+            answer.pop("probabilities")
+        if state == "ordinary_null":
+            answer["probabilities"] = None
+        if state == "fallback_numeric_confidence":
+            answer["confidence"] = 0.8
+        if state == "fallback_calibrated":
+            answer["calibrated"] = True
+        if state == "fallback_unknown_choice":
+            answer["choice"] = "other"
         return httpx.Response(200, json={"model": "a", "answers": {"kind": answer}, "usage": {"input_tokens": 7}})
 
     transport = httpx.MockTransport(router)
@@ -473,17 +488,57 @@ def test_cascade_gateway_protocols_and_missing_fallback_probabilities(tmp_path, 
             answer = response.json()["answers"][0]
             assert answer["choice"] == "invoice" and answer["probabilities"][0]["probability"] == 0.8
             assert answer["calibrated"] is False and answer["answered_by"] == "escalated"
-        fallback = client.post("/v1/decisions", json={**request, "input": "fallback"})
-        assert fallback.status_code == 200
-        assert fallback.json()["answers"][0] == {
-            "type": "choice",
-            "name": "kind",
-            "choice": "invoice",
-            "probabilities": None,
-            "confidence": None,
-            "answered_by": "fallback",
-            "calibrated": False,
+        for path in ("/v1/decisions", "/decisions"):
+            fallback = client.post(path, json={**request, "input": "fallback"})
+            assert fallback.status_code == 200
+            assert fallback.json()["answers"][0] == {
+                "type": "choice",
+                "name": "kind",
+                "choice": "invoice",
+                "probabilities": None,
+                "confidence": None,
+                "answered_by": "fallback",
+                "calibrated": False,
+            }
+        for path in ("/v1/decisions", "/decisions"):
+            conflict = client.post(path, json={**request, "input": "fallback_conflict"})
+            assert conflict.status_code == 200
+            answer = conflict.json()["answers"][0]
+            assert answer["choice"] == "invoice" and answer["probabilities"] == [
+                {"value": "invoice", "probability": 0.1},
+                {"value": "receipt", "probability": 0.9},
+            ]
+            assert answer["confidence"] == 0.9 and answer["calibrated"] is False
+            ordinary = client.post(path, json={**request, "input": "native_conflict"})
+            assert ordinary.status_code == 200 and ordinary.json()["answers"][0]["choice"] == "receipt"
+            for state in (
+                "ordinary_missing",
+                "ordinary_null",
+                "fallback_missing",
+                "fallback_numeric_confidence",
+                "fallback_calibrated",
+                "fallback_unknown_choice",
+            ):
+                malformed = client.post(path, json={**request, "input": state})
+                assert malformed.status_code == 502 and malformed.json()["error"]["code"] == "UPSTREAM_ERROR"
+        boolean_request = {
+            **request,
+            "input": "fallback_boolean",
+            "questions": [
+                {
+                    "type": "choice",
+                    "name": "kind",
+                    "instructions": "Choose",
+                    "choices": [{"value": True}, {"value": False}],
+                }
+            ],
         }
+        boolean = client.post("/v1/decisions", json=boolean_request)
+        assert boolean.status_code == 200 and boolean.json()["answers"][0]["choice"] is False
+        assert boolean.json()["answers"][0]["probabilities"] == [
+            {"value": True, "probability": 0.9},
+            {"value": False, "probability": 0.1},
+        ]
         error = client.post("/decisions", json={**request, "input": "error"})
         assert error.status_code == 422 and error.json()["error"]["code"] == "INVALID_REQUEST"
         count = len(received)

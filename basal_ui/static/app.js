@@ -1405,6 +1405,7 @@ function setupCascadeUI(available) {
   const updateLevels=()=>{
     const rows=[...$('#cascadeLevels').children],blend=$('#cascadeKind').value==='blend';
     $('#cascadeFallback').hidden=blend;$('#cascadeFallbackUnavailable').hidden=!blend;
+    $('#cascadeFallback').querySelectorAll('input').forEach(input=>input.disabled=blend);
     rows.forEach((row,i)=>{const threshold=row.querySelector('.cascade-threshold'),weight=row.querySelector('.cascade-weight');threshold.hidden=blend||i===rows.length-1;weight.hidden=!blend;threshold.querySelector('input').disabled=threshold.hidden;weight.querySelector('input').disabled=weight.hidden;row.querySelector('button').disabled=rows.length<=2;});
   };
   $('#newCascade').onclick=()=>{
@@ -1412,8 +1413,8 @@ function setupCascadeUI(available) {
     addLevel(members[0]?.id);addLevel(members[1]?.id);$('#cascadeError').hidden=true;dialog.showModal();
   };
   $('#cascadeAddLevel').onclick=()=>addLevel();
-  $('#cancelCascade').onclick=()=>dialog.close();
-  dialog.addEventListener('close',()=>$('#cascadeForm').reset());
+  $('#cancelCascade').onclick=()=>{$('#cascadeForm').reset();dialog.close();};
+  dialog.addEventListener('cancel',()=>$('#cascadeForm').reset());
   $('#cascadeKind').onchange=updateLevels;
   $('#cascadeForm').onsubmit=async event=>{
     event.preventDefault();
