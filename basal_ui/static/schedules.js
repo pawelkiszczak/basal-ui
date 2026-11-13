@@ -41,11 +41,15 @@
     interval.onchange = intervalFields;
     function modelOptions(models) {
       const select = $('#scheduleModel'), old = select.value;
-      const ids = models.filter(model => model.state === 'ready').map(model => model.id);
-      if (old && !ids.includes(old)) ids.push(old);
-      if (JSON.stringify([...select.options].map(option => option.value)) !== JSON.stringify(ids)) {
-        select.innerHTML = ids.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
-        if (old && ids.includes(old)) select.value = old;
+      const allowed = model => model.kind !== 'cascade' || (model.cascade_kind === 'escalate' && !model.cascade_has_fallback);
+      const rows = models.filter(model => model.state === 'ready' && allowed(model)).map(model => ({id:model.id,disabled:false}));
+      if (old && !rows.some(row => row.id === old)) {
+        const existing=models.find(model => model.id === old);
+        rows.push({id:old,disabled:Boolean(existing && !allowed(existing))});
+      }
+      if (JSON.stringify([...select.options].map(option => [option.value,option.disabled])) !== JSON.stringify(rows.map(row => [row.id,row.disabled]))) {
+        select.innerHTML = rows.map(row => `<option value="${esc(row.id)}"${row.disabled?' disabled':''}>${esc(row.id)}${row.disabled?' · '+esc(t('Batch unavailable for this Cascade')):''}</option>`).join('');
+        if (old && rows.some(row => row.id === old)) select.value = old;
       }
     }
     function resetForm() { editing = null; $('#scheduleForm').reset(); $('#scheduleFormTitle').textContent = t('Create schedule'); $('#scheduleCancel').hidden = true; $('#scheduleError').hidden = true; intervalFields(); }
@@ -60,6 +64,7 @@
     $('#scheduleForm').onsubmit = event => { event.preventDefault(); scheduleAct(async () => {
       try {
         if (!await checkFolders()) return;
+        if ($('#scheduleModel').selectedOptions[0]?.disabled) throw new Error(t('Batch unavailable for this Cascade'));
         const n = Number($('#scheduleEvery').value), type = interval.value;
         if (type !== 'daily' && (!Number.isSafeInteger(n) || n < 1 || n * (type === 'hours' ? 60 : 1) > 525600)) throw new Error(t('Enter a valid interval.'));
         const body = {model:$('#scheduleModel').value,input_dir:$('#scheduleInputDir').value,output_dir:$('#scheduleOutputDir').value,pattern:$('#schedulePattern').value,concurrency:Number($('#scheduleConcurrency').value),interval:type === 'daily' ? {daily_at:$('#scheduleDaily').value} : {every_minutes:n * (type === 'hours' ? 60 : 1)},overwrite:$('#scheduleOverwrite').checked,catch_up:$('#scheduleCatchUp').checked};
@@ -95,7 +100,7 @@
       const url = `/api/schedules/${encodeURIComponent(spec.id)}`;
       if (button.dataset.action === 'edit') {
         editing=spec.id; $('#scheduleFormTitle').textContent=t('Edit schedule'); $('#scheduleCancel').hidden=false;
-        const select=$('#scheduleModel'); if (![...select.options].some(option=>option.value===spec.model)) select.add(new Option(spec.model,spec.model)); select.value=spec.model;
+        const select=$('#scheduleModel'); if (![...select.options].some(option=>option.value===spec.model)) {const model=(statusCache?.models||[]).find(row=>row.id===spec.model), unavailable=model?.kind==='cascade'&&(model.cascade_kind!=='escalate'||model.cascade_has_fallback), option=new Option(spec.model+(unavailable?' · '+t('Batch unavailable for this Cascade'):''),spec.model);option.disabled=Boolean(unavailable);select.add(option);} select.value=spec.model;
         $('#scheduleInputDir').value=spec.input_dir; $('#scheduleOutputDir').value=spec.output_dir; $('#schedulePattern').value=spec.pattern; $('#scheduleConcurrency').value=spec.concurrency;
         interval.value=spec.interval.daily_at?'daily':'minutes'; $('#scheduleEvery').value=spec.interval.every_minutes||60; $('#scheduleDaily').value=spec.interval.daily_at||'09:00'; $('#scheduleOverwrite').checked=spec.overwrite; $('#scheduleCatchUp').checked=spec.catch_up; intervalFields(); $('#scheduleInputDir').focus(); return;
       }

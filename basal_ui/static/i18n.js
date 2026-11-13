@@ -4,6 +4,7 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Batch unavailable for this Cascade": "Przetwarzanie wsadowe niedostępne dla tej kaskady",
   "Preview next request": "Podgląd następnego żądania",
   "Preview of {file}: {preview}": "Podgląd pliku {file}: {preview}",
   "Unable to preview {file}. Details: {details}": "Nie można wyświetlić podglądu pliku {file}. Szczegóły: {details}",

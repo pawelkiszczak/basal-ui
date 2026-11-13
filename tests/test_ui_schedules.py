@@ -386,6 +386,76 @@ def test_publication_recovers_checkpoint_after_restart(tmp_path, monkeypatch):
     assert len(settings.schedule_history()) == 1
 
 
+@pytest.mark.parametrize(
+    ("handle", "wait", "error", "recovered"),
+    [(42, 0x102, 0, False), (42, 0, 0, True), (0, None, 5, False), (0, None, 87, True), (42, 0xFFFFFFFF, 0, False)],
+)
+def test_windows_publication_recovery_queries_process_without_signalling(
+    tmp_path, monkeypatch, handle, wait, error, recovered
+):
+    import ctypes
+    import os
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    scheduler = schedules.Schedules(settings, object(), None)
+    spec = scheduler.create(definition(tmp_path, tmp_path))
+    source, output = tmp_path / "input.jsonl", tmp_path / "input.answers.jsonl"
+    source.write_text(item())
+    stat = source.stat()
+    row = {
+        "run_id": "published",
+        "schedule": spec["id"],
+        "model": "mini",
+        "file": str(source),
+        "at": 123,
+        "duration": 0,
+        "size": stat.st_size,
+        "mtime": stat.st_mtime_ns,
+        "output": str(output),
+        "rows": 1,
+        "errors": 0,
+    }
+    temporary = tmp_path / ".basal-ui-schedule-recovery.jsonl"
+    temporary.write_text("answers")
+    settings.begin_schedule_publication(spec, row, temporary)
+    os.replace(temporary, output)
+
+    class Function:
+        def __init__(self, function):
+            self.function = function
+
+        def __call__(self, *args):
+            return self.function(*args)
+
+    closed = []
+
+    def open_process(access, inherit, pid):
+        assert (access, inherit, pid) == (0x00100000, False, os.getpid())
+        return handle
+
+    def wait_for_process(actual_handle, timeout):
+        assert (actual_handle, timeout) == (handle, 0)
+        return wait
+
+    kernel = SimpleNamespace(
+        OpenProcess=Function(open_process),
+        WaitForSingleObject=Function(wait_for_process),
+        CloseHandle=Function(closed.append),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: error, raising=False)
+    monkeypatch.setattr(settings.sys, "platform", "win32")
+    monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("process was signalled"))
+    settings.recover_schedule_publications()
+    assert closed == ([handle] if handle else [])
+    assert bool(settings.schedule_history()) is recovered
+    assert bool(settings.load().get("schedule_publications")) is not recovered
+    if recovered:
+        assert settings.schedule_state("nightly")["processed"][str(source)] == [stat.st_size, stat.st_mtime_ns]
+    assert output.read_text() == "answers"
+
+
 def test_unpublished_recovery_preserves_prior_output(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     scheduler = schedules.Schedules(settings, object(), None)
@@ -858,3 +928,149 @@ def test_incomplete_proxy_header_hits_absolute_deadline(monkeypatch):
             connection.sendall(b"POST /v1/systemone HTTP/1.1\r\nHost:")
             connection.settimeout(2)
             assert connection.recv(1) == b""
+
+
+def test_resumed_scan_missing_folder_respects_interval(client, child, tmp_path):
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    for name in ("b", "c"):
+        (inputs / f"{name}.jsonl").write_text(item(name))
+    assert (
+        client.post("/api/schedules", json=definition(inputs, outputs, interval={"every_minutes": 60})).status_code
+        == 201
+    )
+    scheduler = client.app.state.schedules
+    assert scheduler.run_due(1000)["status"] == "started"
+    scheduler.active[2].thread.join(30)
+    scheduler._finish_active()
+    for path in inputs.iterdir():
+        path.unlink()
+    inputs.rmdir()
+    restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
+    assert restarted.run_due(1100)["status"] == "failed"
+    assert restarted.run_due(1130)["status"] == "no_new_files"
+    assert restarted.run_due(1160)["status"] == "no_new_files"
+    rows = client.get("/api/schedules/nightly/runs").json()["runs"]
+    assert sum(bool(row.get("error")) for row in rows) == 1
+    assert not restarted.get("nightly")["paused"]
+    assert restarted.run_due(4700)["status"] == "failed"
+
+
+def test_restart_preserves_accepted_order_and_excludes_later_arrival(client, child, tmp_path):
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    for name in ("b", "c"):
+        (inputs / f"{name}.jsonl").write_text(item(name))
+    assert (
+        client.post("/api/schedules", json=definition(inputs, outputs, interval={"every_minutes": 60})).status_code
+        == 201
+    )
+    scheduler = client.app.state.schedules
+    assert scheduler.run_due(1000)["status"] == "started"
+    scheduler.active[2].thread.join(30)
+    scheduler._finish_active()
+    (inputs / "a.jsonl").write_text(item("a"))
+    restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
+    assert restarted.run_due(1100)["status"] == "started"
+    restarted.active[2].thread.join(30)
+    restarted.run_due(1101)
+    assert [body["state"] for _, body in child.seen] == ["b", "c"]
+    assert restarted.run_due(1102)["status"] == "no_new_files"
+    assert restarted.run_due(4600)["status"] == "started"
+    restarted.active[2].thread.join(30)
+    restarted.run_due(4601)
+    assert [body["state"] for _, body in child.seen] == ["b", "c", "a"]
+
+
+def test_stalled_response_delivery_is_drained_after_inference(monkeypatch):
+    import contextlib
+    import queue
+    import socket
+    import threading
+    from urllib.parse import urlsplit
+
+    import httpx
+
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "DELIVERY_TIMEOUT_S", 0.2)
+    completed, stop = threading.Event(), threading.Event()
+    urls = queue.Queue()
+
+    class Fleet:
+        def decide_runner(self, *_args, **_kwargs):
+            completed.set()
+            return httpx.Response(200, content=b"x" * (32 * 1024 * 1024))
+
+    def serve():
+        with batch.comparison_proxy(Fleet(), object(), "model") as url:
+            urls.put(url)
+            stop.wait(10)
+
+    owner = threading.Thread(target=serve)
+    owner.start()
+    target = urlsplit(urls.get(timeout=5))
+    connection = socket.socket()
+    connection.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    connection.settimeout(5)
+    connection.connect((target.hostname, target.port))
+    try:
+        connection.sendall(
+            f"POST /v1/systemone HTTP/1.1\r\nHost: 127.0.0.1:{target.port}\r\nContent-Length: 2\r\n\r\n{{}}".encode()
+        )
+        assert completed.wait(5)
+        assert connection.recv(1)
+        handlers = [t for t in threading.enumerate() if "process_request_thread" in t.name]
+        assert handlers
+        for handler in handlers:
+            handler.join(5)
+            assert not handler.is_alive()
+        stop.set()
+        owner.join(10)
+        assert not owner.is_alive()
+        assert not [t for t in threading.enumerate() if t.name == "basal-ui-scheduled-batch"]
+    finally:
+        stop.set()
+        with contextlib.suppress(OSError):
+            connection.close()
+        owner.join(10)
+
+
+@pytest.mark.parametrize(
+    "kind,fallback,allowed",
+    [("blend", None, False), ("escalate", {"url": "https://example.invalid"}, False), ("escalate", None, True)],
+)
+def test_cascade_batch_eligibility_at_both_routes(client, child, tmp_path, kind, fallback, allowed):
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    source = inputs / "a.jsonl"
+    source.write_text(item())
+    scheduler = client.app.state.schedules
+    runner = scheduler.fleet.runners["mini"]
+    runner.models_entry = {"kind": "cascade", "early_exit": []}
+    runner.spec = {"kind": kind, "fallback": fallback}
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    result = scheduler.run_due(1000)
+    if allowed:
+        assert result["status"] == "started"
+        scheduler.active[2].thread.join(30)
+        scheduler.run_due(1001)
+        assert len(child.seen) == 1
+        manual = client.post(
+            "/api/batch", json={"id": "mini", "input": str(source), "output": str(tmp_path / "manual.jsonl")}
+        )
+        assert manual.status_code == 202
+        scheduler.fleet.jobs.get("batch").thread.join(30)
+        assert len(child.seen) == 2
+    else:
+        assert result["status"] == "failed"
+        assert (
+            "Batch requires an escalation Cascade without fallback"
+            in client.get("/api/schedules/nightly/runs").json()["runs"][0]["error"]
+        )
+        manual = client.post("/api/batch", json={"id": "mini", "input": str(source)})
+        assert manual.status_code == 400 and "Batch requires an escalation Cascade without fallback" in manual.text
+        assert child.seen == [] and client.get("/api/jobs").json()["jobs"].get("batch") is None

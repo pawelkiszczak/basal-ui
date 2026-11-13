@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 from pathlib import Path
@@ -440,11 +441,32 @@ def _user_records(data: dict) -> list[dict]:
 
 
 def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not handle:
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process
+            try:
+                return kernel.WaitForSingleObject(handle, 0) != 0  # WAIT_OBJECT_0: process exited
+            finally:
+                kernel.CloseHandle(handle)
+        except (AttributeError, OSError):
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
+    except OSError:
         return True
     return True
 
@@ -704,13 +726,7 @@ def recover_schedule_publications() -> None:
         owner = intent.get("owner_pid")
         if type(owner) is not int or owner <= 0:
             raise ValueError("invalid schedule publication owner")
-        try:
-            os.kill(owner, 0)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            continue
-        else:
+        if _alive(owner):
             continue
         temporary = Path(intent["temporary"])
         output = Path(row["output"])

@@ -128,6 +128,10 @@ def create_app(
     def start_scheduled_batch(spec, source, output, signature, runner, row):
         snapshot = None
         try:
+            try:
+                batch.validate_runner(runner)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
             if output.resolve() == source.resolve():
                 raise RuntimeError("output must not be the input file")
             with paths._open(source) as stream:
@@ -163,10 +167,9 @@ def create_app(
                 if not isinstance(item, dict) or not ("questions" in item or "options" in item):
                     raise RuntimeError(f"{source.name}: line {number} is not a Batch request")
                 if (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison":
-                    try:
-                        batch.validate_comparison_item(item, runner)
-                    except ValueError as exc:
-                        raise RuntimeError(f"{source.name}: line {number}: {exc}") from exc
+                    error = batch.validate_comparison_item(item, runner)
+                    if error:
+                        raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
                 if first:
                     try:
                         _, reason = paths._row_shape(item)
@@ -1597,13 +1600,15 @@ def create_app(
             )
         source = Path(source).expanduser()
         try:
-            lines = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+            source_bytes = source.read_bytes()
+            lines = [(n, line) for n, line in enumerate(source_bytes.decode("utf-8").splitlines(), 1) if line.strip()]
         except (OSError, UnicodeDecodeError) as exc:
             raise HTTPException(400, f"cannot read {source}: {getattr(exc, 'strerror', None) or exc}") from exc
-        for n, line in enumerate(lines, 1):
+        items = []
+        for n, line in lines:
             try:
                 item = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 item = None
             if not isinstance(item, dict) or not ("questions" in item or "options" in item):
                 raise HTTPException(
@@ -1611,6 +1616,7 @@ def create_app(
                     f"{source.name}: line {n} is neither a simple item (state, question, "
                     "options) nor a /v1/systemone request",
                 )
+            items.append((n, item))
         if not lines:
             raise HTTPException(400, f"{source} has no lines")
         out = Path(body["output"]).expanduser() if body.get("output") else batch.default_output(source)
@@ -1627,6 +1633,10 @@ def create_app(
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
+        try:
+            batch.validate_runner(runner)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         early_exit = body.get("early_exit")
         levels = (runner.models_entry or {}).get("early_exit") or []
         if early_exit is not None and early_exit not in levels:
@@ -1636,8 +1646,25 @@ def create_app(
                 if levels
                 else f"{model_id} has no early exits (basal-serve --mode fast-exit)",
             )
+        comparison = (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison"
+        snapshot = None
+        if comparison:
+            for n, item in items:
+                error = batch.validate_comparison_item(item, runner, early_exit)
+                if error:
+                    detail = f"{source.name}: line {n}: {error['detail']}"
+                    raise HTTPException(400, {**error, "detail": detail} if error.get("code") else detail)
+            fd, name = tempfile.mkstemp(prefix="basal-ui-comparison-", suffix=".jsonl")
+            snapshot = Path(name)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(source_bytes)
+            except BaseException:
+                snapshot.unlink(missing_ok=True)
+                raise
+        started = False
         try:
-            return fleet.start_model_job(
+            result = fleet.start_model_job(
                 "batch",
                 model_id,
                 f"{model_id} on {source.name}",
@@ -1648,9 +1675,18 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
+                *([runner, snapshot] if comparison else []),
+                runner_expected=runner if comparison else None,
             )
+            started = True
+            return result
+        except KeyError as exc:
+            raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
+        finally:
+            if snapshot is not None and not started:
+                snapshot.unlink(missing_ok=True)
 
     @app.delete("/api/batch")
     def cancel_batch():

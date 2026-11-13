@@ -44,6 +44,7 @@ def test_scheduled_comparison_refuses_unrepresentable_input_before_inference(
     source.write_text(json.dumps(item) + "\n")
     manual = client.post("/api/batch", json={"id": model["id"], "input": str(source)})
     assert manual.status_code == 400
+    assert manual.json()["detail"]["code"] == "UNSUPPORTED_FOR_COMPARISON"
     assert (
         client.post(
             "/api/schedules",
@@ -61,4 +62,5 @@ def test_scheduled_comparison_refuses_unrepresentable_input_before_inference(
     assert result["status"] == "failed"
     row = client.get("/api/schedules/compare/runs").json()["runs"][0]
     assert reason in row["error"]
+    assert row["code"] == "UNSUPPORTED_FOR_COMPARISON"
     assert child.seen == [] and fleet.jobs.get("batch") is None

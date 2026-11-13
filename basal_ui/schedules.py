@@ -249,7 +249,15 @@ class Schedules:
                             facts = paths.check(spec[key], kind)
                             if not facts["ok"]:
                                 raise ValueError(f"{key}: {facts['code']}")
-                        queue = candidates(spec)
+                        if (
+                            not force
+                            and isinstance(stored_scan, dict)
+                            and stored_scan.get("spec") == spec
+                            and "items" in stored_scan
+                        ):
+                            queue = [Path(path) for path in stored_scan["items"]]
+                        else:
+                            queue = candidates(spec)
                     except (OSError, ValueError) as exc:
                         row = {
                             "run_id": uuid.uuid4().hex,
@@ -263,11 +271,15 @@ class Schedules:
                             "errors": 1,
                             "error": str(exc),
                         }
-                        if not self.settings.update_schedule_state(
-                            sid, lambda state: state.update(last_scan=timestamp), expected_spec=spec
-                        ):
+
+                        def settle_failed(state):
+                            state["last_scan"] = timestamp
+                            state.pop("scan", None)
+
+                        if not self.settings.update_schedule_state(sid, settle_failed, expected_spec=spec):
                             self.pending.pop(sid, None)
                             continue
+                        self.pending.pop(sid, None)
                         self._record(spec, row)
                         outcome = "failed"
                         continue
@@ -295,18 +307,41 @@ class Schedules:
                         accepted = {signature(path) for path in pending["items"]}
                         if active_signature is not None:
                             accepted.add(active_signature)
+                        additions = []
                         for path in queue:
                             sig = signature(path)
                             if sig not in accepted and processed.get(sig[0]) != list(sig[1:]):
-                                pending["items"].append(path)
+                                additions.append(path)
                                 accepted.add(sig)
+                        if additions:
+                            scan = {**pending["scan"], "items": [*pending["scan"]["items"], *map(str, additions)]}
+                            if not self.settings.update_schedule_state(
+                                sid, lambda state, scan=scan: state.update(scan=scan), expected_spec=spec
+                            ):
+                                self.pending.pop(sid, None)
+                                continue
+                            pending["scan"] = scan
+                            pending["items"].extend(additions)
                         pending["forced"] = pending["forced"] or force
                     else:
+                        if force and isinstance(stored_scan, dict) and stored_scan.get("spec") == spec:
+                            prior = [Path(path) for path in stored_scan.get("items", [])]
+                            known = set(prior)
+                            combined = [*prior, *(path for path in queue if path not in known)]
+                            queue = [
+                                path
+                                for path in combined
+                                if (sig := signature(path)) != active_signature
+                                and processed.get(sig[0]) != list(sig[1:])
+                            ]
+                            stored_scan = {**stored_scan, "items": list(map(str, combined)), "forced": True}
                         scan = (
                             stored_scan
                             if isinstance(stored_scan, dict) and stored_scan.get("spec") == spec
-                            else {"spec": spec, "at": timestamp, "forced": force}
+                            else {"spec": spec, "at": timestamp, "forced": force, "items": list(map(str, queue))}
                         )
+                        if "items" not in scan:
+                            scan = {**scan, "items": list(map(str, queue))}
                         if not self.settings.update_schedule_state(
                             sid, lambda state, scan=scan: state.update(scan=scan), expected_spec=spec
                         ):
@@ -398,7 +433,12 @@ class Schedules:
                             queue.pop(0)
                             outcome = "skipped"
                             continue
-                        self._record(spec, {**row, "error": str(exc), "errors": 1}, checkpoint=True)
+                        detail = exc.args[0] if exc.args and isinstance(exc.args[0], dict) else {"detail": str(exc)}
+                        self._record(
+                            spec,
+                            {**row, "error": detail["detail"], "code": detail.get("code"), "errors": 1},
+                            checkpoint=True,
+                        )
                         queue.pop(0)
                         outcome = "failed"
                         if sid not in self.pending:

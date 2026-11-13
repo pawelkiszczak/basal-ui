@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from .jobs import run_tool
 
 PREFLIGHT_TIMEOUT_S = 5
+DELIVERY_TIMEOUT_S = 5
 
 
 def default_output(input_path) -> Path:
@@ -25,7 +26,10 @@ def validate_comparison_item(item, runner, early_exit=None):
     from basal.run import to_request
 
     if "questions" in item and "gold" in item:
-        raise ValueError("basal-run does not grade gold on full requests; use simple items")
+        return {
+            "code": "UNSUPPORTED_FOR_COMPARISON",
+            "detail": "basal-run does not grade gold on full requests; use simple items",
+        }
     permitted = (
         {"id", "state", "questions", "early_exit", "gold"}
         if "questions" in item
@@ -33,14 +37,24 @@ def validate_comparison_item(item, runner, early_exit=None):
     )
     extra = set(item) - permitted
     if extra:
-        raise ValueError(f"basal-run would discard {sorted(extra)[0]}")
+        return {"code": "UNSUPPORTED_FOR_COMPARISON", "detail": f"basal-run would discard {sorted(extra)[0]}"}
     try:
         request = to_request(item, early_exit)
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(str(exc)) from exc
+        return {"detail": str(exc)}
     refusal, _, _ = runner._prepare(request)
     if refusal is not None:
-        raise ValueError(refusal.json()["error"])
+        error = refusal.json()
+        return {"code": error["code"], "detail": error["error"]}
+    return None
+
+
+def validate_runner(runner):
+    """Preserve the Cascade Batch admission contract for every Batch caller."""
+    if (getattr(runner, "models_entry", None) or {}).get("kind") == "cascade":
+        spec = getattr(runner, "spec", {})
+        if spec.get("kind") != "escalate" or spec.get("fallback"):
+            raise ValueError("Batch requires an escalation Cascade without fallback")
 
 
 @contextlib.contextmanager
@@ -52,6 +66,7 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
             pass
 
         def do_POST(self):
+            inferred = False
             try:
                 host = urlsplit("http://" + self.headers.get("Host", ""))
                 origin = urlsplit(self.headers.get("Origin", ""))
@@ -92,10 +107,13 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 body = json.loads(self.rfile.read(length))
                 if not server.begin_inference(self.connection):
                     return
+                inferred = True
                 response = fleet.decide_runner(runner, model_id, body, source=source, endpoint=endpoint)
                 status, content = response.status_code, response.content
             except Exception:  # noqa: BLE001 — basal-run records an error for this item
                 status, content = 502, b'{"error":"Batch request failed","code":"UPSTREAM_ERROR"}'
+            if inferred and not server.begin_delivery(self.connection):
+                return
             with contextlib.suppress(OSError):
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -110,6 +128,7 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
             super().__init__(*args)
             self.pending_lock = threading.Lock()
             self.pending = {}
+            self.delivering = set()
             self.closing = False
 
         def abort_pending(self, connection):
@@ -146,13 +165,26 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                     timer = self.pending.pop(connection, None)
                     if timer is not None:
                         timer.cancel()
+                    self.delivering.discard(connection)
+
+        def begin_delivery(self, connection):
+            with self.pending_lock:
+                if self.closing:
+                    return False
+                self.delivering.add(connection)
+                connection.settimeout(DELIVERY_TIMEOUT_S)
+                return True
 
         def close_pending(self):
             with self.pending_lock:
                 self.closing = True
                 connections = list(self.pending)
+                delivering = list(self.delivering)
             for connection in connections:
                 self.abort_pending(connection)
+            for connection in delivering:
+                with contextlib.suppress(OSError):
+                    connection.shutdown(socket.SHUT_RDWR)
 
     server = Server(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, name="basal-ui-scheduled-batch", daemon=True)
