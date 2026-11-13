@@ -843,10 +843,13 @@ class Fleet:
                 else:
                     self.leases.pop(runner, None)
 
-    def start_model_job(self, kind, model_id, label, target, *args):
+    def start_model_job(self, kind, model_id, label, target, *args, runner_expected=None):
         # Acquire before scheduling: a queued job already owns its model.
         lease = self.lease(model_id)
-        lease.__enter__()
+        leased = lease.__enter__()
+        if runner_expected is not None and leased is not runner_expected:
+            lease.__exit__(None, None, None)
+            raise RuntimeError("model changed during job preparation")
 
         def run(job, *values):
             try:
@@ -872,7 +875,13 @@ class Fleet:
                 self.inflight.pop(token, None)
 
     def decide(self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"):
-        with self.lease(model_id) as runner, self.answering(model_id, source):
+        with self.lease(model_id) as runner:
+            return self.decide_runner(runner, model_id, body, path, source, endpoint, method)
+
+    def decide_runner(
+        self, runner, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"
+    ):
+        with self.answering(model_id, source):
             t0 = time.perf_counter()
             try:
                 response = runner.decide(body, path)

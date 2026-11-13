@@ -8,7 +8,7 @@ import os
 import stat
 from pathlib import Path
 
-KINDS = ("jsonl", "output")
+KINDS = ("jsonl", "output", "input_dir", "output_dir")
 LINE_CAP = 100_000
 COUNT_CAP = 64 * 1024 * 1024
 FIRST_LINE_CAP = 1024 * 1024
@@ -129,6 +129,15 @@ def _read_jsonl(file, result):
 
 
 def _problem(path, kind, result):
+    if kind in ("input_dir", "output_dir"):
+        if not path.exists():
+            return "missing"
+        if not path.is_dir():
+            return "not_dir"
+        mode = os.R_OK | os.X_OK if kind == "input_dir" else os.W_OK | os.X_OK
+        if not os.access(path, mode):
+            return "unreadable" if kind == "input_dir" else "not_writable"
+        return None
     if kind == "output":
         parent_ok = path.parent.is_dir() and os.access(path.parent, os.W_OK)
         exists = path.exists()
@@ -180,7 +189,7 @@ def check(path, kind):
         }
         code = _problem(resolved, kind, result)
     except PermissionError:
-        result, code = unknown, "not_writable" if kind == "output" else "unreadable"
+        result, code = unknown, "not_writable" if kind in ("output", "output_dir") else "unreadable"
     except (OSError, RuntimeError):
         result, code = unknown, "invalid"
     return {**result, "ok": code is None, "code": code}
