@@ -1305,8 +1305,11 @@ function renderStatus(s) {
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
-  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
+  const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads]);
+  const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
+  lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;
   if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
@@ -1517,7 +1520,7 @@ $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInp
 document.querySelectorAll('#calibrationBlock input[type=checkbox]').forEach(i=>{i.setAttribute('role','switch');setChecked(i,i.checked);});
 document.body.append($('#reportDialog'));  // a modal inside a hidden view would block the page without showing
 $('#reportClose').onclick=()=>$('#reportDialog').close();
-let calibrationRunning=false, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0;
+let calibrationRunning=false, calibrationBlocked=true, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0, lastCalibrationStatus='';
 function renderCalibrationModels() {
   const select=$('#calibrationModel'), current=select.value||localStorage.getItem('basal-ui.calibrationModel')||'', rows=modelData.filter(m=>m.downloaded);
   const signature=JSON.stringify(rows.map(m=>m.id));
@@ -1527,7 +1530,7 @@ function renderCalibrationModels() {
     if(rows.some(m=>m.id===current))select.value=current;
     loadCalibrations();
   }
-  $('#runCalibration').disabled=calibrationRunning||!rows.length;
+  $('#runCalibration').disabled=calibrationRunning||calibrationBlocked||!rows.length;
 }
 $('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);loadCalibrations();};
 $('#runCalibration').onclick=()=>act(async()=>{
@@ -1557,7 +1560,7 @@ function allThresholds(f) {
 }
 function renderCalibrationState(job) {
   const running=Boolean(job?.running);
-  $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||!$('#calibrationModel').value;
+  $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||calibrationBlocked||!$('#calibrationModel').value;
   $('#calibrationProgress').textContent=!job?'':running?`${shortName(job.model)} · ${ts(job.phase,job.phase_code,job.phase_params)}…`:job.phase==='error'?`${t('Failed: {error}',{error:job.error})}`:job.phase==='cancelled'?t('Cancelled'):['done','done_with_warnings'].includes(job.phase)?`${job.phase==='done_with_warnings'?t('Completed with warnings'):t('Completed (see report for certification)')}: ${shortName(job.result?.file||'')}${job.result?.warnings?.length?' · '+job.result.warnings.join(' · '):''}`:'';
   if(calibrationRunning&&!running)loadCalibrations();
   if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';$('#reportDialog').showModal();}
@@ -1565,7 +1568,7 @@ function renderCalibrationState(job) {
 }
 async function loadCalibrations() {
   const id=$('#calibrationModel').value, sequence=++calibrationSequence, files=$('#calibrationFiles');
-  files.innerHTML='';
+  calibrationBlocked=true; $('#runCalibration').disabled=true;
   files.setAttribute('aria-busy','true');
   $('#importCalibration').disabled=true;
   if(!id){files.removeAttribute('aria-busy');return;}
@@ -1575,7 +1578,7 @@ async function loadCalibrations() {
     renderCalibrationFiles(id,data);
   }catch(e){
     if(!calibrationCurrent(id,sequence))return;
-    files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
+    files.dataset.content=''; files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
   }finally{
     if(calibrationCurrent(id,sequence)){files.removeAttribute('aria-busy');$('#importCalibration').disabled=false;}
   }
@@ -1587,22 +1590,33 @@ function thresholdCell(thresholds) {
 }
 function renderCalibrationFiles(id, d) {
   const loaded=(statusCache?.models||[]).find(m=>m.id===id);
+  const layout=d.shipped?.context?.layout;
+  calibrationBlocked=!layout||(!d.calibrate_layout&&(layout!=='canonical'||d.default_layout&&d.default_layout!==layout));
+  $('#runCalibration').disabled=calibrationRunning||calibrationBlocked;
   const row=(f,value,label)=>{
     const fitted=f?.fitted_on&&typeof f.fitted_on==='object'?f.fitted_on:null, gates=f?.gates||{};
     const automated=Object.entries(gates.automated_at||{}).map(([k,v])=>`${(Number(k)*100).toFixed(0)}%: ${pct(v)} at ${pct(gates.automated_error?.[k])} error`).join(' · ');
     const checked=(d.selected||'')===value;
-    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
+    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${esc(f?.layout||'—')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
   };
-  const ctx=d.shipped?.context||{}, context=d.shipped?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
-  const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
-  const shipped=d.shipped?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
-  $('#calibrationFiles').innerHTML=`<p class="muted">${context}<br>${selection}</p><div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
+  const ctx=d.shipped?.context, available=d.shipped?.file&&ctx, context=available?`${t('Shipped calibration')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('Active load settings'):t('Saved load settings'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
+  const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('Shipped calibration')}`;
+  const shipped=available?row(d.shipped,'',`${t('Shipped calibration')} · ${shortName(d.shipped.file)}`):'';
+  const reason=layout&&calibrationBlocked?t('The installed Engine cannot calibrate this layout'):'';
+  const mismatch=d.layout_mismatch_code?ts('Selected calibration layout differs from the load settings; certified thresholds will not apply.',d.layout_mismatch_code):'';
+  const focused=document.activeElement, focusKey=focused?.closest('#calibrationFiles')?{name:focused.name,value:focused.value,refit:focused.dataset.refit,report:focused.dataset.report}:null;
+  const html=`<p class="muted">${context}<br>${selection}<br>${t('Fit layout')}: ${esc(layout||'—')}</p>${!available&&d.shipped?.error?`<p class="reason">${esc(d.shipped.error)}</p>`:''}${reason?`<p class="reason">${esc(reason)}</p>`:''}${mismatch?`<p class="reason">${esc(mismatch)}</p>`:''}<div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Layout')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
+  const content=JSON.stringify([id,html,d.calibrate_layout,d.default_layout,d.files,loaded?.restart_required]);
+  if($('#calibrationFiles').dataset.content===content)return;
+  $('#calibrationFiles').dataset.content=content; $('#calibrationFiles').innerHTML=html;
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
     if(!radio)continue;
-    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;
-    radio.closest('tr').lastElementChild.append(' ',button);
+    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;button.disabled=!f.layout||(!d.calibrate_layout&&(f.layout!=='canonical'||d.default_layout&&d.default_layout!=='canonical'));
+    const cell=radio.closest('tr').lastElementChild; cell.append(' ',button);
+    if(button.disabled){const reason=document.createElement('span');reason.className='reason';reason.textContent=f.layout?t('The installed Engine cannot calibrate this layout'):t('Cannot determine saved rows layout');cell.append(' ',reason);}
   }
+  if(focusKey){const controls=[...$('#calibrationFiles').querySelectorAll('input,button')]; controls.find(el=>focusKey.refit?el.dataset.refit===focusKey.refit:focusKey.report?el.dataset.report===focusKey.report:el.name===focusKey.name&&el.value===focusKey.value)?.focus();}
   $('#calibrationFiles').querySelectorAll('[data-refit]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
     await api('/api/calibrate',{method:'POST',body:JSON.stringify({id,input:b.dataset.refit,from_rows:true})});
@@ -1793,7 +1807,7 @@ $('#optionsApply').onclick=async()=>{
   const {id,media,restart,save,data,initialMode}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
   $('#optionsApply').disabled=true;
   try{
-    if(remember||data.saved&&!initialMode)await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});
+    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();return;}
     if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
     else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}

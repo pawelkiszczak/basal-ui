@@ -13,7 +13,7 @@ import shutil
 import time
 from pathlib import Path
 
-from basal.server import MODES, calibration_file, calibration_mismatch, certified, model_identity
+from basal.server import MODES, calibration_file, calibration_layout, calibration_mismatch, certified, model_identity
 
 from .hardware import free_engine_memory
 
@@ -58,6 +58,18 @@ def load(path) -> dict:
     return cal
 
 
+def rows_layout(path):
+    """The paired calibration identifies the layout of saved rows."""
+    cal = load(path)
+    fitted = cal.get("fitted_on")
+    if not isinstance(fitted, dict):
+        raise ValueError(f"cannot determine saved rows layout from {path}: fitted_on is missing or invalid")
+    layout = fitted.get("layout", "canonical")
+    if layout not in ("canonical", "qfirst", "state_twice"):
+        raise ValueError(f"cannot determine saved rows layout from {path}: invalid layout")
+    return layout
+
+
 def report_warnings(report):
     """Keep engine warning text, including FIT/CERT summaries and strict-check omissions."""
     return list(
@@ -79,6 +91,7 @@ def summary(path, local_dir=None) -> dict:
     out = {
         "warnings": warnings,
         "fitted_on": cal.get("fitted_on"),
+        "layout": calibration_layout(cal),
         "gates": cal.get("gates"),
         "thresholds": certified_table(cal),
         "task_thresholds": cal.get("task_thresholds") or {},
@@ -133,7 +146,10 @@ def served_certified(entry, local_dir, mode, options, selected=None) -> dict:
                 options.get("adapter"),
             )
         )
-        return certified_table(json.loads(path.read_text(encoding="utf-8")))
+        cal = json.loads(path.read_text(encoding="utf-8"))
+        if calibration_layout(cal) != (options.get("layout") or model_layout(Path(local_dir))):
+            return {}
+        return certified_table(cal)
     except (OSError, ValueError, TypeError, AttributeError):
         return {}
 
@@ -149,7 +165,7 @@ def listing(model_id, settings_mod, local_dir=None) -> list[dict]:
         entry = {"file": str(path), "when": path.stat().st_mtime, "rows": str(rows) if rows.is_file() else None}
         try:
             entry.update(summary(path, local_dir))
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
             entry["error"] = str(exc)
         files.append(entry)
     return files
@@ -281,7 +297,18 @@ def run_calibration(
     advanced = advanced or {}
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     rows_path = Path(out_path).with_suffix(".rows.jsonl")
+    from basal.prompt import model_layout
+
+    try:
+        default_layout = model_layout(Path(local_dir))
+    except (OSError, ValueError, AttributeError):
+        if not advanced.get("from_rows"):
+            raise
+        default_layout = "canonical"
+    layout = (options or {}).get("layout") or default_layout
     common = ["--model", str(local_dir), "--out", str(out_path), "--targets", ",".join(targets)]
+    if layout != "canonical" or (options or {}).get("layout") == "canonical" and default_layout != layout:
+        common += ["--layout", layout]
     for key, flag in (
         ("min_per_type", "--min-per-type"),
         ("min_blend", "--min-blend"),
@@ -308,7 +335,11 @@ def run_calibration(
     if advanced.get("report_only"):
         common.append("--report-only")
     in_process = engine_args is not None
-    argv = [str(input_path), *common, *(engine_args or ())]
+    engine_args = engine_args or []
+    if "--layout" in engine_args:
+        index = engine_args.index("--layout")
+        engine_args = engine_args[:index] + engine_args[index + 2 :]
+    argv = [str(input_path), *common, *engine_args]
     if advanced.get("from_rows"):
         _basal_calibrate(job, argv, writer)
     elif in_process:
@@ -321,7 +352,9 @@ def run_calibration(
             free_engine_memory()
     else:
         job.progress("starting model")
-        runner = fleet.start_temporary("calibrate", assessment, job.log, options, extra_args=["--no-calibration"])
+        runner = fleet.start_temporary(
+            "calibrate", assessment, job.log, options, extra_args=["--no-calibration"], model_path=local_dir
+        )
         try:
             while (state := runner.status())["state"] != "ready":
                 job.check()
@@ -340,6 +373,10 @@ def run_calibration(
         return {"file": None, "report": report, "report_only": True}
     if not Path(out_path).exists():
         raise RuntimeError("basal-calibrate wrote no file")
+    if advanced.get("from_rows") and layout != "canonical":
+        cal = json.loads(Path(out_path).read_text(encoding="utf-8"))
+        cal["fitted_on"]["layout"] = layout
+        Path(out_path).write_text(json.dumps(cal, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     name_snapshot(out_path, local_dir)
     Path(out_path).with_suffix(".report.txt").write_text(report + "\n", encoding="utf-8")
     return {"file": str(out_path), "report": report, "engine_in_process": in_process, **summary(out_path)}

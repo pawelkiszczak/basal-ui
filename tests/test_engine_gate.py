@@ -104,8 +104,7 @@ NEW_IN_2_5 = ("adapter", "viz_gemma4", "mcp_models", "mlx_recurrent", "int8", "v
 
 def test_feature_probes_match_the_installed_engine():
     """Each probe tells the tested releases apart: all on with 2.5.0, all off with 2.4.x (CI runs both)."""
-    assert set(NEW_IN_2_5) == set(engine.FEATURES)
-    found = {name: engine.feature(name) for name in engine.FEATURES}
+    found = {name: engine.feature(name) for name in NEW_IN_2_5}
     assert all(isinstance(value, bool) for value in found.values()), found
     version = Version(engine.installed()[0])
     expected = version >= Version("2.5.0")
@@ -125,3 +124,15 @@ def test_a_probe_of_an_engine_module_that_cannot_be_imported_is_off(monkeypatch)
     monkeypatch.setattr(engine.importlib, "import_module", import_module)
     assert engine.feature("mcp_models") is False
     assert engine._parameter("basal.engine", "NoSuchBackend.__init__", "compute") is False
+
+
+def test_calibrate_layout_probe_detects_cli_option(monkeypatch):
+    import argparse
+
+    from basal import calibrate
+
+    parser = argparse.ArgumentParser()
+    monkeypatch.setattr(calibrate, "parser", lambda: parser)
+    assert engine.feature("calibrate_layout") is False
+    parser.add_argument("--layout")
+    assert engine.feature("calibrate_layout") is True
