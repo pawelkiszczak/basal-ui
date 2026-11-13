@@ -672,7 +672,11 @@ def test_downgrade_keeps_saved_values_for_reset(monkeypatch):
         assert client.put("/api/models/options", json={"id": BF16.id, "options": {}}).status_code == 200
 
 
-def test_selected_graph_memory_reaches_fleet_budget(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hide_graph_memory", [False, True])
+def test_selected_graph_memory_reaches_fleet_budget(tmp_path, monkeypatch, hide_graph_memory):
+    if hide_graph_memory:
+        flags = options.serve_flags()
+        monkeypatch.setattr(options, "serve_flags", lambda: flags - {"--graph-memory-gb"})
     machine = dataclasses.replace(CUDA, memory_bytes=10 * catalog.GIB, available_bytes=10 * catalog.GIB)
     fleet = Fleet(
         models_dir_fn=lambda: tmp_path,
@@ -692,7 +696,15 @@ def test_selected_graph_memory_reaches_fleet_budget(tmp_path, monkeypatch):
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         saved = {"mode": "fast", "graph_memory_gb": 2}
-        assert client.put("/api/models/options", json={"id": BF16.id, "options": saved}).status_code == 200
+        response = client.put("/api/models/options", json={"id": BF16.id, "options": saved})
+        if "--graph-memory-gb" not in options.serve_flags():
+            assert response.status_code == 400 and "graph_memory_gb" in response.json()["detail"]
+            assert settings.load_options(BF16.id) == {}
+            refused = client.post("/api/load", json={"id": BF16.id, "options": saved})
+            assert refused.status_code == 400 and "graph_memory_gb" in refused.json()["detail"]
+            assert client.get("/api/status").json()["models"] == []
+            return
+        assert response.status_code == 200
         assert client.get("/api/models").json()["models"][0]["est_memory_bytes"] == 120 + 2 * catalog.GIB
         response = client.post("/api/load", json={"id": BF16.id, "options": saved})
         assert response.status_code == 202
