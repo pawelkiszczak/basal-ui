@@ -657,6 +657,7 @@ def create_app(
                     "media_reason_code": catalog.message_fields(a.media_reason, "")[0],
                     "media_reason_params": catalog.message_fields(a.media_reason, "")[1],
                     "downloaded": on_disk[a.variant.id] is not None,
+                    "has_calibration_rows": any(settings_mod.calibrations_dir(a.variant.id).glob("*.rows.jsonl")),
                     "downloaded_bytes": on_disk[a.variant.id],
                     "revision": revisions.get(a.variant.id),
                     "inspect_reason": inspectable(a.variant, current_hw),
@@ -1131,9 +1132,7 @@ def create_app(
             if active
             else catalog.is_downloaded(variant, settings_mod.models_dir(), revision=selected_options.get("revision"))
         )
-        if not local_dir:
-            raise HTTPException(400, f"download {variant.id} first")
-        local_dir = Path(local_dir)
+        local_dir = Path(local_dir) if local_dir else None
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(400, "input must be the path of a labelled JSONL file (docs/CALIBRATION.md)")
@@ -1192,6 +1191,8 @@ def create_app(
         if not isinstance(from_rows, bool):
             raise HTTPException(400, "from_rows must be a boolean")
         advanced["from_rows"] = from_rows
+        if not from_rows and local_dir is None:
+            raise HTTPException(400, f"download {variant.id} first")
         units = []
         if not from_rows:
             try:
@@ -1219,10 +1220,37 @@ def create_app(
             original = source.with_name(name + ".json")
             try:
                 options = {"layout": calibration.rows_layout(original)}
+                fitted = calibration.load(original)["fitted_on"]
+                if any(
+                    key in fitted and (not isinstance(fitted[key], str) or not fitted[key])
+                    for key in ("model", "revision")
+                ):
+                    raise ValueError(f"cannot determine saved rows model identity from {original}")
+                advanced["rows_identity"] = {key: fitted[key] for key in ("model", "revision") if key in fitted}
             except ValueError as exc:
                 return JSONResponse({"detail": str(exc), "code": "calibration_rows_layout_unknown"}, status_code=400)
+        if from_rows:
+            try:
+                with source.open(encoding="utf-8") as rows_file:
+                    header = json.loads(rows_file.readline())
+                baseline = header.get("baseline")
+                advanced["rows_no_baseline"] = compare == "shipped" and not baseline
+                if compare == "shipped" and baseline and not Path(baseline).is_file():
+                    raise ValueError(f"saved rows baseline is unavailable: {baseline}")
+                if compare == "none" and baseline:
+                    raise ValueError("the installed Engine cannot omit the saved rows baseline")
+                compared_file = baseline if compare == "shipped" else compare if compare != "none" else None
+                if (
+                    compared_file
+                    and calibration.calibration_layout(calibration.load(compared_file)) != options["layout"]
+                ):
+                    raise ValueError("saved rows and comparison calibration use different layouts")
+            except (OSError, ValueError, TypeError, AttributeError) as exc:
+                return JSONResponse(
+                    {"detail": str(exc), "code": "calibration_rows_baseline_unavailable"}, status_code=400
+                )
         try:
-            default_layout = model_layout(Path(local_dir))
+            default_layout = model_layout(Path(local_dir)) if local_dir is not None else "canonical"
         except (OSError, ValueError, AttributeError) as exc:
             if not from_rows:
                 raise HTTPException(400, f"cannot determine model layout: {exc}") from exc
@@ -1239,6 +1267,12 @@ def create_app(
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
         label = f"{variant.id} on {source.name}" + (" (engine in process: task questions)" if in_process else "")
         reserve = in_process and not from_rows
+        engine_args = None
+        if reserve:
+            engine_args = calibration.engine_flags(
+                catalog.serve_args(variant, local_dir, assessment.mode, platform=hw().platform)
+                + load_options.args(options)
+            )
         try:
             if reserve:
                 fleet.reserve("calibrate", assessment.est_memory_bytes)
@@ -1247,12 +1281,6 @@ def create_app(
                     fleet.check_budget(assessment.est_memory_bytes)
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
-        engine_args = None
-        if in_process and not from_rows:
-            engine_args = calibration.engine_flags(
-                catalog.serve_args(variant, local_dir, assessment.mode, platform=hw().platform)
-                + load_options.args(options)
-            )
         advanced["reserve"] = reserve
         try:
             return fleet.jobs.start(
@@ -1270,10 +1298,12 @@ def create_app(
                 engine_args,
                 advanced,
             )
-        except RuntimeError as exc:
+        except BaseException as exc:
             if reserve:
                 fleet.release("calibrate")
-            raise HTTPException(409, str(exc)) from exc
+            if isinstance(exc, RuntimeError):
+                raise HTTPException(409, str(exc)) from exc
+            raise
 
     @app.delete("/api/calibrate")
     def cancel_calibrate():

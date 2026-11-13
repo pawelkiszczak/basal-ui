@@ -293,90 +293,99 @@ def run_calibration(
     advanced=None,
 ):
     """Run basal-calibrate, either against a private child or an in-process engine."""
-    writer = _Lines(job.log)
-    advanced = advanced or {}
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    rows_path = Path(out_path).with_suffix(".rows.jsonl")
-    from basal.prompt import model_layout
-
-    try:
-        default_layout = model_layout(Path(local_dir))
-    except (OSError, ValueError, AttributeError):
-        if not advanced.get("from_rows"):
-            raise
-        default_layout = "canonical"
-    layout = (options or {}).get("layout") or default_layout
-    common = ["--model", str(local_dir), "--out", str(out_path), "--targets", ",".join(targets)]
-    if layout != "canonical" or (options or {}).get("layout") == "canonical" and default_layout != layout:
-        common += ["--layout", layout]
-    for key, flag in (
-        ("min_per_type", "--min-per-type"),
-        ("min_blend", "--min-blend"),
-        ("min_family", "--min-family"),
-        ("min_per_set", "--min-per-set"),
-        ("concurrency", "--concurrency"),
-    ):
-        if key in advanced:
-            common += [flag, str(advanced[key])]
-    reference = advanced.get("reference")
-    if reference:
-        common += ["--reference", str(reference)]
-    compare = advanced.get("compare", "shipped")
-    if compare == "none":
-        common.append("--no-calibration")
-    elif isinstance(compare, str) and compare != "shipped":
-        common += ["--calibration", compare]
-    if advanced.get("strict"):
-        common.append("--strict")
-    if advanced.get("save_rows"):
-        common += ["--save-rows", str(rows_path)]
-    if advanced.get("from_rows"):
-        common.append("--from-rows")
-    if advanced.get("report_only"):
-        common.append("--report-only")
     in_process = engine_args is not None
-    engine_args = engine_args or []
-    if "--layout" in engine_args:
-        index = engine_args.index("--layout")
-        engine_args = engine_args[:index] + engine_args[index + 2 :]
-    argv = [str(input_path), *common, *engine_args]
-    if advanced.get("from_rows"):
-        _basal_calibrate(job, argv, writer)
-    elif in_process:
+    try:
+        writer = _Lines(job.log)
+        advanced = advanced or {}
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        rows_path = Path(out_path).with_suffix(".rows.jsonl")
+        from basal.prompt import model_layout
+
         try:
+            default_layout = model_layout(Path(local_dir)) if local_dir is not None else "canonical"
+        except (OSError, ValueError, AttributeError):
+            if not advanced.get("from_rows"):
+                raise
+            default_layout = "canonical"
+        layout = (options or {}).get("layout") or default_layout
+        common = ["--out", str(out_path), "--targets", ",".join(targets)]
+        if local_dir is not None and not advanced.get("from_rows"):
+            common[:0] = ["--model", str(local_dir)]
+        if layout != "canonical" or (options or {}).get("layout") == "canonical" and default_layout != layout:
+            common += ["--layout", layout]
+        for key, flag in (
+            ("min_per_type", "--min-per-type"),
+            ("min_blend", "--min-blend"),
+            ("min_family", "--min-family"),
+            ("min_per_set", "--min-per-set"),
+            ("concurrency", "--concurrency"),
+        ):
+            if key in advanced:
+                common += [flag, str(advanced[key])]
+        reference = advanced.get("reference")
+        if reference:
+            common += ["--reference", str(reference)]
+        compare = advanced.get("compare", "shipped")
+        if compare == "none":
+            common.append("--no-calibration")
+        elif isinstance(compare, str) and compare != "shipped":
+            common += ["--calibration", compare]
+        if advanced.get("strict"):
+            common.append("--strict")
+        if advanced.get("save_rows"):
+            common += ["--save-rows", str(rows_path)]
+        if advanced.get("from_rows"):
+            common.append("--from-rows")
+        if advanced.get("report_only"):
+            common.append("--report-only")
+        in_process = engine_args is not None
+        engine_args = engine_args or []
+        if "--layout" in engine_args:
+            index = engine_args.index("--layout")
+            engine_args = engine_args[:index] + engine_args[index + 2 :]
+        argv = [str(input_path), *common, *engine_args]
+        if advanced.get("from_rows"):
+            if advanced.get("rows_no_baseline"):
+                writer.write("warning: saved rows have no recorded baseline; shipped comparison is unavailable\n")
+            _basal_calibrate(job, argv, writer)
+        elif in_process:
             job.progress("calibrating (engine in basal-ui's process)")
             _basal_calibrate(job, argv, writer)
-        finally:
-            if advanced.get("reserve", True):
+        else:
+            job.progress("starting model")
+            runner = fleet.start_temporary(
+                "calibrate", assessment, job.log, options, extra_args=["--no-calibration"], model_path=local_dir
+            )
+            try:
+                while (state := runner.status())["state"] != "ready":
+                    job.check()
+                    if state["state"] == "error":
+                        raise RuntimeError(state["error"])
+                    if state["state"] == "idle":
+                        raise RuntimeError("the temporary basal-serve was stopped")
+                    time.sleep(READY_POLL_S)
+                job.progress("calibrating")
+                _basal_calibrate(job, [str(input_path), "--url", runner.base_url, *common], writer)
+            finally:
+                fleet.stop_temporary("calibrate")
+        job.check()
+        report = "\n".join(writer.lines)
+        if advanced.get("report_only"):
+            return {"file": None, "report": report, "report_only": True}
+        if not Path(out_path).exists():
+            raise RuntimeError("basal-calibrate wrote no file")
+        if advanced.get("from_rows"):
+            cal = json.loads(Path(out_path).read_text(encoding="utf-8"))
+            if layout != "canonical":
+                cal["fitted_on"]["layout"] = layout
+            cal["fitted_on"].update(advanced.get("rows_identity", {}))
+            Path(out_path).write_text(json.dumps(cal, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        elif local_dir is not None:
+            name_snapshot(out_path, local_dir)
+        Path(out_path).with_suffix(".report.txt").write_text(report + "\n", encoding="utf-8")
+        return {"file": str(out_path), "report": report, "engine_in_process": in_process, **summary(out_path)}
+    finally:
+        if in_process and not (advanced or {}).get("from_rows"):
+            if (advanced or {}).get("reserve", True):
                 fleet.release("calibrate")
             free_engine_memory()
-    else:
-        job.progress("starting model")
-        runner = fleet.start_temporary(
-            "calibrate", assessment, job.log, options, extra_args=["--no-calibration"], model_path=local_dir
-        )
-        try:
-            while (state := runner.status())["state"] != "ready":
-                job.check()
-                if state["state"] == "error":
-                    raise RuntimeError(state["error"])
-                if state["state"] == "idle":
-                    raise RuntimeError("the temporary basal-serve was stopped")
-                time.sleep(READY_POLL_S)
-            job.progress("calibrating")
-            _basal_calibrate(job, [str(input_path), "--url", runner.base_url, *common], writer)
-        finally:
-            fleet.stop_temporary("calibrate")
-    job.check()
-    report = "\n".join(writer.lines)
-    if advanced.get("report_only"):
-        return {"file": None, "report": report, "report_only": True}
-    if not Path(out_path).exists():
-        raise RuntimeError("basal-calibrate wrote no file")
-    if advanced.get("from_rows") and layout != "canonical":
-        cal = json.loads(Path(out_path).read_text(encoding="utf-8"))
-        cal["fitted_on"]["layout"] = layout
-        Path(out_path).write_text(json.dumps(cal, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-    name_snapshot(out_path, local_dir)
-    Path(out_path).with_suffix(".report.txt").write_text(report + "\n", encoding="utf-8")
-    return {"file": str(out_path), "report": report, "engine_in_process": in_process, **summary(out_path)}

@@ -1,10 +1,14 @@
 """Browser regressions for oldest-first history draining and log-buffer restarts."""
 
 import json
+import os
+from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from basal_ui import settings
 from tests.e2e import test_pages
 
 browser = test_pages.browser  # pytest fixture shared with test_pages
@@ -230,33 +234,63 @@ def test_calibration_layout_refresh_and_refit_capability(page):
 
 def test_calibration_tracks_real_saved_and_active_layout(page, ui, text_model):
     model = text_model["id"]
-    ui.unload(model)
-    ui.put("/api/models/options", {"id": model, "options": {"layout": "canonical"}})
-    test_pages.manager_tab(page, "calibration")
-    page.select_option("#calibrationModel", model)
-    page.wait_for_function(
-        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')"
-    )
-    page.evaluate("id => openLoadOptions(id, false, 'save')", model)
-    page.locator("#opt-layout").evaluate("el => el.closest('details').open = true")
-    page.select_option("#opt-layout", "qfirst")
-    page.locator("#optionsApply").click()
-    page.wait_for_function(
-        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')"
-    )
-    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"
-    ui.post("/api/load", {"id": model, "options": {"layout": "canonical"}})
-    ui.wait_model(model)
-    page.wait_for_function(
-        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')", timeout=30000
-    )
-    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "canonical"
-    page.screenshot(path="/tmp/basal-issue-19-calibration.png")
-    ui.unload(model)
-    page.wait_for_function(
-        "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')", timeout=30000
-    )
-    assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"
+    active = ui.model(model)
+    if active and active["state"] != "ready":
+        pytest.skip("the model must be ready or unloaded to restore its state")
+    original = json.loads(ui.settings.read_text()) if ui.settings.exists() else {}
+    saved = original.get("load_options", {}).get(model, {})
+    try:
+        ui.unload(model)
+        ui.put("/api/models/options", {"id": model, "options": {"layout": "canonical"}})
+        test_pages.manager_tab(page, "calibration")
+        page.select_option("#calibrationModel", model)
+        page.wait_for_function(
+            "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')"
+        )
+        page.evaluate("id => openLoadOptions(id, false, 'save')", model)
+        page.locator("#opt-layout").evaluate("el => el.closest('details').open = true")
+        page.select_option("#opt-layout", "qfirst")
+        page.locator("#optionsApply").click()
+        page.wait_for_function(
+            "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')"
+        )
+        assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"
+        ui.post("/api/load", {"id": model, "options": {"layout": "canonical"}})
+        ui.wait_model(model)
+        page.wait_for_function(
+            "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: canonical')",
+            timeout=30000,
+        )
+        assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "canonical"
+        page.screenshot(path="/tmp/basal-issue-19-calibration.png")
+        ui.unload(model)
+        page.wait_for_function(
+            "() => document.querySelector('#calibrationFiles').textContent.includes('Fit layout: qfirst')",
+            timeout=30000,
+        )
+        assert ui.get("/api/calibrations", params={"id": model})["shipped"]["context"]["layout"] == "qfirst"
+    finally:
+        try:
+            ui.unload(model)
+            ui.put("/api/models/options", {"id": model, "options": saved})
+            if active:
+                ui.post("/api/load", {"id": model, "options": active["options"], "media": active["media_requested"]})
+                restored = ui.wait_model(model)
+                assert restored and restored["state"] == "ready", restored
+        finally:
+            # Preserve the session's original auto-load ordering and entries for other models.
+            with patch.dict(os.environ, {"BASAL_UI_CONFIG": str(ui.settings)}):
+
+                @settings._locked
+                def restore_remembered():
+                    current = settings.load()
+                    if "last_models" in original:
+                        current["last_models"] = original["last_models"]
+                    else:
+                        current.pop("last_models", None)
+                    settings.save(current)
+
+                restore_remembered()
 
 
 def test_calibration_error_and_mismatch_states_keep_focus(page):
@@ -286,3 +320,127 @@ def test_calibration_error_and_mismatch_states_keep_focus(page):
     assert page.locator('input[name="calibrationUse"]').count() == 1
     assert radio.evaluate("el => document.activeElement === el")
     page.screenshot(path="/tmp/basal-issue19-ui-synthetic-error.png")
+
+
+def test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_model):
+    model = text_model["id"]
+    if ui.model(model):
+        pytest.skip("model must be unloaded to test an unavailable Saved snapshot")
+    original = json.loads(ui.settings.read_text()) if ui.settings.exists() else {}
+    saved = original.get("load_options", {}).get(model, {})
+    directory = ui.settings.parent / "calibrations" / model.replace("/", "--")
+    directory.mkdir(parents=True, exist_ok=True)
+    source = directory / "test-unavailable-snapshot.json"
+    rows = source.with_suffix(".rows.jsonl")
+    assert not source.exists() and not rows.exists()
+    fitted = {
+        "temperature_per_prim": {"choice": 1},
+        "fitted_on": {"model": model, "revision": "original", "layout": "qfirst"},
+    }
+    header = {
+        "basal_calibrate_rows": 1,
+        "fmt": 2,
+        "kind": "mlx",
+        "quant": None,
+        "model": model,
+        "engine": "mlx",
+        "data": "test.jsonl",
+        "requests": 1,
+        "baseline": None,
+        "orders": 1,
+    }
+    row = {
+        "line": 1,
+        "req": 0,
+        "name": "q",
+        "prim": "choice",
+        "gold": 0,
+        "keys": ["0", "1"],
+        "group": "1",
+        "family": "q",
+        "p": [0.99, 0.01],
+    }
+    source.write_text(json.dumps(fitted))
+    rows.write_text(json.dumps(header) + "\n" + json.dumps(row) + "\n")
+    result_path = None
+    job_started = False
+    try:
+        ui.put("/api/models/options", {"id": model, "options": {"revision": "issue19-unavailable-revision"}})
+        listing = ui.get("/api/calibrations", params={"id": model})
+        assert listing["shipped"] is None
+        test_pages.manager_tab(page, "calibration")
+        page.wait_for_function("id => modelData.some(m => m.id === id)", arg=model)
+        page.evaluate(
+            """id => {
+          const model = modelData.find(m => m.id === id);
+          model.downloaded = false; model.has_calibration_rows = true;
+          calibrationSignature = ''; renderCalibrationModels();
+        }""",
+            model,
+        )
+        page.select_option("#calibrationModel", model)
+        button = page.locator(f'[data-refit="{rows}"]')
+        button.wait_for()
+        assert button.is_enabled()
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/calibrate") and response.request.method == "POST"
+        ) as started:
+            button.click()
+        assert started.value.status == 202
+        job_started = True
+        job = ui.wait_job("calibrate")
+        assert job["phase"] == "done_with_warnings", job
+        result_path = Path(job["result"]["file"])
+        metadata = json.loads(result_path.read_text())["fitted_on"]
+        assert (metadata["model"], metadata["revision"], metadata["layout"]) == (model, "original", "qfirst")
+        assert ui.model(model) is None
+    finally:
+        if job_started and result_path is None:
+            job = ui.status()["jobs"].get("calibrate")
+            if job and job["running"]:
+                ui.delete("/api/calibrate")
+                job = ui.wait_job("calibrate")
+            if job and (job.get("result") or {}).get("file"):
+                result_path = Path(job["result"]["file"])
+        ui.put("/api/models/options", {"id": model, "options": saved})
+        source.unlink(missing_ok=True)
+        rows.unlink(missing_ok=True)
+        if result_path:
+            result_path.unlink(missing_ok=True)
+            result_path.with_suffix(".report.txt").unlink(missing_ok=True)
+
+
+def test_calibration_transition_restores_session_on_failure(page, ui, text_model, monkeypatch):
+    model = text_model["id"]
+    if ui.model(model):
+        pytest.skip("model must be unloaded for this restoration check")
+    before = json.loads(ui.settings.read_text()) if ui.settings.exists() else {}
+
+    def fail_after_change(*args):
+        raise AssertionError("injected failure")
+
+    try:
+        active = ui.load(model, {"layout": "canonical"})
+        remembered = json.loads(ui.settings.read_text()).get("last_models")
+        monkeypatch.setattr(test_pages, "manager_tab", fail_after_change)
+        with pytest.raises(AssertionError, match="injected failure"):
+            test_calibration_tracks_real_saved_and_active_layout(page, ui, text_model)
+        after = json.loads(ui.settings.read_text())
+        assert after.get("last_models") == remembered
+        assert after.get("load_options", {}).get(model, {}) == before.get("load_options", {}).get(model, {})
+        restored = ui.model(model)
+        assert restored["state"] == "ready" and restored["options"] == active["options"]
+    finally:
+        ui.unload(model)
+        with patch.dict(os.environ, {"BASAL_UI_CONFIG": str(ui.settings)}):
+
+            @settings._locked
+            def restore_remembered():
+                current = settings.load()
+                if "last_models" in before:
+                    current["last_models"] = before["last_models"]
+                else:
+                    current.pop("last_models", None)
+                settings.save(current)
+
+            restore_remembered()

@@ -862,6 +862,7 @@ const PL = {
   "Active load settings": "Aktywne ustawienia ładowania",
   "Saved load settings": "Zapisane ustawienia ładowania",
   "Shipped calibration": "Kalibracja dołączona do modelu",
+  "code:calibration_rows_baseline_unavailable": "Nie można porównać z kalibracją bazową zapisanych wierszy.",
   "code:calibration_rows_layout_unknown": "Nie można ustalić układu zapisanych wierszy na podstawie oryginalnej kalibracji.",
   "Cannot determine saved rows layout": "Nie można ustalić układu zapisanych wierszy",
   "Fit layout": "Układ dopasowania",

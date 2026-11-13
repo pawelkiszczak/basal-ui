@@ -1522,7 +1522,7 @@ document.body.append($('#reportDialog'));  // a modal inside a hidden view would
 $('#reportClose').onclick=()=>$('#reportDialog').close();
 let calibrationRunning=false, calibrationBlocked=true, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0, lastCalibrationStatus='';
 function renderCalibrationModels() {
-  const select=$('#calibrationModel'), current=select.value||localStorage.getItem('basal-ui.calibrationModel')||'', rows=modelData.filter(m=>m.downloaded);
+  const select=$('#calibrationModel'), current=select.value||localStorage.getItem('basal-ui.calibrationModel')||'', rows=modelData.filter(m=>m.downloaded||m.has_calibration_rows);
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature!==calibrationSignature){
     calibrationSignature=signature;

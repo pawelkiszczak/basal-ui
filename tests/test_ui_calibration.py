@@ -491,7 +491,11 @@ def test_from_rows_report_only_skips_child_and_memory_reservation(tmp_path, monk
         assert response.status_code == 202
         job = wait_job(client)
     assert job["phase"] == "done", job["error"]
-    assert job["result"] == {"file": None, "report": "rows report", "report_only": True}
+    assert job["result"] == {
+        "file": None,
+        "report": "warning: saved rows have no recorded baseline; shipped comparison is unavailable\nrows report",
+        "report_only": True,
+    }
     assert "--from-rows" in calls[0] and "--report-only" in calls[0]
     assert not fleet.temporary and not fleet.reserved
 
@@ -611,7 +615,8 @@ def test_refit_preserves_the_layout_of_the_original_rows(tmp_path, monkeypatch, 
             client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True}).status_code == 202
         )
         job = wait_job(client)
-        assert job["phase"] == "done", job["error"]
+        assert job["phase"] == "done_with_warnings", job["error"]
+        assert "shipped comparison is unavailable" in job["result"]["report"]
         assert json.loads(Path(job["result"]["file"]).read_text())["fitted_on"]["layout"] == "qfirst"
 
 
@@ -704,3 +709,115 @@ def test_active_snapshot_survives_cache_ref_change(tmp_path, monkeypatch, config
         assert (
             client.get("/api/calibrations", params={"id": "mini"}).json()["shipped"]["context"]["layout"] == "canonical"
         )
+
+
+def test_missing_model_snapshot_refits_saved_rows_without_engine_or_reservation(tmp_path, monkeypatch):
+    fleet, app = make_app(tmp_path)
+    directory = settings.calibrations_dir("mini")
+    directory.mkdir(parents=True)
+    original = directory / "original.json"
+    original.write_text(
+        json.dumps({**FITTED, "fitted_on": {"model": "org/model", "revision": "abc", "layout": "qfirst"}})
+    )
+    rows = original.with_suffix(".rows.jsonl")
+    header = {
+        "basal_calibrate_rows": 1,
+        "fmt": 2,
+        "kind": "mlx",
+        "quant": None,
+        "model": "org/model",
+        "engine": "mlx",
+        "data": "input.jsonl",
+        "requests": 1,
+        "baseline": None,
+        "orders": 1,
+    }
+    row = {
+        "line": 1,
+        "req": 0,
+        "name": "q",
+        "prim": "choice",
+        "gold": 0,
+        "keys": ["0", "1"],
+        "group": "1",
+        "family": "q",
+        "p": [0.99, 0.01],
+    }
+    rows.write_text(json.dumps(header) + "\n" + json.dumps(row) + "\n")
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: None)
+    monkeypatch.setattr(catalog, "downloaded_bytes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fleet, "reserve", lambda *args: pytest.fail("refit reserved memory"))
+    monkeypatch.setattr(fleet, "check_budget", lambda *args: pytest.fail("refit checked memory"))
+    monkeypatch.setattr(fleet, "start_temporary", lambda *args, **kwargs: pytest.fail("refit started a model"))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        model = client.get("/api/models").json()["models"][0]
+        assert not model["downloaded"] and model["has_calibration_rows"]
+        listing = client.get("/api/calibrations", params={"id": "mini"}).json()
+        assert listing["shipped"] is None and listing["files"][0]["layout"] == "qfirst"
+        response = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert response.status_code == 202
+        job = wait_job(client)
+        assert job["phase"] == "done_with_warnings", job
+        fitted = json.loads(Path(job["result"]["file"]).read_text())["fitted_on"]
+        assert (fitted["layout"], fitted["model"], fitted["revision"]) == ("qfirst", "org/model", "abc")
+        assert "shipped comparison is unavailable" in job["result"]["report"]
+        monkeypatch.setattr(engine, "feature", lambda name: name != "calibrate_layout")
+        unsupported = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert unsupported.status_code == 400 and unsupported.json()["code"] == "calibration_layout_unsupported"
+
+
+def test_refit_rejects_unavailable_saved_baseline(tmp_path, monkeypatch):
+    _, app = make_app(tmp_path)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: None)
+    original = tmp_path / "fit.json"
+    original.write_text(json.dumps(FITTED))
+    rows = original.with_suffix(".rows.jsonl")
+    rows.write_text(json.dumps({"basal_calibrate_rows": 1, "baseline": str(tmp_path / "missing.json")}) + "\n")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        result = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert result.status_code == 400 and result.json()["code"] == "calibration_rows_baseline_unavailable"
+        baseline = tmp_path / "baseline.json"
+        baseline.write_text(json.dumps(FITTED))
+        original.write_text(json.dumps({**FITTED, "fitted_on": {"layout": "qfirst"}}))
+        rows.write_text(json.dumps({"basal_calibrate_rows": 1, "baseline": str(baseline)}) + "\n")
+        result = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert result.status_code == 400 and "different layouts" in result.json()["detail"]
+
+
+def test_in_process_setup_failure_releases_reservation(tmp_path, monkeypatch, config):
+    import basal.prompt
+
+    real_model_layout = basal.prompt.model_layout
+    calls = 0
+    freed = []
+
+    def fail_in_job(path):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("model metadata became unavailable")
+        return real_model_layout(path)
+
+    monkeypatch.setattr(basal.prompt, "model_layout", fail_in_job)
+    monkeypatch.setattr(calibration, "free_engine_memory", lambda: freed.append(True))
+    fleet, app = make_app(tmp_path, APPLE)
+    labelled = tmp_path / "task.jsonl"
+    labelled.write_text(json.dumps(TASK) + "\n")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        result = client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)})
+        assert result.status_code == 202
+        job = wait_job(client)
+        assert job["phase"] == "error" and "model metadata became unavailable" in job["error"]
+        assert freed == [True] and "calibrate" not in fleet.reserved
+        monkeypatch.setattr(basal.prompt, "model_layout", real_model_layout)
+
+        def fail_after_reservation(*args):
+            assert "calibrate" in fleet.reserved
+            raise RuntimeError("second job reached the Engine")
+
+        monkeypatch.setattr(calibration, "_basal_calibrate", fail_after_reservation)
+        result = client.post("/api/calibrate", json={"id": "mini", "input": str(labelled)})
+        assert result.status_code == 202
+        job = wait_job(client)
+        assert job["phase"] == "error" and "second job reached the Engine" in job["error"]
+        assert freed == [True, True] and "calibrate" not in fleet.reserved

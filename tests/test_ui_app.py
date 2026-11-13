@@ -501,7 +501,7 @@ HTTPServer(('127.0.0.1', int(__import__('sys').argv[1])), Handler).serve_forever
     monkeypatch.setattr(
         Runner,
         "_build_command",
-        lambda self, v, path, assessment, media, port, serve: [sys.executable, "-c", code, str(port)],
+        lambda self, v, path, assessment, media, port, serve, calibration: [sys.executable, "-c", code, str(port)],
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
