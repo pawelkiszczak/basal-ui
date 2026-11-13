@@ -65,11 +65,11 @@ def test_packed_batches_flags_and_validation():
     for mode in ("mlx", "mlx-q8"):
         chosen = options.validate({"mode": mode, "mlx_packed": True})
         options.check_combination(BF16, APPLE, chosen, "mlx")
-        assert options.args(chosen) == ["--mlx-packed"]
+        assert options.args(chosen, mode) == ["--mlx-packed"]
     for batches in ("compact", "default", "auto", "fine"):
         chosen = options.validate({"mode": "fast", "batches": batches, "state_cache_gb": 1.5})
         options.check_combination(BF16, CUDA, chosen, "fast")
-        parsed = parser().parse_args(options.args(chosen))
+        parsed = parser().parse_args(options.args(chosen, "fast"))
         assert parsed.batches == batches and parsed.state_cache_gb == 1.5
     with pytest.raises(ValueError, match="CUDA graph"):
         options.check_combination(BF16, CPU, options.validate({"batches": "fine"}), "eager")

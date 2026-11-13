@@ -46,7 +46,7 @@ APPLE = Hardware("apple", "Apple M4 Max", 64 * 1024**3, None, None, frozenset({"
 
 
 def test_defaults_emit_nothing_and_every_non_default_its_flag():
-    assert options.args({}) == [] and options.args(dict(options.DEFAULTS)) == []
+    assert options.args({}, "eager") == [] and options.args(dict(options.DEFAULTS), "eager") == []
     flags = options.args(
         {
             "mode": "fast",
@@ -72,7 +72,8 @@ def test_defaults_emit_nothing_and_every_non_default_its_flag():
             "think": True,
             "think_tokens": 512,
             "early_exit": "0.99",
-        }
+        },
+        "fast",
     )
     assert flags == [
         "--quant",
@@ -123,7 +124,7 @@ def test_defaults_emit_nothing_and_every_non_default_its_flag():
 
 
 def test_layout_is_passed_and_refused_with_the_caches():
-    assert options.args({"layout": "qfirst"}) == ["--layout", "qfirst"]
+    assert options.args({"layout": "qfirst"}, "eager") == ["--layout", "qfirst"]
     with pytest.raises(ValueError, match="layout"):
         options.validate({"layout": "statefirst"})
     for cache in ({"prefix_cache": True}, {"state_cache_gb": 1.0}):
@@ -211,7 +212,7 @@ def test_every_engine_switch_reaches_basal_serve_as_it_reads_it(tmp_path):
     chosen.update({k: v for k, v in engine_25.items() if "--" + k.replace("_", "-") in flags})
     if "--vllm-overlap" in flags:  # the engine 2.5 on/off switches (argparse keeps them as strings)
         switches = {"vllm_overlap": True, "state_cache_lock": True, "long_lane_gdn": True}
-        on_off = parser().parse_args(["--model", "m", *options.args(switches)])
+        on_off = parser().parse_args(["--model", "m", *options.args(switches, "fast")])
         assert {k: getattr(on_off, k) for k in switches} == {k: "on" for k in switches}
     if engine.feature("adapter"):
         ad = tmp_path / "ad"
@@ -219,9 +220,16 @@ def test_every_engine_switch_reaches_basal_serve_as_it_reads_it(tmp_path):
         (ad / "adapter_config.json").write_text('{"peft_type": "LORA", "r": 2, "lora_alpha": 4}', encoding="utf-8")
         (ad / "adapter_model.safetensors").write_bytes(b"")
         chosen["adapter"] = str(ad)
-    a = parser().parse_args(["--model", "m", "--ple-offload", "on", "--strict-calibration", *options.args(chosen)])
-    assert {k: getattr(a, k) for k in chosen} == chosen
-    assert options.args({"ple_offload": True, "strict_calibration": True}) == [
+    a = parser().parse_args(
+        ["--model", "m", "--ple-offload", "on", "--strict-calibration", *options.args(chosen, "fp8")]
+    )
+    inactive = {"nvfp4_amax", "nvfp4_scope"}
+    assert {k: getattr(a, k) for k in chosen if k not in inactive} == {
+        k: v for k, v in chosen.items() if k not in inactive
+    }
+    nvfp4 = parser().parse_args(["--model", "m", *options.args(chosen, "nvfp4")])
+    assert {k: getattr(nvfp4, k) for k in chosen if k in inactive} == {k: v for k, v in chosen.items() if k in inactive}
+    assert options.args({"ple_offload": True, "strict_calibration": True}, "eager") == [
         "--ple-offload",
         "on",
         "--strict-calibration",
@@ -248,12 +256,12 @@ def test_engine_25_load_options_follow_the_installed_serve_flags(monkeypatch):
     real = engine.serve_flags()
     if "--reread" in real:
         assert "reread" not in options.unavailable_options()
-        assert options.args({"reread": 0.9}) == ["--reread", "0.9"]
+        assert options.args({"reread": 0.9}, "eager") == ["--reread", "0.9"]
     monkeypatch.setattr(options, "serve_flags", lambda: real - {"--reread"})  # an engine that lacks the flag (2.4.1)
     assert options.unavailable_options()["reread"] == "needs basal engine 2.5.0 or newer"
     with pytest.raises(ValueError, match="load option reread: needs basal engine 2.5.0 or newer"):
         options.validate({"reread": 0.9})
-    assert options.args({"reread": None}) == []  # the default never needs the flag
+    assert options.args({"reread": None}, "eager") == []  # the default never needs the flag
     app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CPU)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         data = client.get("/api/models/options", params={"id": BF16.id}).json()
@@ -561,7 +569,9 @@ def test_pico_serves_with_mlx_from_its_bf16_weights_with_engine_2_5(monkeypatch,
 
 def test_thinking_needs_basal_2_0_4_5b_with_vllm_and_early_exit_needs_fast_exit():
     big = Variant("big", "Remek/basal-2.0-4.5B", "basal-2.0", "4.5B", "bf16", "bf16", None, 100, False)
-    assert options.args({"think": True, "think_tokens": 512, "early_exit": "0.99", "mode": "fast-exit"}) == [
+    assert options.args(
+        {"think": True, "think_tokens": 512, "early_exit": "0.99", "mode": "fast-exit"}, "fast-exit"
+    ) == [
         "--think",
         "auto",
         "--think-tokens",
@@ -632,7 +642,7 @@ def test_load_options_reach_the_command_are_remembered_and_reused_by_restart(tmp
 
 def test_revision_is_validated_but_never_emitted_as_a_serve_flag():
     assert options.validate({"revision": "refs/pr/4"})["revision"] == "refs/pr/4"
-    assert options.args({"revision": "abc123"}) == []
+    assert options.args({"revision": "abc123"}, "eager") == []
     with pytest.raises(ValueError, match="revision"):
         options.validate({"revision": "bad revision"})
     assert options.validate({"revision": ""})["revision"] is None  # a cleared field: the default branch
@@ -746,3 +756,80 @@ def test_oversized_graph_memory_refused_and_saved_value_recoverable(tmp_path, mo
         assert settings.load_options(BF16.id) == chosen
         assert client.put("/api/models/options", json={"id": BF16.id, "options": {}}).status_code == 200
         assert settings.load_options(BF16.id) == {}
+
+
+def test_inactive_quantization_is_preserved_but_not_sent_to_native(tmp_path, monkeypatch):
+    from basal import server
+
+    if "--nvfp4-amax" not in engine.serve_flags():
+        pytest.skip("installed Engine lacks quantization options")
+    commands, preflights = [], []
+    stale = str(tmp_path / "missing-amax.json")
+    active_file = tmp_path / "amax.json"
+    active_file.write_text('{"amax": {"layer": 1.0}}')
+
+    def native_preflight(native):
+        kind, default_quant, _ = server.MODES[native.mode]
+        quant = native.quant or default_quant
+        if native.fp8_scaling == "block" and quant != "fp8":
+            raise SystemExit("--fp8-scaling block needs --mode fp8")
+        if native.quant_load != "gpu" and (kind != "graph" or quant not in ("fp8", "nvfp4", "int8")):
+            raise SystemExit("--quant-load cpu needs a quantized CUDA graph")
+        server.nvfp4_args(native, None, quant)
+        preflights.append(native)
+
+    monkeypatch.setattr(server, "serve_options", native_preflight, raising=False)
+
+    def start(self, assessment, gen, *args, **kwargs):
+        commands.append(self._build_command(BF16, tmp_path, assessment, False, 1, settings.serve_settings()))
+        with self.lock:
+            self.state = "ready"
+
+    monkeypatch.setattr("basal_ui.fleet.Runner._start", start)
+    machine = dataclasses.replace(CUDA, cuda_capability=(10, 0))
+    fleet = Fleet(
+        models_dir_fn=lambda: tmp_path,
+        platform_fn=lambda: "cuda",
+        settings_mod=settings,
+        hardware_fn=lambda: machine,
+        stats=Stats(tmp_path / "s.json"),
+        history=History(tmp_path / "h.jsonl"),
+    )
+    app = create_app(
+        catalog_fn=lambda **_: ([BF16], "test"),
+        hardware_fn=lambda: machine,
+        fleet=fleet,
+        stats=fleet.stats,
+        history=fleet.history,
+    )
+    cases = [
+        ({"mode": "fast", "fp8_scaling": "block"}, "--fp8-scaling"),
+        ({"mode": "eager", "quant_load": "cpu"}, "--quant-load"),
+        ({"mode": "fast", "quant": "fp8", "nvfp4_amax": stale}, "--nvfp4-amax"),
+    ]
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for chosen, omitted in cases:
+            assert client.put("/api/models/options", json={"id": BF16.id, "options": chosen}).status_code == 200
+            assert (
+                client.put("/api/presets", json={"kind": "load", "name": "retained", "value": chosen}).status_code
+                == 200
+            )
+            assert client.get("/api/presets").json()["load"]["retained"] == chosen
+            before = len(commands)
+            assert client.post("/api/load", json={"id": BF16.id}).status_code == 202
+            wait_for(lambda before=before: len(commands) > before)
+            assert omitted not in commands[-1]
+            assert settings.load_options(BF16.id) == chosen
+            assert client.post("/api/unload", json={"id": BF16.id}).status_code == 200
+        assert len(preflights) >= len(cases)
+
+    fp8 = {"mode": "fast", "quant": "fp8", "fp8_scaling": "block", "quant_load": "cpu"}
+    parsed = server.parser().parse_args(["--model", "m", "--mode", "fast", *options.args(fp8, "fast")])
+    assert parsed.fp8_scaling == "block" and parsed.quant_load == "cpu"
+    nvfp4 = {"mode": "nvfp4", "nvfp4_amax": str(active_file), "nvfp4_scope": "mlp", "quant_load": "cpu"}
+    parsed = server.parser().parse_args(["--model", "m", "--mode", "nvfp4", *options.args(nvfp4, "nvfp4")])
+    assert server.nvfp4_args(parsed, None, "nvfp4")["nvfp4_scope"] == "mlp" and parsed.quant_load == "cpu"
+    real_flags = engine.serve_flags()
+    monkeypatch.setattr(options, "serve_flags", lambda: real_flags - {"--nvfp4-amax"})
+    with pytest.raises(ValueError, match="nvfp4_amax"):
+        options.args({"nvfp4_amax": stale}, "eager")

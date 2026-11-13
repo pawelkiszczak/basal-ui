@@ -318,10 +318,23 @@ def _value(v):
     return f"{v:g}" if isinstance(v, float) else str(v)
 
 
-def args(options: dict) -> list[str]:
+def args(options: dict, mode: str) -> list[str]:
     """basal-serve flags of the non-default options; the mode is applied by the runner (serve_args's --mode)."""
+    merged = validate(options)
+    kind, mode_quant, _ = MODES[mode]
+    quant = merged["quant"] or mode_quant
+    graph = kind in ("graph", "exit")
+    applicable = {
+        "fp8_scaling": graph and quant == "fp8",
+        "fp8_bf16_layers": graph and quant in ("fp8", "nvfp4", "int8"),
+        "quant_load": kind == "graph" and quant in ("fp8", "nvfp4", "int8"),
+        "nvfp4_amax": graph and quant == "nvfp4",
+        "nvfp4_scope": graph and quant == "nvfp4",
+    }
     flags = []
-    for key, value in non_default(validate(options)).items():
+    for key, value in non_default(merged).items():
+        if key in applicable and not applicable[key]:
+            continue
         flag = "--" + key.replace("_", "-")
         if key in ("mode", "revision"):
             continue
@@ -632,7 +645,7 @@ def check_combination(v, hw, options, default_mode, media=False):
     native = None
     if hasattr(server, "serve_options") or v.recurrent or options["long_lane_gdn"]:
         try:
-            native = server.parser().parse_args(["--model", v.repo, "--mode", mode, *args(options)])
+            native = server.parser().parse_args(["--model", v.repo, "--mode", mode, *args(options, mode)])
             if hasattr(server, "serve_options"):
                 server.serve_options(native)
             elif getattr(native, "long_lane_gdn", "off") == "on" and native.long_lane != "on":

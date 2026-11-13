@@ -1230,7 +1230,7 @@ def create_app(
         if in_process and not from_rows:
             engine_args = calibration.engine_flags(
                 catalog.serve_args(variant, local_dir, assessment.mode, platform=hw().platform)
-                + load_options.args(options)
+                + load_options.args(options, assessment.mode)
             )
         advanced["reserve"] = reserve
         try:
