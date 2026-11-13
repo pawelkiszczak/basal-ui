@@ -1436,13 +1436,28 @@ $('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
 <details class="manager-help"><summary>${t('How this measurement runs')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
+$('#benchmarkResults').insertAdjacentHTML('beforebegin',`<div class="bench-params"><div class="qf-row"><label for="identityDtype">${t('Identity gate dtype')}</label><select id="identityDtype"><option value="fp32">fp32</option><option value="bf16">bf16</option></select><button type="button" id="runIdentity">${t('Identity gate')}</button><button type="button" id="runOrderCheck">${t('Order check')}</button></div><p class="muted">${t('Identity gate uses Saved load settings, which can differ from Active load settings.')}</p><p class="muted" id="engineCheckReason" role="status"></p></div>`);
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
 $('#benchmarkSet').onchange=()=>{localStorage.setItem('basal-ui.benchmarkSet',$('#benchmarkSet').value);updateBenchmarkForm();};
 $('#benchmarkPath').oninput=()=>localStorage.setItem('basal-ui.benchmarkPath',$('#benchmarkPath').value);
 $('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels());};
-$('#benchmarkModel').onchange=()=>{updateBenchmarkForm();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+$('#benchmarkModel').onchange=()=>{updateBenchmarkForm();updateEngineCheckAvailability();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+async function updateEngineCheckAvailability() {
+  const id=$('#benchmarkModel').value;
+  if(!id){$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;return;}
+  try{
+    const d=await api(`/api/benchmark/availability?id=${encodeURIComponent(id)}`);
+    if(id!==$('#benchmarkModel').value)return;
+    $('#runIdentity').disabled=!d.identity.available||Boolean(statusCache?.jobs?.benchmark?.running); $('#runIdentity').title=d.identity.reason||'';
+    $('#runOrderCheck').disabled=!d.order_check.available||Boolean(statusCache?.jobs?.benchmark?.running); $('#runOrderCheck').title=d.order_check.reason||'';
+    $('#engineCheckReason').textContent=[!d.identity.available?`${t('Identity gate')}: ${ts(d.identity.reason,d.identity.reason_code,d.identity.reason_params)}`:'',!d.order_check.available?`${t('Order check')}: ${t(d.order_check.reason)}`:''].filter(Boolean).join(' · ');
+  }catch(error){$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;$('#engineCheckReason').textContent=error.message;}
+}
+$('#runIdentity').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#benchmarkModel').value,kind:'identity',dtype:$('#identityDtype').value})});toast(t('Identity gate started'));await refreshStatus();});
+$('#runOrderCheck').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#benchmarkModel').value,kind:'order_check'})});toast(t('Order check started'));await refreshStatus();});
+updateEngineCheckAvailability();
 let benchModelsSignature='', comparisonFor='';
 function updateBenchmarkForm() {
   const kind=$('#benchmarkKind').value;
@@ -1483,17 +1498,25 @@ function renderBenchmarkState(bench, ready) {
     benchModelsSignature=signature;
     select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
     if(ids.includes(current))select.value=current;
-    updateBenchmarkForm(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
+    updateBenchmarkForm(); updateEngineCheckAvailability(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
   }
   const running=Boolean(bench?.running);
+  if(running){$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;}
   $('#runBenchmark').disabled=running||!ids.length; $('#cancelBenchmark').hidden=!running;
   $('#benchmarkProgress').textContent=!bench?(ids.length?'':kind==='modes'?t('Download a model to compare its modes.'):t('Load a model to benchmark it.')):running?`${shortName(bench.model)} · ${bench.label} · ${ts(bench.phase,bench.phase_code,bench.phase_params)} ${bench.done}/${bench.total}`:bench.phase==='error'?`${t('Failed: {error}',{error:bench.error})}`:bench.phase==='cancelled'?t('Cancelled'):'';
-  if(benchRunning&&!running)loadStats();
+  if(benchRunning&&!running){loadStats();updateEngineCheckAvailability();}
   benchRunning=running;
 }
 function benchmarkRow(x) {
-  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
+  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set||''))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set||''))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
   if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}</td></tr>`;}
+  if(kind==='identity'){
+    const rows=x.rows||[];
+    const detail=rows.map(r=>`<tr><td>${esc(r.path)}</td><td>${r.gate==='pass'?t('Passed'):t('Failed')}</td><td>${Number(r.max_dp).toExponential(2)}</td></tr>`).join('');
+    const max=Math.max(...rows.map(r=>Number(r.max_dp))).toExponential(2);
+    return `<tr>${head}<td colspan="7"><details><summary><span class="badge ${x.pass?'fit-fits':'fit-tight'}">${x.pass?t('Passed'):t('Failed')}</span> · ${esc(x.dtype)} · ${esc(x.engine)} · ${t('max |Δp|')} ${max}</summary><table class="mini-table"><thead><tr><th>${t('Path')}</th><th>${t('Gate')}</th><th>${t('max |Δp|')}</th></tr></thead><tbody>${detail}</tbody></table></details></td></tr>`;
+  }
+  if(kind==='order_check')return `<tr>${head}<td colspan="7"><details><summary>${t('Order check')}</summary><pre>${esc(JSON.stringify(x.report,null,2))}</pre></details></td></tr>`;
   if(kind==='modes'){
     const f=(v,d=1)=>v==null||Number.isNaN(Number(v))?'—':Number(v).toFixed(d);
     const rows=(x.modes||[]).map(m=>m.error?`<tr><td>${esc(m.mode)}</td><td colspan="8"><span class="reason wide">${esc(m.error)}</span></td></tr>`:`<tr><td>${esc(m.mode)}</td><td>${f(m.lat1_ms)}</td><td>${f(m.lat2_ms)}</td><td>${f(m.lat2_p95_ms)}</td><td>${f(m.dec_s)}</td><td>${m.agree==null?`ref`:f(m.agree,3)}</td><td>${m.acc==null?'—':pct(m.acc)}</td><td>${f(m.load_s)}</td><td>${f(m.mem_gb,2)}</td></tr>`).join('');
@@ -1937,6 +1960,21 @@ function answerBest(a) {
   return a.type||null;
 }
 let batchRowsLoaded=0, batchRunning=false, batchResult=null;
+let batchPresetAvailable=false;
+async function loadBatchPresets() {
+  const select=$('#batchPreset'), lang=$('#batchLang'), reason=$('#batchPresetReason');
+  try {
+    const data=await api('/api/batch/presets');
+    batchPresetAvailable=data.available;
+    if(data.available)select.innerHTML=`<option value="">${t('None')}</option>`+data.presets.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    select.disabled=lang.disabled=!data.available;
+    reason.hidden=data.available;
+    if(!data.available)reason.textContent=t('Presets need Engine 2.5. Installed Engine: {version}',{version:data.reason?.match(/installed: ([^)]+)/)?.[1]||'unknown'});
+  } catch(error) {
+    batchPresetAvailable=false; select.disabled=lang.disabled=true; reason.hidden=false; reason.textContent=error.message;
+  }
+}
+loadBatchPresets();
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
 function renderBatchState(job, ready) {
@@ -1970,6 +2008,7 @@ $('#runBatch').onclick=()=>act(async()=>{
   const body={id:$('#batchModel').value,input:$('#batchInput').value.trim(),concurrency:Number($('#batchConcurrency').value)||16};
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
+  if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
   await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
   $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
   toast(t('Batch started')); await refreshStatus();

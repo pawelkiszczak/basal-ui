@@ -270,10 +270,12 @@ with their log and any report written before failure retained.
 
 **Batch** runs `basal-run` from the app: a loaded model, an input JSONL file (simple items or full `/v1/systemone`
 requests, [in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SERVING.md#inference-on-a-jsonl-file)), the output file (default `<stem>.answers.jsonl` next to it, e.g. `items.jsonl` → `items.answers.jsonl`), the
-concurrency and, for a `--mode fast-exit` model, an early-exit level. The progress, the summary (items, errors,
-seconds, items per second, server p50, accuracy over the items with `gold`) and the answers page by page are shown;
-**Download answers** saves the output file. Batch requests go straight to the model's basal-serve: they are not
-counted in the statistics or the history. One batch runs at a time; its log is **Logs → job:batch**.
+concurrency and, for a `--mode fast-exit` model, an early-exit level. On Engine 2.5, **Preset** adds the Engine's
+ready questions to state-only JSONL lines, and **Language** selects `auto` (detect from the state), `pl` or `en`.
+The progress, the summary (items, errors, seconds, items per second, server p50, accuracy over the items with `gold`)
+and the answers page by page are shown; **Download answers** saves the output file. Batch requests go straight to the
+model's basal-serve: they are not counted in the statistics or the history. One batch runs at a time; its log is
+**Logs → job:batch**. Engine 2.4.1 keeps these preset controls disabled with the installed-engine reason.
 
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
@@ -365,6 +367,12 @@ three other measurements, one at a time:
   loaded, measured (latency with one and both option orders, decisions per second, agreement with the first mode,
   accuracy, load time, memory) and freed in turn. Its memory is counted in the budget while it runs (twice the
   estimate with `eager-fp32`); a mode that fails is listed with its error.
+
+- **Identity gate**: `basal-bench --identity` for a downloaded model, in fp32 or bf16. It uses saved attention, merge,
+  lean, tree and Gemma attention settings when non-default; the fast mode must be available for this model and
+  machine. Results list each prefix-reuse path's gate and maximum probability delta.
+- **Order check** (Engine 2.5): `basal-bench --order-check` measures option-order flips and averaged readouts.
+  The result is available only when the installed Engine exposes the check.
 
 The last 20 results per model stay in the stats file and are shown side by side. Benchmark requests are not counted
 in the statistics or the history.
@@ -535,3 +543,5 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+
+Batch materializes preset-only rows in a private temporary input before running Native basal-run, because Engine 2.5 summarization expects full requests for named preset answers. The original file remains unchanged. Engine 2.8 resume and checkpoint integration is tracked in #70 and is not qualified here.

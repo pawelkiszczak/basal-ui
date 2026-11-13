@@ -973,15 +973,16 @@ def create_app(
 
     @app.post("/api/benchmark", status_code=202)
     def post_benchmark(body: dict = Body(...)):
-        """kind benchmark (the preset), loadtest, determinism (a loaded model) or modes (a downloaded model, loaded
-        in basal-ui's process mode by mode); one measurement at a time."""
-        from . import bench
+        """Run one model benchmark; Engine-tool checks also accept downloaded, unloaded models."""
+        from . import bench, engine
 
         model_id, kind = body.get("id"), body.get("kind", "benchmark")
-        if kind not in ("benchmark", "loadtest", "determinism", "modes"):
-            raise HTTPException(400, "kind must be benchmark, loadtest, determinism or modes")
+        if kind not in ("benchmark", "loadtest", "determinism", "modes", "identity", "order_check"):
+            raise HTTPException(400, "kind must be benchmark, loadtest, determinism, modes, identity or order_check")
         if kind == "modes":
             return start_modes(model_id, body)
+        if kind in ("identity", "order_check"):
+            return start_engine_check(model_id, kind, body, bench, engine)
         try:
             label, paths = bench.resolve_set(body.get("set", "bundled"))
         except ValueError as exc:
@@ -1007,6 +1008,93 @@ def create_app(
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    def start_engine_check(model_id, kind, body, bench, engine):
+        variant = find_variant(model_id)
+        local_dir = downloaded(variant)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        if kind == "order_check" and not engine.feature("order_check"):
+            raise HTTPException(400, "order check needs Engine 2.5")
+        if kind == "identity":
+            dtype = body.get("dtype")
+            if dtype not in ("fp32", "bf16"):
+                raise HTTPException(400, "dtype must be fp32 or bf16")
+            fast = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+            )
+            if options.get("quant") == "nvfp4" or variant.port == "NVFP4":
+                raise HTTPException(400, "Identity gate does not support NVFP4 on this Engine")
+            if not fast or not fast["available"]:
+                raise HTTPException(
+                    400, f"identity gate requires fast mode: {fast['reason'] if fast else 'unavailable'}"
+                )
+            job_fn, args = bench.identity_job, (dtype.replace("fp32", "float32").replace("bf16", "bfloat16"), options)
+            reservation = bench.comparison_memory(
+                ["eager-fp32"] if dtype == "fp32" else ["fast"], assessment.est_memory_bytes
+            )
+        else:
+            from basal.server import default_mode
+
+            default = default_mode(str(local_dir))
+            supported = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == default), None
+            )
+            if not supported or not supported["available"]:
+                raise HTTPException(400, "Order check cannot run the Engine default mode on this model and hardware")
+            job_fn, args, reservation = bench.order_check_job, (), 2 * (assessment.est_memory_bytes or 0)
+        try:
+            with fleet.lock:
+                fleet.reserve(kind, reservation)
+                try:
+                    return fleet.jobs.start(
+                        "benchmark", variant.id, f"{kind}: {variant.id}", job_fn, fleet, variant, local_dir, *args
+                    )
+                except Exception:
+                    fleet.release(kind)
+                    raise
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/benchmark/availability")
+    def benchmark_availability(id: str):
+        from . import engine
+
+        variant = find_variant(id)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        fast = next(
+            (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+        )
+        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        nvfp4 = options.get("quant") == "nvfp4" or variant.port == "NVFP4"
+        order_reason = None
+        if not engine.feature("order_check"):
+            order_reason = "needs Engine 2.5"
+        else:
+            from basal.server import default_mode
+
+            local_dir = downloaded(variant)
+            default = default_mode(str(local_dir))
+            mode = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == default), None
+            )
+            if not mode or not mode["available"]:
+                order_reason = "Order check cannot run the Engine default mode on this model and hardware"
+        return {
+            "identity": {
+                "available": bool(fast and fast["available"] and not nvfp4),
+                "reason": "Identity gate does not support NVFP4 on this Engine"
+                if nvfp4
+                else fast["reason"]
+                if fast
+                else "fast unavailable",
+                "reason_code": fast.get("reason_code") if fast and not nvfp4 else None,
+                "reason_params": fast.get("reason_params") if fast and not nvfp4 else None,
+            },
+            "order_check": {"available": order_reason is None, "reason": order_reason},
+        }
 
     def modes_context(variant):
         """(local dir, assessment, merged load options, the modes a comparison may run) of a downloaded variant."""
@@ -1372,16 +1460,61 @@ def create_app(
         """Return bounded, read-only facts about a path used by Batch."""
         from . import paths
 
+        preset = body.get("preset")
+        if preset not in (None, ""):
+            from . import engine
+
+            if not isinstance(preset, str):
+                raise HTTPException(400, "preset must be a string")
+            if not engine.feature("presets"):
+                raise HTTPException(400, "Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if preset not in names():
+                raise HTTPException(400, f"unknown preset {preset!r}")
+        else:
+            preset = None
         try:
-            return paths.check(body.get("path"), body.get("kind"))
+            return paths.check(body.get("path"), body.get("kind"), preset)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/batch/presets")
+    def get_batch_presets():
+        from . import engine
+
+        available = engine.feature("presets")
+        if not available:
+            return {
+                "available": False,
+                "presets": [],
+                "langs": [],
+                "reason": f"needs engine 2.5 (installed: {engine.status()['version']})",
+            }
+        from basal.presets import names
+
+        return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
 
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
         from . import batch
 
         model_id = body.get("id")
+        preset = body.get("preset")
+        lang = body.get("lang", "auto")
+        if preset is not None:
+            from . import engine
+
+            if not engine.feature("presets"):
+                raise HTTPException(400, "Batch presets need Engine 2.5")
+            from basal.presets import names
+
+            if not isinstance(preset, str) or preset not in names():
+                raise HTTPException(400, f"unknown preset {preset!r}")
+        if not isinstance(lang, str) or lang not in ("auto", "pl", "en"):
+            raise HTTPException(400, "lang must be one of auto, pl, en")
+        if lang != "auto" and preset is None:
+            raise HTTPException(400, "lang requires a preset")
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(
@@ -1397,12 +1530,20 @@ def create_app(
                 item = json.loads(line)
             except ValueError:
                 item = None
-            if not isinstance(item, dict) or not ("questions" in item or "options" in item):
+            is_state_only = (
+                preset
+                and isinstance(item, dict)
+                and "questions" not in item
+                and "question" not in item
+            )
+            if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
                 raise HTTPException(
                     400,
                     f"{source.name}: line {n} is neither a simple item (state, question, "
                     "options) nor a /v1/systemone request",
                 )
+            if is_state_only and not isinstance(item.get("state"), str):
+                raise HTTPException(400, f"{source.name}: line {n} state must be a string")
         if not lines:
             raise HTTPException(400, f"{source} has no lines")
         out = Path(body["output"]).expanduser() if body.get("output") else batch.default_output(source)
@@ -1440,6 +1581,8 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
+                preset,
+                lang,
             )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc

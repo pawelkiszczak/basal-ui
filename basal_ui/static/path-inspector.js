@@ -57,12 +57,17 @@
       }
       setMessage(kind,t('Checking path…'));
       try {
-        const data = await api('/api/paths/check',{method:'POST',body:JSON.stringify({path,kind})});
+        const data = await api('/api/paths/check',{method:'POST',body:JSON.stringify({path,kind,...(kind==='jsonl'&&$('#batchPreset').value?{preset:$('#batchPreset').value}:{})})});
         if(id===sequence.get(kind)&&input.value.trim()===path)show(kind,data);
       } catch(error) {
         if(id===sequence.get(kind)&&input.value.trim()===path)setMessage(kind,error.message,'path-warning');
       }
     };
+    ['#batchPreset','#batchLang'].forEach(selector=>$(selector).addEventListener('change',()=>{
+      const input=view.querySelector('#batchInput');
+      sequence.set('jsonl',sequence.get('jsonl')+1);
+      if(input.value.trim())check('jsonl',input);
+    }));
     fields.forEach(([kind,input])=>input.addEventListener('input',()=>{
       sequence.set(kind,sequence.get(kind)+1);
       setMessage(kind,t('Edit a path, then check again.'));
