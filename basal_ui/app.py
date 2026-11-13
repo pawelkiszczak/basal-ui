@@ -1675,8 +1675,9 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
-                *([runner, snapshot] if comparison else []),
-                runner_expected=runner if comparison else None,
+                runner,
+                snapshot,
+                runner_expected=runner,
             )
             started = True
             return result

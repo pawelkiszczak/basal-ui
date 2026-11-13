@@ -213,7 +213,6 @@ def run_batch(
 ) -> dict:
     """The batch job: basal-run in its own process (it writes the output file at the end); a cancel stops it."""
     try:
-        bound_runner = runner
         runner = runner or fleet.ready(model_id)
         path = snapshot_path or input_path
         total = sum(1 for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip())
@@ -222,7 +221,7 @@ def run_batch(
             comparison_proxy(
                 fleet, runner, model_id, source, "/api/schedules" if source == "schedule" else "/api/batch"
             )
-            if bound_runner
+            if source == "schedule" or (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison"
             else contextlib.nullcontext(runner.base_url)
         )
         with proxy as base_url:

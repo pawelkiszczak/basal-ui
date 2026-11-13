@@ -196,8 +196,30 @@ class Schedules:
             current = self.get(spec["id"])
             if current.get("paused") and current != spec:
                 self.pending.pop(spec["id"], None)
+            elif spec["id"] in self.pending:
+                scan = self.settings.schedule_state(spec["id"]).get("scan")
+                if isinstance(scan, dict) and scan.get("spec") == spec:
+                    self.pending[spec["id"]]["scan"] = scan
+                else:
+                    self.pending.pop(spec["id"], None)
         except KeyError:
             self.pending.pop(spec["id"], None)
+
+    def _settle_without_run(self, spec, matched):
+        def remove(state):
+            scan = state.get("scan")
+            if isinstance(scan, dict) and scan.get("spec") == spec and str(matched) in scan.get("items", []):
+                scan["items"].remove(str(matched))
+
+        if not self.settings.update_schedule_state(spec["id"], remove, expected_spec=spec):
+            self.pending.pop(spec["id"], None)
+            return False
+        scan = self.settings.schedule_state(spec["id"]).get("scan")
+        if not isinstance(scan, dict) or scan.get("spec") != spec:
+            self.pending.pop(spec["id"], None)
+            return False
+        self.pending[spec["id"]]["scan"] = scan
+        return True
 
     def _finish_active(self):
         if self.active is None:
@@ -363,6 +385,8 @@ class Schedules:
                         path = matched.resolve()
                         stat = path.stat()
                         if not path.is_file():
+                            if not self._settle_without_run(spec, matched):
+                                break
                             queue.pop(0)
                             continue
                     except (OSError, RuntimeError) as exc:
@@ -377,6 +401,7 @@ class Schedules:
                             "rows": 0,
                             "errors": 1,
                             "error": str(exc),
+                            "_matched": str(matched),
                         }
                         self._record(spec, row)
                         queue.pop(0)
@@ -386,6 +411,8 @@ class Schedules:
                         continue
                     signature = [stat.st_size, stat.st_mtime_ns]
                     if self.settings.schedule_state(sid).get("processed", {}).get(str(path)) == signature:
+                        if not self._settle_without_run(spec, matched):
+                            break
                         queue.pop(0)
                         continue
                     output = Path(spec["output_dir"]) / f"{matched.stem}.answers.jsonl"
@@ -401,6 +428,7 @@ class Schedules:
                         "mtime": signature[1],
                         "rows": 0,
                         "errors": 0,
+                        "_matched": str(matched),
                     }
                     if not spec["overwrite"] and output.exists():
                         self._record(spec, {**row, "skipped": "output exists"})

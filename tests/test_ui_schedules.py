@@ -358,6 +358,10 @@ def test_publication_recovers_checkpoint_after_restart(tmp_path, monkeypatch):
     source, output = tmp_path / "input.jsonl", tmp_path / "input.answers.jsonl"
     source.write_text(item())
     signature = source.stat()
+    settings.update_schedule_state(
+        "nightly",
+        lambda state: state.update(scan={"spec": spec, "at": 100, "forced": False, "items": [str(source), "next"]}),
+    )
     row = {
         "run_id": "published",
         "schedule": spec["id"],
@@ -370,6 +374,7 @@ def test_publication_recovers_checkpoint_after_restart(tmp_path, monkeypatch):
         "output": str(output),
         "rows": 1,
         "errors": 0,
+        "_matched": str(source),
     }
     temporary = tmp_path / ".basal-ui-schedule-recovery.jsonl"
     temporary.write_text("new answers")
@@ -380,6 +385,7 @@ def test_publication_recovers_checkpoint_after_restart(tmp_path, monkeypatch):
     settings.save(data)
     restarted = schedules.Schedules(settings, object(), None)
     assert settings.schedule_state("nightly")["processed"][str(source)] == [signature.st_size, signature.st_mtime_ns]
+    assert settings.schedule_state("nightly")["scan"]["items"] == ["next"]
     recovered = restarted.runs("nightly")["runs"][0]
     assert recovered["reason"] == "recovered after interruption" and recovered["duration"] is None
     schedules.Schedules(settings, object(), None)
@@ -984,6 +990,91 @@ def test_restart_preserves_accepted_order_and_excludes_later_arrival(client, chi
     assert [body["state"] for _, body in child.seen] == ["b", "c", "a"]
 
 
+def test_restart_does_not_readmit_settled_skip_when_output_disappears(client, child, tmp_path, monkeypatch):
+    import threading
+
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    for name in ("b", "c"):
+        (inputs / f"{name}.jsonl").write_text(item(name))
+    existing = outputs / "b.answers.jsonl"
+    existing.write_text("prior answers")
+    assert (
+        client.post("/api/schedules", json=definition(inputs, outputs, interval={"every_minutes": 60})).status_code
+        == 201
+    )
+    scheduler = client.app.state.schedules
+    entered, release = threading.Event(), threading.Event()
+    original = scheduler.fleet.decide_runner
+
+    def hold(*args, **kwargs):
+        entered.set()
+        assert release.wait(30)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler.fleet, "decide_runner", hold)
+    try:
+        assert scheduler.run_due(1000)["status"] == "started"
+        assert entered.wait(30)
+        assert settings.schedule_state("nightly")["scan"]["items"] == [str(inputs / "c.jsonl")]
+        assert str((inputs / "b.jsonl").resolve()) not in settings.schedule_state("nightly").get("processed", {})
+        existing.unlink()
+        assert client.delete("/api/batch").status_code == 200
+        release.set()
+        scheduler.active[2].thread.join(30)
+        assert not scheduler.active[2].thread.is_alive()
+    finally:
+        release.set()
+        monkeypatch.setattr(scheduler.fleet, "decide_runner", original)
+    scheduler.active = None  # simulate loss of the in-memory job during restart
+    restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
+    assert restarted.run_due(1100)["status"] == "started"
+    restarted.active[2].thread.join(30)
+    restarted.run_due(1101)
+    assert not existing.exists()
+    assert [body["state"] for _, body in child.seen][-1] == "c"
+    assert restarted.run_due(1102)["status"] == "no_new_files"
+    assert restarted.run_due(4600)["status"] == "started"
+    restarted.active[2].thread.join(30)
+    restarted.run_due(4601)
+    assert [body["state"] for _, body in child.seen][-2:] == ["c", "b"]
+
+
+def test_restart_does_not_readmit_changed_settled_symlink_before_remaining_queue(client, child, tmp_path):
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    target = tmp_path / "target.jsonl"
+    target.write_text(item("b"))
+    (inputs / "b.jsonl").symlink_to(target)
+    (inputs / "c.jsonl").write_text(item("c"))
+    assert (
+        client.post(
+            "/api/schedules", json=definition(inputs, outputs, interval={"every_minutes": 60}, overwrite=True)
+        ).status_code
+        == 201
+    )
+    scheduler = client.app.state.schedules
+    assert scheduler.run_due(1000)["status"] == "started"
+    scheduler.active[2].thread.join(30)
+    scheduler._finish_active()
+    assert settings.schedule_state("nightly")["scan"]["items"] == [str(inputs / "c.jsonl")]
+    target.write_text(item("changed b"))
+    restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
+    assert restarted.run_due(1100)["status"] == "started"
+    restarted.active[2].thread.join(30)
+    restarted.run_due(1101)
+    assert [body["state"] for _, body in child.seen] == ["b", "c"]
+    assert restarted.run_due(1102)["status"] == "no_new_files"
+    assert restarted.run_due(4600)["status"] == "started"
+    restarted.active[2].thread.join(30)
+    restarted.run_due(4601)
+    assert [body["state"] for _, body in child.seen] == ["b", "c", "changed b"]
+    assert (outputs / "b.answers.jsonl").is_file()
+    assert all("_matched" not in row for row in settings.schedule_history())
+
+
 def test_stalled_response_delivery_is_drained_after_inference(monkeypatch):
     import contextlib
     import queue
@@ -1059,12 +1150,18 @@ def test_cascade_batch_eligibility_at_both_routes(client, child, tmp_path, kind,
         scheduler.active[2].thread.join(30)
         scheduler.run_due(1001)
         assert len(child.seen) == 1
+        history = client.get("/api/history").json()
+        stats = client.get("/api/stats").json()
+        traffic = client.get("/api/traffic").json()["requests"]
         manual = client.post(
             "/api/batch", json={"id": "mini", "input": str(source), "output": str(tmp_path / "manual.jsonl")}
         )
         assert manual.status_code == 202
         scheduler.fleet.jobs.get("batch").thread.join(30)
         assert len(child.seen) == 2
+        assert client.get("/api/history").json() == history
+        assert client.get("/api/stats").json() == stats
+        assert client.get("/api/traffic").json()["requests"] == traffic
     else:
         assert result["status"] == "failed"
         assert (

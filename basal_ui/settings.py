@@ -657,6 +657,8 @@ def update_schedule_state(schedule_id: str, change, expected_spec=None) -> bool:
 
 @_locked
 def append_schedule_run(row: dict, spec: dict, checkpoint: bool = False) -> None:
+    row = dict(row)
+    matched = row.pop("_matched", None)
     if len((json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")) > 1024 * 1024:
         raise ValueError("schedule history record exceeds the rotation limit")
     current = schedule_history()
@@ -673,6 +675,9 @@ def append_schedule_run(row: dict, spec: dict, checkpoint: bool = False) -> None
     if live is not None and live.get("_token") == spec.get("_token"):
         states = data.setdefault("schedule_state", {})
         state = states.setdefault(spec["id"], {})
+        scan = state.get("scan")
+        if live == spec and isinstance(scan, dict) and scan.get("spec") == spec and matched in scan.get("items", []):
+            scan["items"].remove(matched)
         if checkpoint:
             state.setdefault("processed", {})[row["file"]] = [row["size"], row["mtime"]]
         if row.get("error") and live == spec:

@@ -72,6 +72,74 @@ def test_batch_answers_every_line_and_serves_the_rows_and_the_file(client, child
     download = client.get("/api/batch/download")
     assert download.status_code == 200 and len(download.text.splitlines()) == 3
     assert client.get("/api/stats").json()["models"] == {}  # not counted in the statistics
+    assert client.get("/api/history").json()["items"] == []
+    assert client.get("/api/traffic").json()["requests"] == 0
+
+
+@pytest.mark.parametrize("kind", ["native", "cascade"])
+def test_manual_batch_rejects_runner_replaced_after_validation(client, child, tmp_path, monkeypatch, kind):
+    source = tmp_path / "items.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+    fleet = client.app.state.schedules.fleet
+    checked = fleet.runners["mini"]
+    if kind == "cascade":
+        checked.models_entry = {"kind": "cascade", "early_exit": []}
+        checked.spec = {"kind": "escalate", "fallback": None}
+    replacement = Runner()
+    replacement.state, replacement.model, replacement.base_url = "ready", "mini", child.url
+    replacement.models_entry = {"kind": "cascade", "early_exit": []}
+    replacement.spec = {"kind": "blend", "fallback": None}
+    original = fleet.start_model_job
+
+    def replace(*args, **kwargs):
+        with fleet.lock:
+            fleet.runners["mini"] = replacement
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fleet, "start_model_job", replace)
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source)})
+    assert response.status_code == 409 and "model changed during job preparation" in response.text
+    assert child.seen == [] and fleet.jobs.get("batch") is None and not fleet.leases
+
+
+def test_manual_batch_executes_on_leased_runner_after_name_rebound(client, child, tmp_path, monkeypatch):
+    import threading
+
+    from basal_ui import batch
+
+    source = tmp_path / "items.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+    fleet = client.app.state.schedules.fleet
+    checked = fleet.runners["mini"]
+    replacement = Runner()
+    replacement.state, replacement.model, replacement.base_url = "ready", "mini", "http://127.0.0.1:1"
+    replacement.models_entry = {"early_exit": []}
+    entered, release = threading.Event(), threading.Event()
+    original = batch.run_batch
+
+    def hold(job, *args):
+        entered.set()
+        assert release.wait(30)
+        return original(job, *args)
+
+    monkeypatch.setattr(batch, "run_batch", hold)
+    try:
+        assert client.post("/api/batch", json={"id": "mini", "input": str(source)}).status_code == 202
+        assert entered.wait(30)
+        with fleet.lock:
+            fleet.runners["mini"] = replacement
+        release.set()
+        job = fleet.jobs.get("batch")
+        job.thread.join(30)
+        assert not job.thread.is_alive() and job.state()["phase"] == "done"
+        assert len(child.seen) == 1
+        assert client.get("/api/stats").json()["models"] == {}
+        assert client.get("/api/history").json()["items"] == []
+        assert client.get("/api/traffic").json()["requests"] == 0
+    finally:
+        release.set()
+        with fleet.lock:
+            fleet.runners["mini"] = checked
 
 
 def test_batch_refuses_output_that_resolves_to_input(client, tmp_path):
