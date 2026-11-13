@@ -502,7 +502,7 @@ class Fleet:
         self.retiring: dict[Runner, int | None] = {}  # unloaded runners whose child is still being terminated
         self._rss_cache = (0.0, {})
         self.idle_unloads = {}
-        self.idle_settings_generation = 0
+        self.idle_settings_generation = settings_mod.with_idle_unload_state(lambda _timeout, revision: revision)
         self.idle_settings_changed = 0.0
         self.idle_stop = threading.Event()
         self.idle_thread = None
@@ -710,6 +710,16 @@ class Fleet:
         if self.idle_thread is not None:
             self.idle_thread.join()
 
+    def refresh_idle_settings(self):
+        def observe(timeout, revision):
+            if revision != self.idle_settings_generation:
+                self.idle_settings_generation = revision
+                self.idle_settings_changed = time.monotonic()
+            return timeout, revision
+
+        with self.lock:
+            return self.settings_mod.with_idle_unload_state(observe)
+
     def unload_idle(self, now):
         with self.lock:
             candidates = list(self.runners.items())
@@ -717,10 +727,9 @@ class Fleet:
             if not isinstance(runner, Runner):
                 continue
             with self.lock, runner.lock:
-                timeout = self.settings_mod.memory_settings()["idle_unload_minutes"]
+                timeout, settings_generation = self.refresh_idle_settings()
                 if (
                     not timeout
-                    or timeout * 60 > sys.float_info.max
                     or self.idle_stop.is_set()
                     or self.stopping
                     or self.engine_addon_installing
@@ -735,7 +744,6 @@ class Fleet:
                 ):
                     continue
                 gen, url, last_used, expected_timeout = runner.gen, runner.base_url, runner.last_used, timeout
-                settings_generation = self.idle_settings_generation
             try:
                 response = httpx.get(url + "/health", timeout=0.5)
                 response.raise_for_status()
@@ -745,32 +753,52 @@ class Fleet:
             except (httpx.HTTPError, ValueError):
                 continue
             with self.lock, runner.lock:
-                timeout = self.settings_mod.memory_settings()["idle_unload_minutes"]
-                if (
-                    not timeout
-                    or timeout != expected_timeout
-                    or self.idle_stop.is_set()
-                    or self.stopping
-                    or self.engine_addon_installing
-                    or self.runners.get(model_id) is not runner
-                    or model_id in self.draining
-                    or self.leases.get(runner)
-                    or runner.gen != gen
-                    or self.idle_settings_generation != settings_generation
-                    or runner.state != "ready"
-                    or runner.last_used != last_used
-                    or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
-                    or type(health.get("running")) is not int
-                    or health["running"] != 0
-                    or type(health.get("queued")) is not int
-                    or health["queued"] != 0
+
+                def detach_if_current(
+                    timeout,
+                    revision,
+                    model_id=model_id,
+                    runner=runner,
+                    gen=gen,
+                    last_used=last_used,
+                    expected_timeout=expected_timeout,
+                    settings_generation=settings_generation,
+                    health=health,
                 ):
+                    if revision != self.idle_settings_generation:
+                        self.idle_settings_generation = revision
+                        self.idle_settings_changed = time.monotonic()
+                    if (
+                        not timeout
+                        or timeout != expected_timeout
+                        or self.idle_stop.is_set()
+                        or self.stopping
+                        or self.engine_addon_installing
+                        or self.runners.get(model_id) is not runner
+                        or model_id in self.draining
+                        or self.leases.get(runner)
+                        or runner.gen != gen
+                        or revision != settings_generation
+                        or runner.state != "ready"
+                        or runner.last_used != last_used
+                        or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
+                        or type(health.get("running")) is not int
+                        or health["running"] != 0
+                        or type(health.get("queued")) is not int
+                        or health["queued"] != 0
+                    ):
+                        return None
+                    message = f"unloaded after {timeout} idle minutes"
+                    runner.log.append(message)
+                    self.idle_unloads[model_id] = {"code": "idle_unload", "minutes": timeout, "at": time.time()}
+                    detached, proc = self._detach_runner(model_id, forget=False)
+                    self._prune_logs()
+                    return detached, proc, message
+
+                result = self.settings_mod.with_idle_unload_state(detach_if_current)
+                if result is None:
                     continue
-                message = f"unloaded after {timeout} idle minutes"
-                runner.log.append(message)
-                self.idle_unloads[model_id] = {"code": "idle_unload", "minutes": timeout, "at": time.time()}
-                detached, proc = self._detach_runner(model_id, forget=False)
-                self._prune_logs()
+                detached, proc, message = result
             self._finish_unload(model_id, detached, proc)
             self.event("info", f"{model_id}: {message}")
 

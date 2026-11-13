@@ -5,7 +5,7 @@
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
   "Unload idle models after minutes (empty = off)": "Wyładuj nieaktywne modele po minutach (puste = wyłączone)",
-  "Enter a whole number of minutes of at least 1, or leave empty to turn off.": "Wpisz liczbę całkowitą minut nie mniejszą niż 1 lub pozostaw puste, aby wyłączyć.",
+  "Enter whole minutes from 1 to 9,007,199,254,740,991, or leave empty to turn off.": "Wpisz całkowitą liczbę minut od 1 do 9 007 199 254 740 991 lub pozostaw puste, aby wyłączyć.",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",

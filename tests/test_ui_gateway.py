@@ -209,6 +209,7 @@ def test_mcp_tools_route_by_model_argument_or_the_first_loaded_model(fleet, monk
         pytest.skip("the installed engine's MCP tools take no model argument (2.4.1)")
     monkeypatch.setattr(gateway_module, "feature", lambda name: mcp_models if name == "mcp_models" else False)
     settings.update_memory({"idle_unload_minutes": 1})
+    fleet.refresh_idle_settings()
     runner = fleet.runners["a/one"]
     runner.base_url, runner.health_polling, runner.last_used = "http://localhost", True, time.monotonic() - 120
     headers = {"Accept": "application/json, text/event-stream", "Host": "127.0.0.1:8793"}

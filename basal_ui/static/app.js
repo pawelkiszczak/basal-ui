@@ -2123,7 +2123,7 @@ $('#saveMemory').onclick=async()=>{
   const bytesOf=input=>{const value=input.value.trim();if(value===input.dataset.shown&&input.dataset.bytes!==undefined)return input.dataset.bytes===''?null:Number(input.dataset.bytes);return value===''?null:Math.round(Number(value)*2**30);};
   try{
     const input=$('#idleUnload'), value=input.value.trim(), number=Number(value);
-    if(!input.validity.valid || (value && (!Number.isFinite(number) || !Number.isInteger(number)))) throw new Error(t('Enter a whole number of minutes of at least 1, or leave empty to turn off.'));
+    if(!input.validity.valid || (value && (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number<1))) throw new Error(t('Enter whole minutes from 1 to 9,007,199,254,740,991, or leave empty to turn off.'));
     await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0,idle_unload_minutes:value?number:null})});
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}

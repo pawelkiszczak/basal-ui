@@ -230,7 +230,7 @@ def test_memory_settings_validate_budget_and_reserve(tmp_path, monkeypatch):
         {"reserve_bytes": -1},
         {"reserve_bytes": 1.5},
         {"swap": 1},
-        *({"idle_unload_minutes": v} for v in (0, -1, 1.5, "1", True)),
+        *({"idle_unload_minutes": v} for v in (0, -1, 1.5, "1", True, 2**53, 10**309)),
     ):
         with pytest.raises(ValueError):
             settings.update_memory(patch)
@@ -241,6 +241,8 @@ def test_memory_settings_validate_budget_and_reserve(tmp_path, monkeypatch):
     }
     assert settings.update_memory({"budget_bytes": None})["budget_bytes"] is None
     assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0, "idle_unload_minutes": None}
+    settings.save({"memory": {"idle_unload_minutes": 2**53}})
+    assert settings.memory_settings()["idle_unload_minutes"] is None
 
 
 def test_cross_process_settings_updates_do_not_lose_keys(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@ import contextlib
 import math
 import os
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -1409,7 +1410,7 @@ def test_idle_unload_revalidates_activity_replacement_and_shutdown(tmp_path, mon
         assert fleet.runners["mini"] is replacement
 
 
-def test_idle_unload_long_job_and_large_timeout(tmp_path, monkeypatch, instant_start):
+def test_idle_unload_long_job_and_max_timeout(tmp_path, monkeypatch, instant_start):
     app, fleet = app_for(tmp_path, [MINI])
     entered, release = threading.Event(), threading.Event()
     monkeypatch.setattr(
@@ -1446,8 +1447,8 @@ def test_idle_unload_long_job_and_large_timeout(tmp_path, monkeypatch, instant_s
         assert not fleet.jobs.get("batch").thread.is_alive()
         fleet.unload_idle(runner.last_used + 59)
         assert "mini" in fleet.runners
-        assert client.put("/api/memory", json={"idle_unload_minutes": 10**309}).status_code == 200
-        fleet.unload_idle(sys.float_info.max)
+        assert client.put("/api/memory", json={"idle_unload_minutes": 2**53 - 1}).status_code == 200
+        fleet.unload_idle(time.monotonic() + 60)
         assert "mini" in fleet.runners
         assert fleet.idle_thread.is_alive()
 
@@ -1545,3 +1546,84 @@ def test_api_errors_and_forwarding_failure_reset_idle_countdown(tmp_path, monkey
                 assert response.status_code == status
                 fleet.unload_idle(runner.last_used + 59)
                 assert "mini" in fleet.runners
+
+
+def test_idle_timeout_safe_integer_api_round_trip_and_rejection(tmp_path):
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        maximum = 2**53 - 1
+        assert client.put("/api/memory", json={"idle_unload_minutes": maximum}).status_code == 200
+        assert client.put("/api/memory", json={"reserve_bytes": 0}).json()["settings"]["idle_unload_minutes"] == maximum
+        before = (tmp_path / "settings.json").read_bytes()
+        for value in (2**53, 10**309, -1, 0, 1.5, "1", True):
+            response = client.put("/api/memory", json={"idle_unload_minutes": value})
+            assert response.status_code == 400 and "idle_unload_minutes" in response.json()["detail"]
+            assert (tmp_path / "settings.json").read_bytes() == before
+        assert client.get("/api/memory").json()["settings"]["idle_unload_minutes"] == maximum
+
+
+def test_shared_idle_revision_restarts_countdown_and_invalidates_probe(tmp_path, monkeypatch, instant_start):
+    app_a, fleet_a = app_for(tmp_path, [MINI])
+    app_b, fleet_b = app_for(tmp_path, [MINI])
+    request = httpx.Request("GET", "http://localhost/health")
+    good = httpx.Response(200, json={"status": "ok", "running": 0, "queued": 0}, request=request)
+    with (
+        TestClient(app_a, base_url="http://127.0.0.1") as client_a,
+        TestClient(app_b, base_url="http://127.0.0.1") as client_b,
+    ):
+        client_b.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client_b).get("mini") == "ready")
+        runner = fleet_b.runners["mini"]
+        runner.base_url, runner.health_polling = "http://localhost", True
+        runner.last_used -= 600
+        assert client_a.put("/api/memory", json={"idle_unload_minutes": 2}).status_code == 200
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", lambda *args, **kwargs: good)
+        fleet_b.unload_idle(time.monotonic())
+        assert fleet_b.runners["mini"] is runner
+        changed = fleet_b.idle_settings_changed
+        revision = fleet_b.idle_settings_generation
+        assert revision == fleet_a.idle_settings_generation
+        assert client_a.put("/api/memory", json={"reserve_bytes": 0}).status_code == 200
+        assert client_a.put("/api/memory", json={"idle_unload_minutes": 2}).status_code == 200
+        fleet_b.refresh_idle_settings()
+        assert (fleet_b.idle_settings_generation, fleet_b.idle_settings_changed) == (revision, changed)
+
+        def change_and_revert(*args, **kwargs):
+            code = "from basal_ui import settings; settings.update_memory({'idle_unload_minutes': 3}); settings.update_memory({'idle_unload_minutes': 2})"
+            subprocess.run([sys.executable, "-c", code], check=True, timeout=15, env=os.environ.copy())
+            return good
+
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", change_and_revert)
+        fleet_b.unload_idle(changed + 120)
+        assert fleet_b.runners["mini"] is runner
+        assert fleet_b.idle_settings_generation == revision + 2
+        assert fleet_b.idle_settings_changed >= changed
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", lambda *args, **kwargs: good)
+        deadline = fleet_b.idle_settings_changed + 120
+        fleet_b.unload_idle(math.nextafter(deadline, -math.inf))
+        assert fleet_b.runners["mini"] is runner
+        fleet_b.unload_idle(deadline)
+        assert "mini" not in fleet_b.runners
+
+
+def test_gateway_start_failure_leaves_no_idle_timer(tmp_path):
+    class FailedGateway:
+        def start(self):
+            raise RuntimeError("gateway startup failed")
+
+    fleet = make_fleet(tmp_path)
+    app = create_app(
+        catalog_fn=lambda **_: ([], "test"),
+        hardware_fn=lambda: HW,
+        fleet=fleet,
+        stats=fleet.stats,
+        history=fleet.history,
+        gateway=FailedGateway(),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="gateway startup failed"), TestClient(app, base_url="http://127.0.0.1"):
+            pass
+        assert fleet.idle_thread is None
+    finally:
+        fleet.shutdown()
+        fleet.stats.close()
