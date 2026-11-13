@@ -1775,3 +1775,304 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_cascade_router_keyboard_focus_protocol_and_attribution(browser, isolated_ui, text_model, second_model):
+    """Real router, native models and browser controls; the fallback endpoint is a controlled local fixture."""
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import httpx
+
+    from tests.e2e.support import alive
+
+    if not feature("router"):
+        pytest.skip("the installed Engine has no router")
+    first, second = text_model["id"], second_model["id"]
+    isolated_ui.load(first)
+    memory = isolated_ui.status()["memory"]
+    second_assessment = next(model for model in isolated_ui.get("/api/models")["models"] if model["id"] == second)
+    estimate = second_assessment["est_memory_bytes"]
+    if estimate is not None and memory["committed_bytes"] + estimate > memory["budget_bytes"] - memory["reserve_bytes"]:
+        pytest.skip(
+            f"Cascade needs two models: {memory['committed_bytes']} committed + {estimate} estimated bytes exceeds "
+            f"the {memory['budget_bytes'] - memory['reserve_bytes']} byte memory budget after reserve"
+        )
+    isolated_ui.load(second)
+    received = []
+    send_logprobs = threading.Event()
+
+    class Fallback(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            received.append((self.path, self.headers.get("Authorization"), body.get("model")))
+            choice = {"message": {"content": '{"answer":"A"}'}}
+            if send_logprobs.is_set():
+                choice["logprobs"] = {
+                    "content": [
+                        {
+                            "token": '{"answer": "A"}',
+                            "logprob": -2.0,
+                            "top_logprobs": [{"token": '{"answer": "B"}', "logprob": -0.1}],
+                        }
+                    ]
+                }
+            result = json.dumps({"choices": [choice]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(result)))
+            self.end_headers()
+            self.wfile.write(result)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Fallback)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    page = context.new_page()
+    page.set_default_timeout(WAIT)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    router_pids = []
+    try:
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+        manager_tab(page, "library")
+        page.locator("#newCascade").focus()
+        page.keyboard.press("Enter")
+        page.locator("#cascadeName").fill("e2e-blend-keyboard")
+        page.locator("#cascadeFallback summary").focus()
+        page.keyboard.press("Enter")
+        page.locator("#cascadeFallbackUrl").fill("not-a-url")
+        page.locator("#cascadeFallbackBelow").fill("0")
+        kind = page.locator("#cascadeKind")
+        kind.focus()
+        page.keyboard.press("b")
+        sync_api.expect(kind).to_have_value("blend")
+        sync_api.expect(page.locator("#cascadeFallback")).to_be_hidden()
+        sync_api.expect(page.locator("#cascadeFallbackUnavailable")).to_be_visible()
+        assert page.locator("#cascadeFallback input:disabled").count() == 6
+        page.locator("#cascadeName").focus()
+        kind.focus()
+        page.keyboard.press("e")
+        sync_api.expect(kind).to_have_value("escalate")
+        assert page.locator("#cascadeFallbackUrl").input_value() == "not-a-url"
+        assert page.locator("#cascadeFallbackBelow").input_value() == "0"
+        assert page.locator("#cascadeFallback input:disabled").count() == 0
+        page.locator("#cascadeName").focus()
+        kind.focus()
+        page.keyboard.press("b")
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/cascades") and response.request.method == "POST"
+        ) as created:
+            page.locator("#cascadeForm button[type=submit]").focus()
+            page.keyboard.press("Enter")
+        assert created.value.status == 201 and created.value.request.post_data_json.get("fallback") is None
+        sync_api.expect(page.locator("#cascadeDialog")).to_be_hidden()
+        saved = next(row for row in isolated_ui.get("/api/cascades")["cascades"] if row["name"] == "e2e-blend-keyboard")
+        assert saved["kind"] == "blend" and saved["fallback"] is None
+        page.locator("#newCascade").focus()
+        page.keyboard.press("Enter")
+        page.locator("#cascadeName").fill("e2e-route")
+        sync_api.expect(page.locator("#cascadeFallback")).to_be_visible()
+        page.locator(".cascade-threshold input").first.fill("1")
+        page.locator("#cascadeForm button[type=submit]").focus()
+        page.keyboard.press("Enter")
+        sync_api.expect(page.locator("#cascadeDialog")).to_be_hidden()
+        action = page.locator('[data-cascade="e2e-route"]')
+        sync_api.expect(action).to_have_attribute("data-cascade-action", "start")
+
+        def focus_survives_poll(control):
+            control.focus()
+            original = control.element_handle()
+            for _ in range(2):
+                with page.expect_response(
+                    lambda response: response.url.endswith("/api/cascades") and response.request.method == "GET",
+                    timeout=15000,
+                ):
+                    pass
+                assert original.evaluate("node => node === document.activeElement && node.isConnected")
+
+        focus_survives_poll(action)
+        page.keyboard.press("Enter")
+        sync_api.expect(action).to_have_attribute("data-cascade-action", "stop", timeout=WAIT)
+        router_pids.append(isolated_ui.model("e2e-route")["pid"])
+        focus_survives_poll(action)
+        delete = page.locator('[data-cascade-delete="e2e-route"]')
+        focus_survives_poll(delete)
+
+        # The router's own health polls may lag its first health response.
+        deadline = time.monotonic() + 30
+        while True:
+            result = isolated_ui.decide("e2e-route", CHOICE)
+            if result["answers"]["dept"].get("answered_by") == "escalated":
+                break
+            assert time.monotonic() < deadline, result
+            time.sleep(0.2)
+        isolated_ui.delete("/api/stats")
+        isolated_ui.delete("/api/history")
+        view(page, "playground")
+        page.select_option("#playgroundModel", "e2e-route")
+        page.evaluate("request => setRequest(request)", CHOICE)
+        page.click("#sendButton")
+        sync_api.expect(page.locator("#results .safety")).to_contain_text("Cascade level 2", timeout=WAIT)
+        assert page.locator("#inspectDecision").count() == 0
+        assert isolated_ui.get("/api/stats")["models"]["e2e-route"]["requests"] == 1
+        history = isolated_ui.get("/api/history", params={"model": "e2e-route"})["items"]
+        assert len(history) == 1 and history[0]["model"] == "e2e-route" and history[0]["source"] == "playground"
+        traffic = isolated_ui.get("/api/traffic", params={"minutes": 15})
+        assert traffic["requests"] == 1 and traffic["endpoints"][0]["endpoint"] == "/api/decide"
+        page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
+        page.reload()
+        page.wait_for_function(
+            "() => (statusCache?.models || []).some(model => model.id === 'e2e-route' && model.state === 'ready')"
+        )
+        view(page, "playground")
+        page.select_option("#playgroundModel", "e2e-route")
+        page.evaluate("request => setRequest(request)", CHOICE)
+        page.click("#sendButton")
+        sync_api.expect(page.locator("#results .safety")).to_contain_text("Odpowiedział kolejny model", timeout=WAIT)
+        assert json.loads(page.locator("#rawResponse").text_content())["answers"]["dept"]["answered_by"] == "escalated"
+        assert page.locator("#inspectDecision").count() == 0
+
+        port = free_port()
+        mcp_available = isolated_ui.get("/api/serve")["mcp_available"] and feature("mcp_models")
+        isolated_ui.put(
+            "/api/serve",
+            {"enabled": True, "host": "127.0.0.1", "port": port, "require_key": False, "mcp": bool(mcp_available)},
+        )
+        isolated_ui.post("/api/serve/restart")
+        decisions = {
+            "model": "e2e-route",
+            "input": CHOICE["state"],
+            "questions": [
+                {
+                    "type": "choice",
+                    "name": "dept",
+                    "instructions": CHOICE["questions"]["dept"]["instructions"],
+                    "choices": [
+                        {"value": value, "description": description}
+                        for value, description in CHOICE["questions"]["dept"]["criteria"].items()
+                    ],
+                }
+            ],
+        }
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=120) as gateway:
+            native = gateway.post("/v1/systemone", json={"model": "e2e-route", **CHOICE})
+            assert native.status_code == 200 and native.json()["answers"]["dept"]["answered_by"] == "escalated"
+            if mcp_available:
+                rpc = gateway.post(
+                    "/mcp",
+                    headers={"Accept": "application/json, text/event-stream"},
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "decide",
+                            "arguments": {
+                                "model": "e2e-route",
+                                "state": CHOICE["state"],
+                                "type": "choice",
+                                "question": CHOICE["questions"]["dept"]["instructions"],
+                                "options": CHOICE["questions"]["dept"]["criteria"],
+                            },
+                        },
+                    },
+                )
+                assert (
+                    rpc.status_code == 200 and rpc.json()["result"]["structuredContent"]["answered_by"] == "escalated"
+                ), rpc.text
+                assert any(
+                    row["source"] == "mcp"
+                    for row in isolated_ui.get("/api/history", params={"model": "e2e-route"})["items"]
+                )
+            for path in ("/v1/decisions", "/decisions"):
+                response = gateway.post(path, json=decisions)
+                assert response.status_code == 200, response.text
+                answer = response.json()["answers"][0]
+                assert (
+                    answer["answered_by"] == "escalated" and answer["choice"] in CHOICE["questions"]["dept"]["criteria"]
+                )
+                assert sum(item["probability"] for item in answer["probabilities"]) == pytest.approx(1, abs=0.01)
+            refused = gateway.post("/decisions", json={**decisions, "questions": []})
+            assert refused.status_code == 400 and refused.json()["error"]["code"] == "INVALID_REQUEST"
+
+            levels = [{"model": first, "below": 1}, {"model": second}]
+            isolated_ui.post(
+                "/api/cascades",
+                {
+                    "name": "e2e-blend",
+                    "kind": "blend",
+                    "levels": [{"model": first}, {"model": second}],
+                    "weights": [1, 2],
+                },
+            )
+            isolated_ui.post("/api/cascades/e2e-blend/start")
+            router_pids.append(isolated_ui.model("e2e-blend")["pid"])
+            isolated_ui.post(
+                "/api/cascades",
+                {
+                    "name": "e2e-fallback",
+                    "kind": "escalate",
+                    "levels": levels,
+                    "fallback": {
+                        "url": f"http://127.0.0.1:{server.server_port}/v1",
+                        "model": "controlled",
+                        "below": 1,
+                        "key": "synthetic-secret",
+                    },
+                },
+            )
+            isolated_ui.post("/api/cascades/e2e-fallback/start")
+            router_pids.append(isolated_ui.model("e2e-fallback")["pid"])
+            for name, expected in (("e2e-blend", "calibrated"), ("e2e-fallback", "answered_by")):
+                deadline = time.monotonic() + 30
+                while True:
+                    response = gateway.post("/v1/decisions", json={**decisions, "model": name})
+                    assert response.status_code == 200, response.text
+                    answer = response.json()["answers"][0]
+                    if (expected == "calibrated" and answer.get("calibrated") is False) or answer.get(
+                        "answered_by"
+                    ) == "fallback":
+                        break
+                    assert time.monotonic() < deadline, answer
+                    time.sleep(0.2)
+                assert answer["calibrated"] is False
+                if name == "e2e-fallback":
+                    assert answer["probabilities"] is None and answer["confidence"] is None
+                    assert received[-1] == ("/v1/chat/completions", "Bearer synthetic-secret", "controlled")
+                    send_logprobs.set()
+                    for path in ("/v1/decisions", "/decisions"):
+                        response = gateway.post(path, json={**decisions, "model": name})
+                        assert response.status_code == 200, response.text
+                        conflict = response.json()["answers"][0]
+                        assert conflict["answered_by"] == "fallback" and conflict["calibrated"] is False
+                        assert conflict["choice"] == "cards"
+                        assert conflict["probabilities"][0]["probability"] < conflict["probabilities"][1]["probability"]
+
+        batch_file = isolated_ui.root / "cascade-input.jsonl"
+        batch_file.write_text(json.dumps(CHOICE) + "\n", encoding="utf-8")
+        isolated_ui.run_job("/api/batch", {"id": "e2e-route", "input": str(batch_file)}, "batch")
+        rows = isolated_ui.get("/api/batch/rows")["rows"]
+        assert len(rows) == 1 and rows[0]["answers"]["dept"]["answered_by"] == "escalated"
+        for name in ("e2e-blend", "e2e-fallback"):
+            assert isolated_ui.http.post("/api/batch", json={"id": name, "input": str(batch_file)}).status_code == 400
+
+        manager_tab(page, "library")
+        action.focus()
+        page.keyboard.press("Enter")
+        sync_api.expect(action).to_have_attribute("data-cascade-action", "start", timeout=WAIT)
+        isolated_ui.unload(first)
+        assert isolated_ui.model("e2e-blend") is None and isolated_ui.model("e2e-fallback") is None
+        assert all(not alive(pid) for pid in router_pids)
+        assert not errors, errors
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+        worker.join(5)
+        assert not worker.is_alive()

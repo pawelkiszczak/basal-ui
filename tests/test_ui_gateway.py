@@ -77,6 +77,18 @@ def test_model_is_required_and_must_be_loaded_in_both_error_envelopes(fleet):
     assert fleet.calls == []
 
 
+def test_models_endpoint_marks_cascade_kind(fleet):
+    runner = Runner()
+    runner.state, runner.model, runner.ready_at = "ready", "tri", 1700000000.0
+    runner.models_entry = {"name": "tri", "kind": "cascade", "levels": []}
+    fleet.runners["tri"] = runner
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.get("/v1/models")
+    cascade = next(item for item in response.json()["data"] if item["id"] == "tri")
+    assert cascade["kind"] == "cascade"
+    assert next(item for item in response.json()["models"] if item["name"] == "tri")["kind"] == "cascade"
+
+
 def test_gateway_rejects_untrusted_host_on_forwarding_routes(fleet):
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         response = client.post("/v1/systemone", json={"model": "a/one"}, headers={"Host": "evil.example"})
@@ -393,3 +405,148 @@ def test_port_in_use_is_reported_and_lan_url_is_used_for_all_interfaces(fleet, m
     assert gateway.status()["url"] == "http://192.0.2.10:8123"
     gateway.status()
     assert calls == [1]
+
+
+def test_cascade_gateway_protocols_and_missing_fallback_probabilities(tmp_path, monkeypatch):
+    from basal_ui import fleet as fleet_module
+    from basal_ui.fleet import CascadeRunner
+
+    fleet = Fleet(
+        lambda: tmp_path,
+        lambda: "cpu",
+        settings,
+        lambda: HW,
+        Stats(tmp_path / "stats.json"),
+        History(tmp_path / "history.jsonl"),
+    )
+    runner = CascadeRunner(
+        {"name": "route", "kind": "escalate", "levels": [{"model": "a"}, {"model": "b"}]}, settings, fleet.event
+    )
+    runner.state, runner.base_url = "ready", "http://router"
+    fleet.runners["route"] = runner
+    received = []
+
+    def router(request):
+        body = json.loads(request.content)
+        received.append((request.url.path, body))
+        if body["state"] == "error":
+            return httpx.Response(422, json={"error": "bad input", "code": "INVALID_REQUEST"})
+        state = body["state"]
+        fallback = state.startswith("fallback")
+        answer = {
+            "type": "choice",
+            "choice": "invoice",
+            "probabilities": None if fallback else {"invoice": 0.8, "receipt": 0.2},
+            "confidence": None if fallback else 0.8,
+            "answered_by": "fallback" if fallback else "escalated",
+            "calibrated": False,
+        }
+        if state in ("fallback_conflict", "native_conflict"):
+            answer.update(probabilities={"invoice": 0.1, "receipt": 0.9}, confidence=0.9)
+        if state == "fallback_boolean":
+            answer.update(choice="false", probabilities={"true": 0.9, "false": 0.1}, confidence=0.9)
+        if state in ("ordinary_missing", "fallback_missing"):
+            answer.pop("probabilities")
+        if state == "ordinary_null":
+            answer["probabilities"] = None
+        if state == "fallback_numeric_confidence":
+            answer["confidence"] = 0.8
+        if state == "fallback_calibrated":
+            answer["calibrated"] = True
+        if state == "fallback_unknown_choice":
+            answer["choice"] = "other"
+        return httpx.Response(200, json={"model": "a", "answers": {"kind": answer}, "usage": {"input_tokens": 7}})
+
+    transport = httpx.MockTransport(router)
+    real_async = httpx.AsyncClient
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", lambda **kw: real_async(transport=transport, **kw))
+    request = {
+        "model": "route",
+        "input": "normal",
+        "questions": [
+            {
+                "type": "choice",
+                "name": "kind",
+                "instructions": "Document kind?",
+                "choices": [{"value": "invoice"}, {"value": "receipt"}],
+            }
+        ],
+    }
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        native = client.post(
+            "/v1/systemone",
+            json={
+                "model": "route",
+                "state": "normal",
+                "questions": {"kind": {"type": "choice", "criteria": {"invoice": None, "receipt": None}}},
+            },
+        )
+        assert native.status_code == 200 and native.json()["answers"]["kind"]["probabilities"]["invoice"] == 0.8
+        for path in ("/v1/decisions", "/decisions"):
+            response = client.post(path, json=request)
+            assert response.status_code == 200
+            answer = response.json()["answers"][0]
+            assert answer["choice"] == "invoice" and answer["probabilities"][0]["probability"] == 0.8
+            assert answer["calibrated"] is False and answer["answered_by"] == "escalated"
+        for path in ("/v1/decisions", "/decisions"):
+            fallback = client.post(path, json={**request, "input": "fallback"})
+            assert fallback.status_code == 200
+            assert fallback.json()["answers"][0] == {
+                "type": "choice",
+                "name": "kind",
+                "choice": "invoice",
+                "probabilities": None,
+                "confidence": None,
+                "answered_by": "fallback",
+                "calibrated": False,
+            }
+        for path in ("/v1/decisions", "/decisions"):
+            conflict = client.post(path, json={**request, "input": "fallback_conflict"})
+            assert conflict.status_code == 200
+            answer = conflict.json()["answers"][0]
+            assert answer["choice"] == "invoice" and answer["probabilities"] == [
+                {"value": "invoice", "probability": 0.1},
+                {"value": "receipt", "probability": 0.9},
+            ]
+            assert answer["confidence"] == 0.9 and answer["calibrated"] is False
+            ordinary = client.post(path, json={**request, "input": "native_conflict"})
+            assert ordinary.status_code == 200 and ordinary.json()["answers"][0]["choice"] == "receipt"
+            for state in (
+                "ordinary_missing",
+                "ordinary_null",
+                "fallback_missing",
+                "fallback_numeric_confidence",
+                "fallback_calibrated",
+                "fallback_unknown_choice",
+            ):
+                malformed = client.post(path, json={**request, "input": state})
+                assert malformed.status_code == 502 and malformed.json()["error"]["code"] == "UPSTREAM_ERROR"
+        boolean_request = {
+            **request,
+            "input": "fallback_boolean",
+            "questions": [
+                {
+                    "type": "choice",
+                    "name": "kind",
+                    "instructions": "Choose",
+                    "choices": [{"value": True}, {"value": False}],
+                }
+            ],
+        }
+        boolean = client.post("/v1/decisions", json=boolean_request)
+        assert boolean.status_code == 200 and boolean.json()["answers"][0]["choice"] is False
+        assert boolean.json()["answers"][0]["probabilities"] == [
+            {"value": True, "probability": 0.9},
+            {"value": False, "probability": 0.1},
+        ]
+        error = client.post("/decisions", json={**request, "input": "error"})
+        assert error.status_code == 422 and error.json()["error"]["code"] == "INVALID_REQUEST"
+        count = len(received)
+        invalid = client.post("/v1/decisions", json={**request, "questions": []})
+        assert invalid.status_code == 400 and len(received) == count
+    assert all(path == "/v1/systemone" for path, _ in received)
+    with httpx.Client(transport=transport) as child:
+        monkeypatch.setattr(fleet_module.httpx, "post", child.post)
+        sync = fleet.decide("route", request, path="/v1/decisions", source="api")
+    assert sync.status_code == 200 and sync.json()["answers"][0]["choice"] == "invoice"
+    assert received[-1][0] == "/v1/systemone"

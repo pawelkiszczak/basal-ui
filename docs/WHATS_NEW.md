@@ -1,5 +1,7 @@
 # Unreleased
 
+
+- Define escalation and Blend Cascades over ready local models, with an optional private fallback endpoint.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)

@@ -106,7 +106,7 @@
     const old = selects.map(select => select.value), focused = selects.indexOf(document.activeElement);
     for (const [index, select] of selects.entries()) {
       if (select.dataset.modelSignature !== readySignature) {
-        select.innerHTML = ready.map(model => `<option value="${esc(model.id)}">${esc(model.id)}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
+        select.innerHTML = ready.map(model => `<option value="${esc(model.id)}">${esc(model.id)}${model.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
         select.dataset.modelSignature = readySignature;
       }
       const first = ready.some(model => model.id === old[0]) ? old[0] : ready.some(model => model.id === selectedModel) ? selectedModel : ready[0]?.id || '';
@@ -180,7 +180,7 @@
   function refreshModels(models) {
     mount();
     const nextReady = Array.isArray(models) ? models.filter(model => model?.id && model.state === 'ready') : [];
-    const signature = JSON.stringify(nextReady.map(model => [model.id, model.media || []]));
+    const signature = JSON.stringify(nextReady.map(model => [model.id, model.media || [], model.kind]));
     if (signature !== readySignature) {
       readySignature = signature;
       sequence++;
