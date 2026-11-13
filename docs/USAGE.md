@@ -222,7 +222,7 @@ marks the model in the catalog and on its loaded row). Each field shows only for
 With engine 2.5 the dialog also offers the second read of uncertain answers (`--reread`, `--reread-combine`,
 `--reread-max-tokens`, `--reread-image`) and K-order averaging (`--order-average`), the prepared start-up kernels
 (`--prepared auto`, `off` or a directory), compile scope and graph memory sizing (`--compile-scope`,
-`--graph-memory-gb`, whose value replaces the fixed graph-engine overhead in the fit estimate), the MLX forward and
+`--graph-memory-gb`, whose value replaces the fixed graph-engine overhead in the fit estimate for Native graph mode; fast-exit retains the fixed estimate), the MLX forward and
 compute (`--mlx-forward`, `--mlx-compute`), the FP8 / NVFP4 quantisation switches (`--fp8-scaling`,
 `--fp8-bf16-layers`, `--quant-load`, `--nvfp4-amax`, `--nvfp4-scope`), state-cache locking and precision
 (`--state-cache-lock`, `--state-cache-bits`), the long-request lane for Qwen3.5 models (`--long-lane-gdn` for supported recurrent-model scheduling),

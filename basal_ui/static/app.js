@@ -1699,9 +1699,9 @@ const OPTION_FIELDS={
   think_max_len:{label:'vLLM context',kind:'num',attrs:'min="512" step="512"',think:true},
   think_log:{label:'vLLM log file',kind:'text',placeholder:'basal-think-vllm.log',think:true},
   early_exit:{label:'Early exit (default policy)',kind:'select',values:['off','0.999','0.995','0.99','0.98']},
-  prepared:{label:'Prepared kernels',kind:'text',placeholder:'auto, off or a directory',modes:GRAPH_MODES},
-  compile_scope:{label:'Compile scope',kind:'select',values:['model','layer'],modes:GRAPH_MODES},
-  graph_memory_gb:{label:'Graph memory (GiB)',kind:'num',attrs:'min="0" step="any"',placeholder:'free memory at start-up',modes:GRAPH_MODES},
+  prepared:{label:'Prepared kernels',kind:'text',placeholder:'auto, off or a directory',compiledGraph:true},
+  compile_scope:{label:'Compile scope',kind:'select',values:['model','layer'],graphOnly:true,compiledOnly:true},
+  graph_memory_gb:{label:'Graph memory (GiB)',kind:'num',attrs:'min="0" step="any"',placeholder:'free memory at start-up',graphOnly:true},
   mlx_forward:{label:'MLX forward',kind:'select',values:['mlx-lm','basal'],modes:['mlx','mlx-q8']},
   mlx_compute:{label:'MLX compute',kind:'select',values:['auto','bf16'],modes:['mlx','mlx-q8']},
   order_average:{label:'Average K option orders',kind:'num',attrs:'min="2" step="1"',placeholder:'off'},
@@ -1709,8 +1709,8 @@ const OPTION_FIELDS={
   reread_combine:{label:'Reread combination',kind:'select',values:['mean','second']},
   reread_max_tokens:{label:'Reread requests up to (tokens)',kind:'num',attrs:'min="1" step="1"'},
   reread_image:{label:'Reread images at (soft tokens)',kind:'select',values:[[null,'off'],[70,'70'],[140,'140'],[280,'280'],[560,'560'],[1120,'1120']],numeric:true},
-  state_cache_lock:{label:'State cache under the launch lock',kind:'bool'},
-  state_cache_bits:{label:'State cache precision',kind:'select',values:[[16,'16-bit'],[8,'8-bit (about 1.7x more states)']],numeric:true},
+  state_cache_lock:{label:'State cache under the launch lock',kind:'bool',graphOnly:true},
+  state_cache_bits:{label:'State cache precision',kind:'select',values:[[16,'16-bit'],[8,'8-bit (about 1.7x more states)']],numeric:true,graphOnly:true},
   long_lane_gdn:{label:'Long-request lane on Qwen3.5 (opt-in)',kind:'bool'},
   rank_max_candidates:{label:'Rank candidates per request',kind:'num',attrs:'min="1" step="1"'},
   fp8_scaling:{label:'FP8 scaling',kind:'select',values:['auto','row','block'],quants:'fp8'},
@@ -1719,7 +1719,7 @@ const OPTION_FIELDS={
   nvfp4_amax:{label:'NVFP4 amax file',kind:'text',placeholder:'the model’s NVFP4_AMAX.json',quants:'nvfp4'},
   nvfp4_scope:{label:'NVFP4 scope',kind:'select',values:['all','mlp'],quants:'nvfp4'},
   vllm_overlap:{label:'Overlapping engine calls (opt-in)',kind:'bool',modes:['vllm']},
-  global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],modes:GRAPH_MODES},
+  global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],graphOnly:true},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
@@ -1750,7 +1750,7 @@ function renderOptionsForm(values) {
   // collapsible sections: Engine and any section with a non-default value open, unless the user toggled it this session
   const changed=keys=>keys.some(k=>JSON.stringify(values[k])!==JSON.stringify(d.defaults[k]));
   const isOpen=(title,keys)=>optionSectionOpen.get(title)??(title==='Engine'||changed(keys));
-  $('#optionsForm').innerHTML=OPTION_SECTIONS.map(([title,keys])=>`<details class="option-section" data-section="${esc(title)}"${isOpen(title,keys)?' open':''}><summary>${esc(t(title))}</summary>${title==='Engine'?modes:''}<div class="option-grid">${keys.map(k=>`<div class="opt-field" data-opt="${k}"${OPTION_FIELDS[k].modes?` data-modes="${OPTION_FIELDS[k].modes.join(' ')}"`:''}${OPTION_FIELDS[k].quants?` data-quants="${OPTION_FIELDS[k].quants}"`:''}>${optionInput(k,values[k])}${d.unavailable?.[k]?`<small class="option-unavailable">${esc(t(d.unavailable[k]))}</small>`:''}</div>`).join('')}</div>${title==='Experimental'?experimental:title==='Quantization'?`<p class="muted">${t('Inactive quantization settings remain saved and are not passed to the engine.')}</p>`:title==='Caching'?`<p class="muted">${t('State cache reuses the longest cached prefix of growing or edited states, then computes the changed suffix. Its GB budget consumes GPU memory alongside weights and graphs; reduce it if memory is tight. No cache-hit counters are reported.')}</p>`:title==='Kernels (CUDA graph engine)'?`<p class="muted">${t('auto uses compact rows where supported. default uses padded graphs; fine captures more shapes and takes longer to start. compact needs supported attention kernels and more GPU memory (about 6 GB extra on measured RTX 3090 runs). Unsupported combinations show the engine’s refusal in the model row and Logs.')}</p>`:title==='Engine'?'<p class="muted" id="optPackedNote"></p>':''}</details>`).join('');
+  $('#optionsForm').innerHTML=OPTION_SECTIONS.map(([title,keys])=>`<details class="option-section" data-section="${esc(title)}"${isOpen(title,keys)?' open':''}><summary>${esc(t(title))}</summary>${title==='Engine'?modes:''}<div class="option-grid">${keys.map(k=>`<div class="opt-field" data-opt="${k}"${OPTION_FIELDS[k].modes?` data-modes="${OPTION_FIELDS[k].modes.join(' ')}"`:''}${OPTION_FIELDS[k].quants?` data-quants="${OPTION_FIELDS[k].quants}"`:''}${OPTION_FIELDS[k].graphOnly?' data-graph-only':''}${OPTION_FIELDS[k].compiledGraph?' data-compiled-graph':''}${OPTION_FIELDS[k].compiledOnly?' data-compiled-only':''}>${optionInput(k,values[k])}${d.unavailable?.[k]?`<small class="option-unavailable">${esc(t(d.unavailable[k]))}</small>`:''}</div>`).join('')}</div>${title==='Experimental'?experimental:title==='Quantization'?`<p class="muted">${t('Inactive graph and quantization settings remain saved and are not passed to the engine.')}</p>`:title==='Caching'?`<p class="muted">${t('State cache reuses the longest cached prefix of growing or edited states, then computes the changed suffix. Its GB budget consumes GPU memory alongside weights and graphs; reduce it if memory is tight. No cache-hit counters are reported.')}</p>`:title==='Kernels (CUDA graph engine)'?`<p class="muted">${t('auto uses compact rows where supported. default uses padded graphs; fine captures more shapes and takes longer to start. compact needs supported attention kernels and more GPU memory (about 6 GB extra on measured RTX 3090 runs). Unsupported combinations show the engine’s refusal in the model row and Logs.')}</p>`:title==='Engine'?'<p class="muted" id="optPackedNote"></p>':''}</details>`).join('');
   $('#optionsForm').querySelectorAll('details.option-section > summary').forEach(s=>s.onclick=()=>optionSectionOpen.set(s.parentElement.dataset.section,!s.parentElement.open));  // a user's click (or Enter / Space), not the initial open
   $('#optionsForm').querySelectorAll('input[type=range]').forEach(r=>r.oninput=()=>{$(`#${r.id}-out`).textContent=`${r.value}%`;});
   $('#optionsForm').onchange=()=>updateOptionVisibility();
@@ -1766,8 +1766,11 @@ function updateOptionVisibility() {
   $('#optPackedNote').textContent=mode==='mps'?t('Packed PyTorch execution: choose Device cpu for the CPU path, or mps for Apple Silicon. The CPU default remains eager.'):packedReasonText||t('MLX packed is off by default. Measured on an Apple M5 Pro (basal 2.3.1, #36): basal-2.0-4.5B 134 → 88 ms per two-order decision, mini 47 → 31 ms, the same decisions as the KV-cache path in bf16 (mlx-q8 on the 4.5B: 0.955 instead of 0.977 agreement). Compatible Llama groups with prefix plus all suffixes up to 512 tokens use packed rows; longer groups keep the KV-cache path.');
   $('#opt-device option[value=cuda]').disabled=mode==='mps';
   $('#optionsForm').querySelectorAll('[data-modes]').forEach(x=>x.hidden=!optionsState.data.unavailable?.[x.dataset.opt]&&!x.dataset.modes.split(' ').includes(mode));
-  const quant=$('#opt-quant').value||mode;
-  $('#optionsForm').querySelectorAll('[data-quants]').forEach(x=>x.hidden=!optionsState.data.unavailable?.[x.dataset.opt]&&!(GRAPH_MODES.includes(mode)&&x.dataset.quants.split(' ').includes(quant)));
+  const modeInfo=optionModes().find(m=>m.mode===mode), graph=modeInfo?.kind==='graph', compiled=Boolean(modeInfo?.compiled), quant=$('#opt-quant').value||mode;
+  $('#optionsForm').querySelectorAll('[data-graph-only],[data-compiled-graph],[data-quants]').forEach(x=>{
+    const applicable=x.hasAttribute('data-compiled-graph')?(compiled&&(graph||modeInfo?.kind==='exit')):graph&&(!x.hasAttribute('data-compiled-only')||compiled)&&(!x.dataset.quants||x.dataset.quants.split(' ').includes(quant));
+    x.hidden=!optionsState.data.unavailable?.[x.dataset.opt]&&!applicable;
+  });
   // thinking: basal-2.0 4.5B with vLLM (here, in another environment, or a running server); early exit: fast-exit
   const thinkBox=$('#opt-think'), exitBox=$('#opt-early_exit');
   thinkBox.disabled=!think.model; if(!think.model)setChecked(thinkBox,false);
@@ -1794,7 +1797,7 @@ function collectOptions() {
     const el=$(`#opt-${key}`);
     if(!el)continue;
     if(optionsState.data.unavailable?.[key]){out[key]=f.kind==='bool'?el.checked:f.kind==='num'?(el.value===''?d.defaults[key]:Number(el.value)):f.kind==='select'?(el.value===''?null:(f.numeric?Number(el.value):el.value)):(el.value.trim()||d.defaults[key]);continue;}
-    if((el.closest('[hidden]')&&!f.quants)||el.disabled)continue;
+    if((el.closest('[hidden]')&&!f.quants&&!f.graphOnly&&!f.compiledGraph)||el.disabled)continue;
     if(f.kind==='bool')out[key]=el.checked;
     else if(f.kind==='percent')out[key]=Number(el.value)===Math.round(d.defaults[key]*100)?d.defaults[key]:Number(el.value)/100;
     else if(f.kind==='num')out[key]=el.value===''?d.defaults[key]:Number(el.value);

@@ -458,6 +458,12 @@ def _fit(est: int | None, budget: int | None) -> str:
     return "too_large"
 
 
+def is_graph_backend(mode):
+    from basal.server import MODES
+
+    return MODES.get(mode, (None,))[0] == "graph"
+
+
 def graph_memory_bytes(value):
     """Convert graph GiB to bytes without overflowing the floating-point estimate."""
     if value > sys.float_info.max / GIB:
@@ -473,7 +479,7 @@ def assess(v: Variant, hw: Hardware, options: dict | None = None) -> Assessment:
     overhead = GIB
     effective_mode = (options or {}).get("mode") or mode
     if effective_mode in GRAPH_ENGINE_MODES:
-        graph_memory = (options or {}).get("graph_memory_gb")  # --graph-memory-gb replaces the 4 GiB estimate
+        graph_memory = (options or {}).get("graph_memory_gb") if is_graph_backend(effective_mode) else None
         overhead = graph_memory_bytes(graph_memory) if graph_memory else GRAPH_ENGINE_OVERHEAD
     est = int(v.weights_bytes * 1.2) + overhead if v.weights_bytes is not None else None  # weights + runtime + KV cache
     fit = _fit(est, hw.memory_bytes) if hw.memory_bytes else "unknown"

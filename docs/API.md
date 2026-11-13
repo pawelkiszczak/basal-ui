@@ -450,4 +450,4 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 
 ### Load option availability
 
-`GET /api/models/options?id=...` returns `unavailable`, a map of option keys to reasons when the installed Engine lacks support. Saved values remain visible; submitting an unavailable non-default value is refused. `PUT /api/models/options` saves validated non-default values. Existing load presets and their import/export carry these option values.
+`GET /api/models/options?id=...` includes Native `kind` and `compiled` on mode rows, and returns `unavailable`, a map of option keys to reasons when the installed Engine lacks support. Saved values remain visible; submitting an unavailable non-default value is refused. `PUT /api/models/options` saves validated non-default values. Existing load presets and their import/export carry these option values.

@@ -4,7 +4,7 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
-  "Inactive quantization settings remain saved and are not passed to the engine.": "Nieaktywne ustawienia kwantyzacji pozostają zapisane i nie są przekazywane do silnika.",
+  "Inactive graph and quantization settings remain saved and are not passed to the engine.": "Nieaktywne ustawienia grafu i kwantyzacji pozostają zapisane i nie są przekazywane do silnika.",
   "mean": "średnia",
   "second": "drugi odczyt",
   "off": "wyłączone",

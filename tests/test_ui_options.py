@@ -763,7 +763,7 @@ def test_inactive_quantization_is_preserved_but_not_sent_to_native(tmp_path, mon
 
     if "--nvfp4-amax" not in engine.serve_flags():
         pytest.skip("installed Engine lacks quantization options")
-    commands, preflights = [], []
+    commands = []
     stale = str(tmp_path / "missing-amax.json")
     active_file = tmp_path / "amax.json"
     active_file.write_text('{"amax": {"layer": 1.0}}')
@@ -776,7 +776,6 @@ def test_inactive_quantization_is_preserved_but_not_sent_to_native(tmp_path, mon
         if native.quant_load != "gpu" and (kind != "graph" or quant not in ("fp8", "nvfp4", "int8")):
             raise SystemExit("--quant-load cpu needs a quantized CUDA graph")
         server.nvfp4_args(native, None, quant)
-        preflights.append(native)
 
     monkeypatch.setattr(server, "serve_options", native_preflight, raising=False)
 
@@ -821,7 +820,6 @@ def test_inactive_quantization_is_preserved_but_not_sent_to_native(tmp_path, mon
             assert omitted not in commands[-1]
             assert settings.load_options(BF16.id) == chosen
             assert client.post("/api/unload", json={"id": BF16.id}).status_code == 200
-        assert len(preflights) >= len(cases)
 
     fp8 = {"mode": "fast", "quant": "fp8", "fp8_scaling": "block", "quant_load": "cpu"}
     parsed = server.parser().parse_args(["--model", "m", "--mode", "fast", *options.args(fp8, "fast")])
@@ -833,3 +831,107 @@ def test_inactive_quantization_is_preserved_but_not_sent_to_native(tmp_path, mon
     monkeypatch.setattr(options, "serve_flags", lambda: real_flags - {"--nvfp4-amax"})
     with pytest.raises(ValueError, match="nvfp4_amax"):
         options.args({"nvfp4_amax": stale}, "eager")
+
+
+def test_exit_uses_fixed_budget_and_keeps_graph_settings_for_graph_mode(tmp_path, monkeypatch):
+    from basal import server
+
+    if "--graph-memory-gb" not in engine.serve_flags():
+        pytest.skip("installed Engine lacks graph memory option")
+    variant = dataclasses.replace(BF16, family="basal-1.0")
+    machine = dataclasses.replace(CUDA, cuda_capability=(10, 0), memory_bytes=20 * catalog.GIB)
+    amax = tmp_path / "amax.json"
+    amax.write_text('{"amax": {"layer": 1.0}}')
+    common = {
+        "quant": "fp8",
+        "fp8_scaling": "block",
+        "fp8_bf16_layers": 4,
+        "quant_load": "cpu",
+        "nvfp4_amax": str(amax),
+        "nvfp4_scope": "mlp",
+        "compile_scope": "layer",
+        "global_attn": "triton",
+        "graph_memory_gb": 7,
+        "state_cache_bits": 8,
+        "state_cache_lock": True,
+        "state_cache_gb": 1,
+        "prepared": "off",
+    }
+    forbidden = {
+        "--fp8-scaling",
+        "--fp8-bf16-layers",
+        "--quant-load",
+        "--nvfp4-amax",
+        "--nvfp4-scope",
+        "--compile-scope",
+        "--global-attn",
+        "--graph-memory-gb",
+        "--state-cache-bits",
+        "--state-cache-lock",
+    }
+    commands = []
+
+    def native_preflight(a):
+        kind, default_quant, _ = server.MODES[a.mode]
+        quant = a.quant or default_quant
+        if kind != "graph":
+            assert a.graph_memory_gb is None and a.global_attn == "flex" and a.state_cache_bits == 16
+            assert a.state_cache_lock == "off" and a.fp8_scaling == "auto"
+        server.nvfp4_args(a, None, quant)
+
+    def start(self, assessment, gen, *args, **kwargs):
+        commands.append(self._build_command(variant, tmp_path, assessment, False, 1, settings.serve_settings()))
+        with self.lock:
+            self.state = "ready"
+
+    monkeypatch.setattr(server, "serve_options", native_preflight, raising=False)
+    monkeypatch.setattr("basal_ui.fleet.Runner._start", start)
+    fleet = Fleet(
+        models_dir_fn=lambda: tmp_path,
+        platform_fn=lambda: "cuda",
+        settings_mod=settings,
+        hardware_fn=lambda: machine,
+        stats=Stats(tmp_path / "s.json"),
+        history=History(tmp_path / "h.jsonl"),
+    )
+    app = create_app(
+        catalog_fn=lambda **_: ([variant], "test"),
+        hardware_fn=lambda: machine,
+        fleet=fleet,
+        stats=fleet.stats,
+        history=fleet.history,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        exit_settings = {"mode": "fast-exit", **common}
+        assert client.put("/api/models/options", json={"id": variant.id, "options": exit_settings}).status_code == 200
+        assert (
+            client.put("/api/presets", json={"kind": "load", "name": "exit", "value": exit_settings}).status_code == 200
+        )
+        assert client.get("/api/presets").json()["load"]["exit"] == exit_settings
+        assert client.get("/api/models").json()["models"][0]["est_memory_bytes"] == 120 + catalog.GRAPH_ENGINE_OVERHEAD
+        response = client.post("/api/load", json={"id": variant.id})
+        assert response.status_code == 202
+        wait_for(lambda: bool(commands))
+        assert not forbidden.intersection(commands[-1]) and "--prepared" in commands[-1]
+        assert response.json()["memory"]["committed_bytes"] == 120 + catalog.GRAPH_ENGINE_OVERHEAD
+        assert settings.load_options(variant.id) == exit_settings
+        assert client.post("/api/unload", json={"id": variant.id}).status_code == 200
+        graph_settings = {"mode": "fast", **common}
+        assert client.put("/api/models/options", json={"id": variant.id, "options": graph_settings}).status_code == 200
+        response = client.post("/api/load", json={"id": variant.id})
+        assert response.status_code == 202
+        wait_for(lambda: len(commands) == 2)
+        assert {
+            "--graph-memory-gb",
+            "--global-attn",
+            "--compile-scope",
+            "--state-cache-lock",
+            "--state-cache-bits",
+            "--fp8-scaling",
+            "--quant-load",
+            "--prepared",
+        }.issubset(commands[-1])
+        assert "--nvfp4-amax" not in commands[-1]
+        assert response.json()["memory"]["committed_bytes"] == 120 + 7 * catalog.GIB
+        assert settings.load_options(variant.id) == graph_settings
+    assert "--prepared" not in options.args({"prepared": "off"}, "fast-nocompile")

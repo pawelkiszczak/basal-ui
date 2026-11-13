@@ -13,7 +13,7 @@ from basal.gdn_graph import refused as gdn_refused
 from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
-from .catalog import _cuda_graph, _quantized_hardware_reason, graph_memory_bytes
+from .catalog import _cuda_graph, _quantized_hardware_reason, graph_memory_bytes, is_graph_backend
 from .engine import feature, serve_flags, serve_modes
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
@@ -321,13 +321,19 @@ def _value(v):
 def args(options: dict, mode: str) -> list[str]:
     """basal-serve flags of the non-default options; the mode is applied by the runner (serve_args's --mode)."""
     merged = validate(options)
-    kind, mode_quant, _ = MODES[mode]
+    kind, mode_quant, compiled = MODES[mode]
     quant = merged["quant"] or mode_quant
-    graph = kind in ("graph", "exit")
+    graph = is_graph_backend(mode)
     applicable = {
+        "prepared": kind in ("graph", "exit") and compiled,
+        "compile_scope": graph and compiled,
+        "global_attn": graph,
+        "graph_memory_gb": graph,
+        "state_cache_lock": graph,
+        "state_cache_bits": graph,
         "fp8_scaling": graph and quant == "fp8",
         "fp8_bf16_layers": graph and quant in ("fp8", "nvfp4", "int8"),
-        "quant_load": kind == "graph" and quant in ("fp8", "nvfp4", "int8"),
+        "quant_load": graph and quant in ("fp8", "nvfp4", "int8"),
         "nvfp4_amax": graph and quant == "nvfp4",
         "nvfp4_scope": graph and quant == "nvfp4",
     }
@@ -449,6 +455,8 @@ def available_modes(v, hw, assessment) -> list[dict]:
     return [
         {
             "mode": m,
+            "kind": MODES[m][0] if m in MODES else None,
+            "compiled": MODES[m][2] if m in MODES else False,
             "available": reasons[m] is None,
             "reason": reasons[m],
             "reason_code": _availability_message(reasons[m])[0],
