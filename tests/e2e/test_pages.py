@@ -1890,7 +1890,11 @@ def test_cascade_router_keyboard_focus_protocol_and_attribution(browser, isolate
         assert page.locator("#inspectDecision").count() == 0
 
         port = free_port()
-        isolated_ui.put("/api/serve", {"enabled": True, "host": "127.0.0.1", "port": port, "require_key": False})
+        mcp_available = isolated_ui.get("/api/serve")["mcp_available"] and feature("mcp_models")
+        isolated_ui.put(
+            "/api/serve",
+            {"enabled": True, "host": "127.0.0.1", "port": port, "require_key": False, "mcp": bool(mcp_available)},
+        )
         isolated_ui.post("/api/serve/restart")
         decisions = {
             "model": "e2e-route",
@@ -1910,6 +1914,33 @@ def test_cascade_router_keyboard_focus_protocol_and_attribution(browser, isolate
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=120) as gateway:
             native = gateway.post("/v1/systemone", json={"model": "e2e-route", **CHOICE})
             assert native.status_code == 200 and native.json()["answers"]["dept"]["answered_by"] == "escalated"
+            if mcp_available:
+                rpc = gateway.post(
+                    "/mcp",
+                    headers={"Accept": "application/json, text/event-stream"},
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "decide",
+                            "arguments": {
+                                "model": "e2e-route",
+                                "state": CHOICE["state"],
+                                "type": "choice",
+                                "question": CHOICE["questions"]["dept"]["instructions"],
+                                "options": CHOICE["questions"]["dept"]["criteria"],
+                            },
+                        },
+                    },
+                )
+                assert (
+                    rpc.status_code == 200 and rpc.json()["result"]["structuredContent"]["answered_by"] == "escalated"
+                ), rpc.text
+                assert any(
+                    row["source"] == "mcp"
+                    for row in isolated_ui.get("/api/history", params={"model": "e2e-route"})["items"]
+                )
             for path in ("/v1/decisions", "/decisions"):
                 response = gateway.post(path, json=decisions)
                 assert response.status_code == 200, response.text
@@ -1965,6 +1996,14 @@ def test_cascade_router_keyboard_focus_protocol_and_attribution(browser, isolate
                 if name == "e2e-fallback":
                     assert answer["probabilities"] is None and answer["confidence"] is None
                     assert received[-1] == ("/v1/chat/completions", "Bearer synthetic-secret", "controlled")
+
+        batch_file = isolated_ui.root / "cascade-input.jsonl"
+        batch_file.write_text(json.dumps(CHOICE) + "\n", encoding="utf-8")
+        isolated_ui.run_job("/api/batch", {"id": "e2e-route", "input": str(batch_file)}, "batch")
+        rows = isolated_ui.get("/api/batch/rows")["rows"]
+        assert len(rows) == 1 and rows[0]["answers"]["dept"]["answered_by"] == "escalated"
+        for name in ("e2e-blend", "e2e-fallback"):
+            assert isolated_ui.http.post("/api/batch", json={"id": name, "input": str(batch_file)}).status_code == 400
 
         manager_tab(page, "library")
         action.focus()
