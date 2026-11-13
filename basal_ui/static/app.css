@@ -166,3 +166,10 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 .model-loader-dialog{width:min(900px,calc(100vw - 32px))}.model-loader-dialog h2{font-size:20px}.model-loader-row{display:grid;gap:12px;padding:20px 0;border-bottom:1px solid var(--line)}.model-loader-row strong{overflow-wrap:anywhere}.model-loader-row .controls{flex-wrap:wrap}.model-loader-dialog>.dashboard-link{display:inline-flex;margin-top:20px}
 .recommendation-controls{gap:8px;margin-bottom:24px}.recommendation-controls>select{max-width:380px;width:100%}.recommendation-controls>.manager-help{margin:8px 0 0}.recommendation-controls p+p{margin-top:12px}
 @media(max-width:720px){.page-header{padding-right:0}.page-header>#openModelLoader{position:static;margin-top:18px}}
+#cascadeDialog{width:min(600px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;background:var(--white);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:18px}
+#cascadeForm{display:grid;gap:12px}
+#cascadeForm label{display:grid;gap:4px;min-width:0;font-size:13px}
+#cascadeForm input,#cascadeForm select{width:100%;min-width:0}
+#cascadeForm details[open]{display:grid}
+#cascadeForm details label{margin-top:10px}
+.cascade-level{display:grid;gap:8px;margin:10px 0;padding:12px;border:1px solid var(--line);border-radius:6px}

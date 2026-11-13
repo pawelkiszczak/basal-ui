@@ -61,3 +61,9 @@ A change to the Engine submitted upstream, tracked from use case to merged relea
 
 **Research note**:
 The record of an Engine proposal's use case, measurements and outcome.
+
+**Cascade**:
+A named router over ordered, ready native models, using escalation or a weighted Blend, optionally followed by a chat fallback. A Cascade is not a model checkpoint.
+
+**Blend**:
+A Cascade kind that combines eligible answers using weighted probabilities; its blended answers are uncalibrated.

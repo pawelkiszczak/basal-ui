@@ -405,6 +405,14 @@ class Manager:
             snapshots = []
             for item in selected:
                 runner = fleet.ready(item["id"])
+                if (runner.models_entry or {}).get("kind") == "cascade":
+                    raise RuntimeError("A Cascade cannot be used in a backend test")
+                if any(
+                    (r.models_entry or {}).get("kind") == "cascade"
+                    and any(level["model"] == item["id"] for level in r.levels)
+                    for r in fleet.runners.values()
+                ):
+                    raise RuntimeError("Stop dependent Cascades before unloading a member for a backend test")
                 if runner.generation != item["generation"] or fleet.leases.get(runner, 0):
                     raise RuntimeError("Unload selection changed or is busy; refresh and confirm again")
                 if item["id"] not in variants or not runner.serve_snapshot:

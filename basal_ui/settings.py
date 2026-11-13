@@ -7,12 +7,14 @@ the basal-serve key file hold SHA-256 digests of API keys only and are readable 
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from huggingface_hub.constants import HF_HUB_CACHE
 
@@ -362,8 +364,170 @@ def history_path() -> Path:
     return _sibling("history.jsonl")
 
 
+def _decision_secrets() -> dict:
+    path = _sibling("decision-secrets.json")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} is not a JSON object")
+    return value
+
+
+@_locked
+def decision_secret(server_id: str) -> str | None:
+    value = _decision_secrets().get(server_id)
+    if value is not None and not isinstance(value, str):
+        raise ValueError("stored decision secret must be a string")
+    return value
+
+
+def cascades() -> list[dict]:
+    value = load().get("cascades", [])
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def set_cascade(spec: dict, replace: bool = False) -> dict:
+    if not isinstance(spec, dict):
+        raise ValueError("cascade must be an object")
+    name = spec.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name):
+        raise ValueError("name must match ^[a-z0-9][a-z0-9-]{0,39}$")
+    if not replace and name in {x.get("name") for x in cascades()}:
+        raise ValueError(f"cascade {name!r} already exists")
+    kind, levels = spec.get("kind"), spec.get("levels")
+    if kind not in ("escalate", "blend"):
+        raise ValueError("kind must be escalate or blend")
+    if (
+        not isinstance(levels, list)
+        or len(levels) < 2
+        or any(not isinstance(x, dict) or not isinstance(x.get("model"), str) or not x["model"] for x in levels)
+    ):
+        raise ValueError("levels must contain at least two model ids")
+    if kind == "escalate":
+        if spec.get("weights") is not None:
+            raise ValueError("escalation cannot use blend weights")
+        for level in levels[:-1]:
+            below = level.get("below")
+            if isinstance(below, bool) or not isinstance(below, (int, float)) or not 0 < below <= 1:
+                raise ValueError("each non-final escalate level needs below in (0, 1]")
+        normalized = {
+            "name": name,
+            "kind": kind,
+            "levels": [
+                {"model": x["model"], **({"below": x["below"]} if i < len(levels) - 1 else {})}
+                for i, x in enumerate(levels)
+            ],
+            "weights": None,
+        }
+    else:
+        if any("below" in level for level in levels):
+            raise ValueError("blend cannot use escalation thresholds")
+        weights = spec.get("weights")
+        if (
+            not isinstance(weights, list)
+            or len(weights) != len(levels)
+            or any(
+                isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x <= 0
+                for x in weights
+            )
+        ):
+            raise ValueError("blend weights must be positive and match the levels")
+        normalized = {"name": name, "kind": kind, "levels": [{"model": x["model"]} for x in levels], "weights": weights}
+    fallback = spec.get("fallback")
+    secret_id = f"cascade:{name}"
+    old_secrets = _decision_secrets()
+    new_secrets = dict(old_secrets)
+    if fallback is not None:
+        if not isinstance(fallback, dict):
+            raise ValueError("fallback must be an object or null")
+        url = fallback.get("url")
+        try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            if (
+                not parts
+                or parts.scheme not in ("http", "https")
+                or not parts.hostname
+                or parts.username is not None
+                or parts.password is not None
+            ):
+                raise ValueError("fallback.url must be an http(s) URL without credentials")
+            _ = parts.port
+        except ValueError as exc:
+            raise ValueError("fallback.url must be an http(s) URL without credentials and with a valid port") from exc
+        if not isinstance(fallback.get("model"), str) or not fallback["model"].strip():
+            raise ValueError("fallback.model must be a non-empty string")
+        for field, default in (("below", 0.5), ("timeout", 60)):
+            value = fallback.get(field, default)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+                or (field == "below" and value > 1)
+            ):
+                raise ValueError(f"fallback.{field} is out of range")
+        tokens = fallback.get("max_tokens", 8192)
+        if type(tokens) is not int or tokens < 1:
+            raise ValueError("fallback.max_tokens must be a positive integer")
+        normalized["fallback"] = {
+            k: fallback[k] for k in ("url", "model", "below", "timeout", "max_tokens") if k in fallback
+        }
+        previous = next((x for x in cascades() if x.get("name") == name), None)
+        previous_url = (previous or {}).get("fallback") or {}
+        previous_url = previous_url.get("url")
+        if previous_url:
+            old = urlsplit(previous_url)
+            old_origin = (old.scheme.lower(), old.hostname, old.port or (443 if old.scheme.lower() == "https" else 80))
+            new_origin = (
+                parts.scheme.lower(),
+                parts.hostname,
+                parts.port or (443 if parts.scheme.lower() == "https" else 80),
+            )
+            if old_origin != new_origin:
+                new_secrets.pop(secret_id, None)
+        if fallback.get("key") is not None:
+            if not isinstance(fallback["key"], str) or not fallback["key"].strip():
+                raise ValueError("fallback.key must be a non-empty string")
+            new_secrets[secret_id] = fallback["key"]
+    else:
+        normalized["fallback"] = None
+        new_secrets.pop(secret_id, None)
+    data = load()
+    data["cascades"] = [x for x in cascades() if x.get("name") != name] + [normalized]
+    if new_secrets != old_secrets:
+        _write_private(_sibling("decision-secrets.json"), json.dumps(new_secrets, indent=2))
+    try:
+        save(data)
+    except BaseException:
+        if new_secrets != old_secrets:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(old_secrets, indent=2))
+        raise
+    return normalized
+
+
+@_locked
+def delete_cascade(name: str) -> None:
+    data = load()
+    old_secrets = _decision_secrets()
+    new_secrets = dict(old_secrets)
+    new_secrets.pop(f"cascade:{name}", None)
+    data["cascades"] = [x for x in cascades() if x.get("name") != name]
+    if new_secrets != old_secrets:
+        _write_private(_sibling("decision-secrets.json"), json.dumps(new_secrets, indent=2))
+    try:
+        save(data)
+    except BaseException:
+        if new_secrets != old_secrets:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(old_secrets, indent=2))
+        raise
+
+
 def calibrations_dir(model_id: str) -> Path:
-    """Where basal-ui writes the calibration files it fits for a model: <settings dir>/calibrations/<org>--<name>/."""
+    """Where basal-ui writes the calibration files it fits for a model."""
+
     return _settings_path().parent / "calibrations" / model_id.replace("/", "--")
 
 

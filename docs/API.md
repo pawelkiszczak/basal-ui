@@ -447,3 +447,17 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+## Cascades
+
+Engine 2.5 exposes configured Cascades through the local app API:
+
+- `GET /api/cascades` lists definitions and running state; fallback keys are never returned.
+- `POST /api/cascades` creates a definition (`name`, `kind`, ordered `levels`, optional `weights` and `fallback`).
+- `PUT /api/cascades/{name}` replaces a stopped definition; `DELETE` removes a stopped definition.
+- `POST /api/cascades/{name}/start` starts it only when every member is ready; `/stop` unloads the router.
+
+The gateway's `GET /v1/models` lists Cascade entries with `kind: "cascade"` and accepts their name in the request's
+`model` field. Escalation answers include per-answer `answered_by`, `level`, and `model`. Blend and fallback answers
+include `calibrated: false`. Batch accepts only escalation Cascades without fallback; Calibration, Inspect, and Benchmarks do not accept Cascades.
+The router feature probe gates these routes. Fallback keys live in the owner-only decision-secrets sidecar and never appear in responses. Settings and secrets use separate atomic replacements, so a process crash between them can leave them out of sync.

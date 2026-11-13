@@ -304,3 +304,64 @@ def test_the_first_catalog_check_reports_no_new_models_then_only_new_ones(tmp_pa
     assert settings.update_seen_ids(["a", "b", "c"]) == ["c"]
     settings.mark_models_seen(["c"])
     assert settings.update_seen_ids(["a", "b", "c"]) == []
+
+
+def test_cascades_validate_shape_and_store_secrets_owner_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    base = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+    with pytest.raises(ValueError, match="at least two"):
+        settings.set_cascade({**base, "levels": [{"model": "a/one", "below": 0.8}]})
+    with pytest.raises(ValueError, match="blend weights"):
+        settings.set_cascade(
+            {**base, "kind": "blend", "levels": [{"model": "a/one"}, {"model": "b/two"}], "weights": [1]}
+        )
+    spec = settings.set_cascade(
+        {**base, "fallback": {"url": "https://example.test/v1", "model": "chat", "key": "secret"}}
+    )
+    assert spec["levels"] == base["levels"]
+    assert "key" not in spec["fallback"]
+    assert settings.decision_secret("cascade:tri") == "secret"
+    assert settings._sibling("decision-secrets.json").stat().st_mode & 0o777 == 0o600
+    assert "secret" not in json.dumps(settings.cascades())
+    settings.delete_cascade("tri")
+    assert settings.decision_secret("cascade:tri") is None
+
+
+def test_cascade_rejects_invalid_numbers_and_urls_and_preserves_secrets_on_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    base = {"name": "route", "kind": "blend", "levels": [{"model": "a"}, {"model": "b"}], "weights": [1, 2]}
+    for weights in ([1, float("inf")], [True, 2], [1, float("nan")]):
+        with pytest.raises(ValueError):
+            settings.set_cascade({**base, "weights": weights})
+    for fallback in (
+        {"url": "https://user:pass@example.test/v1", "model": "chat"},
+        {"url": "https://example.test/v1", "model": "chat", "max_tokens": 1.5},
+        {"url": "https://example.test/v1", "model": "chat", "timeout": float("inf")},
+    ):
+        with pytest.raises(ValueError):
+            settings.set_cascade({**base, "fallback": fallback})
+    fallback = {"url": "https://example.test/v1", "model": "chat", "key": "original"}
+    settings.set_cascade({**base, "fallback": fallback})
+    monkeypatch.setattr(settings, "save", lambda _: (_ for _ in ()).throw(OSError("write failed")))
+    with pytest.raises(OSError, match="write failed"):
+        settings.set_cascade({**base, "fallback": {**fallback, "key": "replacement"}}, replace=True)
+    assert settings.decision_secret("cascade:route") == "original"
+    assert settings.cascades()[0]["fallback"]["model"] == "chat"
+
+
+def test_cascade_secret_corruption_is_not_treated_as_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    settings._sibling("decision-secrets.json").write_text("{")
+    with pytest.raises(ValueError):
+        settings.decision_secret("cascade:route")
+
+
+def test_cascade_key_retained_only_for_same_fallback_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    base = {"name": "route", "kind": "blend", "levels": [{"model": "a"}, {"model": "b"}], "weights": [1, 2]}
+    fallback = {"url": "https://example.test/v1", "model": "chat", "key": "secret"}
+    settings.set_cascade({**base, "fallback": fallback})
+    settings.set_cascade({**base, "fallback": {"url": "https://example.test:443/new", "model": "chat"}}, replace=True)
+    assert settings.decision_secret("cascade:route") == "secret"
+    settings.set_cascade({**base, "fallback": {"url": "https://other.test/v1", "model": "chat"}}, replace=True)
+    assert settings.decision_secret("cascade:route") is None

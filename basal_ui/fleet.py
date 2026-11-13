@@ -475,6 +475,169 @@ class Runner:
         return response
 
 
+class CascadeRunner:
+    """A basal-router process exposing loaded model members as one decision model."""
+
+    def __init__(self, spec, settings_mod, event):
+        self.model = self.id = spec["name"]
+        self.spec, self.settings_mod, self.event = spec, settings_mod, event
+        self.state, self.error, self.process = "starting", None, None
+        self.est_memory_bytes, self.temporary, self.media, self.options, self.rss_bytes = 0, False, [], {}, None
+        self.ready_at, self.last_used = None, time.monotonic()
+        self.log = LogBuffer()
+        self.lock = threading.RLock()
+        self.gen = 0
+        self.base_url = None
+        self.command = []
+        self.levels = [dict(x) for x in spec["levels"]]
+        self.models_entry = {"name": self.model, "kind": "cascade", "levels": self.levels}
+
+    def start(self, members):
+        with self.lock:
+            gen = self.gen
+            if self.state != "starting":
+                raise RuntimeError("cascade start cancelled")
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        base_url = f"http://127.0.0.1:{port}"
+        argv = [
+            sys.executable,
+            "-m",
+            "basal.router",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--replicas",
+            members[self.levels[0]["model"]],
+        ]
+        if self.spec["kind"] == "escalate":
+            for i, level in enumerate(self.levels[1:], 1):
+                argv += ["--escalate", members[level["model"]], "--escalate-below", str(self.levels[i - 1]["below"])]
+        else:
+            for level in self.levels[1:]:
+                argv += ["--blend", members[level["model"]]]
+            argv += ["--blend-weights", *map(str, self.spec["weights"])]
+        fallback = self.spec.get("fallback")
+        env = os.environ.copy()
+        env.pop("BASAL_FALLBACK_API_KEY", None)
+        if fallback:
+            argv += [
+                "--fallback",
+                fallback["url"],
+                "--fallback-model",
+                fallback["model"],
+                "--fallback-below",
+                str(fallback.get("below", 0.5)),
+                "--fallback-timeout",
+                str(fallback.get("timeout", 60)),
+                "--fallback-max-tokens",
+                str(fallback.get("max_tokens", 8192)),
+            ]
+            key = self.settings_mod.decision_secret(f"cascade:{self.model}")
+            if key:
+                env["BASAL_FALLBACK_API_KEY"] = key
+        try:
+            with self.lock:
+                if gen != self.gen:
+                    raise RuntimeError("cascade start cancelled")
+                self.command, self.base_url = argv, base_url
+                self.process = proc = subprocess.Popen(
+                    argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, start_new_session=True
+                )
+            threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
+            deadline = time.monotonic() + START_TIMEOUT_S
+            while time.monotonic() < deadline:
+                with self.lock:
+                    if gen != self.gen:
+                        raise RuntimeError("cascade start cancelled")
+                if proc.poll() is not None:
+                    raise RuntimeError(f"basal-router exited ({proc.returncode}): {self.log.last() or ''}")
+                try:
+                    if httpx.get(base_url + "/health", timeout=0.5).status_code == 200:
+                        with self.lock:
+                            if gen != self.gen:
+                                raise RuntimeError("cascade start cancelled")
+                            self.state, self.ready_at = "ready", time.time()
+                        return self
+                except httpx.HTTPError:
+                    pass
+                time.sleep(0.2)
+            raise RuntimeError(f"basal-router did not become healthy within {START_TIMEOUT_S} s")
+        except Exception as exc:
+            proc = None
+            with self.lock:
+                if gen == self.gen:
+                    proc, self.process = self.process, None
+                    self.gen += 1
+                    self.error, self.state = str(exc), "error"
+            Runner._terminate(proc)
+            raise
+
+    def _read_logs(self, proc):
+        for line in proc.stdout:
+            self.log.append(line.rstrip())
+
+    @property
+    def pid(self):
+        return self.process.pid if self.process else None
+
+    def status(self):
+        with self.lock:
+            if self.state == "ready" and self.process and self.process.poll() is not None:
+                self.state, self.error = "error", f"basal-router exited ({self.process.returncode})"
+            return {
+                "id": self.model,
+                "model": self.model,
+                "state": self.state,
+                "error": self.error,
+                "kind": "cascade",
+                "entry": self.models_entry,
+                "models_entry": self.models_entry,
+                "base_url": self.base_url,
+                "pid": self.process.pid if self.process else None,
+                "ready_at": self.ready_at,
+                "est_memory_bytes": 0,
+                "temporary": False,
+                "cascade_kind": self.spec["kind"],
+                "cascade_has_fallback": bool(self.spec.get("fallback")),
+                "media": [],
+                "options": {},
+                "health": {"reachable": self.state == "ready"},
+                "rss_bytes": self.rss_bytes,
+            }
+
+    def decide(self, body, path="/v1/systemone"):
+        child_body, reply = child_request(path, body)
+        if child_body is None:
+            return reply
+        response = reply(httpx.post(self.base_url + path, json=child_body, timeout=120))
+        response.extensions["basal.inference"] = True
+        return response
+
+    async def adecide(self, client, body, path="/v1/systemone"):
+        child_body, reply = child_request(path, body)
+        if child_body is None:
+            return reply
+        response = reply(await client.post(self.base_url + path, json=child_body))
+        response.extensions["basal.inference"] = True
+        return response
+
+    def stop(self):
+        proc, _ = self.detach()
+        Runner._terminate(proc)
+
+    def detach(self):
+        with self.lock:
+            self.gen += 1
+            proc, self.process = self.process, None
+            self.state = "idle"
+            return proc, 0
+
+    unload = stop
+
+
 class Fleet:
     """The loaded models (one Runner each, in load order), their shared downloads, logs, statistics and history."""
 
@@ -649,24 +812,79 @@ class Fleet:
         for key in unloaded[: max(0, len(self.logs) - 1 - MODEL_LOGS_KEPT)]:
             del self.logs[key]
 
+    def start_cascade(self, name):
+        from .engine import feature
+
+        if not feature("router"):
+            raise RuntimeError("Cascades need engine 2.5")
+        with self.lock:
+            self._check_addon_maintenance()
+            if self.stopping or name in self.draining or name in self.runners:
+                raise RuntimeError("model is unavailable during maintenance or already loaded")
+            self.draining.add(name)
+        try:
+            spec = next((x for x in self.settings_mod.cascades() if x["name"] == name), None)
+            if spec is None:
+                raise KeyError(name)
+            with self.lock:
+                if self.stopping:
+                    raise RuntimeError("model is unavailable during maintenance")
+                members = {}
+                for level in spec["levels"]:
+                    member = self.runners.get(level["model"])
+                    if member is None or member.status()["state"] != "ready" or level["model"] in self.draining:
+                        raise RuntimeError(f"cascade member {level['model']} is not loaded")
+                    if isinstance(member, CascadeRunner):
+                        raise RuntimeError(f"cascade member {level['model']} must be a native model")
+                    members[level["model"]] = member.base_url
+                runner = CascadeRunner(spec, self.settings_mod, self.event)
+                self.runners[name] = runner
+                self.logs[name] = runner.log
+        finally:
+            with self.lock:
+                self.draining.discard(name)
+        try:
+            runner.start(members)
+        except Exception:
+            with self.lock:
+                if self.runners.get(name) is runner:
+                    self.runners.pop(name)
+            raise
+        self.event("info", f"cascade ready: {name}")
+        return self.status()
+
+    def stop_cascade(self, name):
+        runner = self.runners.get(name)
+        if not isinstance(runner, CascadeRunner):
+            raise KeyError(name)
+        return self.unload(name)
+
     def unload(self, model_id=None, forget=True):
-        """Unload one model (KeyError when it is not loaded) or every model; forget=False keeps it for auto-load."""
+        """Unload one model and stop any cascades whose members are being removed."""
         with self.lock:
             self._check_addon_maintenance()
             if model_id is not None and model_id not in self.runners:
                 raise KeyError(model_id)
             ids = [model_id] if model_id is not None else list(self.runners)
+            dependents = [
+                name
+                for name, runner in self.runners.items()
+                if isinstance(runner, CascadeRunner)
+                and name not in ids
+                and any(level["model"] == model_id for level in runner.levels)
+            ]
+            ids = dependents + ids
             if not self.stopping and any(i in self.draining for i in ids):
                 raise RuntimeError("model is unavailable during maintenance")
+            for name in dependents:
+                self.event("info", f"cascade {name} stopped because member {model_id} was unloaded")
             retiring = []
             for i in ids:
                 runner = self.runners.pop(i)
-                # detach under the fleet lock: the old load can no longer reach ready and remember itself after
-                # forget_loaded; its memory stays committed until the child is gone (a new load must wait for it)
                 proc, est = runner.detach()
                 retiring.append((runner, proc))
                 self.retiring[runner] = est
-                if forget:
+                if forget and not isinstance(runner, CascadeRunner):
                     self.settings_mod.forget_loaded(i)
             self._prune_logs()
         for i, (runner, proc) in zip(ids, retiring, strict=True):
@@ -674,7 +892,7 @@ class Fleet:
             with self.lock:
                 self.retiring.pop(runner, None)
             self.event("info", f"unloaded: {i}")
-        if model_id is None:  # every model: the private children of jobs too (their job then fails)
+        if model_id is None:
             with self.lock:
                 temporary = list(self.temporary)
             for kind in temporary:
@@ -694,6 +912,17 @@ class Fleet:
                 raise KeyError(model_id)
             if options is None:
                 options = current.options
+            dependents = [
+                (name, runner)
+                for name, runner in self.runners.items()
+                if isinstance(runner, CascadeRunner) and any(level["model"] == model_id for level in runner.levels)
+            ]
+            stopped = []
+            for name, runner in dependents:
+                self.runners.pop(name)
+                child, _ = runner.detach()
+                stopped.append(child)
+                self.event("info", f"cascade {name} stopped because member {model_id} was restarted")
             proc, est = current.detach()
             self.runners.pop(model_id)
             self.retiring[current] = est
@@ -702,6 +931,8 @@ class Fleet:
         self.event("info", f"restart: {model_id}")
         reservation = f"restart:{model_id}"
         try:
+            for child in stopped:
+                Runner._terminate(child)
             Runner._terminate(proc)
             with self.lock:
                 self.retiring.pop(current, None)
@@ -735,7 +966,7 @@ class Fleet:
             models.append(runner.status())
         now = time.monotonic()
         with self.lock:
-            memory = self._memory(sum(m["rss_bytes"] or 0 for m in models))
+            memory = self._memory(sum(m["rss_bytes"] or 0 for m in models if m.get("kind") != "cascade"))
             inflight = list(self.inflight.values())
         for m in models:  # what basal-ui is waiting on (Playground, API server, MCP, benchmark), oldest first
             m["inflight"] = [
