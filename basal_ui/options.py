@@ -13,7 +13,7 @@ from basal.gdn_graph import refused as gdn_refused
 from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
-from .catalog import _cuda_graph, _quantized_hardware_reason
+from .catalog import _cuda_graph, _quantized_hardware_reason, graph_memory_bytes
 from .engine import feature, serve_flags, serve_modes
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
@@ -228,6 +228,8 @@ def _number(key, value):
             f"load option {key} must be {'above' if open_lo else 'at least'} {lo}"
             + (f" and at most {hi}" if hi is not None else "")
         )
+    if key == "graph_memory_gb":
+        graph_memory_bytes(value)
     return int(value) if integer else float(value)
 
 
@@ -627,10 +629,14 @@ def check_combination(v, hw, options, default_mode, media=False):
     mode = options["mode"] or ("eager" if media else default_mode)
     from basal import server
 
-    if hasattr(server, "serve_options"):
-        native = server.parser().parse_args(["--model", v.repo, "--mode", mode, *args(options)])
+    native = None
+    if hasattr(server, "serve_options") or v.recurrent or options["long_lane_gdn"]:
         try:
-            server.serve_options(native)
+            native = server.parser().parse_args(["--model", v.repo, "--mode", mode, *args(options)])
+            if hasattr(server, "serve_options"):
+                server.serve_options(native)
+            elif getattr(native, "long_lane_gdn", "off") == "on" and native.long_lane != "on":
+                raise ValueError("--long-lane-gdn on needs --long-lane on")
         except SystemExit as exc:
             raise ValueError(str(exc)) from None
     if options["mlx_packed"]:
@@ -668,7 +674,7 @@ def check_combination(v, hw, options, default_mode, media=False):
         )
         # 2.5.1 serves it with --long-lane-gdn on (its bf16 answers agree with float32 a little less often than
         # eager's); on 2.4.1 validate() refuses the option itself, so the gate here keeps its meaning
-        if not reason and options["long_lane"] is True and not options["long_lane_gdn"]:
+        if not reason and native.long_lane == "on" and getattr(native, "long_lane_gdn", "off") != "on":
             reason = OPTION_TEMPLATES["reason_long_lane"]
         if reason:
             raise ValueError(reason)

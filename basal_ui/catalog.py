@@ -6,6 +6,7 @@ reports whether this machine can serve it and whether it fits the memory budget;
 
 import json
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
@@ -457,13 +458,23 @@ def _fit(est: int | None, budget: int | None) -> str:
     return "too_large"
 
 
+def graph_memory_bytes(value):
+    """Convert graph GiB to bytes without overflowing the floating-point estimate."""
+    if value > sys.float_info.max / GIB:
+        raise ValueError("load option graph_memory_gb is too large to convert to bytes")
+    try:
+        return int(value * GIB)
+    except (OverflowError, ValueError):
+        raise ValueError("load option graph_memory_gb is too large to convert to bytes") from None
+
+
 def assess(v: Variant, hw: Hardware, options: dict | None = None) -> Assessment:
     mode, reason = _mode(v, hw)
     overhead = GIB
     effective_mode = (options or {}).get("mode") or mode
     if effective_mode in GRAPH_ENGINE_MODES:
         graph_memory = (options or {}).get("graph_memory_gb")  # --graph-memory-gb replaces the 4 GiB estimate
-        overhead = int(graph_memory * GIB) if graph_memory else GRAPH_ENGINE_OVERHEAD
+        overhead = graph_memory_bytes(graph_memory) if graph_memory else GRAPH_ENGINE_OVERHEAD
     est = int(v.weights_bytes * 1.2) + overhead if v.weights_bytes is not None else None  # weights + runtime + KV cache
     fit = _fit(est, hw.memory_bytes) if hw.memory_bytes else "unknown"
     fit_now = _fit(est, hw.available_bytes)

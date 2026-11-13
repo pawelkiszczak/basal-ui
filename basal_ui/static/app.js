@@ -1713,11 +1713,11 @@ const OPTION_FIELDS={
   state_cache_bits:{label:'State cache precision',kind:'select',values:[[16,'16-bit'],[8,'8-bit (about 1.7x more states)']],numeric:true},
   long_lane_gdn:{label:'Long-request lane on Qwen3.5 (opt-in)',kind:'bool'},
   rank_max_candidates:{label:'Rank candidates per request',kind:'num',attrs:'min="1" step="1"'},
-  fp8_scaling:{label:'FP8 scaling',kind:'select',values:['auto','row','block'],modes:['fp8']},
-  fp8_bf16_layers:{label:'bf16 edge layers',kind:'num',attrs:'min="0" step="1"',modes:['fp8','nvfp4','int8']},
-  quant_load:{label:'Quantise from',kind:'select',values:[['gpu','GPU memory'],['cpu','host memory']],modes:['fp8','nvfp4','int8']},
-  nvfp4_amax:{label:'NVFP4 amax file',kind:'text',placeholder:'the model’s NVFP4_AMAX.json',modes:['nvfp4']},
-  nvfp4_scope:{label:'NVFP4 scope',kind:'select',values:['all','mlp'],modes:['nvfp4']},
+  fp8_scaling:{label:'FP8 scaling',kind:'select',values:['auto','row','block'],quants:'fp8'},
+  fp8_bf16_layers:{label:'bf16 edge layers',kind:'num',attrs:'min="0" step="1"',quants:'fp8 nvfp4 int8'},
+  quant_load:{label:'Quantise from',kind:'select',values:[['gpu','GPU memory'],['cpu','host memory']],quants:'fp8 nvfp4 int8'},
+  nvfp4_amax:{label:'NVFP4 amax file',kind:'text',placeholder:'the model’s NVFP4_AMAX.json',quants:'nvfp4'},
+  nvfp4_scope:{label:'NVFP4 scope',kind:'select',values:['all','mlp'],quants:'nvfp4'},
   vllm_overlap:{label:'Overlapping engine calls (opt-in)',kind:'bool',modes:['vllm']},
   global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],modes:GRAPH_MODES},
 };
@@ -1750,7 +1750,7 @@ function renderOptionsForm(values) {
   // collapsible sections: Engine and any section with a non-default value open, unless the user toggled it this session
   const changed=keys=>keys.some(k=>JSON.stringify(values[k])!==JSON.stringify(d.defaults[k]));
   const isOpen=(title,keys)=>optionSectionOpen.get(title)??(title==='Engine'||changed(keys));
-  $('#optionsForm').innerHTML=OPTION_SECTIONS.map(([title,keys])=>`<details class="option-section" data-section="${esc(title)}"${isOpen(title,keys)?' open':''}><summary>${esc(t(title))}</summary>${title==='Engine'?modes:''}<div class="option-grid">${keys.map(k=>`<div class="opt-field" data-opt="${k}"${OPTION_FIELDS[k].modes?` data-modes="${OPTION_FIELDS[k].modes.join(' ')}"`:''}>${optionInput(k,values[k])}${d.unavailable?.[k]?`<small class="option-unavailable">${esc(t(d.unavailable[k]))}</small>`:''}</div>`).join('')}</div>${title==='Experimental'?experimental:title==='Caching'?`<p class="muted">${t('State cache reuses the longest cached prefix of growing or edited states, then computes the changed suffix. Its GB budget consumes GPU memory alongside weights and graphs; reduce it if memory is tight. No cache-hit counters are reported.')}</p>`:title==='Kernels (CUDA graph engine)'?`<p class="muted">${t('auto uses compact rows where supported. default uses padded graphs; fine captures more shapes and takes longer to start. compact needs supported attention kernels and more GPU memory (about 6 GB extra on measured RTX 3090 runs). Unsupported combinations show the engine’s refusal in the model row and Logs.')}</p>`:title==='Engine'?'<p class="muted" id="optPackedNote"></p>':''}</details>`).join('');
+  $('#optionsForm').innerHTML=OPTION_SECTIONS.map(([title,keys])=>`<details class="option-section" data-section="${esc(title)}"${isOpen(title,keys)?' open':''}><summary>${esc(t(title))}</summary>${title==='Engine'?modes:''}<div class="option-grid">${keys.map(k=>`<div class="opt-field" data-opt="${k}"${OPTION_FIELDS[k].modes?` data-modes="${OPTION_FIELDS[k].modes.join(' ')}"`:''}${OPTION_FIELDS[k].quants?` data-quants="${OPTION_FIELDS[k].quants}"`:''}>${optionInput(k,values[k])}${d.unavailable?.[k]?`<small class="option-unavailable">${esc(t(d.unavailable[k]))}</small>`:''}</div>`).join('')}</div>${title==='Experimental'?experimental:title==='Caching'?`<p class="muted">${t('State cache reuses the longest cached prefix of growing or edited states, then computes the changed suffix. Its GB budget consumes GPU memory alongside weights and graphs; reduce it if memory is tight. No cache-hit counters are reported.')}</p>`:title==='Kernels (CUDA graph engine)'?`<p class="muted">${t('auto uses compact rows where supported. default uses padded graphs; fine captures more shapes and takes longer to start. compact needs supported attention kernels and more GPU memory (about 6 GB extra on measured RTX 3090 runs). Unsupported combinations show the engine’s refusal in the model row and Logs.')}</p>`:title==='Engine'?'<p class="muted" id="optPackedNote"></p>':''}</details>`).join('');
   $('#optionsForm').querySelectorAll('details.option-section > summary').forEach(s=>s.onclick=()=>optionSectionOpen.set(s.parentElement.dataset.section,!s.parentElement.open));  // a user's click (or Enter / Space), not the initial open
   $('#optionsForm').querySelectorAll('input[type=range]').forEach(r=>r.oninput=()=>{$(`#${r.id}-out`).textContent=`${r.value}%`;});
   $('#optionsForm').onchange=()=>updateOptionVisibility();
@@ -1766,6 +1766,8 @@ function updateOptionVisibility() {
   $('#optPackedNote').textContent=mode==='mps'?t('Packed PyTorch execution: choose Device cpu for the CPU path, or mps for Apple Silicon. The CPU default remains eager.'):packedReasonText||t('MLX packed is off by default. Measured on an Apple M5 Pro (basal 2.3.1, #36): basal-2.0-4.5B 134 → 88 ms per two-order decision, mini 47 → 31 ms, the same decisions as the KV-cache path in bf16 (mlx-q8 on the 4.5B: 0.955 instead of 0.977 agreement). Compatible Llama groups with prefix plus all suffixes up to 512 tokens use packed rows; longer groups keep the KV-cache path.');
   $('#opt-device option[value=cuda]').disabled=mode==='mps';
   $('#optionsForm').querySelectorAll('[data-modes]').forEach(x=>x.hidden=!optionsState.data.unavailable?.[x.dataset.opt]&&!x.dataset.modes.split(' ').includes(mode));
+  const quant=$('#opt-quant').value||mode;
+  $('#optionsForm').querySelectorAll('[data-quants]').forEach(x=>x.hidden=!optionsState.data.unavailable?.[x.dataset.opt]&&!(GRAPH_MODES.includes(mode)&&x.dataset.quants.split(' ').includes(quant)));
   // thinking: basal-2.0 4.5B with vLLM (here, in another environment, or a running server); early exit: fast-exit
   const thinkBox=$('#opt-think'), exitBox=$('#opt-early_exit');
   thinkBox.disabled=!think.model; if(!think.model)setChecked(thinkBox,false);
@@ -1792,7 +1794,7 @@ function collectOptions() {
     const el=$(`#opt-${key}`);
     if(!el)continue;
     if(optionsState.data.unavailable?.[key]){out[key]=f.kind==='bool'?el.checked:f.kind==='num'?(el.value===''?d.defaults[key]:Number(el.value)):f.kind==='select'?(el.value===''?null:(f.numeric?Number(el.value):el.value)):(el.value.trim()||d.defaults[key]);continue;}
-    if(el.closest('[hidden]')||el.disabled)continue;
+    if((el.closest('[hidden]')&&!f.quants)||el.disabled)continue;
     if(f.kind==='bool')out[key]=el.checked;
     else if(f.kind==='percent')out[key]=Number(el.value)===Math.round(d.defaults[key]*100)?d.defaults[key]:Number(el.value)/100;
     else if(f.kind==='num')out[key]=el.value===''?d.defaults[key]:Number(el.value);
@@ -1804,7 +1806,8 @@ function collectOptions() {
 async function openLoadOptions(id, media=false, action='load', initialMode=null) {
   const data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);
   const loaded=(statusCache?.models||[]).find(m=>m.id===id), restart=action==='restart', save=action==='save';
-  optionsState={id,media,restart,save,data,initialMode};
+  const trigger=document.activeElement?.closest('.options-model');
+  optionsState={id,media,restart,save,data,initialMode,trigger};
   $('#optionsModel').textContent=`${id}${media?` · ${t('with media')}`:''}${restart?` · ${t('restarts the running model')}`:save?` · ${t('kept for the next load')}`:''}`;
   $('#optionsApply').textContent=restart?t('Restart'):save?t('Save'):t('Load');
   $('#optionsSetupNote').hidden=!save;
@@ -1822,14 +1825,14 @@ document.addEventListener('click',e=>{const b=e.target.closest('.options-model')
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
-  const {id,media,restart,save,data,initialMode}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
+  const {id,media,restart,save,data,initialMode,trigger}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
   $('#optionsApply').disabled=true;
   try{
     const invalid=[...$('#optionsForm').querySelectorAll('input,select')].find(el=>!el.disabled&&!el.closest('[hidden]')&&(!el.checkValidity()||(['opt-reread','opt-graph_memory_gb'].includes(el.id)&&el.value!==''&&Number(el.value)<=0)));
     if(invalid){invalid.setAttribute('aria-invalid','true');invalid.focus();throw new Error(t('Check the value of {option}.',{option:OPTION_FIELDS[invalid.id.slice(4)]?.label?t(OPTION_FIELDS[invalid.id.slice(4)].label):invalid.id}));}
     for(const [key,reason] of Object.entries(data.unavailable||{}))if(Object.hasOwn(options,key))throw new Error(t('Load option {option}: {reason}',{option:key,reason:t(reason)}));
     if(remember||data.saved&&!initialMode)await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});
-    if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();return;}
+    if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();const replacement=[...document.querySelectorAll('.options-model')].find(b=>b.dataset.id===id&&b.dataset.action==='save'&&b.dataset.media===String(media)&&b.getClientRects().length);(replacement|| (trigger?.isConnected?trigger:null))?.focus();return;}
     if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
     else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
     $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();

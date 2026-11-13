@@ -691,3 +691,58 @@ def test_selected_graph_memory_reaches_fleet_budget(tmp_path, monkeypatch):
         client.post("/api/unload", json={"id": BF16.id})
         refused = client.post("/api/load", json={"id": BF16.id, "options": {"mode": "fast", "graph_memory_gb": 9}})
         assert refused.status_code == 409
+
+
+def test_gdn_preflight_and_future_native_auto(monkeypatch):
+    from basal import server
+
+    if "--long-lane-gdn" not in engine.serve_flags():
+        pytest.skip("installed Engine does not declare --long-lane-gdn")
+    app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CUDA)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        chosen = {"mode": "fast", "long_lane_gdn": True}
+        for method, path in ((client.put, "/api/models/options"), (client.post, "/api/load")):
+            result = method(path, json={"id": BF16.id, "options": chosen})
+            assert result.status_code == 400 and "--long-lane-gdn on needs --long-lane on" in result.json()["detail"]
+        assert client.get("/api/status").json()["models"] == []
+
+    real_parser = server.parser
+
+    def parser_with_auto():
+        parser = real_parser()
+        parser.set_defaults(long_lane="auto")
+        return parser
+
+    observed = []
+    monkeypatch.setattr(server, "parser", parser_with_auto)
+    monkeypatch.setattr(
+        server, "serve_options", lambda args: observed.append((args.long_lane, args.long_lane_gdn)), raising=False
+    )
+    options.check_combination(BF16, CUDA, options.validate(chosen, "fast"), "fast")
+    assert observed == [("auto", "on")]
+
+    class RejectingParser:
+        def parse_args(self, args):
+            raise SystemExit("native parser refusal")
+
+    monkeypatch.setattr(server, "parser", lambda: RejectingParser())
+    with pytest.raises(ValueError, match="native parser refusal"):
+        options.check_combination(BF16, CUDA, options.validate(chosen, "fast"), "fast")
+
+
+def test_oversized_graph_memory_refused_and_saved_value_recoverable(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CUDA)
+    chosen = {"mode": "fast", "graph_memory_gb": 1e308}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for method, path in ((client.put, "/api/models/options"), (client.post, "/api/load")):
+            result = method(path, json={"id": BF16.id, "options": chosen})
+            assert result.status_code == 400 and "too large to convert to bytes" in result.json()["detail"]
+        settings.set_load_options(BF16.id, chosen)
+        assert client.get("/api/models").status_code == 200
+        assert client.get("/api/models/card", params={"id": BF16.id}).status_code == 200
+        saved = client.get("/api/models/options", params={"id": BF16.id})
+        assert saved.status_code == 200 and saved.json()["options"]["graph_memory_gb"] == 1e308
+        assert settings.load_options(BF16.id) == chosen
+        assert client.put("/api/models/options", json={"id": BF16.id, "options": {}}).status_code == 200
+        assert settings.load_options(BF16.id) == {}
