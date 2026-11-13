@@ -892,10 +892,8 @@ def test_saved_rows_comparison_modes_use_engine_semantics(tmp_path, monkeypatch)
         "p": [0.99, 0.01],
     }
     rows.write_text(json.dumps(header) + "\n" + json.dumps(row) + "\n")
-    import os
-
-    expanduser = os.path.expanduser
-    monkeypatch.setattr(os.path, "expanduser", lambda value: str(tmp_path) if value == "~" else expanduser(value))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     with TestClient(app, base_url="http://127.0.0.1") as client:
         for compare in ("shipped", "none", "~/custom.json"):
             response = client.post(
