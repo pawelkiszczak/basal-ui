@@ -1171,3 +1171,55 @@ def test_cascade_batch_eligibility_at_both_routes(client, child, tmp_path, kind,
         manual = client.post("/api/batch", json={"id": "mini", "input": str(source)})
         assert manual.status_code == 400 and "Batch requires an escalation Cascade without fallback" in manual.text
         assert child.seen == [] and client.get("/api/jobs").json()["jobs"].get("batch") is None
+
+
+@pytest.mark.parametrize("failure_stage", ["history_write", "final_settings_save"])
+def test_history_interruption_does_not_replay_settled_skip(client, child, tmp_path, monkeypatch, failure_stage):
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    for name in ("b", "c"):
+        (inputs / f"{name}.jsonl").write_text(item(name))
+    protected = outputs / "b.answers.jsonl"
+    protected.write_text("existing answers")
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    scheduler = client.app.state.schedules
+    write_history, save_settings = settings._write_schedule_history, settings.save
+    interrupted = history_written = False
+
+    def write(rows):
+        nonlocal interrupted, history_written
+        if failure_stage == "history_write" and not interrupted:
+            interrupted = True
+            raise OSError("history persistence interrupted")
+        write_history(rows)
+        history_written = True
+
+    def save(data):
+        nonlocal interrupted
+        if (
+            failure_stage == "final_settings_save"
+            and history_written
+            and not interrupted
+            and "schedule_history_pending" not in data
+        ):
+            interrupted = True
+            raise OSError("history persistence interrupted")
+        save_settings(data)
+
+    monkeypatch.setattr(settings, "_write_schedule_history", write)
+    monkeypatch.setattr(settings, "save", save)
+    with pytest.raises(OSError, match="history persistence interrupted"):
+        scheduler.run_due(1000)
+    assert scheduler.run_due(1001)["status"] == "started"
+    job = scheduler.active[2]
+    job.thread.join(30)
+    assert not job.thread.is_alive()
+    scheduler.run_due(1002)
+    rows = client.get("/api/schedules/nightly/runs").json()["runs"]
+    assert len(rows) == 2
+    assert [row["file"] for row in rows] == [str(inputs / "c.jsonl"), str(inputs / "b.jsonl")]
+    assert rows[1]["skipped"] == "output exists" and rows[0]["rows"] == 1
+    assert protected.read_text() == "existing answers"
+    assert [body["state"] for _, body in child.seen] == ["c"]
+    assert not client.get("/api/schedules").json()["schedules"][0]["paused"]

@@ -191,7 +191,12 @@ class Schedules:
         return current.strftime("%H:%M") == spec["interval"]["daily_at"] and (last is None or last < today_slot)
 
     def _record(self, spec, row, checkpoint=False):
-        self.settings.append_schedule_run(row, spec, checkpoint)
+        try:
+            self.settings.append_schedule_run(row, spec, checkpoint)
+        except Exception:
+            # The dequeue may already be durable; rebuild the cache before recording another outcome.
+            self.pending.pop(spec["id"], None)
+            raise
         try:
             current = self.get(spec["id"])
             if current.get("paused") and current != spec:
