@@ -173,3 +173,5 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 #cascadeForm details[open]{display:grid}
 #cascadeForm details label{margin-top:10px}
 .cascade-level{display:grid;gap:8px;margin:10px 0;padding:12px;border:1px solid var(--line);border-radius:6px}
+.playground-shell{min-width:0}
+.chips.safety .chip,.chips.safety .badge{height:auto;max-width:100%;min-width:0;overflow-wrap:anywhere;white-space:normal}
