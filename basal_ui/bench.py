@@ -4,6 +4,7 @@ against the model's basal-serve) and engine-mode comparisons (basal-bench); the 
 
 import asyncio
 import json
+import math
 import statistics
 import tempfile
 import time
@@ -13,6 +14,8 @@ import httpx
 from basal.bench import DEFAULT_QUESTIONS
 from basal.loadtest import body
 
+from . import engine
+from . import options as load_options
 from .jobs import Cancelled, run_tool
 
 MIN_ITEMS = 10
@@ -309,6 +312,111 @@ def comparison_modes(available) -> list[str]:
 def comparison_memory(modes, est_memory_bytes) -> int:
     """The memory a comparison holds at its peak: one mode at a time, eager-fp32 at twice the bf16 weights."""
     return (2 if "eager-fp32" in modes else 1) * (est_memory_bytes or 0)
+
+
+def identity_args(local_dir, dtype, options, out_json) -> list[str]:
+    """Build basal-bench's fast-path identity gate command for the saved serving options."""
+    from basal.server import lean_tree
+
+    lean, tree = lean_tree(
+        options.get("lean", load_options.DEFAULTS["lean"]),
+        options.get("tree", load_options.DEFAULTS["tree"]),
+        "graph",
+    )
+    args = ["--identity", "--model", str(local_dir), "--dtype", dtype, "--out", str(out_json)]
+    for key, flag in (
+        ("attn", "--attn"),
+        ("merge", "--merge"),
+        ("lean", "--lean"),
+        ("tree", "--tree"),
+        ("gemma_attn", "--gemma-attn"),
+    ):
+        value = lean if key == "lean" else tree if key == "tree" else options.get(key)
+        if value is not None and value != load_options.DEFAULTS.get(key):
+            args += [flag, str(value)]
+    return args
+
+
+def order_args(local_dir, out_json) -> list[str]:
+    return ["--order-check", "--model", str(local_dir), "--out", str(out_json)]
+
+
+def identity_job(job, fleet, variant, local_dir, dtype, options):
+    """Run the Engine identity gate, store its per-path results and release its memory reservation."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="basal-ui-identity-") as directory:
+            out_json = str(Path(directory) / "identity.json")
+            result = run_tool(job, "bench", identity_args(local_dir, dtype, options, out_json), out_path=out_json)
+    finally:
+        fleet.release("identity")
+    rows = result.get("rows") if isinstance(result, dict) else None
+    if (
+        not isinstance(rows, list)
+        or not rows
+        or not all(
+            isinstance(r, dict)
+            and r.get("gate") in ("pass", "FAIL")
+            and isinstance(r.get("path"), str)
+            and isinstance(r.get("max_dp"), (int, float))
+            and not isinstance(r.get("max_dp"), bool)
+            and math.isfinite(r["max_dp"])
+            and r["max_dp"] >= 0
+            and bool(r["path"])
+            for r in rows
+        )
+    ):
+        raise RuntimeError("invalid identity gate output")
+    stored = {
+        "kind": "identity",
+        "model": variant.id,
+        "dtype": dtype,
+        "rows": rows,
+        "pass": all(row.get("gate") == "pass" for row in rows),
+        "engine": engine.installed()[0],
+        "when": time.time(),
+    }
+    if fleet.stats is not None:
+        fleet.stats.add_benchmark(variant.id, stored)
+    return stored
+
+
+def order_check_job(job, fleet, variant, local_dir):
+    """Run Engine 2.5's option-order check and save its report unchanged."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="basal-ui-order-check-") as directory:
+            out_json = str(Path(directory) / "order-check.json")
+            result = run_tool(job, "bench", order_args(local_dir, out_json), out_path=out_json)
+    finally:
+        fleet.release("order_check")
+
+    def valid_block(block):
+        return (
+            isinstance(block, dict)
+            and isinstance(block.get("n"), int)
+            and not isinstance(block["n"], bool)
+            and block["n"] > 0
+            and all(
+                isinstance(block.get(key), (int, float))
+                and not isinstance(block[key], bool)
+                and math.isfinite(block[key])
+                and 0 <= block[key] <= 1
+                for key in ("flip_reversed", "flip_rotated", "flip_any")
+            )
+        )
+
+    if (
+        not valid_block(result)
+        or not isinstance(result.get("mode"), str)
+        or not result["mode"]
+        or not isinstance(result.get("by_k"), dict)
+        or not result["by_k"]
+        or not all(isinstance(key, str) and key and valid_block(block) for key, block in result["by_k"].items())
+    ):
+        raise RuntimeError("invalid order check output")
+    stored = {"kind": "order_check", "model": variant.id, "when": time.time(), "report": result}
+    if fleet.stats is not None:
+        fleet.stats.add_benchmark(variant.id, stored)
+    return stored
 
 
 def bench_args(local_dir, modes, n, lat_n, gguf, options) -> list[str]:
