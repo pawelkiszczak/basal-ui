@@ -1251,7 +1251,7 @@ def create_app(
                 },
                 status_code=400,
             )
-        out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
+        out = calibration.unique_path(settings_mod.calibrations_dir(variant.id), time.strftime("%Y%m%d-%H%M%S"))
         label = f"{variant.id} on {source.name}" + (" (engine in process: task questions)" if in_process else "")
         reserve = in_process and not from_rows
         engine_args = None

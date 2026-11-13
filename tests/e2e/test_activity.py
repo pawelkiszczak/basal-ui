@@ -328,8 +328,9 @@ def test_calibration_error_and_mismatch_states_keep_focus(page):
 
 def test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_model):
     model = text_model["id"]
-    if ui.model(model):
-        pytest.skip("model must be unloaded to test an unavailable Saved snapshot")
+    active = ui.model(model)
+    if active and active["state"] != "ready":
+        pytest.skip("the model must be ready or unloaded to restore its state")
     original = json.loads(ui.settings.read_text()) if ui.settings.exists() else {}
     saved = original.get("load_options", {}).get(model, {})
     directory = ui.settings.parent / "calibrations" / model.replace("/", "--")
@@ -369,6 +370,7 @@ def test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_mo
     result_path = None
     job_started = False
     try:
+        ui.unload(model)
         ui.put("/api/models/options", {"id": model, "options": {"revision": "issue19-unavailable-revision"}})
         listing = ui.get("/api/calibrations", params={"id": model})
         assert listing["shipped"] is None
@@ -392,19 +394,42 @@ def test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_mo
         assert (metadata["model"], metadata["layout"]) == (model, "qfirst") and "revision" not in metadata
         assert ui.model(model) is None
     finally:
-        if job_started and result_path is None:
-            job = ui.status()["jobs"].get("calibrate")
-            if job and job["running"]:
-                ui.delete("/api/calibrate")
-                job = ui.wait_job("calibrate")
-            if job and (job.get("result") or {}).get("file"):
-                result_path = Path(job["result"]["file"])
-        ui.put("/api/models/options", {"id": model, "options": saved})
-        source.unlink(missing_ok=True)
-        rows.unlink(missing_ok=True)
-        if result_path:
-            result_path.unlink(missing_ok=True)
-            result_path.with_suffix(".report.txt").unlink(missing_ok=True)
+        try:
+            if job_started and result_path is None:
+                job = ui.status()["jobs"].get("calibrate")
+                if job and job["running"]:
+                    ui.delete("/api/calibrate")
+                    job = ui.wait_job("calibrate")
+                if job and (job.get("result") or {}).get("file"):
+                    result_path = Path(job["result"]["file"])
+        finally:
+            try:
+                ui.unload(model)
+                ui.put("/api/models/options", {"id": model, "options": saved})
+                if active:
+                    ui.post(
+                        "/api/load", {"id": model, "options": active["options"], "media": active["media_requested"]}
+                    )
+                    restored = ui.wait_model(model)
+                    assert restored and restored["state"] == "ready", restored
+            finally:
+                with patch.dict(os.environ, {"BASAL_UI_CONFIG": str(ui.settings)}):
+
+                    @settings._locked
+                    def restore_remembered():
+                        current = settings.load()
+                        if "last_models" in original:
+                            current["last_models"] = original["last_models"]
+                        else:
+                            current.pop("last_models", None)
+                        settings.save(current)
+
+                    restore_remembered()
+                source.unlink(missing_ok=True)
+                rows.unlink(missing_ok=True)
+                if result_path:
+                    result_path.unlink(missing_ok=True)
+                    result_path.with_suffix(".report.txt").unlink(missing_ok=True)
 
 
 def test_calibration_transition_restores_session_on_failure(page, ui, text_model, monkeypatch):
@@ -419,12 +444,25 @@ def test_calibration_transition_restores_session_on_failure(page, ui, text_model
     try:
         active = ui.load(model, {"layout": "canonical"})
         remembered = json.loads(ui.settings.read_text()).get("last_models")
+        test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_model)
+        after_success = json.loads(ui.settings.read_text())
+        assert after_success.get("last_models") == remembered
+        assert after_success.get("load_options", {}).get(model, {}) == before.get("load_options", {}).get(model, {})
+        restored = ui.model(model)
+        assert restored["state"] == "ready" and restored["options"] == active["options"]
         monkeypatch.setattr(test_pages, "manager_tab", fail_after_change)
         with pytest.raises(AssertionError, match="injected failure"):
             test_calibration_tracks_real_saved_and_active_layout(page, ui, text_model)
         after = json.loads(ui.settings.read_text())
         assert after.get("last_models") == remembered
         assert after.get("load_options", {}).get(model, {}) == before.get("load_options", {}).get(model, {})
+        restored = ui.model(model)
+        assert restored["state"] == "ready" and restored["options"] == active["options"]
+        with pytest.raises(AssertionError, match="injected failure"):
+            test_refit_button_works_when_saved_snapshot_is_unavailable(page, ui, text_model)
+        after_refit = json.loads(ui.settings.read_text())
+        assert after_refit.get("last_models") == remembered
+        assert after_refit.get("load_options", {}).get(model, {}) == before.get("load_options", {}).get(model, {})
         restored = ui.model(model)
         assert restored["state"] == "ready" and restored["options"] == active["options"]
     finally:

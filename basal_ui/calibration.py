@@ -83,16 +83,16 @@ def rows_provenance(path, original):
             raise ValueError("model identity is missing")
         row_name, row_revision = model_identity(row_model, Path(row_model))
         pair_name, pair_revision = model_identity(pair_model, Path(pair_model))
+        if pair_revision and fitted.get("revision") and pair_revision != fitted["revision"]:
+            raise ValueError("paired model path and revision disagree")
+        if row_revision and header.get("revision") and row_revision != header["revision"]:
+            raise ValueError("saved rows model path and revision disagree")
         pair_revision = fitted.get("revision") or pair_revision
         row_revision = header.get("revision") or row_revision
-        baseline = header.get("baseline")
-        if not row_revision and baseline:
-            base_model, base_revision = model_identity(baseline, Path(baseline).parent)
-            if base_revision and base_model == row_name:
-                row_revision = base_revision
-        if row_name != pair_name or row_revision != pair_revision:
+        if row_name != pair_name or row_revision and pair_revision and row_revision != pair_revision:
             raise ValueError("model or revision differs between saved rows and paired calibration")
-        return header, layout, {"model": pair_name, **({"revision": pair_revision} if pair_revision else {})}
+        revision = pair_revision or row_revision
+        return header, layout, {"model": pair_name, **({"revision": revision} if revision else {})}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ValueError(f"cannot verify saved rows provenance: {exc}") from exc
 
@@ -321,11 +321,15 @@ def run_calibration(
 ):
     """Run basal-calibrate, either against a private child or an in-process engine."""
     in_process = engine_args is not None
+    private_dir = None
     try:
         writer = _Lines(job.log)
         advanced = advanced or {}
-        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        rows_path = Path(out_path).with_suffix(".rows.jsonl")
+        public_out = Path(out_path)
+        public_out.parent.mkdir(parents=True, exist_ok=True)
+        private_dir = tempfile.TemporaryDirectory(prefix=".calibration-", dir=public_out.parent)
+        out_path = Path(private_dir.name) / public_out.name
+        rows_path = out_path.with_suffix(".rows.jsonl")
         from basal.prompt import model_layout
 
         try:
@@ -451,7 +455,11 @@ def run_calibration(
             finally:
                 fleet.stop_temporary("calibrate")
         job.check()
-        report = "\n".join(writer.lines)
+        report = (
+            "\n".join(writer.lines)
+            .replace(str(out_path), str(public_out))
+            .replace(str(rows_path), str(public_out.with_suffix(".rows.jsonl")))
+        )
         if advanced.get("report_only"):
             return {"file": None, "report": report, "report_only": True}
         if not Path(out_path).exists():
@@ -464,10 +472,32 @@ def run_calibration(
             Path(out_path).write_text(json.dumps(cal, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         elif local_dir is not None:
             name_snapshot(out_path, local_dir)
-        Path(out_path).with_suffix(".report.txt").write_text(report + "\n", encoding="utf-8")
-        return {"file": str(out_path), "report": report, "engine_in_process": in_process, **summary(out_path)}
+        out_path.with_suffix(".report.txt").write_text(report + "\n", encoding="utf-8")
+        result = summary(out_path)
+        published = []
+        try:
+            for source in (out_path.with_suffix(".report.txt"), rows_path, out_path):
+                if source.exists():
+                    job.check()
+                    target = public_out.parent / source.name
+                    os.link(source, target)
+                    published.append((source, target))
+            job.check()
+        except BaseException:
+            for source, target in published:
+                try:
+                    if os.path.samestat(source.stat(), target.stat()):
+                        target.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
+        return {"file": str(public_out), "report": report, "engine_in_process": in_process, **result}
     finally:
-        if in_process and not (advanced or {}).get("from_rows"):
-            if (advanced or {}).get("reserve", True):
-                fleet.release("calibrate")
-            free_engine_memory()
+        try:
+            if private_dir is not None:
+                private_dir.cleanup()
+        finally:
+            if in_process and not (advanced or {}).get("from_rows"):
+                if (advanced or {}).get("reserve", True):
+                    fleet.release("calibrate")
+                free_engine_memory()

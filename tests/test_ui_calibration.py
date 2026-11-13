@@ -833,7 +833,6 @@ def test_in_process_setup_failure_releases_reservation(tmp_path, monkeypatch, co
     [
         ({"basal_calibrate_rows": 1}, {"model": "org/model"}),
         ({"basal_calibrate_rows": 1, "model": "other/model"}, {"model": "org/model"}),
-        ({"basal_calibrate_rows": 1, "model": "org/model"}, {"model": "org/model", "revision": "abc"}),
         (
             {"basal_calibrate_rows": 1, "model": "org/model", "revision": "abc"},
             {"model": "org/model", "revision": "def"},
@@ -911,3 +910,125 @@ def test_saved_rows_comparison_modes_use_engine_semantics(tmp_path, monkeypatch)
                 assert result["baseline"] == "none" and not result["temperature_per_prim"]
             else:
                 assert result["baseline"] == str(custom) and result["temperature_per_prim"]["choice"] == 1.7
+
+
+@pytest.mark.parametrize(
+    "header,pair",
+    [
+        (
+            {"model": "/cache/models--org--model/snapshots/abc", "revision": "def"},
+            {"model": "org/model", "revision": "abc"},
+        ),
+        (
+            {"model": "/cache/models--org--model/snapshots/abc"},
+            {"model": "/cache/models--org--model/snapshots/abc", "revision": "def"},
+        ),
+    ],
+)
+def test_refit_rejects_internal_revision_contradictions(tmp_path, header, pair):
+    _, app = make_app(tmp_path)
+    original = tmp_path / "identity.json"
+    original.write_text(json.dumps({**FITTED, "fitted_on": {**pair, "layout": "qfirst"}}))
+    rows = original.with_suffix(".rows.jsonl")
+    rows.write_text(json.dumps({"basal_calibrate_rows": 1, **header}) + "\n")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert response.status_code == 400 and response.json()["code"] == "calibration_rows_layout_unknown"
+        assert "disagree" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("failure", ["strict", "cancel"])
+def test_refit_failed_or_cancelled_after_engine_write_does_not_publish(tmp_path, monkeypatch, failure):
+    import basal_ui.app as app_module
+
+    written, release = threading.Event(), threading.Event()
+
+    def fit(argv):
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(FITTED))
+        written.set()
+        if failure == "strict":
+            assert "--strict" in argv and "--reference" in argv
+            raise SystemExit("strict check failed")
+        assert release.wait(10)
+
+    monkeypatch.setattr(calibrate, "main", fit)
+    monkeypatch.setattr(app_module.time, "strftime", lambda *_: "fixed")
+    _, app = make_app(tmp_path)
+    original = tmp_path / "source.json"
+    original.write_text(json.dumps({**FITTED, "fitted_on": {"model": "org/model", "layout": "qfirst"}}))
+    rows = original.with_suffix(".rows.jsonl")
+    rows.write_text(json.dumps({"basal_calibrate_rows": 1, "model": "org/model"}) + "\n")
+    directory = settings.calibrations_dir("mini")
+    directory.mkdir(parents=True)
+    existing = directory / "fixed.json"
+    existing.write_text('{"existing":"unchanged"}')
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            body = {"id": "mini", "input": str(rows), "from_rows": True}
+            if failure == "strict":
+                body["advanced"] = {"strict": True, "reference": "basal-1.5"}
+            response = client.post("/api/calibrate", json=body)
+            assert response.status_code == 202
+            assert written.wait(10)
+            if failure == "cancel":
+                client.delete("/api/calibrate")
+                release.set()
+            job = wait_job(client)
+            assert job["phase"] == ("error" if failure == "strict" else "cancelled")
+            assert existing.read_text() == '{"existing":"unchanged"}'
+            assert list(directory.glob("*.json")) == [existing]
+            assert not list(directory.glob(".calibration-*"))
+    finally:
+        release.set()
+
+
+def test_successful_refit_publishes_only_corrected_layout(tmp_path, monkeypatch):
+    def fit(argv):
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(FITTED))
+
+    monkeypatch.setattr(calibrate, "main", fit)
+    _, app = make_app(tmp_path)
+    original = tmp_path / "source.json"
+    original.write_text(json.dumps({**FITTED, "fitted_on": {"model": "org/model", "layout": "qfirst"}}))
+    rows = original.with_suffix(".rows.jsonl")
+    rows.write_text(json.dumps({"basal_calibrate_rows": 1, "model": "org/model"}) + "\n")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert response.status_code == 202
+        job = wait_job(client)
+        assert job["phase"] == "done_with_warnings", job
+        output = Path(job["result"]["file"])
+        assert json.loads(output.read_text())["fitted_on"]["layout"] == "qfirst"
+        assert (
+            next(
+                f["layout"]
+                for f in client.get("/api/calibrations", params={"id": "mini"}).json()["files"]
+                if f["file"] == str(output)
+            )
+            == "qfirst"
+        )
+        assert not list(output.parent.glob(".calibration-*"))
+
+
+def test_refit_uses_declared_paired_revision_not_baseline_revision(tmp_path, monkeypatch):
+    def fit(argv):
+        Path(argv[argv.index("--out") + 1]).write_text(json.dumps(FITTED))
+
+    monkeypatch.setattr(calibrate, "main", fit)
+    _, app = make_app(tmp_path)
+    original = tmp_path / "source.json"
+    original.write_text(
+        json.dumps({**FITTED, "fitted_on": {"model": "org/model", "revision": "producer", "layout": "qfirst"}})
+    )
+    rows = original.with_suffix(".rows.jsonl")
+    baseline = tmp_path / "models--org--model" / "snapshots" / "other-revision" / "CALIBRATION.json"
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text(json.dumps(FITTED))
+    rows.write_text(json.dumps({"basal_calibrate_rows": 1, "model": "org/model", "baseline": str(baseline)}) + "\n")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/calibrate", json={"id": "mini", "input": str(rows), "from_rows": True})
+        assert response.status_code == 202
+        job = wait_job(client)
+        assert job["phase"] == "done_with_warnings", job
+        fitted = json.loads(Path(job["result"]["file"]).read_text())["fitted_on"]
+        assert fitted["revision"] == "producer" and fitted["layout"] == "qfirst"
