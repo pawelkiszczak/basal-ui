@@ -1,6 +1,8 @@
 import json
+import sys
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -233,6 +235,8 @@ def test_preset_materializes_native_requests_and_preserves_source(tmp_path, monk
 
 
 def test_preset_materialization_cancellation_cleans_temp(tmp_path, monkeypatch):
+    import basal
+
     from basal_ui import batch
     from basal_ui.jobs import Cancelled, Job, LogBuffer
 
@@ -249,17 +253,24 @@ def test_preset_materialization_cancellation_cleans_temp(tmp_path, monkeypatch):
     monkeypatch.setattr(batch.tempfile, "TemporaryDirectory", temporary)
     monkeypatch.setattr(batch, "run_tool", lambda *a, **k: pytest.fail("cancelled job launched Native tool"))
     job = Job("batch", "m", "test", LogBuffer())
-    checks = 0
 
-    def check():
-        nonlocal checks
-        checks += 1
-        if checks == 4:
-            raise Cancelled()
+    def questions(name, lang, state):
+        job.cancel.set()
+        return {
+            "urgency": {
+                "type": "choice",
+                "instructions": "Choose urgency",
+                "criteria": {"low": "Low", "high": "High"},
+            },
+        }
 
-    job.check = check
+    presets = ModuleType("basal.presets")
+    presets.questions = questions
+    monkeypatch.setitem(sys.modules, "basal.presets", presets)
+    monkeypatch.setattr(basal, "presets", presets, raising=False)
     fleet = type("Fleet", (), {"ready": lambda self, model: type("Runner", (), {"base_url": "http://localhost"})()})()
     with pytest.raises(Cancelled):
         batch.run_batch(job, fleet, "m", source, tmp_path / "out", preset="triage", lang="en")
     assert created and not created[0].exists()
     assert source.read_text() == '{"state":"one"}\n{"state":"two"}\n'
+    assert not (tmp_path / "out").exists()
