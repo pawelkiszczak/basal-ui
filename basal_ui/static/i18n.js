@@ -4,6 +4,8 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Unload idle models after minutes (empty = off)": "Wyładuj nieaktywne modele po minutach (puste = wyłączone)",
+  "Enter a whole number of minutes of at least 1, or leave empty to turn off.": "Wpisz liczbę całkowitą minut nie mniejszą niż 1 lub pozostaw puste, aby wyłączyć.",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",
@@ -1188,6 +1190,7 @@ const PL = {
   "— on disk": "— na dysku"
 };  // 'English text': 'tekst po polsku'
 const PL_PLURAL = {
+  "Unloaded after {n} idle minute at {time}": ["Wyładowano po {n} minucie bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}"],
   "{n} non-empty row": ["{n} niepusty wiersz", "{n} niepuste wiersze", "{n} niepustych wierszy"],
   "{n} question": ["{n} pytanie", "{n} pytania", "{n} pytań"],
   "{n} request": ["{n} żądanie", "{n} żądania", "{n} żądań"],

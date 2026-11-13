@@ -160,6 +160,7 @@ class Runner:
         self.command, self.progress, self.error, self.base_url = None, None, None, None
         self.media_requested, self.media = False, []
         self.est_memory_bytes, self.models_entry, self.ready_at = None, None, None
+        self.last_used = None
         self.loaded_path = None
         self.serve_snapshot = None  # the child settings the running basal-serve was started with
         self.extra_args, self.temporary, self.options = (), False, {}
@@ -409,6 +410,7 @@ class Runner:
                                 return
                             self.state, self.media = "ready", media_kinds
                             self.models_entry, self.ready_at = entry, time.time()
+                            self.last_used = time.monotonic()
                             if not self.temporary and self.remember:
                                 self.settings_mod.remember_loaded(v.id, media, self.options)
                         self.event("info", f"{v.id}: ready")
@@ -499,6 +501,11 @@ class Fleet:
         self._lan_ip = None
         self.retiring: dict[Runner, int | None] = {}  # unloaded runners whose child is still being terminated
         self._rss_cache = (0.0, {})
+        self.idle_unloads = {}
+        self.idle_settings_generation = 0
+        self.idle_settings_changed = 0.0
+        self.idle_stop = threading.Event()
+        self.idle_thread = None
 
     def _check_addon_maintenance(self):
         """Reject model/process activity while uv mutates the Engine environment."""
@@ -631,6 +638,7 @@ class Fleet:
                 if reserved is None:
                     raise RuntimeError("restart memory reservation was lost")
                 self.reserved.pop(_reservation)
+            self.idle_unloads.pop(model_id, None)
             self.logs.pop(model_id, None)
             self.logs[model_id] = log = LogBuffer()  # most recent last; a reload starts a fresh log
             runner = self._runner(log)
@@ -660,26 +668,111 @@ class Fleet:
                 raise RuntimeError("model is unavailable during maintenance")
             retiring = []
             for i in ids:
-                runner = self.runners.pop(i)
-                # detach under the fleet lock: the old load can no longer reach ready and remember itself after
-                # forget_loaded; its memory stays committed until the child is gone (a new load must wait for it)
-                proc, est = runner.detach()
-                retiring.append((runner, proc))
-                self.retiring[runner] = est
-                if forget:
-                    self.settings_mod.forget_loaded(i)
+                retiring.append(self._detach_runner(i, forget))
             self._prune_logs()
         for i, (runner, proc) in zip(ids, retiring, strict=True):
-            Runner._terminate(proc)
-            with self.lock:
-                self.retiring.pop(runner, None)
-            self.event("info", f"unloaded: {i}")
+            self._finish_unload(i, runner, proc)
         if model_id is None:  # every model: the private children of jobs too (their job then fails)
             with self.lock:
                 temporary = list(self.temporary)
             for kind in temporary:
                 self.stop_temporary(kind)
         return self.status()
+
+    def _detach_runner(self, model_id, forget):
+        # Caller holds the fleet lock; retiring memory stays reserved until termination finishes.
+        runner = self.runners.pop(model_id)
+        proc, est = runner.detach()
+        self.retiring[runner] = est
+        if forget:
+            self.settings_mod.forget_loaded(model_id)
+        return runner, proc
+
+    def _finish_unload(self, model_id, runner, proc):
+        Runner._terminate(proc)
+        with self.lock:
+            self.retiring.pop(runner, None)
+        self.event("info", f"unloaded: {model_id}")
+
+    def start_idle_timer(self):
+        with self.lock:
+            self.idle_stop.clear()
+        self.idle_thread = threading.Thread(target=self._idle_loop, daemon=True)
+        self.idle_thread.start()
+
+    def _idle_loop(self):
+        while not self.idle_stop.wait(30):
+            self.unload_idle(time.monotonic())
+
+    def stop_idle_timer(self):
+        with self.lock:
+            self.idle_stop.set()
+        if self.idle_thread is not None:
+            self.idle_thread.join()
+
+    def unload_idle(self, now):
+        with self.lock:
+            candidates = list(self.runners.items())
+        for model_id, runner in candidates:
+            if not isinstance(runner, Runner):
+                continue
+            with self.lock, runner.lock:
+                timeout = self.settings_mod.memory_settings()["idle_unload_minutes"]
+                if (
+                    not timeout
+                    or timeout * 60 > sys.float_info.max
+                    or self.idle_stop.is_set()
+                    or self.stopping
+                    or self.engine_addon_installing
+                    or self.runners.get(model_id) is not runner
+                    or model_id in self.draining
+                    or self.leases.get(runner)
+                    or runner.temporary
+                    or runner.state != "ready"
+                    or runner.last_used is None
+                    or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
+                    or not runner.base_url
+                ):
+                    continue
+                gen, url, last_used, expected_timeout = runner.gen, runner.base_url, runner.last_used, timeout
+                settings_generation = self.idle_settings_generation
+            try:
+                response = httpx.get(url + "/health", timeout=0.5)
+                response.raise_for_status()
+                health = response.json()
+                if not isinstance(health, dict) or health.get("status") != "ok":
+                    continue
+            except (httpx.HTTPError, ValueError):
+                continue
+            with self.lock, runner.lock:
+                timeout = self.settings_mod.memory_settings()["idle_unload_minutes"]
+                if (
+                    not timeout
+                    or timeout != expected_timeout
+                    or self.idle_stop.is_set()
+                    or self.stopping
+                    or self.engine_addon_installing
+                    or self.runners.get(model_id) is not runner
+                    or model_id in self.draining
+                    or self.leases.get(runner)
+                    or runner.gen != gen
+                    or self.idle_settings_generation != settings_generation
+                    or runner.state != "ready"
+                    or runner.last_used != last_used
+                    or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
+                    or type(health.get("running")) is not int
+                    or health["running"] != 0
+                    or type(health.get("queued")) is not int
+                    or health["queued"] != 0
+                ):
+                    continue
+                message = f"unloaded after {timeout} idle minutes"
+                runner.log.append(message)
+                self.idle_unloads[model_id] = {"code": "idle_unload", "minutes": timeout, "at": time.time()}
+                detached, proc = self._detach_runner(model_id, forget=False)
+                self._prune_logs()
+            self._finish_unload(model_id, detached, proc)
+            self.event("info", f"{model_id}: {message}")
 
     def restart(self, assessment, media=False, options=None):
         """Unload and load again; options None keeps the running child's load options. The model stays in maintenance
@@ -737,13 +830,20 @@ class Fleet:
         with self.lock:
             memory = self._memory(sum(m["rss_bytes"] or 0 for m in models))
             inflight = list(self.inflight.values())
+            idle_unloads = dict(self.idle_unloads)
         for m in models:  # what basal-ui is waiting on (Playground, API server, MCP, benchmark), oldest first
             m["inflight"] = [
                 {"source": source, "seconds": round(now - t0, 1)}
                 for model, source, t0 in sorted(inflight, key=lambda x: x[2])
                 if model == m["id"]
             ]
-        return {"models": models, "downloads": self.downloads.status(), "memory": memory, "jobs": self.jobs.states()}
+        return {
+            "models": models,
+            "idle_unloads": idle_unloads,
+            "downloads": self.downloads.status(),
+            "memory": memory,
+            "jobs": self.jobs.states(),
+        }
 
     def _rss(self):
         """rss_by_pgid() at most every RSS_INTERVAL_S: the UI polls every second while a model loads."""
@@ -846,12 +946,14 @@ class Fleet:
     def start_model_job(self, kind, model_id, label, target, *args):
         # Acquire before scheduling: a queued job already owns its model.
         lease = self.lease(model_id)
-        lease.__enter__()
+        runner = lease.__enter__()
 
         def run(job, *values):
             try:
                 return target(job, *values)
             finally:
+                with self.lock:
+                    runner.last_used = time.monotonic()
                 lease.__exit__(None, None, None)
 
         try:
@@ -861,7 +963,7 @@ class Fleet:
             raise
 
     @contextmanager
-    def answering(self, model_id, source):
+    def answering(self, model_id, source, runner):
         token = object()
         with self.lock:
             self.inflight[token] = (model_id, source, time.monotonic())
@@ -870,9 +972,11 @@ class Fleet:
         finally:
             with self.lock:
                 self.inflight.pop(token, None)
+                if runner is not None:
+                    runner.last_used = time.monotonic()
 
     def decide(self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"):
-        with self.lease(model_id) as runner, self.answering(model_id, source):
+        with self.lease(model_id) as runner, self.answering(model_id, source, runner):
             t0 = time.perf_counter()
             try:
                 response = runner.decide(body, path)
@@ -907,7 +1011,7 @@ class Fleet:
     async def adecide(
         self, model_id, body, path="/v1/systemone", source="api", client=None, endpoint=None, method="POST"
     ):
-        with self.lease(model_id) as runner, self.answering(model_id, source):
+        with self.lease(model_id) as runner, self.answering(model_id, source, runner):
             t0 = time.perf_counter()
             try:
                 response = await runner.adecide(client, body, path)

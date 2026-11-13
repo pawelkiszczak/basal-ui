@@ -1,6 +1,7 @@
 import hashlib
 import json
 import socket
+import time
 
 import httpx
 import pytest
@@ -207,6 +208,9 @@ def test_mcp_tools_route_by_model_argument_or_the_first_loaded_model(fleet, monk
     if mcp_models and not engine.feature("mcp_models"):
         pytest.skip("the installed engine's MCP tools take no model argument (2.4.1)")
     monkeypatch.setattr(gateway_module, "feature", lambda name: mcp_models if name == "mcp_models" else False)
+    settings.update_memory({"idle_unload_minutes": 1})
+    runner = fleet.runners["a/one"]
+    runner.base_url, runner.health_polling, runner.last_used = "http://localhost", True, time.monotonic() - 120
     headers = {"Accept": "application/json, text/event-stream", "Host": "127.0.0.1:8793"}
 
     def rpc(client, method, params):
@@ -239,6 +243,18 @@ def test_mcp_tools_route_by_model_argument_or_the_first_loaded_model(fleet, monk
     assert sorted((r["model"], r["source"]) for r in fleet.history.list()) == expected
     traffic = fleet.stats.traffic_snapshot(15)
     assert [(row["endpoint"], row["method"]) for row in traffic["endpoints"]] == [("/mcp", "CALL")]
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *args, **kwargs: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    fleet.unload_idle(runner.last_used + 59)
+    assert fleet.runners["a/one"] is runner
+    fleet.unload_idle(runner.last_used + 60)
+    assert "a/one" not in fleet.runners
 
 
 def test_pre_inference_validation_stays_in_lifetime_stats_but_not_traffic(fleet):
