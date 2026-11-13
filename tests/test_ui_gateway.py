@@ -591,3 +591,29 @@ def test_metrics_timeout_does_not_hide_healthy_sibling(fleet, child):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_metrics_snapshot_does_not_block_gateway_event_loop(fleet, monkeypatch):
+    entered, release, health_done = threading.Event(), threading.Event(), threading.Event()
+    snapshot = fleet.stats.snapshot
+
+    def blocked_snapshot():
+        entered.set()
+        assert release.wait(5)
+        return snapshot()
+
+    monkeypatch.setattr(fleet.stats, "snapshot", blocked_snapshot)
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        metrics = threading.Thread(target=lambda: client.get("/metrics"))
+        health = threading.Thread(target=lambda: (client.get("/health"), health_done.set()))
+        metrics.start()
+        try:
+            assert entered.wait(5)
+            health.start()
+            assert health_done.wait(2)
+        finally:
+            release.set()
+            metrics.join(5)
+            if health.ident:
+                health.join(5)
+        assert not metrics.is_alive() and not health.is_alive()

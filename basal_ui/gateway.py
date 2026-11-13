@@ -74,6 +74,7 @@ def _group_metrics(lines):
 def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0.1"):
     """The gateway's ASGI app. keys: basal_ui.auth.ApiKeys or None (no key required)."""
     from starlette.applications import Starlette
+    from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
@@ -157,7 +158,8 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         counters = ("requests", "questions", "errors", "input_tokens")
         lines = [f"# TYPE basal_ui_{key}_total counter" for key in counters]
         lines.extend(("# TYPE basal_ui_latency_seconds gauge", "# TYPE basal_ui_latency_seconds_avg gauge"))
-        for model, entry in stats.snapshot()["models"].items():
+        snapshot = await run_in_threadpool(stats.snapshot)
+        for model, entry in snapshot["models"].items():
             label = f'model="{_label(model)}"'
             for key in counters:
                 lines.append(f"basal_ui_{key}_total{{{label}}} {entry[key]}")
@@ -167,11 +169,12 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             if entry["avg_latency_ms"] is not None:
                 lines.append(f"basal_ui_latency_seconds_avg{{{label}}} {entry['avg_latency_ms'] / 1000}")
         lines.extend(f"# TYPE basal_ui_traffic_{key}_total gauge" for key in ("requests", "errors"))
-        for entry in stats.traffic_snapshot(15)["endpoints"]:
+        traffic = await run_in_threadpool(stats.traffic_snapshot, 15)
+        for entry in traffic["endpoints"]:
             labels = f'endpoint="{_label(entry["endpoint"])}",method="{_label(entry["method"])}"'
             for key in ("requests", "errors"):
                 lines.append(f"basal_ui_traffic_{key}_total{{{labels}}} {entry[key]}")
-        loaded, children = await asyncio.to_thread(fleet.metrics_snapshot)
+        loaded, children = await run_in_threadpool(fleet.metrics_snapshot)
         lines.extend(("# TYPE basal_ui_models_loaded gauge", f"basal_ui_models_loaded {loaded}"))
         metadata = {("TYPE", f"basal_ui_{key}_total") for key in counters}
         metadata.update(("TYPE", f"basal_ui_traffic_{key}_total") for key in ("requests", "errors"))
@@ -183,7 +186,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
                     "text/"
                 ):
                     return None
-                if await asyncio.to_thread(fleet.metrics_current, model, runner, generation, url):
+                if await run_in_threadpool(fleet.metrics_current, model, runner, generation, url):
                     return model, response.text
             except (httpx.HTTPError, asyncio.TimeoutError):
                 pass
