@@ -97,13 +97,30 @@ basal-ui's internal key is one; user keys get 403), otherwise it is open like `/
 
 ### Prometheus metrics
 
-`GET /metrics` returns Prometheus text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. It exports lifetime per-model request, question, error and input-token totals, p50/p95 and average latency in seconds, loaded-model count, and process-local 15-minute endpoint request and error counts. Lifetime totals have Prometheus type `counter` and can decrease after a reset. Rolling 15-minute counts have type `gauge` because they can decrease as the window advances or after a reset. Each ready native Engine child's available text metrics are included with the loaded model ID as a `model` label. Samples from all models are grouped by metric family, including histogram and summary subseries. Children that fail to respond within two seconds, return a non-text response or do not support metrics are skipped; cascades and Comparison models are never scraped. Percentiles use the most recent 1,000 retained latency samples per model; average latency uses all recorded requests. Unavailable latency values are omitted. Lifetime counters reset when statistics are reset; rolling counts also expire as the window advances.
+`GET /metrics` returns Prometheus 0.0.4 text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. Lifetime counters can decrease after a statistics reset. Rolling 15-minute counts are gauges because they can decrease as the window advances or after a reset. Each ready native Engine child's available text metrics are included with its loaded ID as a `model` label. Samples are grouped by metric family, including histogram and summary subseries. Children that do not respond within two seconds, return a non-text response or do not support metrics are skipped; Cascades and Comparison models are never scraped.
+
+The basal-ui metric names are:
+
+| Metric | Labels | Type | Unit |
+|---|---|---|---|
+| `basal_ui_requests_total` | `model` | counter | requests |
+| `basal_ui_questions_total` | `model` | counter | questions |
+| `basal_ui_errors_total` | `model` | counter | failed requests |
+| `basal_ui_input_tokens_total` | `model` | counter | input tokens |
+| `basal_ui_latency_seconds` | `model`, `quantile` (`0.5` or `0.95`) | gauge | seconds |
+| `basal_ui_latency_seconds_avg` | `model` | gauge | seconds |
+| `basal_ui_traffic_requests_total` | `endpoint`, `method` | gauge | requests in 15 minutes |
+| `basal_ui_traffic_errors_total` | `endpoint`, `method` | gauge | failed requests in 15 minutes |
+| `basal_ui_models_loaded` | none | gauge | ready models |
+
+Latency quantiles use at most 1,000 retained samples per model, not the complete lifetime distribution.
+Average latency uses lifetime recorded requests. Unavailable latency values are omitted.
 
 To enable authenticated scraping, create a secret file accessible to both basal-ui and Prometheus and start basal-ui with its contents in `BASAL_UI_ADMIN_KEY` (set **Require an API key** in the API server settings):
 
 ```sh
 umask 077
-python -c 'import secrets; print(secrets.token_urlsafe(32))' > /secure/path/basal-admin-key
+uv run --no-project python -c 'import secrets; print(secrets.token_urlsafe(32))' > /secure/path/basal-admin-key
 BASAL_UI_ADMIN_KEY="$(cat /secure/path/basal-admin-key)" basal-ui
 ```
 
