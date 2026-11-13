@@ -405,3 +405,93 @@ def test_port_in_use_is_reported_and_lan_url_is_used_for_all_interfaces(fleet, m
     assert gateway.status()["url"] == "http://192.0.2.10:8123"
     gateway.status()
     assert calls == [1]
+
+
+def test_cascade_gateway_protocols_and_missing_fallback_probabilities(tmp_path, monkeypatch):
+    from basal_ui import fleet as fleet_module
+    from basal_ui.fleet import CascadeRunner
+
+    fleet = Fleet(
+        lambda: tmp_path,
+        lambda: "cpu",
+        settings,
+        lambda: HW,
+        Stats(tmp_path / "stats.json"),
+        History(tmp_path / "history.jsonl"),
+    )
+    runner = CascadeRunner(
+        {"name": "route", "kind": "escalate", "levels": [{"model": "a"}, {"model": "b"}]}, settings, fleet.event
+    )
+    runner.state, runner.base_url = "ready", "http://router"
+    fleet.runners["route"] = runner
+    received = []
+
+    def router(request):
+        body = json.loads(request.content)
+        received.append((request.url.path, body))
+        if body["state"] == "error":
+            return httpx.Response(422, json={"error": "bad input", "code": "INVALID_REQUEST"})
+        fallback = body["state"] == "fallback"
+        answer = {
+            "type": "choice",
+            "choice": "invoice",
+            "probabilities": None if fallback else {"invoice": 0.8, "receipt": 0.2},
+            "confidence": None if fallback else 0.8,
+            "answered_by": "fallback" if fallback else "escalated",
+            "calibrated": False,
+        }
+        return httpx.Response(200, json={"model": "a", "answers": {"kind": answer}, "usage": {"input_tokens": 7}})
+
+    transport = httpx.MockTransport(router)
+    real_async = httpx.AsyncClient
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", lambda **kw: real_async(transport=transport, **kw))
+    request = {
+        "model": "route",
+        "input": "normal",
+        "questions": [
+            {
+                "type": "choice",
+                "name": "kind",
+                "instructions": "Document kind?",
+                "choices": [{"value": "invoice"}, {"value": "receipt"}],
+            }
+        ],
+    }
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        native = client.post(
+            "/v1/systemone",
+            json={
+                "model": "route",
+                "state": "normal",
+                "questions": {"kind": {"type": "choice", "criteria": {"invoice": None, "receipt": None}}},
+            },
+        )
+        assert native.status_code == 200 and native.json()["answers"]["kind"]["probabilities"]["invoice"] == 0.8
+        for path in ("/v1/decisions", "/decisions"):
+            response = client.post(path, json=request)
+            assert response.status_code == 200
+            answer = response.json()["answers"][0]
+            assert answer["choice"] == "invoice" and answer["probabilities"][0]["probability"] == 0.8
+            assert answer["calibrated"] is False and answer["answered_by"] == "escalated"
+        fallback = client.post("/v1/decisions", json={**request, "input": "fallback"})
+        assert fallback.status_code == 200
+        assert fallback.json()["answers"][0] == {
+            "type": "choice",
+            "name": "kind",
+            "choice": "invoice",
+            "probabilities": None,
+            "confidence": None,
+            "answered_by": "fallback",
+            "calibrated": False,
+        }
+        error = client.post("/decisions", json={**request, "input": "error"})
+        assert error.status_code == 422 and error.json()["error"]["code"] == "INVALID_REQUEST"
+        count = len(received)
+        invalid = client.post("/v1/decisions", json={**request, "questions": []})
+        assert invalid.status_code == 400 and len(received) == count
+    assert all(path == "/v1/systemone" for path, _ in received)
+    with httpx.Client(transport=transport) as child:
+        monkeypatch.setattr(fleet_module.httpx, "post", child.post)
+        sync = fleet.decide("route", request, path="/v1/decisions", source="api")
+    assert sync.status_code == 200 and sync.json()["answers"][0]["choice"] == "invoice"
+    assert received[-1][0] == "/v1/systemone"

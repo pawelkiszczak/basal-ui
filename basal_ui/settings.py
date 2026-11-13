@@ -437,6 +437,8 @@ def set_cascade(spec: dict, replace: bool = False) -> dict:
             raise ValueError("blend weights must be positive and match the levels")
         normalized = {"name": name, "kind": kind, "levels": [{"model": x["model"]} for x in levels], "weights": weights}
     fallback = spec.get("fallback")
+    if kind == "blend" and fallback is not None:
+        raise ValueError("Blend cannot use an LLM fallback")
     secret_id = f"cascade:{name}"
     old_secrets = _decision_secrets()
     new_secrets = dict(old_secrets)

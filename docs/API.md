@@ -271,6 +271,9 @@ are not fetched. Empty text with image input is accepted if the underlying model
 There must be 1–200 questions. Each requires `type` and non-empty `instructions`; `name` is optional and must be
 unique when provided. Omitted names appear as JSON `null`. A `choice` needs 2–255 values, each a string or boolean;
 values must be unique after converting to strings, and original values (including booleans) are restored in answers.
+When a fallback returns no option log probabilities, the selected choice is preserved and `probabilities` and
+`confidence` are `null`; clients requiring a numeric distribution must handle this explicitly. Router-provided
+`answered_by`, `level`, `model` and `calibrated` fields are retained when available.
 A `score` needs 2–10 levels. These Decisions limits may exceed basal's own per-prompt-format option limit: prompt format
 1 supports 2–10 options and format 2 supports 2–255 (the `ollama` mode limit is 20). The serving format must still
 accept the translated question.
@@ -458,6 +461,7 @@ Engine 2.5 exposes configured Cascades through the local app API:
 - `POST /api/cascades/{name}/start` starts it only when every member is ready; `/stop` unloads the router.
 
 The gateway's `GET /v1/models` lists Cascade entries with `kind: "cascade"` and accepts their name in the request's
-`model` field. Escalation answers include per-answer `answered_by`, `level`, and `model`. Blend and fallback answers
+`model` field. Escalation answers include `answered_by`; multi-level routers may also return `level` and `model`.
+Blend cannot be combined with an LLM fallback by the installed router. Blend and fallback answers
 include `calibrated: false`. Batch accepts only escalation Cascades without fallback; Calibration, Inspect, and Benchmarks do not accept Cascades.
 The router feature probe gates these routes. Fallback keys live in the owner-only decision-secrets sidecar and never appear in responses. Settings and secrets use separate atomic replacements, so a process crash between them can leave them out of sync.

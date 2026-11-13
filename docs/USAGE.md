@@ -539,8 +539,8 @@ recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29)
 
 With Engine 2.5, a Cascade combines ready basal models behind one name. In Model manager → Library, create an
 escalation Cascade to retry uncertain decisions at the next loaded model, or a Blend to average probabilities using
-positive weights. A Cascade may optionally send remaining uncertain choice questions to an OpenAI-compatible chat
-endpoint. Its fallback API key is stored in the owner-only `settings.decision-secrets.json` sidecar (named from the configured settings file) and is not returned by the API.
+positive weights. An escalation Cascade may optionally send remaining uncertain choice questions to an OpenAI-compatible chat
+endpoint; the Engine router does not support combining Blend with fallback. Its fallback API key is stored in the owner-only `settings.decision-secrets.json` sidecar (named from the configured settings file) and is not returned by the API.
 
 Start and stop Cascades from the loaded-model list. They do not load their members, count against the memory budget,
 or start automatically after a restart; every member must already be ready. Unloading a member stops any Cascade

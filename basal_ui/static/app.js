@@ -946,7 +946,7 @@ function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
   parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),answer.calibrated===false?'':automatedChips(answer.automated));
-  if(answer.answered_by)parts.push(`<span class="chip">${t('Answered by')} ${esc(answer.answered_by)}</span>`);
+  if(answer.answered_by){const names={first:t('first'),escalated:t('escalated'),fallback:t('fallback')};parts.push(`<span class="chip">${t('Answered by')} ${esc(names[answer.answered_by]??answer.answered_by)}</span>`);}
   const inferred=entry?.kind==='cascade'&&entry.levels?.length===2&&['first','escalated'].includes(answer.answered_by)?(answer.answered_by==='first'?1:2):null;
   const level=answer.level??inferred, model=answer.model??(inferred?entry.levels[inferred-1]?.model:null);
   if(level!=null)parts.push(`<span class="chip">${t('Cascade level')} ${esc(level)}</span>`);
@@ -1387,12 +1387,12 @@ function renderLoadedRows(models) {
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
   if(statusCache?.router_available && Date.now()-cascadeRefreshAt>3000){cascadeRefreshAt=Date.now();renderCascadeDefinitions();}
 }
-let cascadeRefreshAt=0;
+let cascadeRefreshAt=0,cascadeSignature='';
 function setupCascadeUI(available) {
   if($('#cascadePanel'))return;
   $('#loadedModels').insertAdjacentHTML('beforebegin',`<section class="card" id="cascadePanel"><div class="section-head"><h3>${t('Cascades')}</h3>${available?`<button type="button" id="newCascade">${t('New cascade')}</button>`:''}</div><div id="cascadeRows">${available?'':t('Cascades are unavailable because the installed Engine has no router.')}</div></section>`);
   if(!available)return;
-  document.body.insertAdjacentHTML('beforeend',`<dialog id="cascadeDialog"><form method="dialog" id="cascadeForm"><h2>${t('New cascade')}</h2><label>${t('Name')}<input id="cascadeName" required pattern="[a-z0-9][a-z0-9-]{0,39}"></label><label>${t('Cascade kind')}<select id="cascadeKind"><option value="escalate">${t('Escalate')}</option><option value="blend">${t('Blend')}</option></select></label><div id="cascadeLevels"></div><button type="button" id="cascadeAddLevel">${t('Add level')}</button><details><summary>${t('LLM fallback (optional)')}</summary><label>${t('Fallback URL')}<input id="cascadeFallbackUrl" type="url" placeholder="${t('https://host/v1')}"></label><label>${t('Fallback model')}<input id="cascadeFallbackModel"></label><label>${t('Fallback below')}<input id="cascadeFallbackBelow" type="number" min="0.01" max="1" step="0.01" value="0.5"></label><label>${t('Fallback timeout (seconds)')}<input id="cascadeFallbackTimeout" type="number" min="1" value="60"></label><label>${t('Fallback max tokens')}<input id="cascadeFallbackTokens" type="number" min="1" value="8192"></label><label>${t('Fallback API key')}<input id="cascadeFallbackKey" type="password" autocomplete="off"></label></details><div class="controls"><button type="button" id="cancelCascade">${t('Cancel')}</button><button type="submit" class="primary">${t('Create cascade')}</button></div><p id="cascadeError" class="error-box" hidden></p></form></dialog>`);
+  document.body.insertAdjacentHTML('beforeend',`<dialog id="cascadeDialog"><form method="dialog" id="cascadeForm"><h2>${t('New cascade')}</h2><label>${t('Name')}<input id="cascadeName" required pattern="[a-z0-9][a-z0-9-]{0,39}"></label><label>${t('Cascade kind')}<select id="cascadeKind"><option value="escalate">${t('Escalate')}</option><option value="blend">${t('Blend')}</option></select></label><div id="cascadeLevels"></div><button type="button" id="cascadeAddLevel">${t('Add level')}</button><p id="cascadeFallbackUnavailable" class="muted" hidden>${t('Blend does not support an LLM fallback.')}</p><details id="cascadeFallback"><summary>${t('LLM fallback (optional)')}</summary><label>${t('Fallback URL')}<input id="cascadeFallbackUrl" type="url" placeholder="${t('https://host/v1')}"></label><label>${t('Fallback model')}<input id="cascadeFallbackModel"></label><label>${t('Fallback below')}<input id="cascadeFallbackBelow" type="number" min="0.01" max="1" step="0.01" value="0.5"></label><label>${t('Fallback timeout (seconds)')}<input id="cascadeFallbackTimeout" type="number" min="1" value="60"></label><label>${t('Fallback max tokens')}<input id="cascadeFallbackTokens" type="number" min="1" value="8192"></label><label>${t('Fallback API key')}<input id="cascadeFallbackKey" type="password" autocomplete="off"></label></details><div class="controls"><button type="button" id="cancelCascade">${t('Cancel')}</button><button type="submit" class="primary">${t('Create cascade')}</button></div><p id="cascadeError" class="error-box" hidden></p></form></dialog>`);
   const dialog=$('#cascadeDialog');
   const addLevel=(selected='')=>{
     const members=readyModels().filter(m=>m.kind!=='cascade');
@@ -1404,6 +1404,7 @@ function setupCascadeUI(available) {
   };
   const updateLevels=()=>{
     const rows=[...$('#cascadeLevels').children],blend=$('#cascadeKind').value==='blend';
+    $('#cascadeFallback').hidden=blend;$('#cascadeFallbackUnavailable').hidden=!blend;
     rows.forEach((row,i)=>{const threshold=row.querySelector('.cascade-threshold'),weight=row.querySelector('.cascade-weight');threshold.hidden=blend||i===rows.length-1;weight.hidden=!blend;threshold.querySelector('input').disabled=threshold.hidden;weight.querySelector('input').disabled=weight.hidden;row.querySelector('button').disabled=rows.length<=2;});
   };
   $('#newCascade').onclick=()=>{
@@ -1421,7 +1422,7 @@ function setupCascadeUI(available) {
     const body={name:$('#cascadeName').value,kind,levels};
     if(kind==='blend')body.weights=rows.map(row=>Number(row.querySelector('.cascade-weight input').value));
     const fallbackUrl=$('#cascadeFallbackUrl').value.trim();
-    if(fallbackUrl)body.fallback={url:fallbackUrl,model:$('#cascadeFallbackModel').value.trim(),below:Number($('#cascadeFallbackBelow').value),timeout:Number($('#cascadeFallbackTimeout').value),max_tokens:Number($('#cascadeFallbackTokens').value),key:$('#cascadeFallbackKey').value||null};
+    if(kind==='escalate'&&fallbackUrl)body.fallback={url:fallbackUrl,model:$('#cascadeFallbackModel').value.trim(),below:Number($('#cascadeFallbackBelow').value),timeout:Number($('#cascadeFallbackTimeout').value),max_tokens:Number($('#cascadeFallbackTokens').value),key:$('#cascadeFallbackKey').value||null};
     try{await api('/api/cascades',{method:'POST',body:JSON.stringify(body)});dialog.close();$('#cascadeForm').reset();await renderCascadeDefinitions();}
     catch(error){$('#cascadeError').textContent=error.message;$('#cascadeError').hidden=false;}
   };
@@ -1431,10 +1432,15 @@ async function renderCascadeDefinitions() {
   const target=$('#cascadeRows');if(!target)return;
   try{
     const data=await api('/api/cascades'),loaded=new Set((statusCache?.models||[]).filter(m=>m.kind==='cascade').map(m=>m.id));
+    const signature=JSON.stringify([data.cascades,[...loaded]]);if(signature===cascadeSignature)return;
+    const focused=target.contains(document.activeElement)?document.activeElement:null;
+    const focusedName=focused?.dataset.cascade||focused?.dataset.cascadeDelete,focusedDelete=focused?.hasAttribute('data-cascade-delete');
     target.innerHTML=data.cascades.length?data.cascades.map(c=>`<div class="model-row"><strong>${esc(c.name)}</strong><span class="badge">${t('Cascade')} · ${c.kind==='blend'?t('Blend'):t('Escalate')}</span><span>${esc(c.levels.map(x=>x.model).join(' → '))}</span><button type="button" data-cascade-action="${loaded.has(c.name)?'stop':'start'}" data-cascade="${esc(c.name)}">${loaded.has(c.name)?t('Stop cascade'):t('Start cascade')}</button><button type="button" data-cascade-delete="${esc(c.name)}">${t('Delete')}</button></div>`).join(''):`<p class="muted">${t('No Cascades defined.')}</p>`;
+    cascadeSignature=signature;
+    if(focusedName)[...target.querySelectorAll(focusedDelete?'[data-cascade-delete]':'[data-cascade-action]')].find(button=>(button.dataset.cascadeDelete||button.dataset.cascade)===focusedName)?.focus();
     target.querySelectorAll('[data-cascade-action]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}/${button.dataset.cascadeAction}`,{method:'POST'});await refreshStatus();await renderCascadeDefinitions();}));
     target.querySelectorAll('[data-cascade-delete]').forEach(button=>button.onclick=()=>act(async()=>{if(!confirm(t('Delete Cascade {name}?',{name:button.dataset.cascade})))return;await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}`,{method:'DELETE'});await renderCascadeDefinitions();}));
-  }catch(error){target.innerHTML=`<p class="muted">${esc(error.message)}</p>`;}
+  }catch(error){cascadeSignature='';target.innerHTML=`<p class="muted">${esc(error.message)}</p>`;}
 }
 function renderPlaygroundModels(ready) {
   const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media,m.kind]));

@@ -608,11 +608,13 @@ class CascadeRunner:
                 "rss_bytes": self.rss_bytes,
             }
 
+    _url = Runner._url
+
     def decide(self, body, path="/v1/systemone"):
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(httpx.post(self.base_url + path, json=child_body, timeout=120))
+        response = reply(httpx.post(self._url("/v1/systemone"), json=child_body, timeout=120))
         response.extensions["basal.inference"] = True
         return response
 
@@ -620,7 +622,7 @@ class CascadeRunner:
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(await client.post(self.base_url + path, json=child_body))
+        response = reply(await client.post(self._url("/v1/systemone"), json=child_body))
         response.extensions["basal.inference"] = True
         return response
 
@@ -826,6 +828,8 @@ class Fleet:
             spec = next((x for x in self.settings_mod.cascades() if x["name"] == name), None)
             if spec is None:
                 raise KeyError(name)
+            if spec.get("kind") == "blend" and spec.get("fallback") is not None:
+                raise RuntimeError("Blend cannot use an LLM fallback")
             with self.lock:
                 if self.stopping:
                     raise RuntimeError("model is unavailable during maintenance")
@@ -854,16 +858,19 @@ class Fleet:
         return self.status()
 
     def stop_cascade(self, name):
-        runner = self.runners.get(name)
-        if not isinstance(runner, CascadeRunner):
-            raise KeyError(name)
-        return self.unload(name)
+        with self.lock:
+            runner = self.runners.get(name)
+            if not isinstance(runner, CascadeRunner):
+                raise KeyError(name)
+        return self.unload(name, _expected=runner)
 
-    def unload(self, model_id=None, forget=True):
+    def unload(self, model_id=None, forget=True, _expected=None):
         """Unload one model and stop any cascades whose members are being removed."""
         with self.lock:
             self._check_addon_maintenance()
-            if model_id is not None and model_id not in self.runners:
+            if model_id is not None and (
+                model_id not in self.runners or (_expected is not None and self.runners[model_id] is not _expected)
+            ):
                 raise KeyError(model_id)
             ids = [model_id] if model_id is not None else list(self.runners)
             dependents = [
@@ -884,14 +891,25 @@ class Fleet:
                 proc, est = runner.detach()
                 retiring.append((runner, proc))
                 self.retiring[runner] = est
-                if forget and not isinstance(runner, CascadeRunner):
-                    self.settings_mod.forget_loaded(i)
+            forgetting = [
+                i
+                for i, (runner, _) in zip(ids, retiring, strict=True)
+                if forget and not isinstance(runner, CascadeRunner)
+            ]
+            reserved = set(forgetting) - self.draining
+            self.draining.update(reserved)
             self._prune_logs()
-        for i, (runner, proc) in zip(ids, retiring, strict=True):
-            Runner._terminate(proc)
+        try:
+            for i in forgetting:
+                self.settings_mod.forget_loaded(i)
+        finally:
             with self.lock:
-                self.retiring.pop(runner, None)
-            self.event("info", f"unloaded: {i}")
+                self.draining.difference_update(reserved)
+            for i, (runner, proc) in zip(ids, retiring, strict=True):
+                Runner._terminate(proc)
+                with self.lock:
+                    self.retiring.pop(runner, None)
+                self.event("info", f"unloaded: {i}")
         if model_id is None:
             with self.lock:
                 temporary = list(self.temporary)
@@ -1016,7 +1034,8 @@ class Fleet:
         loading model comes from it."""
         with self.lock:
             return self.downloads.alive(repo) or any(
-                r.model_repo == repo and r.state != "idle" for r in [*self.runners.values(), *self.temporary.values()]
+                not isinstance(r, CascadeRunner) and r.model_repo == repo and r.state != "idle"
+                for r in [*self.runners.values(), *self.temporary.values()]
             )
 
     def while_idle(self, fn):

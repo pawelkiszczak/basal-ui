@@ -67,7 +67,11 @@ def child_request(path, body):
             if response.status_code != 200:
                 status, message, code = _child_error(response)
                 return httpx.Response(status, json=openai_error_body(status, message, code))
-            return httpx.Response(200, json=decision_response(response.json(), spec, values))
+            try:
+                result = decision_response(response.json(), spec, values)
+            except (KeyError, TypeError, ValueError):
+                return httpx.Response(502, json=openai_error_body(502, "invalid decision response", "UPSTREAM_ERROR"))
+            return httpx.Response(200, json=result)
 
         return internal, decisions_reply
     try:
@@ -293,11 +297,17 @@ def decision_response(result, spec, values):
         if typ == "predicate":
             answers.append({"type": typ, "name": name, "probability": ans["noul"]})
         elif typ == "choice":
-            probs = [
-                {"value": v, "probability": ans["probabilities"][str(v).lower() if isinstance(v, bool) else str(v)]}
-                for v in values[key]
-            ]
-            chosen = max(probs, key=lambda p: p["probability"])["value"]
+            if ans.get("probabilities") is None:
+                choices = {str(v).lower() if isinstance(v, bool) else str(v): v for v in values[key]}
+                if ans.get("choice") not in choices:
+                    raise ValueError("choice is not in the request")
+                chosen, probs = choices[ans["choice"]], None
+            else:
+                probs = [
+                    {"value": v, "probability": ans["probabilities"][str(v).lower() if isinstance(v, bool) else str(v)]}
+                    for v in values[key]
+                ]
+                chosen = max(probs, key=lambda p: p["probability"])["value"]
             answers.append(
                 {"type": typ, "name": name, "choice": chosen, "probabilities": probs, "confidence": ans["confidence"]}
             )
@@ -315,6 +325,9 @@ def decision_response(result, spec, values):
                     "confidence": ans["confidence"],
                 }
             )
+        answers[-1].update(
+            {field: ans[field] for field in ("answered_by", "level", "model", "calibrated") if field in ans}
+        )
     usage = result.get("usage", {})
     total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
     return {

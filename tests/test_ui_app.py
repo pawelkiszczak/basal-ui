@@ -1365,3 +1365,121 @@ def test_cascade_unloaded_during_health_check_does_not_become_ready(tmp_path, mo
     assert errors == ["cascade start cancelled"]
     assert runner.state == "idle" and "route" not in fleet.runners
     assert terminated == [proc]
+
+
+def test_unload_persistence_failure_reaps_detached_cascade_and_member(tmp_path, monkeypatch):
+    import subprocess
+
+    from basal_ui.fleet import CascadeRunner
+
+    app, fleet = app_for(tmp_path, [])
+    member_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    cascade_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    member = Runner()
+    member.model, member.state, member.process, member.est_memory_bytes = "member", "ready", member_proc, 100
+    cascade = CascadeRunner(
+        {"name": "route", "kind": "escalate", "levels": [{"model": "member"}]}, settings, fleet.event
+    )
+    cascade.state, cascade.process = "ready", cascade_proc
+    fleet.runners.update({"member": member, "route": cascade})
+
+    def fail_write(_):
+        assert not fleet.lock._is_owned()
+        raise OSError("settings write failed")
+
+    monkeypatch.setattr(settings, "forget_loaded", fail_write)
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            with pytest.raises(OSError, match="settings write failed"):
+                client.post("/api/unload", json={"id": "member"})
+            assert member_proc.poll() is not None and cascade_proc.poll() is not None
+            assert "member" not in fleet.runners and "route" not in fleet.runners
+            assert not fleet.retiring and "member" not in fleet.draining
+    finally:
+        for proc in (member_proc, cascade_proc):
+            if proc.poll() is None:
+                Runner._terminate(proc)
+
+
+def test_stale_stop_does_not_unload_replacement(tmp_path, monkeypatch):
+    from basal_ui.fleet import CascadeRunner
+
+    fleet = make_fleet(tmp_path)
+    spec = {"name": "route", "kind": "escalate", "levels": [{"model": "member"}]}
+    old = CascadeRunner(spec, settings, fleet.event)
+    replacement = CascadeRunner(spec, settings, fleet.event)
+    fleet.runners["route"] = old
+    entered, release = threading.Event(), threading.Event()
+    original = fleet.unload
+
+    def delayed(name, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(name, **kwargs)
+
+    monkeypatch.setattr(fleet, "unload", delayed)
+    errors = []
+
+    def stop():
+        try:
+            fleet.stop_cascade("route")
+        except KeyError as exc:
+            errors.append(exc.args[0])
+
+    worker = threading.Thread(target=stop)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        original("route", forget=False)
+        with fleet.lock:
+            fleet.runners["route"] = replacement
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive() and errors == ["route"]
+    assert fleet.runners["route"] is replacement and replacement.state == "starting"
+    original("route", forget=False)
+
+
+def test_unrelated_repository_can_be_deleted_with_cascade_running(tmp_path, instant_start, monkeypatch):
+    from basal_ui.fleet import CascadeRunner
+
+    app, fleet = app_for(tmp_path, [MINI, SMALL])
+    removed = []
+    monkeypatch.setattr(catalog, "delete", lambda variant, cache_dir: removed.append(variant.repo) or 42)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
+        wait_for(lambda: states(client).get(MINI.id) == "ready")
+        cascade = CascadeRunner(
+            {"name": "route", "kind": "escalate", "levels": [{"model": MINI.id}]}, settings, fleet.event
+        )
+        cascade.state = "ready"
+        fleet.runners["route"] = cascade
+        assert client.post("/api/models/delete", json={"id": MINI.id}).status_code == 409
+        response = client.post("/api/models/delete", json={"id": SMALL.id})
+        assert response.status_code == 200 and response.json()["freed_bytes"] == 42
+        assert removed == [SMALL.repo]
+
+
+def test_existing_blend_with_fallback_cannot_start(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    app, fleet = app_for(tmp_path, [])
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    monkeypatch.setattr(
+        settings,
+        "cascades",
+        lambda: [
+            {
+                "name": "route",
+                "kind": "blend",
+                "levels": [{"model": "a"}, {"model": "b"}],
+                "weights": [1, 1],
+                "fallback": {"url": "http://example.test", "model": "chat"},
+            }
+        ],
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/cascades/route/start")
+        assert response.status_code == 409 and "Blend cannot use" in response.json()["detail"]["detail"]
+        assert "route" not in fleet.runners and "route" not in fleet.draining

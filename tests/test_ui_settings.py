@@ -333,6 +333,7 @@ def test_cascade_rejects_invalid_numbers_and_urls_and_preserves_secrets_on_failu
     for weights in ([1, float("inf")], [True, 2], [1, float("nan")]):
         with pytest.raises(ValueError):
             settings.set_cascade({**base, "weights": weights})
+    base = {"name": "route", "kind": "escalate", "levels": [{"model": "a", "below": 0.8}, {"model": "b"}]}
     for fallback in (
         {"url": "https://user:pass@example.test/v1", "model": "chat"},
         {"url": "https://example.test/v1", "model": "chat", "max_tokens": 1.5},
@@ -358,10 +359,25 @@ def test_cascade_secret_corruption_is_not_treated_as_missing(tmp_path, monkeypat
 
 def test_cascade_key_retained_only_for_same_fallback_origin(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
-    base = {"name": "route", "kind": "blend", "levels": [{"model": "a"}, {"model": "b"}], "weights": [1, 2]}
+    base = {"name": "route", "kind": "escalate", "levels": [{"model": "a", "below": 0.8}, {"model": "b"}]}
     fallback = {"url": "https://example.test/v1", "model": "chat", "key": "secret"}
     settings.set_cascade({**base, "fallback": fallback})
     settings.set_cascade({**base, "fallback": {"url": "https://example.test:443/new", "model": "chat"}}, replace=True)
     assert settings.decision_secret("cascade:route") == "secret"
     settings.set_cascade({**base, "fallback": {"url": "https://other.test/v1", "model": "chat"}}, replace=True)
     assert settings.decision_secret("cascade:route") is None
+
+
+def test_blend_fallback_rejected_before_saving(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    spec = {
+        "name": "route",
+        "kind": "blend",
+        "levels": [{"model": "a"}, {"model": "b"}],
+        "weights": [1, 2],
+        "fallback": {"url": "https://example.test/v1", "model": "chat", "key": "secret"},
+    }
+    with pytest.raises(ValueError, match="Blend cannot use"):
+        settings.set_cascade(spec)
+    assert settings.cascades() == []
+    assert not settings._sibling("decision-secrets.json").exists()
