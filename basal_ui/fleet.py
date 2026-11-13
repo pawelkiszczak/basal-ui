@@ -482,7 +482,7 @@ class Fleet:
         self.models_dir_fn, self.platform_fn = models_dir_fn, platform_fn
         self.settings_mod, self.hardware_fn = settings_mod, hardware_fn
         self.stats, self.history = stats, history
-        self.internal_secret = secrets.token_urlsafe(32)
+        self.internal_secret = os.environ.get("BASAL_UI_ADMIN_KEY") or secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.runners: dict[str, Runner] = {}
         self.logs: dict[str, LogBuffer] = {"basal-ui": LogBuffer()}
@@ -769,6 +769,29 @@ class Fleet:
         with self.lock:
             runners = list(self.runners.items())
         return [model_id for model_id, runner in runners if runner.status()["state"] == "ready"]
+
+    def metrics_snapshot(self):
+        """Ready model count and native child identities without health probes or leases."""
+        with self.lock:
+            ready = []
+            for model, runner in self.runners.items():
+                if isinstance(runner, Runner):
+                    with runner.lock:
+                        if runner.state == "ready" and (runner.process is None or runner.process.poll() is None):
+                            ready.append((model, runner, runner.gen, runner.base_url))
+                elif runner.state == "ready":
+                    ready.append((model, runner, None, None))
+            return len(ready), [item for item in ready if isinstance(item[1], Runner) and item[3]]
+
+    def metrics_current(self, model, runner, generation, url):
+        with self.lock, runner.lock:
+            return (
+                self.runners.get(model) is runner
+                and runner.gen == generation
+                and runner.state == "ready"
+                and runner.base_url == url
+                and (runner.process is None or runner.process.poll() is None)
+            )
 
     def model_entries(self):
         """The ready models for GET /v1/models: id, the child's own entry, the time it became ready."""
