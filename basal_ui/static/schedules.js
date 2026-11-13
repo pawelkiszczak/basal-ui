@@ -37,7 +37,7 @@
     const scheduleAct = async fn => { try { await fn(); } catch(error) { $('#scheduleError').textContent=t('Schedule action failed. Details: {details}',{details:error.message}); $('#scheduleError').hidden=false; $('#scheduleError').focus(); } };
     let editing = null, listSignature = '', loading = false, latest = null;
     const interval = $('#scheduleInterval');
-    function intervalFields() { $('#scheduleEveryLabel').hidden = interval.value === 'daily'; $('#scheduleDailyLabel').hidden = interval.value !== 'daily'; }
+    function intervalFields() { const daily=interval.value === 'daily'; $('#scheduleEveryLabel').hidden=daily; $('#scheduleEvery').disabled=daily; $('#scheduleDailyLabel').hidden=!daily; $('#scheduleDaily').disabled=!daily; }
     interval.onchange = intervalFields;
     function modelOptions(models) {
       const select = $('#scheduleModel'), old = select.value;

@@ -22,10 +22,18 @@ def test_scheduled_and_manual_batch_in_browser(page, ui, text_model, tmp_path):
     page.select_option("#scheduleModel", text_model["id"])
     page.fill("#scheduleInputDir", str(inputs))
     page.fill("#scheduleOutputDir", str(outputs))
+    page.fill("#scheduleEvery", "0")
+    page.select_option("#scheduleInterval", "daily")
+    assert page.locator("#scheduleEvery").is_disabled()
+    page.select_option("#scheduleInterval", "minutes")
+    assert page.locator("#scheduleEvery").is_enabled() and page.input_value("#scheduleEvery") == "0"
+    page.select_option("#scheduleInterval", "daily")
+    page.fill("#scheduleDaily", "10:30")
     page.click("#scheduleCheck")
     test_pages.sync_api.expect(page.locator("#scheduleCheckResult")).to_contain_text("Folders are ready")
     page.click("#scheduleForm button[type=submit]")
     test_pages.sync_api.expect(page.locator("[data-action=run]")).to_be_visible()
+    assert ui.get("/api/schedules")["schedules"][0]["interval"] == {"daily_at": "10:30"}
     page.click("[data-action=preview]")
     test_pages.sync_api.expect(page.locator("[data-preview]")).to_contain_text("A synthetic ticket")
     page.click("[data-action=run]")

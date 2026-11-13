@@ -120,7 +120,11 @@ def _read_jsonl(file, result):
         return "not_json"
     if not isinstance(item, dict):
         return "not_json"
-    shape, error = _row_shape(item)
+    try:
+        shape, error = _row_shape(item)
+    except RecursionError:
+        result["schema_error"] = "request nesting exceeds the parser limit"
+        return "invalid_schema"
     if shape is None:
         result["schema_error"] = error
         return "invalid_schema"

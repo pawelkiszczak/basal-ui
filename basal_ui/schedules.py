@@ -171,9 +171,12 @@ class Schedules:
     def _due(self, spec, now, force=False):
         if force:
             return True
+        state = self.settings.schedule_state(spec["id"])
+        scan = state.get("scan")
+        if isinstance(scan, dict) and scan.get("spec") == spec:
+            return not spec["paused"] or scan.get("forced", False)
         if spec["paused"]:
             return False
-        state = self.settings.schedule_state(spec["id"])
         last = state.get("last_scan")
         current = self._time(now)
         if "every_minutes" in spec["interval"]:
@@ -230,11 +233,15 @@ class Schedules:
                 sid = spec["id"]
                 if schedule_id is not None and sid != schedule_id:
                     continue
-                forced_queue = self.pending.get(sid, {}).get("forced", False)
+                stored_scan = self.settings.schedule_state(sid).get("scan")
+                stored_forced = (
+                    isinstance(stored_scan, dict) and stored_scan.get("spec") == spec and stored_scan.get("forced")
+                )
+                forced_queue = self.pending.get(sid, {}).get("forced", False) or stored_forced
                 if spec["paused"] and not force and not forced_queue:
                     self.pending.pop(sid, None)
                     continue
-                if sid not in self.pending and self._due(spec, now, force):
+                if (sid not in self.pending and self._due(spec, now, force)) or force:
                     from . import paths
 
                     try:
@@ -256,12 +263,56 @@ class Schedules:
                             "errors": 1,
                             "error": str(exc),
                         }
-                        self.settings.update_schedule_state(sid, lambda state: state.update(last_scan=timestamp))
+                        if not self.settings.update_schedule_state(
+                            sid, lambda state: state.update(last_scan=timestamp), expected_spec=spec
+                        ):
+                            self.pending.pop(sid, None)
+                            continue
                         self._record(spec, row)
                         outcome = "failed"
                         continue
-                    self.settings.update_schedule_state(sid, lambda state: state.update(last_scan=timestamp))
-                    self.pending[sid] = {"items": queue, "forced": force, "spec": spec}
+                    processed = self.settings.schedule_state(sid).get("processed", {})
+
+                    def signature(path):
+                        try:
+                            resolved = path.resolve()
+                            stat = resolved.stat()
+                            return str(resolved), stat.st_size, stat.st_mtime_ns
+                        except (OSError, RuntimeError):
+                            return str(path), None, None
+
+                    active_signature = None
+                    if self.active is not None and self.active[0]["id"] == sid:
+                        active_row = self.active[1]
+                        active_signature = (active_row["file"], active_row["size"], active_row["mtime"])
+                    queue = [
+                        path
+                        for path in queue
+                        if (sig := signature(path)) != active_signature and processed.get(sig[0]) != list(sig[1:])
+                    ]
+                    pending = self.pending.get(sid)
+                    if pending and pending["spec"] == spec:
+                        accepted = {signature(path) for path in pending["items"]}
+                        if active_signature is not None:
+                            accepted.add(active_signature)
+                        for path in queue:
+                            sig = signature(path)
+                            if sig not in accepted and processed.get(sig[0]) != list(sig[1:]):
+                                pending["items"].append(path)
+                                accepted.add(sig)
+                        pending["forced"] = pending["forced"] or force
+                    else:
+                        scan = (
+                            stored_scan
+                            if isinstance(stored_scan, dict) and stored_scan.get("spec") == spec
+                            else {"spec": spec, "at": timestamp, "forced": force}
+                        )
+                        if not self.settings.update_schedule_state(
+                            sid, lambda state, scan=scan: state.update(scan=scan), expected_spec=spec
+                        ):
+                            self.pending.pop(sid, None)
+                            continue
+                        self.pending[sid] = {"items": queue, "forced": scan["forced"], "spec": spec, "scan": scan}
                 if running:
                     if self.pending.get(sid, {}).get("items"):
                         outcome = "queued"
@@ -331,6 +382,9 @@ class Schedules:
                         continue
                     try:
                         job = self.start_batch(spec, path, output, signature, runner, row)
+                        if job is None:
+                            self.pending.pop(sid, None)
+                            break
                     except KeyError:
                         self._record(spec, {**row, "skipped": "model not loaded"})
                         queue.pop(0)
@@ -354,7 +408,9 @@ class Schedules:
                     row["at"] = job.state()["started"]
                     self.active = (spec, row, job)
                     return {"status": "started", "job": job.state()}
-                self.pending.pop(sid, None)
+                if not queue and sid in self.pending:
+                    self.settings.complete_schedule_scan(spec, self.pending[sid]["scan"])
+                    self.pending.pop(sid, None)
             return {"status": outcome}
 
     def run_now(self, schedule_id, now=None):

@@ -634,3 +634,227 @@ def test_delete_while_running_retains_completion_history(client, child, tmp_path
     assert (outputs / "a.answers.jsonl").is_file()
     assert client.get("/api/schedules/nightly/runs").json()["runs"][0]["rows"] == 1
     assert client.get("/api/schedules").json()["schedules"] == []
+
+
+def test_forced_rescan_queues_file_arriving_during_active_job(client, child, tmp_path, monkeypatch):
+    import threading
+
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "a.jsonl").write_text(item("a"))
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    scheduler = client.app.state.schedules
+    started = threading.Event()
+    original = scheduler.fleet.decide_runner
+
+    def held(*args, **kwargs):
+        started.set()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler.fleet, "decide_runner", held)
+    child.gate.clear()
+    assert scheduler.run_due(1000)["status"] == "started"
+    assert started.wait(10)
+    assert scheduler.run_now("nightly", 1000.5)["status"] == "no_new_files"
+    (inputs / "b.jsonl").write_text(item("b"))
+    assert scheduler.run_now("nightly", 1001)["status"] == "queued"
+    assert scheduler.run_now("nightly", 1002)["status"] == "queued"
+    child.gate.set()
+    scheduler.active[2].thread.join(30)
+    assert scheduler.run_due(1003)["status"] == "started"
+    scheduler.active[2].thread.join(30)
+    scheduler.run_due(1004)
+    assert [body["state"] for _, body in child.seen] == ["a", "b"]
+
+
+def test_restart_recovers_daily_scan_queue_after_first_file(client, child, tmp_path):
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    for name in ("a", "b"):
+        (inputs / f"{name}.jsonl").write_text(item(name))
+    assert (
+        client.post("/api/schedules", json=definition(inputs, outputs, interval={"daily_at": "10:00"})).status_code
+        == 201
+    )
+    scheduler = client.app.state.schedules
+    assert scheduler.run_due(datetime(2026, 11, 6, 10))["status"] == "started"
+    scheduler.active[2].thread.join(30)
+    scheduler._finish_active()
+    restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
+    assert restarted.run_due(datetime(2026, 11, 6, 11))["status"] == "started"
+    restarted.active[2].thread.join(30)
+    restarted.run_due(datetime(2026, 11, 6, 11, 1))
+    assert [body["state"] for _, body in child.seen] == ["a", "b"]
+    assert not restarted._due(restarted.get("nightly"), datetime(2026, 11, 6, 11, 2))
+
+
+@pytest.mark.parametrize("first", [True, False])
+def test_nested_json_is_recorded_at_physical_line_without_inference(client, child, tmp_path, first):
+    import sys
+
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    depth = sys.getrecursionlimit() * 16
+    nested = '{"state":' + "[" * depth + "0" + "]" * depth + ',"question":"q","options":["a","b"]}'
+    (inputs / "a.jsonl").write_text(("\n" if first else item() + "\n") + nested + "\n")
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    assert client.app.state.schedules.run_due(1000)["status"] == "failed"
+    row = client.get("/api/schedules/nightly/runs").json()["runs"][0]
+    assert f"line {2 if first else 3}" in row["error"]
+    assert child.seen == [] and list(outputs.iterdir()) == []
+
+
+def test_schedule_reads_fail_closed_for_corrupt_and_transient_unreadable_settings(tmp_path, monkeypatch):
+    config = tmp_path / "settings.json"
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    assert settings.schedules() == []
+    config.write_text("{broken")
+    for action in (
+        settings.schedules,
+        lambda: settings.schedule_state("x"),
+        settings.schedule_history,
+        settings.recover_schedule_publications,
+        lambda: settings.update_schedules(lambda rows: rows.clear()),
+    ):
+        with pytest.raises(settings.CorruptSettings):
+            action()
+    assert config.read_text() == "{broken"
+    config.write_text('{"keep": "important", "schedules": []}')
+    before = config.read_bytes()
+    original = type(config).read_text
+    failed = False
+
+    def transient(path, *args, **kwargs):
+        nonlocal failed
+        if path == config and not failed:
+            failed = True
+            raise PermissionError("transient read failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(config), "read_text", transient)
+    with pytest.raises(PermissionError):
+        settings.update_schedules(lambda rows: rows.append({"id": "x"}))
+    assert config.read_bytes() == before
+    config.unlink()
+    config.symlink_to(tmp_path / "missing.json")
+    with pytest.raises(settings.CorruptSettings):
+        settings.schedules()
+    assert config.is_symlink()
+
+
+@pytest.mark.parametrize("change", ["pause", "edit", "delete"])
+def test_other_process_change_before_reservation_prevents_start(client, child, tmp_path, monkeypatch, change):
+    import os
+    import subprocess
+    import sys
+
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "a.jsonl").write_text(item())
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    scheduler = client.app.state.schedules
+    original = scheduler.fleet.ready
+
+    def mutate_elsewhere(model):
+        runner = original(model)
+        mutation = {
+            "pause": "rows[0].update(paused=True)",
+            "edit": "rows[0].update(pattern='other*')",
+            "delete": "rows.clear()",
+        }[change]
+        program = f"from basal_ui import settings; settings.update_schedules(lambda rows: {mutation})"
+        subprocess.run([sys.executable, "-c", program], env=os.environ.copy(), check=True, timeout=30)
+        return runner
+
+    monkeypatch.setattr(scheduler.fleet, "ready", mutate_elsewhere)
+    assert scheduler.run_due(1000)["status"] == "no_new_files"
+    rows = client.get("/api/schedules").json()["schedules"]
+    if change == "delete":
+        assert rows == []
+    elif change == "pause":
+        assert rows[0]["paused"]
+    else:
+        assert rows[0]["pattern"] == "other*"
+    assert child.seen == [] and client.get("/api/jobs").json()["jobs"].get("batch") is None
+
+
+def test_cancel_drains_incomplete_proxy_connections_without_abandoning_inference(client, child, tmp_path, monkeypatch):
+    import contextlib
+    import queue
+    import socket
+    import threading
+    from urllib.parse import urlsplit
+
+    import httpx
+
+    from basal_ui import batch
+
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "a.jsonl").write_text(item())
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    urls, started = queue.Queue(), threading.Event()
+    original_proxy = batch.comparison_proxy
+    original_decide = client.app.state.schedules.fleet.decide_runner
+
+    @contextlib.contextmanager
+    def observe(*args, **kwargs):
+        with original_proxy(*args, **kwargs) as url:
+            urls.put(url)
+            yield url
+
+    def held(*args, **kwargs):
+        started.set()
+        return original_decide(*args, **kwargs)
+
+    monkeypatch.setattr(batch, "comparison_proxy", observe)
+    monkeypatch.setattr(client.app.state.schedules.fleet, "decide_runner", held)
+    child.gate.clear()
+    scheduler = client.app.state.schedules
+    assert scheduler.run_due(1000)["status"] == "started"
+    url = urls.get(timeout=10)
+    assert started.wait(10)
+    target = urlsplit(url)
+    header = socket.create_connection((target.hostname, target.port), timeout=3)
+    body = socket.create_connection((target.hostname, target.port), timeout=3)
+    try:
+        header.sendall(b"POST /v1/systemone HTTP/1.1\r\nHost: 127.0.0.1")
+        body.sendall(
+            f"POST /v1/systemone HTTP/1.1\r\nHost: 127.0.0.1:{target.port}\r\nContent-Length: 100\r\n\r\n{{".encode()
+        )
+        assert httpx.post(url + "/v1/systemone", headers={"Host": "evil.example"}, json={}).status_code == 403
+        client.delete("/api/batch")
+        job = scheduler.active[2]
+        assert job.thread.is_alive()  # the live inference still owns the runner
+        assert scheduler.fleet.leases
+        child.gate.set()
+        job.thread.join(10)
+        assert not job.thread.is_alive()
+        assert not [t for t in threading.enumerate() if t.name == "basal-ui-scheduled-batch"]
+        header.settimeout(2)
+        body.settimeout(2)
+        assert header.recv(1) == b"" and body.recv(1) == b""
+    finally:
+        child.gate.set()
+        header.close()
+        body.close()
+
+
+def test_incomplete_proxy_header_hits_absolute_deadline(monkeypatch):
+    import socket
+    from urllib.parse import urlsplit
+
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "PREFLIGHT_TIMEOUT_S", 0.05)
+    with batch.comparison_proxy(object(), object(), "model") as url:
+        target = urlsplit(url)
+        with socket.create_connection((target.hostname, target.port), timeout=2) as connection:
+            connection.sendall(b"POST /v1/systemone HTTP/1.1\r\nHost:")
+            connection.settimeout(2)
+            assert connection.recv(1) == b""

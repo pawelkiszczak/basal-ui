@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import socket
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,10 +12,35 @@ from urllib.parse import urlsplit
 
 from .jobs import run_tool
 
+PREFLIGHT_TIMEOUT_S = 5
+
 
 def default_output(input_path) -> Path:
     path = Path(input_path)
     return path.with_name(f"{path.stem}.answers.jsonl")
+
+
+def validate_comparison_item(item, runner, early_exit=None):
+    """Apply the accepted Comparison Batch preflight before basal-run can discard fields."""
+    from basal.run import to_request
+
+    if "questions" in item and "gold" in item:
+        raise ValueError("basal-run does not grade gold on full requests; use simple items")
+    permitted = (
+        {"id", "state", "questions", "early_exit", "gold"}
+        if "questions" in item
+        else {"id", "state", "question", "options", "type", "gold"}
+    )
+    extra = set(item) - permitted
+    if extra:
+        raise ValueError(f"basal-run would discard {sorted(extra)[0]}")
+    try:
+        request = to_request(item, early_exit)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
+    refusal, _, _ = runner._prepare(request)
+    if refusal is not None:
+        raise ValueError(refusal.json()["error"])
 
 
 @contextlib.contextmanager
@@ -64,18 +90,69 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                     self.send_error(400)
                     return
                 body = json.loads(self.rfile.read(length))
+                if not server.begin_inference(self.connection):
+                    return
                 response = fleet.decide_runner(runner, model_id, body, source=source, endpoint=endpoint)
                 status, content = response.status_code, response.content
             except Exception:  # noqa: BLE001 — basal-run records an error for this item
                 status, content = 502, b'{"error":"Batch request failed","code":"UPSTREAM_ERROR"}'
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
+            with contextlib.suppress(OSError):
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
 
     class Server(ThreadingHTTPServer):
         daemon_threads = False
+
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.pending_lock = threading.Lock()
+            self.pending = {}
+            self.closing = False
+
+        def abort_pending(self, connection):
+            with self.pending_lock:
+                timer = self.pending.pop(connection, None)
+                if timer is not None:
+                    timer.cancel()
+                    with contextlib.suppress(OSError):
+                        connection.shutdown(socket.SHUT_RDWR)
+
+        def process_request(self, connection, address):
+            timer = threading.Timer(PREFLIGHT_TIMEOUT_S, self.abort_pending, args=(connection,))
+            timer.daemon = True
+            with self.pending_lock:
+                self.pending[connection] = timer
+            timer.start()
+            super().process_request(connection, address)
+
+        def begin_inference(self, connection):
+            with self.pending_lock:
+                if self.closing:
+                    return False
+                timer = self.pending.pop(connection, None)
+                if timer is None:
+                    return False
+                timer.cancel()
+                return True
+
+        def finish_request(self, connection, address):
+            try:
+                super().finish_request(connection, address)
+            finally:
+                with self.pending_lock:
+                    timer = self.pending.pop(connection, None)
+                    if timer is not None:
+                        timer.cancel()
+
+        def close_pending(self):
+            with self.pending_lock:
+                self.closing = True
+                connections = list(self.pending)
+            for connection in connections:
+                self.abort_pending(connection)
 
     server = Server(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, name="basal-ui-scheduled-batch", daemon=True)
@@ -84,6 +161,7 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
         yield f"http://127.0.0.1:{server.server_port}"
     finally:
         server.shutdown()
+        server.close_pending()
         server.server_close()
         thread.join()
 

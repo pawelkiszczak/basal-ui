@@ -158,18 +158,29 @@ def create_app(
                     continue
                 try:
                     item = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     item = None
                 if not isinstance(item, dict) or not ("questions" in item or "options" in item):
                     raise RuntimeError(f"{source.name}: line {number} is not a Batch request")
+                if (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison":
+                    try:
+                        batch.validate_comparison_item(item, runner)
+                    except ValueError as exc:
+                        raise RuntimeError(f"{source.name}: line {number}: {exc}") from exc
                 if first:
-                    _, reason = paths._row_shape(item)
+                    try:
+                        _, reason = paths._row_shape(item)
+                    except RecursionError as exc:
+                        raise RuntimeError(
+                            f"{source.name}: line {number}: request nesting exceeds the parser limit"
+                        ) from exc
                     if reason:
                         raise RuntimeError(f"{source.name}: line {number}: {reason}")
                     first = False
             if first:
                 raise RuntimeError(f"{source.name}: no requests")
-            with fleet.lock:
+
+            def reserve():
                 fleet.start_model_job(
                     "batch",
                     spec["model"],
@@ -188,7 +199,12 @@ def create_app(
                     row,
                     runner_expected=runner,
                 )
-                job = fleet.jobs.get("batch")
+                return fleet.jobs.get("batch")
+
+            with fleet.lock:
+                job = settings_mod.reserve_schedule(spec, reserve)
+            if job is None:
+                return None
             snapshot = None
             return job
         except (OSError, UnicodeDecodeError) as exc:
