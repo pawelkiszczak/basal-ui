@@ -316,6 +316,13 @@ def comparison_memory(modes, est_memory_bytes) -> int:
 
 def identity_args(local_dir, dtype, options, out_json) -> list[str]:
     """Build basal-bench's fast-path identity gate command for the saved serving options."""
+    from basal.server import lean_tree
+
+    lean, tree = lean_tree(
+        options.get("lean", load_options.DEFAULTS["lean"]),
+        options.get("tree", load_options.DEFAULTS["tree"]),
+        "graph",
+    )
     args = ["--identity", "--model", str(local_dir), "--dtype", dtype, "--out", str(out_json)]
     for key, flag in (
         ("attn", "--attn"),
@@ -324,7 +331,7 @@ def identity_args(local_dir, dtype, options, out_json) -> list[str]:
         ("tree", "--tree"),
         ("gemma_attn", "--gemma-attn"),
     ):
-        value = options.get(key)
+        value = lean if key == "lean" else tree if key == "tree" else options.get(key)
         if value is not None and value != load_options.DEFAULTS.get(key):
             args += [flag, str(value)]
     return args

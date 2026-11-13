@@ -363,7 +363,19 @@ def test_order_check_rejects_malformed_report(tmp_path, monkeypatch, result):
     assert fleet.released
 
 
-def test_identity_arguments_pass_native_parser(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "lean,tree,effective",
+    [
+        ("pass2", "flex", ("pass2", "flex")),
+        ("auto", "auto", ("pass2", "flex")),
+        ("auto", "dense", ("off", "dense")),
+        ("on", "auto", ("on", "dense")),
+        ("off", "auto", ("off", "dense")),
+        ("pass2", "auto", ("pass2", "flex")),
+        ("auto", "flex", ("pass2", "flex")),
+    ],
+)
+def test_identity_arguments_pass_native_parser(monkeypatch, tmp_path, lean, tree, effective):
     import argparse
 
     from basal import identity
@@ -379,7 +391,7 @@ def test_identity_arguments_pass_native_parser(monkeypatch, tmp_path):
         raise Parsed()
 
     monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
-    options = {"attn": "fa3", "merge": "on", "lean": "pass2", "tree": "flex", "gemma_attn": "math"}
+    options = {"attn": "fa3", "merge": "on", "lean": lean, "tree": tree, "gemma_attn": "math"}
     argv = bench.identity_args(tmp_path, "float32", options, tmp_path / "out.json")
     with pytest.raises(Parsed):
         identity.main(argv[1:])
@@ -387,8 +399,7 @@ def test_identity_arguments_pass_native_parser(monkeypatch, tmp_path):
         "float32",
         "fa3",
         "on",
-        "pass2",
-        "flex",
+        *effective,
         "math",
     )
 
