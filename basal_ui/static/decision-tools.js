@@ -43,7 +43,7 @@
     const reason = reasons.join(' ');
     const status = applicable ? t('Thresholds apply to this answer') : t('Threshold applicability not established');
     const thresholds = `<dl class="dt-thresholds"><div><dt>${t('1% error threshold')}</dt><dd>${t1 == null ? t('Not reported') : esc(Number(t1).toFixed(4))}</dd></div><div><dt>${t('5% error threshold')}</dt><dd>${t5 == null ? t('Not reported') : esc(Number(t5).toFixed(4))}</dd></div></dl>`;
-    return `<aside class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
+    return `<aside data-certification-evidence class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
   }
 
   function answerPanel(name, answer, q, entry) {
@@ -151,6 +151,7 @@
       return item ? {kind: item.kind, data: item.data, file: item.file, elements: item.elements ? structuredClone(item.elements) : undefined} : null;
     });
     const entries = Object.fromEntries(models.map(model => [model.id, structuredClone(modelEntry(model.id))]));
+    const stamps = Object.fromEntries(models.map(model => [model.id, attachedEvidenceStamp(model.id)]));
     const prompt = $('#decisionCompare .dt-prompt');
     prompt.hidden = false;
     prompt.innerHTML = `<strong>${t('Frozen request snapshot')}</strong><pre>${esc(displayRequest(snapshot))}</pre>`;
@@ -167,6 +168,7 @@
       grid.innerHTML = settled.map(result => `<article class="dt-model-result" data-model="${esc(result.model.id)}">${result.error
         ? `<h3>${esc(result.model.id)}</h3><p class="dt-used">${t('Request sent')}: <code>${esc(result.model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(result.model.id)})}</summary><pre>${esc(displayRequest(result.request))}</pre></details><div class="error-box" role="alert">${esc(result.error.message || String(result.error))}</div>`
         : `<h3>${esc(result.model.id)}</h3>${renderResults(result.data, result.request, entries[result.model.id], mediaSnapshot)}`}</article>`).join('');
+      grid.querySelectorAll('.dt-model-result').forEach(card=>{if(card.dataset.model.startsWith('attached/')){card.dataset.evidenceModel=card.dataset.model;card.dataset.evidenceStamp=stamps[card.dataset.model];invalidateAttachedEvidence(card);}});
     } catch (error) {
       if (run === sequence) setError(error.message || String(error));
     } finally {
@@ -181,18 +183,11 @@
     mount();
     const nextReady = Array.isArray(models) ? models.filter(model => model?.id && model.state === 'ready') : [];
     const signature = JSON.stringify(nextReady.map(model => [model.id, model.media || []]));
-    if (signature !== readySignature) {
-      readySignature = signature;
-      sequence++;
-      running = false;
-      const grid = $('#decisionCompare .dt-grid');
-      if (grid) grid.replaceChildren();
-      $('#decisionCompare .dt-prompt').hidden = true;
-    }
+    if (signature !== readySignature) readySignature = signature;
     ready = nextReady;
     reconcileSelects();
   }
 
-  window.DecisionTools = {answerPanel, refreshModels};
+  window.DecisionTools = {answerPanel, refreshModels, invalidateAttachedEvidence:()=>document.querySelectorAll('#decisionCompare .dt-model-result').forEach(invalidateAttachedEvidence)};
   document.addEventListener('DOMContentLoaded', () => { mount(); refreshModels(readyModels()); });
 })();

@@ -229,6 +229,7 @@ class Jobs:
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
         self.start_lock, self.start_guard = start_lock, start_guard
+        self.model_guard = None
 
     def start(self, kind, model, label, target, *args) -> dict:
         """Run target(job, *args) in a daemon thread; its return value is the job's result. RuntimeError when a job of
@@ -241,6 +242,8 @@ class Jobs:
     def _start(self, kind, model, label, target, *args) -> dict:
         if self.start_guard is not None:
             self.start_guard(kind, target)
+        if self.model_guard is not None:
+            self.model_guard(kind, model)
         with self.lock:
             current = self.jobs.get(kind)
             if current is not None and current.running:

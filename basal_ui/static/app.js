@@ -103,6 +103,7 @@ function renderModels(data) {
   backendSelect.value=recommendationBackend;
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
+  renderAttachControl();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
@@ -126,8 +127,8 @@ function renderModels(data) {
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
       const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):downloadButton}${m.runnable?optionsButton(m.id,false,'save'):''}${!loaded&&m.downloaded?deleteButton(m.id):''}`;
-      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
   }
@@ -191,18 +192,19 @@ async function openModelCard(id) {
   $('#modelCardBody').scrollTop=0;  // the dialog is reused: a new card starts at its top
 }
 function renderDiskModels() {
-  const rows = modelData.filter(m => m.downloaded), total = rows.reduce((sum,m) => sum + (Number(m.downloaded_bytes) || 0),0);
+  const rows = modelData.filter(m => m.downloaded || m.attached), total = rows.reduce((sum,m) => sum + (m.attached?0:(Number(m.downloaded_bytes) || 0)),0);
   const groups=new Map();
   for(const model of rows){
-    const type=model.family||'Other';
+    const type=model.attached?'Attached':model.family||'Other';
     if(!groups.has(type))groups.set(type,[]);
     groups.get(type).push(model);
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${type==='Attached'?t('Linked weights: {size}',{size:gb(bytes)}):gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.attached?`<span>${esc(m.repo)}</span>`:''}${m.attached?`<span class="chip">${t('Attached')}</span>${m.uncalibrated?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${m.attached?t('Linked weights: {size}',{size:gb(m.downloaded_bytes)}):gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${m.attached?`${m.downloaded?diskActions(m):`<span class="reason">${t('Model files are missing; remove and attach again.')}</span>`}<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
-  $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
+  const ordinary=rows.filter(m=>m.downloaded&&!m.attached);
+  $('#diskTotal').textContent=t('Total: {size} in {models}',{size:gb(total),models:tp(ordinary.length,'{n} model','{n} models',{n:ordinary.length})})+(rows.some(m=>m.attached)?` · ${t('Shared base weights are not included.')}`:'');
   renderManagerSummary();
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
@@ -223,6 +225,40 @@ function renderModelLoader() {
   }).join(''):`<p class="muted">${t(inspecting?'Download a bf16 model first':'Nothing downloaded yet')}</p>`;
   if(container.innerHTML!==html)container.innerHTML=html;
 }
+async function renderAttachControl() {
+  const card=$('#attachCard');
+  try{
+    const data=await api('/api/attach');
+    card.hidden=false;
+    $('#attachUnavailable').hidden=data.available;
+    $('#attachControls').hidden=!data.available;
+    $('#attachBase').innerHTML=(data.bases||[]).map(base=>`<option value="${esc(base)}">${esc(base)}</option>`).join('');
+  }catch{card.hidden=true;}
+}
+$('#openAttach').onclick=()=>$('#attachDialog').showModal();
+$('#attachModel').onclick=()=>act(async()=>{
+  const base=$('#attachBase').value;
+  await api('/api/attach',{method:'POST',body:JSON.stringify({base,format:Number($('#attachFormat').value)})});
+  $('#attachDialog').close();
+  toast(t('Attach job started'));
+  await refreshStatus();
+});
+$('#cancelAttach').onclick=()=>act(async()=>{await api('/api/attach',{method:'DELETE'});await refreshStatus();});
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.remove-attached');
+  if(!button)return;
+  act(async()=>{
+    const id=button.dataset.id;
+    if(!await confirmDialog({title:t('Remove attached model?'),description:t('{model} will be removed. Shared base weights remain in the cache.',{model:id}),confirmLabel:t('Remove'),destructive:true}))return;
+    const result=await api(`/api/attach/${encodeURIComponent(id)}`,{method:'DELETE'});
+    if(result.cleanup_error){
+      $('#attachRecovery').textContent=t('Cleanup was incomplete. Inspect the retained directory: {path}',{path:result.retained_path});
+      $('#attachRecovery').hidden=false;
+      showView('manager/library',true);$('#attachRecovery').scrollIntoView({block:'center'});
+    }else toast(result.retained_directory?t('Record removed; unverified model directory was retained.'):t('Attached model removed'));
+    await loadModels();
+  });
+});
 $('#openModelLoader').onclick=()=>{$('#modelLoaderDialog').showModal();renderModelLoader();};
 document.addEventListener('click',event=>{
   const button=event.target.closest('.use-loaded-model');if(!button)return;
@@ -890,8 +926,8 @@ function resultHeadline(name, answer, requestQuestion) {
   return null;
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
-const modelEntry=id=>(statusCache?.models||[]).find(m=>m.id===id)?.entry||null;
-const uncalibrated=entry=>Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length;
+const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(!entry)return null;return id.startsWith('attached/')?{...entry,attached_uncalibrated:model.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length}:entry;};
+const uncalibrated=entry=>Boolean(entry?.attached_uncalibrated)||(Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length);
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
   if(type==='tool')return 'choice';  // a single tool decision is deferred against the choice threshold
@@ -908,6 +944,7 @@ function certificateGap(answer, entry) {
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
   if(answer.calibration!=null&&answer.calibration!=='validated')return `calibration: ${answer.calibration}`;
+  if(entry?.attached_uncalibrated)return t('no active certified thresholds for this Attached model');
   if(uncalibrated(entry))return t('the probabilities are not calibrated');
   return null;
 }
@@ -925,6 +962,7 @@ function automationBadge(answer,q,entry) {
 }
 function calibrationChip(answer,entry) {
   const c=answer.calibration;
+  if(entry?.attached_uncalibrated)return `<span class="badge fit-tight">${t('uncalibrated')}</span>`;
   if(c==='validated')return `<span class="badge fit-fits">${t('calibrated')}</span>`;
   if(c==='unvalidated')return `<span class="badge fit-tight">${t(answer.type==='act'?'calibration not validated for this question shape':'unvalidated — fitted on other option orders')}</span>`;
   if(c==='text')return `<span class="badge fit-tight">${t('fitted on text (media request)')}</span>`;
@@ -937,19 +975,20 @@ function automatedChips(automated) {
   if(!automated||typeof automated!=='object')return '';
   return Object.entries(automated).map(([risk,v])=>{
     const at=`${(Number(risk)*100).toFixed(0)}%`;
-    return v===true?`<span class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
+    return v===true?`<span data-certification-evidence class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span data-certification-evidence class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span data-certification-evidence class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
   }).join(' ');
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
+  for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
+  parts.push(automatedChips(answer.automated));
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
 }
 function resultBanners(entry,u) {
-  let html=entry?.calibration_warning?`<div class="error-box">${esc(entry.calibration_warning)}</div>`:'';
+  let html=entry?.calibration_warning?`<div data-certification-evidence class="error-box">${esc(entry.calibration_warning)}</div>`:'';
   const truncated=u?.truncated;
   if(truncated)html+=`<div class="error-box">${t('State truncated to the context: dropped {dropped} of {total} tokens (kept {head} from the start, {tail} from the end)',{dropped:esc(truncated.dropped_tokens),total:esc(truncated.state_tokens),head:esc(truncated.head_tokens),tail:esc(truncated.tail_tokens)})}</div>`;
   return html;
@@ -1056,9 +1095,24 @@ function thinkBlock(a) {
   const think=a.think, used=a.meta?.think;
   if(think?.skipped)return `<div class="chips"><span class="chip muted">${t('thinking skipped ({reason})',{reason:esc(think.skipped)})}</span></div>`;
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
-  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · ${t('calibration')} ${esc(t(think.calibration??'—'))}; ${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
+  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · <span data-certification-evidence>${t('calibration')} ${esc(t(think.calibration??'—'))}; </span>${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
-function renderResults(data, request, mediaSnapshot=selectedMedia) {
+function inspectBlockedReason(id) {
+  const variant=modelData.find(m=>m.id===id);
+  return variant?.attached||String(id||'').startsWith('attached/')?t(variant?.inspect_reason||'attached models cannot be inspected'):null;
+}
+function attachedEvidenceStamp(id) {
+  if(!String(id||'').startsWith('attached/'))return '';
+  const m=(statusCache?.models||[]).find(item=>item.id===id);
+  return JSON.stringify(m?[m.id,m.state,m.generation,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.calibration_warning]:null);
+}
+function invalidateAttachedEvidence(node) {
+  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===attachedEvidenceStamp(node.dataset.evidenceModel))return;
+  node.querySelectorAll('[data-certification-evidence]').forEach(element=>element.remove());
+  const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
+  node.prepend(notice);node.dataset.evidenceStale='1';
+}
+function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=attachedEvidenceStamp(request.model)) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
@@ -1071,7 +1125,9 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const inspectReason=inspectBlockedReason(request.model);
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const results=$('#results');results.dataset.evidenceModel=String(request.model||'').startsWith('attached/')?request.model:'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateAttachedEvidence(results);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1094,7 +1150,8 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
+  const evidenceStamp=attachedEvidenceStamp(request.model);
+  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
 }
@@ -1295,15 +1352,33 @@ const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
 function renderManagerSummary() {
   const loaded=statusCache?.models?.length||0, downloaded=modelData.filter(m=>m.downloaded);
-  const bytes=downloaded.reduce((sum,model)=>sum+(Number(model.downloaded_bytes)||0),0);
+  const bytes=downloaded.reduce((sum,model)=>sum+(model.attached?0:(Number(model.downloaded_bytes)||0)),0);
   $('#managerLoadedCount').textContent=`${loaded} ${t('loaded')}`;
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
+let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  invalidateAttachedEvidence($('#results'));DecisionTools.invalidateAttachedEvidence();
+  const attachJob=s.jobs?.attach;
+  if(attachJob){
+    const progress=s.downloads?.[$('#attachBase').value];
+    $('#cancelAttach').hidden=!attachJob.running;
+    $('#openAttach').disabled=attachJob.running;
+    $('#attachFormat').disabled=attachJob.running;
+    $('#attachBase').disabled=attachJob.running;
+    $('#attachModel').disabled=attachJob.running;
+    $('#attachJob').textContent=attachJob.running?`${t('Attaching {model}',{model:attachJob.model})}${progress?` · ${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}`:''}`:attachJob.phase==='error'?t('Failed: {error}',{error:attachJob.error}):attachJob.phase==='done'?t('Attached model ready'):'';
+    if(!attachJob.running&&attachJob.phase==='done'&&lastAttachedJobRefresh!==attachJob.started){
+      lastAttachedJobRefresh=attachJob.started;
+      loadModels();
+    }
+  }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
+  const attachedSignature=JSON.stringify(models.filter(m=>m.id.startsWith('attached/')).map(m=>[m.id,m.state,m.generation,m.restart_required,m.entry?.certified,m.entry?.calibration_warning,m.uncalibrated]));
+  if(attachedSignature!==attachedStatusSignature){attachedStatusSignature=attachedSignature;loadModels().then(()=>renderLoadedRows(statusCache?.models||[]));}
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
@@ -1368,7 +1443,7 @@ function renderLoadedRows(models) {
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(modelEntry(m.id))?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
     const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
     const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
@@ -1614,7 +1689,7 @@ function renderCalibrationFiles(id, d) {
     const sequence=++calibrationSequence, data=await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})});
     if(!calibrationCurrent(id,sequence))return;
     renderCalibrationFiles(id,data);
-    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus();
+    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus(); await loadModels();
   }));
   $('#calibrationFiles').querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
@@ -1985,7 +2060,7 @@ function renderInspectModels() {
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
-  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
+  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(t(m.inspect_reason))}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
   loadInspectCalibrations();
@@ -2017,6 +2092,7 @@ function renderInspectState(state, job) {
 // What the inspector would explain of a Playground decision: the request it can explain and how that differs from
 // the served one, or why it cannot (another model, media, nothing but task questions).
 function inspectHandoff(request) {
+  const reason=inspectBlockedReason(request.model);if(reason)return {blocked:reason};
   const st=statusCache?.inspect||{}, served=(statusCache?.models||[]).find(m=>m.id===request.model);
   const variant=id=>modelData.find(m=>m.id===id), sv=variant(request.model), iv=variant(st.model);
   if(request.media)return {blocked:t('basal-viz reads text only; remove the media to inspect this request')};
@@ -2039,6 +2115,7 @@ function inspectHandoff(request) {
   return {body,notes};
 }
 function inspectDecision(request) {
+  const reason=inspectBlockedReason(request.model);if(reason){toast(reason,'error');return;}
   if(statusCache?.inspect?.state!=='ready'){toast(t('Start the inspector for {model} first',{model:request.model||t('a model')}),'error');showView('inspect',true);return;}
   const handoff=inspectHandoff(request), notice=$('#inspectNotice');
   if(handoff.blocked){toast(handoff.blocked,'error');return;}

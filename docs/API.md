@@ -32,6 +32,18 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 | `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
 | `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
 | `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
+| `GET /api/attach` | Returns `{"available":boolean,"bases":[...]}`; bases are empty unless `engine.feature("attach")` is available. |
+| `POST /api/attach` | `{"base":"Qwen/Qwen3-4B","revision":null,"format":1}` starts the normal base download pinned to `1cfa9a7208912126459214e8b04321603b3df60c` and an `attach` job; format is 1 by default or 2, subject to the Engine tokenizer check. Unsupported bases/format are 400, duplicate or busy job is 409, unavailable Engine feature is 400. |
+| `DELETE /api/attach` | Cancels the attach job; an in-flight shared download drains before the job stops. |
+| `DELETE /api/attach/{id}` | Removes the record and verified owned directory; returns owned `freed_bytes` and `retained_directory` if ownership cannot be verified. Returns 409 while busy and 404 for unknown ids. Shared base weights remain cached. |
+
+If removal persists the record change but cleanup fails, the response includes `cleanup_error: true`,
+`retained_path` naming the staging directory, and conservative `freed_bytes: 0`. Inspect the retained directory
+before removing it manually; linked base weights remain in the cache.
+
+The attach job and download progress appear in `GET /api/status` under `jobs["attach"]` and `downloads[base]`;
+its log is available at `GET /api/logs?source=job%3Aattach`. The generated model is listed by `GET /api/models`
+and can be loaded and calibrated like other catalog entries.
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns

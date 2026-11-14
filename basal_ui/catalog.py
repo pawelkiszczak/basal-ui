@@ -18,9 +18,12 @@ _REPO_RE = re.compile(
     r"(?:-(FP8|NVFP4|GGUF|MLX(?:-8bit|-6bit|-bf16|-fp4)?|oQ6e))?$"
 )
 _PICO_RE = re.compile(r"^basal-omni-(pico)(?:-(FP8|NVFP4|GGUF|MLX(?:-8bit)?))?$")
-AUTHORS = ("Remek", "pawelkiszczak", "agentGreg")
+ATTACHABLE = ("Qwen/Qwen3-4B",)
+ATTACH_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
+ATTACHED_MODE_REASON = "attached models serve in eager, mps, mlx, mlx-q8 or fast"
 _BASE_FILES = ("*.json", "*.jinja", "*.model", "*.txt")
 TIER_ORDER = {"pico": 0, "mini": 1, "1.5B": 2, "4.5B": 3, "max": 4, "ultra": 5}
+AUTHORS = ("Remek", "pawelkiszczak", "agentGreg")
 CURRENT_TEXT_FAMILY = "basal-2.0"
 # docs/HARDWARE.md, Recommendation: bf16 on data-centre GPUs (launch-bound at batch 1) and on the RTX 4090 (FP8
 # compilation stalled there); FP8 on other GPUs with compute capability 8.9+
@@ -144,10 +147,61 @@ class Variant:
     weights_only: bool = False  # a GGUF repository without tokenizer and calibration: they come from base_repo
     recurrent: bool = False  # RECURRENT_MODELS
     cache_revision: str | None = None  # the complete snapshot selected by the offline catalog
+    local_dir: str | None = None
+    attached_format: int | None = None
 
     @property
     def community(self) -> bool:
-        return self.author != "Remek"
+        return self.family != "attached" and self.author != "Remek"
+
+
+def attached_variants(records, models_dir) -> list[Variant]:
+    """Build catalog variants from persistent attached-model records."""
+    out = []
+    for record in records:
+        base, model_id, directory = record.get("base"), record.get("id"), record.get("out_dir")
+        if not isinstance(base, str) or base not in ATTACHABLE or not isinstance(directory, str):
+            continue
+        if model_id != "attached/" + base.lower().replace("/", "-"):
+            continue
+        path = Path(models_dir) / "attached" / model_id.split("/", 1)[1]
+        if str(path) != directory:
+            continue
+        unsafe = path.parent.is_symlink() or path.is_symlink()
+        try:
+            config = {} if unsafe else json.loads((path / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        weights = [] if unsafe else [p for p in path.glob("*.safetensors") if p.is_file()]
+        try:
+            weight_bytes = sum(p.stat().st_size for p in weights)
+        except OSError:
+            weight_bytes = 0
+        try:
+            params = float(config.get("num_parameters") or weight_bytes / 2)
+        except (TypeError, ValueError):
+            params = weight_bytes / 2
+        tier = f"{params / 1_000_000_000:.1f}B"
+        out.append(
+            Variant(
+                model_id,
+                base,
+                "attached",
+                tier,
+                "bf16",
+                "bf16",
+                None,
+                weight_bytes,
+                True,
+                author=base.split("/", 1)[0],
+                local_dir=str(path),
+                cache_revision=record.get("revision"),
+                attached_format=record.get("format"),
+            )
+        )
+    return out
 
 
 @dataclass(frozen=True)
@@ -428,11 +482,15 @@ def _mode(v: Variant, hw: Hardware) -> tuple[str | None, str | None]:
     if hw.platform == "apple":
         if "mlx" in hw.engines:
             return "mlx", None
+        if v.family == "attached":
+            return "mps", None
         if v.experimental:
             return None, _text("omni_apple_dependency")
         return "mps", None
     if "tpu" in hw.engines and not v.experimental:
         return "tpu", None
+    if v.family == "attached":
+        return "eager", None
     if v.experimental:
         return None, _text("omni_hardware")
     return "eager", None
@@ -502,7 +560,11 @@ def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> li
         pool = [a for a in pool if now(a) == "fits"] or [a for a in pool if now(a) == "tight"]
         return max(pool, key=lambda a: TIER_ORDER.get(a.variant.tier, -1), default=None)
 
-    fitting = [a for a in items if not a.variant.community and a.fit != "too_large" and now(a) != "too_large"]
+    fitting = [
+        a
+        for a in items
+        if a.variant.family != "attached" and not a.variant.community and a.fit != "too_large" and now(a) != "too_large"
+    ]
     text = [a for a in fitting if a.runnable and not a.variant.experimental]
     families = sorted({a.variant.family for a in text}, reverse=True)
     suggestions = []
@@ -649,8 +711,50 @@ def _base_revision(v: Variant) -> dict:
     return {"revision": v.base_revision} if v.base_revision else {}
 
 
+def _attached_weights_complete(path: Path) -> bool:
+    try:
+        index = json.loads((path / "model.safetensors.index.json").read_text(encoding="utf-8"))
+        expected = {f"model-{i:05d}-of-00003.safetensors" for i in range(1, 4)}
+        return set(index["weight_map"].values()) == expected and all(
+            (path / name).is_file() and (path / name).stat().st_size > 0 for name in expected
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> Path | None:
     """The local snapshot directory if the weights and any required base metadata are cached."""
+    if v.local_dir is not None:
+        path = Path(v.local_dir)
+        if v.family == "attached" and (
+            v.cache_revision != ATTACH_REVISION or path.parent.is_symlink() or path.is_symlink()
+        ):
+            return None
+        try:
+            meta = json.loads((path / "basal.json").read_text(encoding="utf-8"))
+            cal = json.loads((path / "CALIBRATION.json").read_text(encoding="utf-8"))
+            config = json.loads((path / "config.json").read_text(encoding="utf-8"))
+            valid = (
+                _attached_weights_complete(path)
+                and meta.get("attached", {}).get("base") == v.repo
+                and (v.cache_revision is None or meta.get("attached", {}).get("revision") == v.cache_revision)
+                and meta.get("readout")
+                and type(v.attached_format) is int
+                and meta.get("prompt") == v.attached_format
+                and v.attached_format in (1, 2)
+                and isinstance(cal, dict)
+                and isinstance(config, dict)
+                and (path / "config.json").is_file()
+                and (path / "tokenizer.json").is_file()
+                and _cached_weight_paths(path, v.port)
+            )
+            return (
+                path
+                if valid and all(weight.stat().st_size > 0 for weight in _cached_weight_paths(path, v.port))
+                else None
+            )
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
     from huggingface_hub import snapshot_download
 
     kwargs = download_kwargs(v, revision)
@@ -661,7 +765,13 @@ def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> P
     except Exception:  # noqa: BLE001 — an absent or partial snapshot is not downloaded
         return None
     weights = _cached_weight_paths(path, v.port, v.gguf_file)
-    return path if weights and (not v.base_repo or base_dir(v, cache_dir) is not None) else None
+    return (
+        path
+        if weights
+        and (v.family != "attached-base" or _attached_weights_complete(path))
+        and (not v.base_repo or base_dir(v, cache_dir) is not None)
+        else None
+    )
 
 
 def _cached_weight_paths(path: Path, port: str, gguf_file: str | None = None) -> list[Path] | None:

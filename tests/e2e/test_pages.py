@@ -1775,3 +1775,337 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_library_totals_and_setup_for_not_downloaded_model(browser, isolated_ui):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        data = isolated_ui.get("/api/models")
+        base = next(m for m in data["models"] if m["runnable"])
+        ordinary = {
+            **base,
+            "id": "fixture/ordinary",
+            "repo": "fixture/ordinary",
+            "family": "fixture",
+            "attached": False,
+            "downloaded": False,
+            "downloaded_bytes": None,
+        }
+        data["models"] = [
+            ordinary,
+            {**ordinary, "id": "fixture/on-disk", "downloaded": True, "downloaded_bytes": 2000000000},
+            {
+                **ordinary,
+                "id": "attached/test",
+                "family": "attached",
+                "attached": True,
+                "downloaded": True,
+                "downloaded_bytes": 8000000000,
+            },
+        ]
+        data["suggestions"] = []
+        status = isolated_ui.status()
+        page.route("**/api/models*", lambda route: route.fulfill(json=data))
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.goto(isolated_ui.url + "/#models")
+        page.locator("#allModelsTab").click()
+        page.wait_for_selector('.options-model[data-id="fixture/ordinary"][data-action="save"]')
+        assert page.locator('.options-model[data-id="fixture/ordinary"][data-action="save"]').count() == 1
+        total = page.locator("#diskTotal").inner_text()
+        assert "2.0 GB" in total and "1 model" in total and "8.0 GB" not in total
+    finally:
+        context.close()
+
+
+def test_attached_decision_refuses_inspect_handoff(browser, isolated_ui):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        data = isolated_ui.get("/api/models")
+        status = isolated_ui.status()
+        data["models"] = []
+        data["suggestions"] = []
+        page.route("**/api/models*", lambda route: route.fulfill(json=data))
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.goto(isolated_ui.url + "/#playground")
+        page.wait_for_function("typeof renderResults === 'function' && typeof modelData !== 'undefined'")
+        page.evaluate("""() => {
+          modelData = [{id:'attached/qwen-qwen3-4b', inspect_reason:'attached models cannot be inspected'}];
+          const request={model:'attached/qwen-qwen3-4b',state:'synthetic',questions:{q:{type:'choice'}}};
+          const response={answers:{q:{type:'choice',choice:'yes',probabilities:{yes:0.8,no:0.2}}}};
+          renderResults(response,request);
+        }""")
+        assert page.locator("#inspectDecision").count() == 0
+        assert "attached models cannot be inspected" in page.locator("#results").inner_text()
+        page.evaluate("""() => {
+          modelData=[];
+          inspectDecision({model:'attached/qwen-qwen3-4b',state:'synthetic',questions:{q:{type:'choice'}}});
+        }""")
+        assert page.locator("#playground").is_visible()
+        assert "attached models cannot be inspected" in page.locator("#toastStack").inner_text()
+        handoff = page.evaluate("""() => {
+          const saved=statusCache;
+          modelData=[{id:'fixture/gguf',family:'basal-2.0',tier:'mini',label:'GGUF',inspect_reason:'bf16 weights required'},
+                     {id:'fixture/bf16',family:'basal-2.0',tier:'mini',label:'bf16',inspect_reason:null}];
+          statusCache={...saved,inspect:{model:'fixture/bf16',state:'ready',mode:'eager',orders:2},models:[]};
+          const request={model:'fixture/gguf',state:'synthetic',questions:{q:{type:'choice'}}};
+          renderResults({answers:{q:{type:'choice',choice:'yes'}}},request);
+          try {return inspectHandoff(request);} finally {statusCache=saved;}
+        }""")
+        assert page.locator("#inspectDecision").is_visible()
+        assert handoff["body"]["questions"]["q"]["type"] == "choice"
+        assert any("fixture/bf16" in note and "fixture/gguf" in note for note in handoff["notes"])
+    finally:
+        context.close()
+
+
+def test_cleanup_failure_path_is_visible_in_library(browser, isolated_ui, tmp_path):
+    context = browser.new_context(viewport={"width": 320, "height": 800})
+    page = context.new_page()
+    try:
+        data = isolated_ui.get("/api/models")
+        base = next(m for m in data["models"] if m["runnable"])
+        data["models"] = [{**base, "id": "attached/test", "family": "attached", "attached": True, "downloaded": False}]
+        data["suggestions"] = []
+        status = isolated_ui.status()
+        page.route("**/api/models*", lambda route: route.fulfill(json=data))
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.goto(isolated_ui.url + "/#manager")
+        page.locator("#diskModels .remove-attached").first.click()
+        page.route(
+            "**/api/attach/attached%2Ftest",
+            lambda route: route.fulfill(
+                json={
+                    "deleted": "attached/test",
+                    "freed_bytes": 0,
+                    "retained_directory": True,
+                    "retained_path": "/Users/pawelkiszczak/.cache/basal-ui-issue26-attach-tests/hub/attached/.removing-abcdefghijklmnopqrstuvwxyz0123456789",
+                    "cleanup_error": True,
+                }
+            ),
+        )
+        page.locator("#confirmAccept").click()
+        notice = page.locator("#attachRecovery")
+        sync_api.expect(notice).to_contain_text(".removing-abcdefghijklmnopqrstuvwxyz0123456789")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert notice.evaluate("el => el.scrollWidth <= el.clientWidth")
+        notice.scroll_into_view_if_needed()
+        page.screenshot(path=str(tmp_path / "recovery-320.png"))
+    finally:
+        context.close()
+
+
+def test_attached_evidence_invalidates_without_another_decision(browser, isolated_ui, tmp_path):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        data = isolated_ui.get("/api/models")
+        base = next(m for m in data["models"] if m["runnable"])
+        attached = "attached/qwen-qwen3-4b"
+        normal = "fixture/normal"
+        data["models"] = [
+            {**base, "id": attached, "family": "attached", "attached": True, "uncalibrated": False},
+            {**base, "id": normal, "family": "basal-2.0", "attached": False},
+        ]
+        data["suggestions"] = []
+        status = isolated_ui.status()
+        entry = {"orders": 2, "temperature_per_prim": {"choice": 0.8}, "certified": {"0.05": {"choice": 0.8}}}
+        status["models"] = [
+            {
+                "id": attached,
+                "state": "ready",
+                "generation": "one",
+                "uncalibrated": False,
+                "entry": entry,
+                "mode": "mps",
+                "options": {},
+                "media": [],
+                "health": {},
+                "inflight": [],
+            },
+            {
+                "id": normal,
+                "state": "ready",
+                "generation": "normal",
+                "entry": entry,
+                "mode": "mps",
+                "options": {},
+                "media": [],
+                "health": {},
+                "inflight": [],
+            },
+        ]
+        requests = []
+
+        def decide(route):
+            request = route.request.post_data_json
+            requests.append(request["model"])
+            route.fulfill(
+                json={
+                    "model": request["model"],
+                    "answers": {
+                        "dept": {
+                            "type": "choice",
+                            "choice": "cards",
+                            "confidence": 0.95,
+                            "probabilities": {"cards": 0.95, "loans": 0.03, "online": 0.02},
+                        }
+                    },
+                }
+            )
+
+        page.route("**/api/models*", lambda route: route.fulfill(json=data))
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.route("**/api/decide", decide)
+        page.goto(isolated_ui.url + "/#playground")
+        page.wait_for_function("document.querySelectorAll('#decisionCompare .dt-model option').length >= 4")
+        page.select_option("#playgroundModel", attached)
+        page.evaluate("request => setRequest(request)", CHOICE)
+        page.click("#sendButton")
+        sync_api.expect(page.locator("#results")).to_contain_text("Automatable at 5% error")
+        selects = page.locator("#decisionCompare .dt-model")
+        selects.nth(0).select_option(attached)
+        selects.nth(1).select_option(normal)
+        page.click("#dt-run")
+        cards = page.locator("#decisionCompare .dt-model-result")
+        sync_api.expect(cards).to_have_count(2)
+        sync_api.expect(cards.nth(1)).to_contain_text("Automatable at 5% error")
+        sync_api.expect(cards.nth(0)).to_contain_text("Automatable at 5% error")
+        before = len(requests)
+        status["models"][0]["uncalibrated"] = True
+        page.evaluate("() => refreshStatus()")
+        sync_api.expect(page.locator("#results .evidence-stale")).to_be_visible()
+        sync_api.expect(cards.nth(0).locator(".evidence-stale")).to_be_visible()
+        assert "Automatable" not in page.locator("#results").inner_text()
+        assert "Automatable" not in cards.nth(0).inner_text()
+        assert "Automatable at 5% error" in cards.nth(1).inner_text()
+        assert "cards" in page.locator("#results").inner_text() and "cards" in cards.nth(0).inner_text()
+        assert len(requests) == before
+        assert selects.nth(0).input_value() == attached and selects.nth(1).input_value() == normal
+        assert page.locator("#playgroundModel").input_value() == attached
+        page.locator("#decisionCompare").scroll_into_view_if_needed()
+        page.screenshot(path=str(tmp_path / "evidence-invalidated.png"))
+    finally:
+        context.close()
+
+
+def test_inflight_attached_evidence_keeps_safety_facts(browser, isolated_ui, tmp_path):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        data = isolated_ui.get("/api/models")
+        base = next(m for m in data["models"] if m["runnable"])
+        attached, normal = "attached/qwen-qwen3-4b", "fixture/normal"
+        data["models"] = [
+            {**base, "id": attached, "family": "attached", "attached": True, "uncalibrated": False},
+            {**base, "id": normal, "family": "basal-2.0", "attached": False},
+        ]
+        data["suggestions"] = []
+        status = isolated_ui.status()
+        entry = {"orders": 2, "temperature_per_prim": {"choice": 0.8}, "certified": {"0.05": {"choice": 0.8}}}
+
+        def model(id, generation):
+            return {
+                "id": id,
+                "state": "ready",
+                "generation": generation,
+                "uncalibrated": False,
+                "entry": entry,
+                "mode": "mps",
+                "options": {},
+                "media": [],
+                "health": {},
+                "inflight": [],
+            }
+
+        status["models"] = [model(attached, "one"), model(normal, "normal")]
+        request = {
+            "state": "Synthetic order SYN-123",
+            "questions": {
+                "action": {"type": "act", "criteria": {"yes": "Yes", "no": "No"}},
+                "claims": {"type": "verify", "claims": {"c1": "Order exists"}},
+                "fields": {"type": "extract", "fields": {"id": "Order ID"}},
+            },
+        }
+        answers = {
+            "action": {
+                "type": "act",
+                "action": "manual",
+                "answer": "yes",
+                "confidence": 0.95,
+                "deferred": True,
+                "refused": "synthetic refusal",
+                "probabilities": {"yes": 0.95, "no": 0.05},
+            },
+            "claims": {
+                "type": "verify",
+                "claims": {"c1": {"verdict": "supported", "confidence": 0.9, "automated": {"0.05": True}}},
+                "all_supported": True,
+            },
+            "fields": {
+                "type": "extract",
+                "fields": {
+                    "id": {"value": "SYN-123", "confidence": 0.9, "source": "state", "automated": {"0.05": True}}
+                },
+                "data": {"id": "SYN-123"},
+            },
+        }
+        held, requests = [], []
+
+        def decide(route):
+            model_id = route.request.post_data_json["model"]
+            requests.append(model_id)
+            if model_id == attached:
+                held.append(route)
+            else:
+                route.fulfill(json={"model": model_id, "answers": answers})
+
+        page.route("**/api/models*", lambda route: route.fulfill(json=data))
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.route("**/api/decide", decide)
+        page.goto(isolated_ui.url + "/#playground")
+        page.wait_for_function("document.querySelectorAll('#decisionCompare .dt-model option').length >= 4")
+        page.select_option("#playgroundModel", attached)
+        open_request_settings(page)
+        page.check("#editJsonToggle")
+        page.fill("#requestJson", json.dumps(request))
+        with page.expect_request(lambda r: r.url.endswith("/api/decide")):
+            page.click("#sendButton")
+        status["models"][0]["uncalibrated"] = True
+        page.evaluate("() => refreshStatus()")
+        assert len(held) == 1
+        held.pop().fulfill(json={"model": attached, "answers": answers})
+        result = page.locator("#results")
+        sync_api.expect(result.locator(".evidence-stale")).to_be_visible()
+        assert "Deferred to a person" in result.inner_text() and "synthetic refusal" in result.inner_text()
+        assert "supported" in result.inner_text() and "SYN-123" in result.inner_text()
+        assert result.locator("[data-certification-evidence]").count() == 0
+        assert json.loads(page.locator("#rawResponse").text_content())["answers"] == answers
+        editor = page.locator("#requestJson").input_value()
+        status["models"][0]["uncalibrated"] = False
+        page.evaluate("() => refreshStatus()")
+        selects = page.locator("#decisionCompare .dt-model")
+        selects.nth(0).select_option(attached)
+        selects.nth(1).select_option(normal)
+        with page.expect_request(lambda r: r.url.endswith("/api/decide") and r.post_data_json.get("model") == attached):
+            page.click("#dt-run")
+        status["models"][0]["uncalibrated"] = True
+        page.evaluate("() => refreshStatus()")
+        assert len(held) == 1
+        held.pop().fulfill(json={"model": attached, "answers": answers})
+        cards = page.locator("#decisionCompare .dt-model-result")
+        sync_api.expect(cards.nth(0).locator(".evidence-stale")).to_be_visible()
+        assert "Deferred to a person" in cards.nth(0).inner_text() and "synthetic refusal" in cards.nth(0).inner_text()
+        assert "supported" in cards.nth(0).inner_text() and "SYN-123" in cards.nth(0).inner_text()
+        assert cards.nth(0).locator("[data-certification-evidence]").count() == 0
+        assert cards.nth(1).locator("[data-certification-evidence]").count() > 0
+        assert "automated" in cards.nth(1).inner_text()
+        assert len(requests) == 3 and page.locator("#requestJson").input_value() == editor
+        assert selects.nth(0).input_value() == attached and selects.nth(1).input_value() == normal
+        cards.nth(0).scroll_into_view_if_needed()
+        page.screenshot(path=str(tmp_path / "inflight-safety.png"))
+        cards.nth(0).evaluate("el => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 90)")
+        page.screenshot(path=str(tmp_path / "inflight-outcomes.png"))
+    finally:
+        context.close()
