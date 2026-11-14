@@ -975,19 +975,20 @@ function automatedChips(automated) {
   if(!automated||typeof automated!=='object')return '';
   return Object.entries(automated).map(([risk,v])=>{
     const at=`${(Number(risk)*100).toFixed(0)}%`;
-    return v===true?`<span class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
+    return v===true?`<span data-certification-evidence class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span data-certification-evidence class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span data-certification-evidence class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
   }).join(' ');
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
+  for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
+  parts.push(automatedChips(answer.automated));
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
 }
 function resultBanners(entry,u) {
-  let html=entry?.calibration_warning?`<div class="error-box">${esc(entry.calibration_warning)}</div>`:'';
+  let html=entry?.calibration_warning?`<div data-certification-evidence class="error-box">${esc(entry.calibration_warning)}</div>`:'';
   const truncated=u?.truncated;
   if(truncated)html+=`<div class="error-box">${t('State truncated to the context: dropped {dropped} of {total} tokens (kept {head} from the start, {tail} from the end)',{dropped:esc(truncated.dropped_tokens),total:esc(truncated.state_tokens),head:esc(truncated.head_tokens),tail:esc(truncated.tail_tokens)})}</div>`;
   return html;
@@ -1094,7 +1095,7 @@ function thinkBlock(a) {
   const think=a.think, used=a.meta?.think;
   if(think?.skipped)return `<div class="chips"><span class="chip muted">${t('thinking skipped ({reason})',{reason:esc(think.skipped)})}</span></div>`;
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
-  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · ${t('calibration')} ${esc(t(think.calibration??'—'))}; ${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
+  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · <span data-certification-evidence>${t('calibration')} ${esc(t(think.calibration??'—'))}; </span>${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
 function inspectBlockedReason(id) {
   const variant=modelData.find(m=>m.id===id);
@@ -1107,7 +1108,7 @@ function attachedEvidenceStamp(id) {
 }
 function invalidateAttachedEvidence(node) {
   if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===attachedEvidenceStamp(node.dataset.evidenceModel))return;
-  node.querySelectorAll('.chips.safety,.dt-evidence').forEach(element=>element.remove());
+  node.querySelectorAll('[data-certification-evidence]').forEach(element=>element.remove());
   const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
   node.prepend(notice);node.dataset.evidenceStale='1';
 }

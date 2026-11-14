@@ -1988,3 +1988,124 @@ def test_attached_evidence_invalidates_without_another_decision(browser, isolate
         page.screenshot(path=str(tmp_path / "evidence-invalidated.png"))
     finally:
         context.close()
+
+
+def test_inflight_attached_evidence_keeps_safety_facts(browser, isolated_ui, tmp_path):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        data = isolated_ui.get("/api/models")
+        base = next(m for m in data["models"] if m["runnable"])
+        attached, normal = "attached/qwen-qwen3-4b", "fixture/normal"
+        data["models"] = [
+            {**base, "id": attached, "family": "attached", "attached": True, "uncalibrated": False},
+            {**base, "id": normal, "family": "basal-2.0", "attached": False},
+        ]
+        data["suggestions"] = []
+        status = isolated_ui.status()
+        entry = {"orders": 2, "temperature_per_prim": {"choice": 0.8}, "certified": {"0.05": {"choice": 0.8}}}
+
+        def model(id, generation):
+            return {
+                "id": id,
+                "state": "ready",
+                "generation": generation,
+                "uncalibrated": False,
+                "entry": entry,
+                "mode": "mps",
+                "options": {},
+                "media": [],
+                "health": {},
+                "inflight": [],
+            }
+
+        status["models"] = [model(attached, "one"), model(normal, "normal")]
+        request = {
+            "state": "Synthetic order SYN-123",
+            "questions": {
+                "action": {"type": "act", "criteria": {"yes": "Yes", "no": "No"}},
+                "claims": {"type": "verify", "claims": {"c1": "Order exists"}},
+                "fields": {"type": "extract", "fields": {"id": "Order ID"}},
+            },
+        }
+        answers = {
+            "action": {
+                "type": "act",
+                "action": "manual",
+                "answer": "yes",
+                "confidence": 0.95,
+                "deferred": True,
+                "refused": "synthetic refusal",
+                "probabilities": {"yes": 0.95, "no": 0.05},
+            },
+            "claims": {
+                "type": "verify",
+                "claims": {"c1": {"verdict": "supported", "confidence": 0.9, "automated": {"0.05": True}}},
+                "all_supported": True,
+            },
+            "fields": {
+                "type": "extract",
+                "fields": {
+                    "id": {"value": "SYN-123", "confidence": 0.9, "source": "state", "automated": {"0.05": True}}
+                },
+                "data": {"id": "SYN-123"},
+            },
+        }
+        held, requests = [], []
+
+        def decide(route):
+            model_id = route.request.post_data_json["model"]
+            requests.append(model_id)
+            if model_id == attached:
+                held.append(route)
+            else:
+                route.fulfill(json={"model": model_id, "answers": answers})
+
+        page.route("**/api/models*", lambda route: route.fulfill(json=data))
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.route("**/api/decide", decide)
+        page.goto(isolated_ui.url + "/#playground")
+        page.wait_for_function("document.querySelectorAll('#decisionCompare .dt-model option').length >= 4")
+        page.select_option("#playgroundModel", attached)
+        open_request_settings(page)
+        page.check("#editJsonToggle")
+        page.fill("#requestJson", json.dumps(request))
+        with page.expect_request(lambda r: r.url.endswith("/api/decide")):
+            page.click("#sendButton")
+        status["models"][0]["uncalibrated"] = True
+        page.evaluate("() => refreshStatus()")
+        assert len(held) == 1
+        held.pop().fulfill(json={"model": attached, "answers": answers})
+        result = page.locator("#results")
+        sync_api.expect(result.locator(".evidence-stale")).to_be_visible()
+        assert "Deferred to a person" in result.inner_text() and "synthetic refusal" in result.inner_text()
+        assert "supported" in result.inner_text() and "SYN-123" in result.inner_text()
+        assert result.locator("[data-certification-evidence]").count() == 0
+        assert json.loads(page.locator("#rawResponse").text_content())["answers"] == answers
+        editor = page.locator("#requestJson").input_value()
+        status["models"][0]["uncalibrated"] = False
+        page.evaluate("() => refreshStatus()")
+        selects = page.locator("#decisionCompare .dt-model")
+        selects.nth(0).select_option(attached)
+        selects.nth(1).select_option(normal)
+        with page.expect_request(lambda r: r.url.endswith("/api/decide") and r.post_data_json.get("model") == attached):
+            page.click("#dt-run")
+        status["models"][0]["uncalibrated"] = True
+        page.evaluate("() => refreshStatus()")
+        assert len(held) == 1
+        held.pop().fulfill(json={"model": attached, "answers": answers})
+        cards = page.locator("#decisionCompare .dt-model-result")
+        sync_api.expect(cards.nth(0).locator(".evidence-stale")).to_be_visible()
+        assert "Deferred to a person" in cards.nth(0).inner_text() and "synthetic refusal" in cards.nth(0).inner_text()
+        assert "supported" in cards.nth(0).inner_text() and "SYN-123" in cards.nth(0).inner_text()
+        assert cards.nth(0).locator("[data-certification-evidence]").count() == 0
+        assert cards.nth(1).locator("[data-certification-evidence]").count() > 0
+        assert "automated" in cards.nth(1).inner_text()
+        assert len(requests) == 3 and page.locator("#requestJson").input_value() == editor
+        assert selects.nth(0).input_value() == attached and selects.nth(1).input_value() == normal
+        cards.nth(0).scroll_into_view_if_needed()
+        page.screenshot(path=str(tmp_path / "inflight-safety.png"))
+        cards.nth(0).evaluate("el => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 90)")
+        page.screenshot(path=str(tmp_path / "inflight-outcomes.png"))
+    finally:
+        context.close()
