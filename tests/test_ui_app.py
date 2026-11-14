@@ -1,10 +1,12 @@
 import base64
 import contextlib
+import json
 import os
 import struct
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -1178,3 +1180,417 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_attach_route_downloads_attaches_and_lists_the_local_variant(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    snapshot = tmp_path / catalog.ATTACH_REVISION
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text('{"num_parameters": 4000000000}')
+    target_weights = snapshot / "model.safetensors"
+    target_weights.write_bytes(b"weights")
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: True)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, *args, **kwargs: snapshot)
+
+    def fake_run_tool(job, module, argv):
+        assert module == "attach"
+        assert argv[0] == snapshot and argv[-2:] == ["--format", "1"]
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "basal.json").write_text(json.dumps({"attached": {"base": "Qwen/Qwen3-4B", "revision": snapshot.name}}))
+        (out / "config.json").symlink_to(snapshot / "config.json")
+        (out / "model.safetensors").symlink_to(target_weights)
+
+    monkeypatch.setattr(jobs, "run_tool", fake_run_tool)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "elsewhere/model"}).status_code == 400
+        response = client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"})
+        assert response.status_code == 202
+        job = fleet.jobs.get("attach")
+        job.thread.join(2)
+        assert not job.thread.is_alive() and job.phase == "done", job.error
+        variant = next(item for item in client.get("/api/models").json()["models"] if item["family"] == "attached")
+        assert variant["id"] == "attached/qwen-qwen3-4b"
+        assert variant["local_dir"] == str(models / "attached" / "qwen-qwen3-4b")
+        assert variant["tier"] == "4.0B" and variant["weights_bytes"] == len(b"weights")
+        assert variant["downloaded"] and variant["uncalibrated"] and variant["attached"]
+        assert variant["inspect_reason"] == "attached models cannot be inspected"
+        assert not any(item["id"] == variant["id"] for item in client.get("/api/models").json()["suggestions"])
+        loaded = SimpleNamespace(state="ready")
+        fleet.runners[variant["id"]] = loaded
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 409
+        del fleet.runners[variant["id"]]
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 200
+        assert not Path(variant["local_dir"]).exists() and target_weights.exists()
+        assert settings.attached_models() == []
+
+
+def test_attached_models_only_offer_supported_execution_modes():
+    from basal_ui import catalog, options
+
+    variant = Variant("attached/test", "Qwen/Qwen3-4B", "attached", "4.0B", "bf16", "bf16", None, 100, True)
+    modes = options.available_modes(variant, HW, catalog.assess(variant, HW))
+    available = {row["mode"] for row in modes if row["available"]}
+    allowed = {"eager", "mps", "mlx", "mlx-q8", "fast"}
+    assert available <= allowed
+    assert any(row["mode"] in allowed for row in modes)
+    refused = next(row for row in modes if row["mode"] == "vllm")
+    assert refused["reason"] == catalog.ATTACHED_MODE_REASON
+    assert refused["reason_code"] == "mode_attached"
+
+
+def test_attach_is_unavailable_without_the_engine_feature(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/attach").json() == {"available": False, "bases": []}
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 400
+
+
+def test_attached_output_needs_metadata_and_complete_weights(tmp_path):
+    path = tmp_path / "attached" / "qwen-qwen3-4b"
+    path.mkdir(parents=True)
+    variant = Variant(
+        "attached/qwen-qwen3-4b",
+        "Qwen/Qwen3-4B",
+        "attached",
+        "4B",
+        "bf16",
+        "bf16",
+        None,
+        1,
+        True,
+        local_dir=str(path),
+        cache_revision=catalog.ATTACH_REVISION,
+        attached_format=1,
+    )
+    (path / "basal.json").write_text(
+        json.dumps(
+            {
+                "prompt": 1,
+                "attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION},
+                "readout": {"codes": "AB"},
+            }
+        )
+    )
+    (path / "CALIBRATION.json").write_text('{"thresholds":{}}')
+    (path / "config.json").write_text("{}")
+    (path / "tokenizer.json").write_text("{}")
+    (path / "model.safetensors.index.json").write_text('{"weight_map":{"a":"one.safetensors","b":"two.safetensors"}}')
+    (path / "one.safetensors").write_bytes(b"one")
+    assert catalog.is_downloaded(variant, tmp_path) is None
+    (path / "two.safetensors").write_bytes(b"two")
+    assert catalog.is_downloaded(variant, tmp_path) == path
+    (path / "CALIBRATION.json").unlink()
+    assert catalog.is_downloaded(variant, tmp_path) is None
+
+
+def test_attach_refuses_unapproved_inputs_before_start(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for body in (
+            {"base": []},
+            {"base": "unapproved/model"},
+            {"base": "Qwen/Qwen3-4B", "format": True},
+            {"base": "Qwen/Qwen3-4B", "revision": "main"},
+        ):
+            assert client.post("/api/attach", json=body).status_code == 400
+        assert fleet.jobs.get("attach") is None
+
+
+def test_attach_persistence_failure_cleans_only_owned_output(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    snapshot = tmp_path / catalog.ATTACH_REVISION
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"weights")
+    real_downloaded = catalog.is_downloaded
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: False)
+    monkeypatch.setattr(
+        catalog,
+        "is_downloaded",
+        lambda variant, *a, **kw: snapshot if variant.family == "attached-base" else real_downloaded(variant, *a, **kw),
+    )
+
+    def attach(job, module, argv):
+        out = Path(argv[argv.index("--out") + 1])
+        for name in ("config.json", "tokenizer.json", "model.safetensors"):
+            (out / name).symlink_to(snapshot / name)
+        (out / "basal.json").write_text(
+            json.dumps(
+                {
+                    "prompt": 1,
+                    "attached": {"base": "Qwen/Qwen3-4B", "revision": snapshot.name},
+                    "readout": {"codes": "AB"},
+                }
+            )
+        )
+        (out / "CALIBRATION.json").write_text('{"thresholds":{}}')
+
+    monkeypatch.setattr(jobs, "run_tool", attach)
+    monkeypatch.setattr(settings, "add_attached", lambda record: (_ for _ in ()).throw(OSError("disk full")))
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 202
+        job = fleet.jobs.get("attach")
+        job.thread.join(5)
+        assert job.phase == "error" and "disk full" in job.error
+        assert not (models / "attached" / "qwen-qwen3-4b").exists()
+        assert (snapshot / "model.safetensors").read_bytes() == b"weights"
+        assert settings.attached_models() == []
+
+
+def test_attach_cancel_drains_tool_and_cleans_partial_directory(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    snapshot = tmp_path / catalog.ATTACH_REVISION
+    snapshot.mkdir()
+    (snapshot / "weights").write_bytes(b"shared")
+    entered = threading.Event()
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: False)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *a, **kw: snapshot)
+
+    def attach(job, module, argv):
+        out = Path(argv[argv.index("--out") + 1])
+        (out / "weights").symlink_to(snapshot / "weights")
+        entered.set()
+        assert job.cancel.wait(5)
+        job.check()
+
+    monkeypatch.setattr(jobs, "run_tool", attach)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 202
+        assert entered.wait(5)
+        assert client.delete("/api/attach/attached/qwen-qwen3-4b").status_code == 404
+        client.delete("/api/attach")
+        job = fleet.jobs.get("attach")
+        job.thread.join(5)
+        assert not job.thread.is_alive() and job.phase == "cancelled"
+        assert not (settings.models_dir() / "attached/qwen-qwen3-4b").exists()
+        assert (snapshot / "weights").read_bytes() == b"shared"
+        assert settings.attached_models() == []
+
+
+def test_attached_removal_waits_for_jobs_and_retains_corrupt_directory(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    model = "attached/qwen-qwen3-4b"
+    out = models / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text("corrupt")
+    (out / "user-file").write_text("keep")
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, fleet = app_for(tmp_path, [MINI])
+    entered, release = threading.Event(), threading.Event()
+
+    def job_target(job):
+        entered.set()
+        assert release.wait(5)
+
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            fleet.jobs.start("calibrate", model, "hold", job_target)
+            assert entered.wait(5)
+            assert client.delete(f"/api/attach/{model}").status_code == 409
+            release.set()
+            fleet.jobs.get("calibrate").thread.join(5)
+            response = client.delete(f"/api/attach/{model}")
+            assert response.status_code == 200 and response.json()["retained_directory"]
+            assert (out / "user-file").read_text() == "keep"
+            assert settings.attached_models() == []
+    finally:
+        release.set()
+
+
+def test_attached_calibration_selection_requires_matching_fitted_model(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    model = "attached/qwen-qwen3-4b"
+    out = models / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps(
+            {
+                "prompt": 1,
+                "attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION},
+                "readout": {"codes": "AB"},
+            }
+        )
+    )
+    (out / "CALIBRATION.json").write_text('{"thresholds": {}}')
+    (out / "config.json").write_text("{}")
+    (out / "tokenizer.json").write_text("{}")
+    (out / "model.safetensors").write_bytes(b"weights")
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    directory = settings.calibrations_dir(model)
+    directory.mkdir(parents=True)
+    selected = directory / "candidate.json"
+    selected.write_text(json.dumps({"fitted_on": {"model": "other"}, "thresholds": {}}))
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/calibrations/select", json={"id": model, "file": str(selected)}).status_code == 400
+        assert settings.calibration_selection().get(model) is None
+        selected.write_text(json.dumps({"fitted_on": {"model": str(out)}, "thresholds": {}}))
+        assert client.post("/api/calibrations/select", json={"id": model, "file": str(selected)}).status_code == 200
+        listed = next(m for m in client.get("/api/models").json()["models"] if m["id"] == model)
+        assert listed["uncalibrated"]
+
+
+def test_attached_record_survives_engine_without_attach(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        row = next(m for m in client.get("/api/models").json()["models"] if m["id"] == model)
+        assert not row["runnable"] and row["reason_code"] == "attach_unavailable"
+        assert client.post("/api/load", json={"id": model}).status_code == 400
+        assert settings.attached_models()[0]["id"] == model
+
+
+def test_attach_cancellation_drains_inflight_download(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    entered, release = threading.Event(), threading.Event()
+    thread = threading.Thread(target=lambda: (entered.set(), release.wait(5)))
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: (thread.start(), True)[1])
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(fleet.downloads, "alive", lambda repo: thread.is_alive())
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *a, **kw: tmp_path / catalog.ATTACH_REVISION)
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 202
+            assert entered.wait(5)
+            client.delete("/api/attach")
+            job = fleet.jobs.get("attach")
+            assert job.running and thread.is_alive()
+            release.set()
+            job.thread.join(5)
+            assert not thread.is_alive() and job.phase == "cancelled"
+            assert settings.attached_models() == []
+    finally:
+        release.set()
+        thread.join(5)
+
+
+def test_attached_load_and_remove_are_serialized(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps(
+            {
+                "prompt": 1,
+                "attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION},
+                "readout": {"codes": "AB"},
+            }
+        )
+    )
+    (out / "CALIBRATION.json").write_text('{"thresholds": {}}')
+    (out / "config.json").write_text("{}")
+    (out / "tokenizer.json").write_text("{}")
+    (out / "model.safetensors").write_bytes(b"weights")
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    entered, release, delete_started = threading.Event(), threading.Event(), threading.Event()
+
+    def load_runner(runner, assessment, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        runner.model, runner.model_repo, runner.state = model, assessment.variant.repo, "starting"
+        return runner.status()
+
+    monkeypatch.setattr(Runner, "load", load_runner)
+    app, fleet = app_for(tmp_path, [MINI])
+    results = {}
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            load = threading.Thread(
+                target=lambda: results.setdefault("load", client.post("/api/load", json={"id": model}))
+            )
+
+            def remove():
+                delete_started.set()
+                results["delete"] = client.delete(f"/api/attach/{model}")
+
+            deletion = threading.Thread(target=remove)
+            load.start()
+            assert entered.wait(5)
+            deletion.start()
+            assert delete_started.wait(5)
+            release.set()
+            load.join(5)
+            deletion.join(5)
+            assert results["load"].status_code == 202 and results["delete"].status_code == 409
+            assert out.is_dir() and settings.attached_models()[0]["id"] == model
+    finally:
+        release.set()

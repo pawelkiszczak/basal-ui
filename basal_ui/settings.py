@@ -373,6 +373,41 @@ def calibration_selection() -> dict:
     return {k: v for k, v in value.items() if isinstance(v, str)} if isinstance(value, dict) else {}
 
 
+def attached_models() -> list[dict]:
+    value = load().get("attached", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def add_attached(record: dict) -> None:
+    required = ("id", "base", "revision", "out_dir", "format", "created")
+    if not isinstance(record, dict) or any(key not in record for key in required):
+        raise ValueError("attached model record is incomplete")
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    if any(item.get("id") == record["id"] for item in attached if isinstance(item, dict)):
+        raise ValueError(f"attached model {record['id']!r} already exists")
+    data["attached"] = [*attached, record]
+    save(data)
+
+
+@_locked
+def remove_attached(model_id: str) -> dict:
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    record = next((item for item in attached if isinstance(item, dict) and item.get("id") == model_id), None)
+    if record is None:
+        raise ValueError(f"unknown attached model {model_id!r}")
+    data["attached"] = [item for item in attached if item is not record]
+    selection = data.get("calibration")
+    if isinstance(selection, dict):
+        selection.pop(model_id, None)
+    save(data)
+    return record
+
+
 @_locked
 def select_calibration(model_id: str, path: str | None) -> None:
     """Use `path` for the model from its next start; None returns it to the shipped calibration."""

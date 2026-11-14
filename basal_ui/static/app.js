@@ -103,6 +103,7 @@ function renderModels(data) {
   backendSelect.value=recommendationBackend;
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
+  renderAttachControl();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
@@ -126,8 +127,8 @@ function renderModels(data) {
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
       const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):downloadButton}${m.runnable?optionsButton(m.id,false,'save'):''}${!loaded&&m.downloaded?deleteButton(m.id):''}`;
-      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&m.downloaded?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
   }
@@ -191,18 +192,17 @@ async function openModelCard(id) {
   $('#modelCardBody').scrollTop=0;  // the dialog is reused: a new card starts at its top
 }
 function renderDiskModels() {
-  const rows = modelData.filter(m => m.downloaded), total = rows.reduce((sum,m) => sum + (Number(m.downloaded_bytes) || 0),0);
+  const rows = modelData.filter(m => m.downloaded || m.attached), total = rows.reduce((sum,m) => sum + (m.attached?0:(Number(m.downloaded_bytes) || 0)),0);
   const groups=new Map();
   for(const model of rows){
-    const type=model.family||'Other';
+    const type=model.attached?'Attached':model.family||'Other';
     if(!groups.has(type))groups.set(type,[]);
     groups.get(type).push(model);
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${type==='Attached'?t('Linked weights: {size}',{size:gb(bytes)}):gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.attached?`<span>${esc(m.repo)}</span>`:''}${m.attached?`<span class="chip">${t('Attached')}</span>${m.uncalibrated?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${m.attached?t('Linked weights: {size}',{size:gb(m.downloaded_bytes)}):gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${m.attached?`${m.downloaded?diskActions(m):`<span class="reason">${t('Model files are missing; remove and attach again.')}</span>`}<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
-  $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
   renderManagerSummary();
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
@@ -223,6 +223,36 @@ function renderModelLoader() {
   }).join(''):`<p class="muted">${t(inspecting?'Download a bf16 model first':'Nothing downloaded yet')}</p>`;
   if(container.innerHTML!==html)container.innerHTML=html;
 }
+async function renderAttachControl() {
+  const card=$('#attachCard');
+  try{
+    const data=await api('/api/attach');
+    card.hidden=false;
+    $('#attachUnavailable').hidden=data.available;
+    $('#attachControls').hidden=!data.available;
+    $('#attachBase').innerHTML=(data.bases||[]).map(base=>`<option value="${esc(base)}">${esc(base)}</option>`).join('');
+  }catch{card.hidden=true;}
+}
+$('#openAttach').onclick=()=>$('#attachDialog').showModal();
+$('#attachModel').onclick=()=>act(async()=>{
+  const base=$('#attachBase').value;
+  await api('/api/attach',{method:'POST',body:JSON.stringify({base,format:Number($('#attachFormat').value)})});
+  $('#attachDialog').close();
+  toast(t('Attach job started'));
+  await refreshStatus();
+});
+$('#cancelAttach').onclick=()=>act(async()=>{await api('/api/attach',{method:'DELETE'});await refreshStatus();});
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.remove-attached');
+  if(!button)return;
+  act(async()=>{
+    const id=button.dataset.id;
+    if(!await confirmDialog({title:t('Remove attached model?'),description:t('{model} will be removed. Shared base weights remain in the cache.',{model:id}),confirmLabel:t('Remove'),destructive:true}))return;
+    const result=await api(`/api/attach/${encodeURIComponent(id)}`,{method:'DELETE'});
+    toast(result.retained_directory?t('Record removed; unverified model directory was retained.'):t('Attached model removed'));
+    await loadModels();
+  });
+});
 $('#openModelLoader').onclick=()=>{$('#modelLoaderDialog').showModal();renderModelLoader();};
 document.addEventListener('click',event=>{
   const button=event.target.closest('.use-loaded-model');if(!button)return;
@@ -1295,13 +1325,28 @@ const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
 function renderManagerSummary() {
   const loaded=statusCache?.models?.length||0, downloaded=modelData.filter(m=>m.downloaded);
-  const bytes=downloaded.reduce((sum,model)=>sum+(Number(model.downloaded_bytes)||0),0);
+  const bytes=downloaded.reduce((sum,model)=>sum+(model.attached?0:(Number(model.downloaded_bytes)||0)),0);
   $('#managerLoadedCount').textContent=`${loaded} ${t('loaded')}`;
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
+let lastAttachedJobRefresh=null;
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  const attachJob=s.jobs?.attach;
+  if(attachJob){
+    const progress=s.downloads?.[$('#attachBase').value];
+    $('#cancelAttach').hidden=!attachJob.running;
+    $('#openAttach').disabled=attachJob.running;
+    $('#attachFormat').disabled=attachJob.running;
+    $('#attachBase').disabled=attachJob.running;
+    $('#attachModel').disabled=attachJob.running;
+    $('#attachJob').textContent=attachJob.running?`${t('Attaching {model}',{model:attachJob.model})}${progress?` · ${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}`:''}`:attachJob.phase==='error'?t('Failed: {error}',{error:attachJob.error}):attachJob.phase==='done'?t('Attached model ready'):'';
+    if(!attachJob.running&&attachJob.phase==='done'&&lastAttachedJobRefresh!==attachJob.started){
+      lastAttachedJobRefresh=attachJob.started;
+      loadModels();
+    }
+  }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
@@ -1614,7 +1659,7 @@ function renderCalibrationFiles(id, d) {
     const sequence=++calibrationSequence, data=await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})});
     if(!calibrationCurrent(id,sequence))return;
     renderCalibrationFiles(id,data);
-    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus();
+    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus(); await loadModels();
   }));
   $('#calibrationFiles').querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
@@ -1985,7 +2030,7 @@ function renderInspectModels() {
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
-  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
+  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(t(m.inspect_reason))}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
   loadInspectCalibrations();

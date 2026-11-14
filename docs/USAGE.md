@@ -9,6 +9,19 @@ tokenizer, prompt format and calibration of its base repository (the model card'
 `base_model_revision` when the card has one; `--model <base> --gguf <file>`), whose small metadata files are downloaded
 with it; one whose card names no base model is listed as not runnable.
 
+## Attached models
+
+On Engine 2.5, **Model manager → Library → Attach a model** downloads a supported base and runs `basal-attach` as a
+background job. The curated list currently contains `Qwen/Qwen3-4B`; free-text repository ids are refused. The
+result appears in the catalog as an **Attached** model, uses the Engine to serve Decisions, and can be loaded in
+eager, mps, mlx, mlx-q8 or fast mode. It is excluded from Suggested and Inspect. Its initial `CALIBRATION.json` has
+no certified thresholds, so the Library labels it **uncalibrated** until a Selected calibration is fitted and chosen.
+The Calibration tab works on the attached directory as for other models. An Attached model can be removed from
+Library only when it is unloaded; only the attachment directory and its links are removed, not the linked base
+weights. If metadata is corrupt, removal retains the directory and removes only its record. Engine 2.4.1 disables
+attachment controls because it has no `basal-attach`. Format 1 is the default; format 2 is available only when the
+tokenizer passes the Engine validation.
+
 Install from the [README's source instructions](../README.md#install) until the first PyPI release. From that checkout:
 
 ```bash
