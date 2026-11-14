@@ -165,14 +165,20 @@ def attached_variants(records, models_dir) -> list[Variant]:
         if model_id != "attached/" + base.lower().replace("/", "-"):
             continue
         path = Path(models_dir) / "attached" / model_id.split("/", 1)[1]
-        if str(path) != directory or path.is_symlink() or path.parent.is_symlink():
+        if str(path) != directory:
             continue
+        unsafe = path.parent.is_symlink() or path.is_symlink()
         try:
-            config = json.loads((path / "config.json").read_text(encoding="utf-8"))
+            config = {} if unsafe else json.loads((path / "config.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             config = {}
-        weights = [p for p in path.glob("*.safetensors") if p.is_file()]
-        weight_bytes = sum(p.stat().st_size for p in weights)
+        if not isinstance(config, dict):
+            config = {}
+        weights = [] if unsafe else [p for p in path.glob("*.safetensors") if p.is_file()]
+        try:
+            weight_bytes = sum(p.stat().st_size for p in weights)
+        except OSError:
+            weight_bytes = 0
         try:
             params = float(config.get("num_parameters") or weight_bytes / 2)
         except (TypeError, ValueError):
@@ -705,23 +711,39 @@ def _base_revision(v: Variant) -> dict:
     return {"revision": v.base_revision} if v.base_revision else {}
 
 
+def _attached_weights_complete(path: Path) -> bool:
+    try:
+        index = json.loads((path / "model.safetensors.index.json").read_text(encoding="utf-8"))
+        expected = {f"model-{i:05d}-of-00003.safetensors" for i in range(1, 4)}
+        return set(index["weight_map"].values()) == expected and all(
+            (path / name).is_file() and (path / name).stat().st_size > 0 for name in expected
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> Path | None:
     """The local snapshot directory if the weights and any required base metadata are cached."""
     if v.local_dir is not None:
         path = Path(v.local_dir)
-        if v.family == "attached" and v.cache_revision != ATTACH_REVISION:
+        if v.family == "attached" and (
+            v.cache_revision != ATTACH_REVISION or path.parent.is_symlink() or path.is_symlink()
+        ):
             return None
         try:
             meta = json.loads((path / "basal.json").read_text(encoding="utf-8"))
             cal = json.loads((path / "CALIBRATION.json").read_text(encoding="utf-8"))
+            config = json.loads((path / "config.json").read_text(encoding="utf-8"))
             valid = (
-                meta.get("attached", {}).get("base") == v.repo
+                _attached_weights_complete(path)
+                and meta.get("attached", {}).get("base") == v.repo
                 and (v.cache_revision is None or meta.get("attached", {}).get("revision") == v.cache_revision)
                 and meta.get("readout")
                 and type(v.attached_format) is int
                 and meta.get("prompt") == v.attached_format
                 and v.attached_format in (1, 2)
                 and isinstance(cal, dict)
+                and isinstance(config, dict)
                 and (path / "config.json").is_file()
                 and (path / "tokenizer.json").is_file()
                 and _cached_weight_paths(path, v.port)
@@ -731,7 +753,7 @@ def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> P
                 if valid and all(weight.stat().st_size > 0 for weight in _cached_weight_paths(path, v.port))
                 else None
             )
-        except (OSError, ValueError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
     from huggingface_hub import snapshot_download
 
@@ -743,7 +765,13 @@ def is_downloaded(v: Variant, cache_dir: Path, revision: str | None = None) -> P
     except Exception:  # noqa: BLE001 — an absent or partial snapshot is not downloaded
         return None
     weights = _cached_weight_paths(path, v.port, v.gguf_file)
-    return path if weights and (not v.base_repo or base_dir(v, cache_dir) is not None) else None
+    return (
+        path
+        if weights
+        and (v.family != "attached-base" or _attached_weights_complete(path))
+        and (not v.base_repo or base_dir(v, cache_dir) is not None)
+        else None
+    )
 
 
 def _cached_weight_paths(path: Path, port: str, gguf_file: str | None = None) -> list[Path] | None:

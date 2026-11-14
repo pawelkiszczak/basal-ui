@@ -1775,3 +1775,28 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_library_totals_and_setup_for_not_downloaded_model(browser, isolated_ui):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        page.goto(isolated_ui.url + "/#models")
+        page.wait_for_function("typeof renderModels === 'function' && typeof modelData !== 'undefined'")
+        page.evaluate("""async () => {
+          const data=await fetch('/api/models').then(r=>r.json());
+          const base=data.models.find(m=>m.runnable);
+          if(!base) throw new Error('no runnable model fixture');
+          const ordinary={...base,id:'fixture/ordinary',repo:'fixture/ordinary',family:'fixture',attached:false,downloaded:false,downloaded_bytes:null};
+          const disk={...ordinary,id:'fixture/on-disk',downloaded:true,downloaded_bytes:2000000000};
+          const linked={...ordinary,id:'attached/test',family:'attached',attached:true,downloaded:true,downloaded_bytes:8000000000};
+          data.models=[ordinary,disk,linked]; data.suggestions=[];
+          renderModels(data);
+        }""")
+        assert page.locator('.options-model[data-id="fixture/ordinary"][data-action="save"]').count() == 1
+        assert (
+            page.locator("#diskTotal").inner_text()
+            == "Total: 2.0 GB in 1 model · Shared base weights are not included."
+        )
+    finally:
+        context.close()

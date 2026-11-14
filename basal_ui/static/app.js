@@ -127,7 +127,7 @@ function renderModels(data) {
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
       const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&m.downloaded?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
       html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
@@ -203,6 +203,8 @@ function renderDiskModels() {
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
     return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${type==='Attached'?t('Linked weights: {size}',{size:gb(bytes)}):gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.attached?`<span>${esc(m.repo)}</span>`:''}${m.attached?`<span class="chip">${t('Attached')}</span>${m.uncalibrated?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${m.attached?t('Linked weights: {size}',{size:gb(m.downloaded_bytes)}):gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${m.attached?`${m.downloaded?diskActions(m):`<span class="reason">${t('Model files are missing; remove and attach again.')}</span>`}<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
+  const ordinary=rows.filter(m=>m.downloaded&&!m.attached);
+  $('#diskTotal').textContent=t('Total: {size} in {models}',{size:gb(total),models:tp(ordinary.length,'{n} model','{n} models',{n:ordinary.length})})+(rows.some(m=>m.attached)?` · ${t('Shared base weights are not included.')}`:'');
   renderManagerSummary();
 }
 // Model manager: load (text or media, or with options) and unload the models on disk
@@ -920,8 +922,8 @@ function resultHeadline(name, answer, requestQuestion) {
   return null;
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
-const modelEntry=id=>(statusCache?.models||[]).find(m=>m.id===id)?.entry||null;
-const uncalibrated=entry=>Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length;
+const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(!entry)return null;const variant=modelData.find(m=>m.id===id);return id.startsWith('attached/')?{...entry,attached_uncalibrated:variant?.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length}:entry;};
+const uncalibrated=entry=>Boolean(entry?.attached_uncalibrated)||(Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length);
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
   if(type==='tool')return 'choice';  // a single tool decision is deferred against the choice threshold
@@ -938,6 +940,7 @@ function certificateGap(answer, entry) {
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
   if(answer.calibration!=null&&answer.calibration!=='validated')return `calibration: ${answer.calibration}`;
+  if(entry?.attached_uncalibrated)return t('no active certified thresholds for this Attached model');
   if(uncalibrated(entry))return t('the probabilities are not calibrated');
   return null;
 }
@@ -955,6 +958,7 @@ function automationBadge(answer,q,entry) {
 }
 function calibrationChip(answer,entry) {
   const c=answer.calibration;
+  if(entry?.attached_uncalibrated)return `<span class="badge fit-tight">${t('uncalibrated')}</span>`;
   if(c==='validated')return `<span class="badge fit-fits">${t('calibrated')}</span>`;
   if(c==='unvalidated')return `<span class="badge fit-tight">${t(answer.type==='act'?'calibration not validated for this question shape':'unvalidated — fitted on other option orders')}</span>`;
   if(c==='text')return `<span class="badge fit-tight">${t('fitted on text (media request)')}</span>`;
@@ -1330,7 +1334,7 @@ function renderManagerSummary() {
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
-let lastAttachedJobRefresh=null;
+let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
   const attachJob=s.jobs?.attach;
@@ -1349,6 +1353,8 @@ function renderStatus(s) {
   }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
+  const attachedSignature=JSON.stringify(models.filter(m=>m.id.startsWith('attached/')).map(m=>[m.id,m.state,m.generation,m.restart_required,m.entry?.certified,m.entry?.calibration_warning]));
+  if(attachedSignature!==attachedStatusSignature){attachedStatusSignature=attachedSignature;loadModels().then(()=>renderLoadedRows(statusCache?.models||[]));}
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
@@ -1413,7 +1419,7 @@ function renderLoadedRows(models) {
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(modelEntry(m.id))?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
     const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
     const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;

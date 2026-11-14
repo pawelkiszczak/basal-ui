@@ -13,9 +13,11 @@ import asyncio
 import base64
 import dataclasses
 import json
+import math
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -545,8 +547,9 @@ def create_app(
                 raise HTTPException(409, "invalid attached model record")
             attached_root = settings_mod.models_dir() / "attached"
             out_dir = attached_root / model_id.split("/", 1)[1]
-            if record.get("out_dir") != str(out_dir) or attached_root.is_symlink() or out_dir.is_symlink():
+            if record.get("out_dir") != str(out_dir):
                 raise HTTPException(409, "invalid attached model directory")
+            unsafe = attached_root.is_symlink() or out_dir.is_symlink()
             with fleet.jobs.lock:
                 working = any(j.running and j.model == model_id for j in fleet.jobs.jobs.values())
             if (
@@ -556,9 +559,11 @@ def create_app(
                 or any(r.model == model_id for r in [*fleet.retiring, *fleet.temporary.values()])
             ):
                 raise HTTPException(409, "unload the attached model and stop its jobs first")
-            retained = False
+            retained = unsafe
             freed = 0
-            if out_dir.exists():
+            staged = None
+            stage_dir = None
+            if not unsafe and out_dir.exists():
                 try:
                     metadata_path = out_dir / "basal.json"
                     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -571,11 +576,25 @@ def create_app(
                 except (OSError, ValueError, AttributeError):
                     owned = False
                 if owned:
-                    freed = sum(p.stat().st_size for p in out_dir.rglob("*") if p.is_file() and not p.is_symlink())
-                    shutil.rmtree(out_dir)
+                    freed = sum(p.stat().st_size for p in out_dir.rglob("*") if not p.is_symlink() and p.is_file())
+                    stage_dir = Path(tempfile.mkdtemp(prefix=".removing-", dir=attached_root))
+                    staged = stage_dir / out_dir.name
+                    try:
+                        out_dir.rename(staged)
+                    except BaseException:
+                        stage_dir.rmdir()
+                        raise
                 else:
                     retained = True
-            settings_mod.remove_attached(model_id)
+            try:
+                settings_mod.remove_attached(model_id)
+            except BaseException:
+                if staged is not None:
+                    staged.rename(out_dir)
+                    stage_dir.rmdir()
+                raise
+            if staged is not None:
+                shutil.rmtree(stage_dir)
         return {"deleted": model_id, "freed_bytes": freed, "retained_directory": retained}
 
     @app.post("/api/restart", status_code=202)
@@ -859,9 +878,11 @@ def create_app(
                 options = settings_mod.load_options(variant.id)
                 with fleet.lock:
                     runner = fleet.runners.get(variant.id)
-                if runner is not None and context["active"] and runner.status()["restart_required"]:
+                if runner is None or not context["active"] or runner.status()["restart_required"]:
                     return True
-                entry = runner.models_entry if runner is not None and context["active"] else None
+                entry = runner.models_entry
+                if not isinstance(entry, dict) or entry.get("calibration_warning") or not entry.get("certified"):
+                    return True
                 orders = (entry or {}).get("orders") or options.get("orders") or 2
                 cal, _, warning = load_calibration(
                     local,
@@ -872,12 +893,23 @@ def create_app(
                     layout=context["layout"] or model_layout(local),
                 )
                 result = calibration.summary(path, local)
+                table = calibration.certified_table(cal)
+                served = entry["certified"]
+                applicable = any(
+                    type(value) in (int, float)
+                    and math.isfinite(value)
+                    and 0 <= value <= 1
+                    and isinstance(served.get(target), dict)
+                    and served[target].get(kind) == value
+                    for target, row in table.items()
+                    for kind, value in row.items()
+                )
                 return bool(
                     warning
                     or result.get("warning")
                     or not isinstance(result.get("fitted_on"), dict)
                     or not result["fitted_on"].get("model")
-                    or not calibration.certified_table(cal)
+                    or not applicable
                 )
             except (OSError, ValueError, TypeError, AttributeError, KeyError):
                 return True

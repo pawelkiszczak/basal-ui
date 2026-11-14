@@ -4,6 +4,8 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Shared base weights are not included.": "Współdzielone wagi modelu bazowego nie są wliczone.",
+  "no active certified thresholds for this Attached model": "Brak aktywnych certyfikowanych progów dla tego dołączonego modelu",
   "code:attach_exists": "Ten dołączony model już istnieje.",
   "code:attach_busy": "Wyładuj dołączony model i zatrzymaj jego zadania.",
   "code:attach_base": "Wybierz obsługiwany model bazowy.",
