@@ -348,8 +348,87 @@ def create_app(
             raise HTTPException(400, f"unknown model {model_id!r}")
         return variant
 
+    def attached_uncalibrated(variant, cache_dir, current_hw):
+        if variant.family != "attached":
+            return False
+        if not engine.feature("attach"):
+            return True
+        from . import calibration
+
+        path = settings_mod.calibration_selection().get(variant.id)
+        local = catalog.is_downloaded(variant, cache_dir)
+        if not path or not local:
+            return True
+        try:
+            from basal.prompt import model_layout
+            from basal.server import MODES, load_calibration
+
+            assessment = catalog.assess(variant, current_hw)
+            _, context = resolve_shipped_calibration(variant, local, assessment)
+            options = settings_mod.load_options(variant.id)
+            with fleet.lock:
+                runner = fleet.runners.get(variant.id)
+            if runner is None or not context["active"] or runner.status()["restart_required"]:
+                return True
+            entry = runner.models_entry
+            if not isinstance(entry, dict) or entry.get("calibration_warning") or not entry.get("certified"):
+                return True
+            orders = (entry or {}).get("orders") or options.get("orders") or 2
+            cal, _, warning = load_calibration(
+                local,
+                MODES[context["mode"]][0],
+                path,
+                context["quant"],
+                orders,
+                layout=context["layout"] or model_layout(local),
+            )
+            result = calibration.summary(path, local)
+            table = calibration.certified_table(cal)
+            served = entry["certified"]
+            values = [
+                (target, kind, value)
+                for target, row in served.items()
+                if isinstance(row, dict)
+                for kind, value in row.items()
+            ]
+            applicable = (
+                bool(values)
+                and all(
+                    type(value) in (int, float)
+                    and math.isfinite(value)
+                    and 0 <= value <= 1
+                    and isinstance(table.get(target), dict)
+                    and table[target].get(kind) == value
+                    for target, kind, value in values
+                )
+                and all(isinstance(row, dict) for row in served.values())
+            )
+            return bool(
+                warning
+                or result.get("warning")
+                or not isinstance(result.get("fitted_on"), dict)
+                or not result["fitted_on"].get("model")
+                or not applicable
+            )
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            return True
+
     def full_status():
-        return {**fleet.status(), "serving": gateway.status(), "inspect": inspector.state()}
+        status = fleet.status()
+        attached = {
+            row["id"]
+            for row in status["models"]
+            if isinstance(row.get("id"), str) and row["id"].startswith("attached/")
+        }
+        if attached:
+            cache_dir = settings_mod.models_dir()
+            variants = {v.id: v for v in catalog.attached_variants(settings_mod.attached_models(), cache_dir)}
+            current_hw = hw()
+            for row in status["models"]:
+                if row["id"] in attached:
+                    variant = variants.get(row["id"])
+                    row["uncalibrated"] = not variant or attached_uncalibrated(variant, cache_dir, current_hw)
+        return {**status, "serving": gateway.status(), "inspect": inspector.state()}
 
     def serve_response():
         config = settings_mod.serve_settings()
@@ -594,7 +673,16 @@ def create_app(
                     stage_dir.rmdir()
                 raise
             if staged is not None:
-                shutil.rmtree(stage_dir)
+                try:
+                    shutil.rmtree(stage_dir)
+                except OSError:
+                    return {
+                        "deleted": model_id,
+                        "freed_bytes": 0,
+                        "retained_directory": True,
+                        "retained_path": str(stage_dir),
+                        "cleanup_error": True,
+                    }
         return {"deleted": model_id, "freed_bytes": freed, "retained_directory": retained}
 
     @app.post("/api/restart", status_code=202)
@@ -856,63 +944,6 @@ def create_app(
         revisions = (
             {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
         )
-        selected_calibrations = settings_mod.calibration_selection()
-
-        def attached_uncalibrated(variant):
-            if variant.family != "attached":
-                return False
-            if not engine.feature("attach"):
-                return True
-            from . import calibration
-
-            path = selected_calibrations.get(variant.id)
-            local = catalog.is_downloaded(variant, cache_dir)
-            if not path or not local:
-                return True
-            try:
-                from basal.prompt import model_layout
-                from basal.server import MODES, load_calibration
-
-                assessment = catalog.assess(variant, current_hw)
-                _, context = resolve_shipped_calibration(variant, local, assessment)
-                options = settings_mod.load_options(variant.id)
-                with fleet.lock:
-                    runner = fleet.runners.get(variant.id)
-                if runner is None or not context["active"] or runner.status()["restart_required"]:
-                    return True
-                entry = runner.models_entry
-                if not isinstance(entry, dict) or entry.get("calibration_warning") or not entry.get("certified"):
-                    return True
-                orders = (entry or {}).get("orders") or options.get("orders") or 2
-                cal, _, warning = load_calibration(
-                    local,
-                    MODES[context["mode"]][0],
-                    path,
-                    context["quant"],
-                    orders,
-                    layout=context["layout"] or model_layout(local),
-                )
-                result = calibration.summary(path, local)
-                table = calibration.certified_table(cal)
-                served = entry["certified"]
-                applicable = any(
-                    type(value) in (int, float)
-                    and math.isfinite(value)
-                    and 0 <= value <= 1
-                    and isinstance(served.get(target), dict)
-                    and served[target].get(kind) == value
-                    for target, row in table.items()
-                    for kind, value in row.items()
-                )
-                return bool(
-                    warning
-                    or result.get("warning")
-                    or not isinstance(result.get("fitted_on"), dict)
-                    or not result["fitted_on"].get("model")
-                    or not applicable
-                )
-            except (OSError, ValueError, TypeError, AttributeError, KeyError):
-                return True
 
         return {
             "source": source,
@@ -950,7 +981,7 @@ def create_app(
                     if a.variant.family == "attached"
                     else revisions.get(a.variant.id),
                     "attached": a.variant.family == "attached",
-                    "uncalibrated": attached_uncalibrated(a.variant),
+                    "uncalibrated": attached_uncalibrated(a.variant, cache_dir, current_hw),
                     "inspect_reason": inspectable(a.variant, current_hw),
                 }
                 for a in baseline

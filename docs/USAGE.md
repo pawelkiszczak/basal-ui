@@ -19,7 +19,8 @@ no certified thresholds, so the Library labels it **uncalibrated** until a Selec
 The Calibration tab works on the attached directory as for other models. An Attached model can be removed from
 Library only when it is unloaded; only the attachment directory and its links are removed, not the linked base
 weights. If metadata is corrupt, removal retains the directory and removes only its record. Engine 2.4.1 disables
-attachment controls because it has no `basal-attach`. Format 1 is the default; format 2 is available only when the
+attachment controls because it has no `basal-attach`. If cleanup fails after removal, Library shows the retained staging
+directory so you can inspect and recover its remaining files. Format 1 is the default; format 2 is available only when the
 tokenizer passes the Engine validation.
 
 Install from the [README's source instructions](../README.md#install) until the first PyPI release. From that checkout:

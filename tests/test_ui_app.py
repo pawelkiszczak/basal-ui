@@ -1787,7 +1787,64 @@ def test_attached_certification_requires_active_matching_thresholds(tmp_path, mo
             return next(x for x in client.get("/api/models").json()["models"] if x["id"] == model)
 
         assert row()["uncalibrated"]
+        assert client.get("/api/status").json()["models"][0]["uncalibrated"]
         runner.models_entry["certified"] = {"0.05": {"choice": 0.8}}
         assert not row()["uncalibrated"]
+        assert not client.get("/api/status").json()["models"][0]["uncalibrated"]
         runner.models_entry["certified"] = {"0.05": {"choice": 0.9}}
         assert row()["uncalibrated"]
+        changed = json.loads(cal.read_text())
+        changed["thresholds"]["0.05"]["per_type"]["noul"] = {"confidence": 0.6}
+        cal.write_text(json.dumps(changed))
+        runner.models_entry["certified"] = {"0.05": {"choice": 0.8, "noul": 0.7}}
+        assert row()["uncalibrated"]
+        assert client.get("/api/status").json()["models"][0]["uncalibrated"]
+
+
+def test_attached_partial_cleanup_reports_retained_staging(tmp_path, monkeypatch):
+    from basal_ui import app as app_module
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps({"attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION}})
+    )
+    (out / "deleted").write_text("deleted")
+    (out / "keep").write_text("recover me")
+    target = tmp_path / "shared"
+    target.write_text("shared")
+    (out / "weight").symlink_to(target)
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    real_rmtree = app_module.shutil.rmtree
+
+    def fail_after_partial(path, *args, **kwargs):
+        path = Path(path)
+        if path.name.startswith(".removing-"):
+            (path / out.name / "deleted").unlink()
+            raise OSError("cleanup failed")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(app_module.shutil, "rmtree", fail_after_partial)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.delete(f"/api/attach/{model}")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["cleanup_error"] and result["retained_directory"] and result["freed_bytes"] == 0
+        stage = Path(result["retained_path"])
+        assert stage.parent == out.parent and (stage / out.name / "keep").read_text() == "recover me"
+        assert (stage / out.name / "weight").is_symlink() and target.read_text() == "shared"
+        assert not settings.attached_models()

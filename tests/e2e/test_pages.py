@@ -1794,9 +1794,67 @@ def test_library_totals_and_setup_for_not_downloaded_model(browser, isolated_ui)
           renderModels(data);
         }""")
         assert page.locator('.options-model[data-id="fixture/ordinary"][data-action="save"]').count() == 1
-        assert (
-            page.locator("#diskTotal").inner_text()
-            == "Total: 2.0 GB in 1 model · Shared base weights are not included."
+        total = page.locator("#diskTotal").inner_text()
+        assert "2.0 GB" in total and "1 model" in total and "8.0 GB" not in total
+    finally:
+        context.close()
+
+
+def test_attached_decision_refuses_inspect_handoff(browser, isolated_ui):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        page.goto(isolated_ui.url + "/#playground")
+        page.wait_for_function("typeof renderResults === 'function' && typeof modelData !== 'undefined'")
+        page.evaluate("""() => {
+          modelData = [{id:'attached/qwen-qwen3-4b', inspect_reason:'attached models cannot be inspected'}];
+          const request={model:'attached/qwen-qwen3-4b',state:'synthetic',questions:{q:{type:'choice'}}};
+          const response={answers:{q:{type:'choice',choice:'yes',probabilities:{yes:0.8,no:0.2}}}};
+          renderResults(response,request);
+        }""")
+        assert page.locator("#inspectDecision").count() == 0
+        assert "attached models cannot be inspected" in page.locator("#results").inner_text()
+        page.evaluate("""() => {
+          modelData=[];
+          inspectDecision({model:'attached/qwen-qwen3-4b',state:'synthetic',questions:{q:{type:'choice'}}});
+        }""")
+        assert page.locator("#playground").is_visible()
+        assert "attached models cannot be inspected" in page.locator("#toastStack").inner_text()
+        page.evaluate("""() => {
+          modelData=[{id:'fixture/normal',inspect_reason:null}];
+          renderResults({answers:{q:{type:'choice',choice:'yes'}}},{model:'fixture/normal',questions:{q:{type:'choice'}}});
+        }""")
+        assert page.locator("#inspectDecision").is_visible()
+    finally:
+        context.close()
+
+
+def test_cleanup_failure_path_is_visible_in_library(browser, isolated_ui):
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    try:
+        page.goto(isolated_ui.url + "/#manager")
+        page.wait_for_function("typeof renderModels === 'function' && typeof modelData !== 'undefined'")
+        page.evaluate("""async () => {
+          const data=await fetch('/api/models').then(r=>r.json()), base=data.models.find(m=>m.runnable);
+          if(!base) throw new Error('no runnable model fixture');
+          data.models=[{...base,id:'attached/test',family:'attached',attached:true,downloaded:false}];
+          data.suggestions=[]; renderModels(data);
+          document.querySelector('.remove-attached').click();
+        }""")
+        page.route(
+            "**/api/attach/attached%2Ftest",
+            lambda route: route.fulfill(
+                json={
+                    "deleted": "attached/test",
+                    "freed_bytes": 0,
+                    "retained_directory": True,
+                    "retained_path": "/tmp/example/.removing-test",
+                    "cleanup_error": True,
+                }
+            ),
         )
+        page.locator("#confirmAccept").click()
+        sync_api.expect(page.locator("#attachRecovery")).to_contain_text("/tmp/example/.removing-test")
     finally:
         context.close()

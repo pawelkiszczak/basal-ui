@@ -251,7 +251,11 @@ document.addEventListener('click',event=>{
     const id=button.dataset.id;
     if(!await confirmDialog({title:t('Remove attached model?'),description:t('{model} will be removed. Shared base weights remain in the cache.',{model:id}),confirmLabel:t('Remove'),destructive:true}))return;
     const result=await api(`/api/attach/${encodeURIComponent(id)}`,{method:'DELETE'});
-    toast(result.retained_directory?t('Record removed; unverified model directory was retained.'):t('Attached model removed'));
+    if(result.cleanup_error){
+      $('#attachRecovery').textContent=t('Cleanup was incomplete. Inspect the retained directory: {path}',{path:result.retained_path});
+      $('#attachRecovery').hidden=false;
+      showView('manager/library',true);$('#attachRecovery').scrollIntoView({block:'center'});
+    }else toast(result.retained_directory?t('Record removed; unverified model directory was retained.'):t('Attached model removed'));
     await loadModels();
   });
 });
@@ -922,7 +926,7 @@ function resultHeadline(name, answer, requestQuestion) {
   return null;
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
-const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(!entry)return null;const variant=modelData.find(m=>m.id===id);return id.startsWith('attached/')?{...entry,attached_uncalibrated:variant?.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length}:entry;};
+const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(!entry)return null;return id.startsWith('attached/')?{...entry,attached_uncalibrated:model.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length}:entry;};
 const uncalibrated=entry=>Boolean(entry?.attached_uncalibrated)||(Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length);
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
@@ -1092,6 +1096,10 @@ function thinkBlock(a) {
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
   return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · ${t('calibration')} ${esc(t(think.calibration??'—'))}; ${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
+function inspectBlockedReason(id) {
+  const variant=modelData.find(m=>m.id===id);
+  return variant?.inspect_reason?t(variant.inspect_reason):String(id||'').startsWith('attached/')?t('attached models cannot be inspected'):null;
+}
 function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
@@ -1105,7 +1113,8 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const inspectReason=inspectBlockedReason(request.model);
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1353,7 +1362,7 @@ function renderStatus(s) {
   }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
-  const attachedSignature=JSON.stringify(models.filter(m=>m.id.startsWith('attached/')).map(m=>[m.id,m.state,m.generation,m.restart_required,m.entry?.certified,m.entry?.calibration_warning]));
+  const attachedSignature=JSON.stringify(models.filter(m=>m.id.startsWith('attached/')).map(m=>[m.id,m.state,m.generation,m.restart_required,m.entry?.certified,m.entry?.calibration_warning,m.uncalibrated]));
   if(attachedSignature!==attachedStatusSignature){attachedStatusSignature=attachedSignature;loadModels().then(()=>renderLoadedRows(statusCache?.models||[]));}
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
@@ -2068,6 +2077,7 @@ function renderInspectState(state, job) {
 // What the inspector would explain of a Playground decision: the request it can explain and how that differs from
 // the served one, or why it cannot (another model, media, nothing but task questions).
 function inspectHandoff(request) {
+  const reason=inspectBlockedReason(request.model);if(reason)return {blocked:reason};
   const st=statusCache?.inspect||{}, served=(statusCache?.models||[]).find(m=>m.id===request.model);
   const variant=id=>modelData.find(m=>m.id===id), sv=variant(request.model), iv=variant(st.model);
   if(request.media)return {blocked:t('basal-viz reads text only; remove the media to inspect this request')};
@@ -2090,6 +2100,7 @@ function inspectHandoff(request) {
   return {body,notes};
 }
 function inspectDecision(request) {
+  const reason=inspectBlockedReason(request.model);if(reason){toast(reason,'error');return;}
   if(statusCache?.inspect?.state!=='ready'){toast(t('Start the inspector for {model} first',{model:request.model||t('a model')}),'error');showView('inspect',true);return;}
   const handoff=inspectHandoff(request), notice=$('#inspectNotice');
   if(handoff.blocked){toast(handoff.blocked,'error');return;}

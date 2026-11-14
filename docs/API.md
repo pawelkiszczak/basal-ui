@@ -37,6 +37,10 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 | `DELETE /api/attach` | Cancels the attach job; an in-flight shared download drains before the job stops. |
 | `DELETE /api/attach/{id}` | Removes the record and verified owned directory; returns owned `freed_bytes` and `retained_directory` if ownership cannot be verified. Returns 409 while busy and 404 for unknown ids. Shared base weights remain cached. |
 
+If removal persists the record change but cleanup fails, the response includes `cleanup_error: true`,
+`retained_path` naming the staging directory, and conservative `freed_bytes: 0`. Inspect the retained directory
+before removing it manually; linked base weights remain in the cache.
+
 The attach job and download progress appear in `GET /api/status` under `jobs["attach"]` and `downloads[base]`;
 its log is available at `GET /api/logs?source=job%3Aattach`. The generated model is listed by `GET /api/models`
 and can be loaded and calibrated like other catalog entries.
