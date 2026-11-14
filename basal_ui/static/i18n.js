@@ -4,6 +4,7 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Calibration or model state changed; previous certification evidence is no longer current.": "Kalibracja lub stan modelu zmieniły się; poprzednie potwierdzenie certyfikacji jest nieaktualne.",
   "Cleanup was incomplete. Inspect the retained directory: {path}": "Czyszczenie nie zostało ukończone. Sprawdź pozostawiony katalog: {path}",
   "Shared base weights are not included.": "Współdzielone wagi modelu bazowego nie są wliczone.",
   "no active certified thresholds for this Attached model": "Brak aktywnych certyfikowanych progów dla tego dołączonego modelu",

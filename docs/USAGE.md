@@ -21,7 +21,8 @@ Library only when it is unloaded; only the attachment directory and its links ar
 weights. If metadata is corrupt, removal retains the directory and removes only its record. Engine 2.4.1 disables
 attachment controls because it has no `basal-attach`. If cleanup fails after removal, Library shows the retained staging
 directory so you can inspect and recover its remaining files. Format 1 is the default; format 2 is available only when the
-tokenizer passes the Engine validation.
+tokenizer passes the Engine validation. If an Attached model's active calibration or identity changes, previously
+displayed Playground and comparison certification evidence is invalidated until you run a new Decision.
 
 Install from the [README's source instructions](../README.md#install) until the first PyPI release. From that checkout:
 

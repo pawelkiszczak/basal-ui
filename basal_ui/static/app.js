@@ -1098,9 +1098,20 @@ function thinkBlock(a) {
 }
 function inspectBlockedReason(id) {
   const variant=modelData.find(m=>m.id===id);
-  return variant?.inspect_reason?t(variant.inspect_reason):String(id||'').startsWith('attached/')?t('attached models cannot be inspected'):null;
+  return variant?.attached||String(id||'').startsWith('attached/')?t(variant?.inspect_reason||'attached models cannot be inspected'):null;
 }
-function renderResults(data, request, mediaSnapshot=selectedMedia) {
+function attachedEvidenceStamp(id) {
+  if(!String(id||'').startsWith('attached/'))return '';
+  const m=(statusCache?.models||[]).find(item=>item.id===id);
+  return JSON.stringify(m?[m.id,m.state,m.generation,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.calibration_warning]:null);
+}
+function invalidateAttachedEvidence(node) {
+  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===attachedEvidenceStamp(node.dataset.evidenceModel))return;
+  node.querySelectorAll('.chips.safety,.dt-evidence').forEach(element=>element.remove());
+  const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
+  node.prepend(notice);node.dataset.evidenceStale='1';
+}
+function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=attachedEvidenceStamp(request.model)) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
@@ -1115,6 +1126,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
   const inspectReason=inspectBlockedReason(request.model);
   $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const results=$('#results');results.dataset.evidenceModel=String(request.model||'').startsWith('attached/')?request.model:'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateAttachedEvidence(results);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1137,7 +1149,8 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
+  const evidenceStamp=attachedEvidenceStamp(request.model);
+  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
 }
@@ -1346,6 +1359,7 @@ function renderManagerSummary() {
 let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  invalidateAttachedEvidence($('#results'));DecisionTools.invalidateAttachedEvidence();
   const attachJob=s.jobs?.attach;
   if(attachJob){
     const progress=s.downloads?.[$('#attachBase').value];
