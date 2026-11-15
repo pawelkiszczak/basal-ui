@@ -347,6 +347,8 @@ def test_catalogue_limits_and_auth_errors(monkeypatch, case, expected):
     with pytest.raises(FetchError) as error:
         mcp_import.list_tools({"url": "http://localhost/mcp"})
     assert error.value.code == expected
+    if case == "auth":
+        assert "Check the bearer token" in str(error.value)
 
 
 def test_manager_reaps_started_worker_on_disconnect(monkeypatch):

@@ -76,10 +76,9 @@ def list_tools(body):
             conn.request("POST", path, json.dumps(payload).encode(), headers)
             response = conn.getresponse()
             if not 200 <= response.status < 300:
-                fail(
-                    f"MCP endpoint returned HTTP {response.status}.",
-                    "mcp_auth_error" if response.status in (401, 403) else "mcp_http_error",
-                )
+                if response.status in (401, 403):
+                    fail("MCP authentication failed. Check the bearer token.", "mcp_auth_error")
+                fail(f"MCP endpoint returned HTTP {response.status}. Check the endpoint URL.", "mcp_http_error")
             if response.getheader("Content-Encoding", "identity").strip().lower() not in ("", "identity"):
                 fail("MCP endpoint returned unsupported content encoding.", "mcp_encoding_error")
             new_session = response.getheader("Mcp-Session-Id")
