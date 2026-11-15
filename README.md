@@ -33,7 +33,7 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
   request on two loaded models, or copy System One curl, Python, OpenAI curl and MCP examples without silently
   dropping unsupported fields. Images and voice clips support basal-omni, with numbered elements marked on a screenshot.
 
-  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground: a choice question answered with calibrated confidence">
+  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground request editor with a source URL and estimated State context">
 
 - a **Model manager** with separate **Library**, **Usage by model**, **Benchmarks** and **Calibration** tabs.
   Loaded models, memory and on-disk variants stay in Library; measurement and tuning controls no longer crowd it.

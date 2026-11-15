@@ -133,6 +133,14 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   them), or the raw JSON request (which carries `"model"`). **Request settings** contains `facts`, `lang`, Edit JSON,
   and supported Thinking / early-exit controls, keeping the model and example selectors visible in the toolbar. Question names must be
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
+  **Fetch URL** loads one public HTTP(S) page on the app server into editable State without sending a Decision.
+  HTML becomes readable text, JSON stays structured, and plain text stays text. The note shows the original and final
+  URL, type, byte count and truncation; review the result before sending. Fetch is anonymous and bounded to 4 MiB,
+  10 seconds, three redirects and 200,000 text characters; larger JSON is refused rather than partly reconstructed.
+  The State token estimate divides UTF-8 bytes by four and omits questions, options, media and prompt overhead; it
+  is not a fit guarantee. Active context limit and policy come from the loaded model, and actual Decision usage wins.
+  Cancel stops the fetch. The final URL is saved with the request in History; Replay restores the recorded State and
+  shows its source without fetching again. Load another example or saved request to leave Replay.
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
   and must be attached again.
   Choice, multi and non-boolean act options use inline key/description rows with add, remove, move-up/down and

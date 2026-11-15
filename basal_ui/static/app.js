@@ -5,6 +5,9 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
 let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
+let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
+let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
+let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 function httpFailure(status,message) {
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
@@ -51,7 +54,8 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((lo
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
-  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden){e.preventDefault();$('#sendButton').click();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&$('#fetchDialog').open){e.preventDefault();}
+  else if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden){e.preventDefault();$('#sendButton').click();}
   else if(!typing&&e.key==='?'&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();$('#shortcutsDialog').showModal();}
   else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
@@ -698,6 +702,83 @@ function requestOptionFields() {
   return fields;
 }
 const REQUEST_OPTION_KEYS=['facts','lang','think','think_text','early_exit'];
+function renderFetchProvenance() {
+  const note=$('#fetchProvenance');
+  $('#openFetchDialog').hidden=replayLocked;
+  note.hidden=sourceUrl===null;
+  if(sourceUrl===null){note.textContent='';return;}
+  note.textContent=replayLocked?t('Recorded source: {url}',{url:sourceUrl}):t('Source: {url}',{url:sourceUrl});
+  if(fetchInfo&&fetchInfo.final_url===sourceUrl)note.textContent+='\n'+t('Original: {url}',{url:fetchInfo.url})+'\n'+
+    t('Final: {url}',{url:fetchInfo.final_url})+'\n'+t('Type: {type} · {bytes} bytes · {truncation}',{
+      type:fetchInfo.content_type,bytes:fetchInfo.bytes,truncation:fetchInfo.truncated?t('Text truncated to 200,000 characters'):t('Text not truncated')});
+}
+function renderStateEstimate() {
+  let state;
+  try {
+    if($('#editJsonToggle').checked)state=JSON.parse($('#requestJson').value).state;
+    else {const input=$('#stateInput');state=input._requestState&&input.value===input._requestState.text?input._requestState.value:parseStructuredText(input.value);}
+    if(state===undefined)throw new Error();
+    const text=typeof state==='string'?state:JSON.stringify(state);
+    const tokens=Math.ceil(new TextEncoder().encode(text).length/4);
+    const context=(statusCache?.models||[]).find(model=>model.id===selectedModel)?.entry?.context;
+    $('#stateEstimate').textContent=t('Estimated State tokens: {tokens} · Active context limit: {limit} · policy: {policy}',{
+      tokens,limit:context?.limit??t('unknown'),policy:context?.overflow??t('unknown')});
+  } catch {$('#stateEstimate').textContent=t('State estimate unavailable until request JSON is valid.');}
+}
+function cancelFetch() {
+  fetchGeneration++;
+  if(fetchOperation)fetchOperation.abort();
+  fetchOperation=null;
+  $('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';
+}
+function closeFetch() {
+  cancelFetch();
+  if($('#fetchDialog').open)$('#fetchDialog').close();
+  if(!$('#openFetchDialog').hidden)$('#openFetchDialog').focus();
+}
+$('#openFetchDialog').addEventListener('click',()=>{
+  if(replayLocked)return;
+  cancelFetch();$('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');
+  $('#fetchDialog').showModal();$('#fetchUrl').focus();
+});
+$('#fetchCancel').addEventListener('click',closeFetch);
+$('#fetchDialog').addEventListener('cancel',event=>{event.preventDefault();closeFetch();});
+$('#fetchForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(fetchOperation||replayLocked)return;
+  let jsonRequest;
+  if($('#editJsonToggle').checked){
+    try {jsonRequest=JSON.parse($('#requestJson').value);if(!jsonRequest||typeof jsonRequest!=='object'||Array.isArray(jsonRequest))throw new Error();}
+    catch {$('#fetchError').textContent=t('Fix the request JSON before fetching.');$('#fetchError').hidden=false;return;}
+  }
+  const controller=new AbortController(), generation=++fetchGeneration;
+  fetchOperation=controller;$('#fetchSubmit').disabled=true;$('#fetchUrl').disabled=true;
+  $('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');$('#fetchStatus').textContent=t('Fetching…');
+  try {
+    const result=await api('/api/fetch',{method:'POST',body:JSON.stringify({url:$('#fetchUrl').value}),signal:controller.signal});
+    if(generation!==fetchGeneration||fetchOperation!==controller)return;
+    sourceUrl=result.final_url;fetchInfo={url:result.url,final_url:result.final_url,content_type:result.content_type,bytes:result.bytes,truncated:result.truncated};renderFetchProvenance();
+    applyingFetch=true;
+    try {
+      if(jsonRequest){jsonRequest.state=result.state;jsonRequest.source_url=sourceUrl;$('#requestJson').value=JSON.stringify(jsonRequest,null,2);$('#requestJson').dispatchEvent(new Event('input',{bubbles:true}));renderStateEstimate();}
+      else {const input=$('#stateInput');input.value=typeof result.state==='string'?result.state:JSON.stringify(result.state,null,2);input._requestState={text:input.value,value:structuredClone(result.state)};input.dispatchEvent(new Event('input',{bubbles:true}));}
+    } finally {applyingFetch=false;}
+    closeFetch();
+  } catch(error) {
+    if(generation!==fetchGeneration||fetchOperation!==controller||error.name==='AbortError')return;
+    $('#fetchError').textContent=error.message;$('#fetchError').hidden=false;$('#fetchUrl').setAttribute('aria-invalid','true');
+  } finally {
+    if(generation===fetchGeneration&&fetchOperation===controller){fetchOperation=null;$('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';}
+  }
+});
+['input','change'].forEach(type=>$('#playground').addEventListener(type,event=>{
+  if(applyingFetch)return;
+  cancelFetch();
+  if(event.target.id==='requestJson'){
+    try {const request=JSON.parse(event.target.value);const next=typeof request?.source_url==='string'?request.source_url:null;if(next!==sourceUrl)fetchInfo=null;sourceUrl=next;renderFetchProvenance();}catch{}
+  }
+  if(event.target.id==='requestJson')renderStateEstimate();
+},true));
 // think / early_exit appear for a model loaded with Thinking / with early-exit levels (--mode fast-exit)
 function setPlaygroundExperimental(model) {
   const think=Boolean(model?.options?.think), levels=model?.entry?.early_exit||[], select=$('#earlyExitSelect');
@@ -719,9 +800,10 @@ function buildRequest() {
   }
   if([...document.querySelectorAll('.q-name')].some(input=>!input.checkValidity()))throw new Error(t('Question names must be non-blank and unique.'));
   const stateInput=$('#stateInput'), state=stateInput._requestState;
-  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields()};
+  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields(),...(sourceUrl!==null?{source_url:sourceUrl}:{})};
 }
 function syncRequest(force=false, keys=['media','detail']) {
+  if(fetchOperation&&!applyingFetch)cancelFetch();
   window.RequestCode.invalidate();
   const textarea = $('#requestJson');
   if ($('#editJsonToggle').checked && !force) {
@@ -738,6 +820,7 @@ function syncRequest(force=false, keys=['media','detail']) {
     try { textarea.value = JSON.stringify(buildRequest(), null, 2); }
     catch (e) { showMediaError(e.message); }
   }
+  renderStateEstimate();
 }
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
@@ -778,21 +861,25 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   $('#questions').append(card); updateMediaEvidence(); syncRequest();
 }
-function setRequest(req, names=[]) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+function setRequest(req, names=[], replay=false) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+  cancelFetch();
+  sourceUrl=typeof req?.source_url==='string'?req.source_url:null;
+  fetchInfo=null; replayLocked=replay; renderFetchProvenance();
   clearSelectedMedia();
   const preserveJson=()=>{
     $('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;
     $('#requestJson').value=JSON.stringify(req,null,2);
+    renderStateEstimate();
     showMediaError(t('This request contains fields or values the Playground builder cannot edit. It remains in Edit JSON mode.'));
     return false;
   };
-  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||req.state==null||
+  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||
      !Object.hasOwn(req,'questions')||!req.questions||typeof req.questions!=='object'||Array.isArray(req.questions))return preserveJson();
-  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model']);
+  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model','source_url']);
   const media=Array.isArray(req.media)?req.media:[];
   let restored=[];
   try {
-    if(Object.keys(req).some(key=>!known.has(key))||
+    if(Object.keys(req).some(key=>!known.has(key))||(Object.hasOwn(req,'source_url')&&typeof req.source_url!=='string')||
        Object.values(req.questions).some(q=>!q||typeof q!=='object'||Array.isArray(q)||!QUESTION_TYPES.includes(q.type))||
        (Object.hasOwn(req,'media')&&!Array.isArray(req.media))||
        media.some(item=>!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(k=>!['type','data'].includes(k))||
@@ -818,8 +905,8 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
     const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);
   }
   const stateInput=$('#stateInput');
-  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state??'',null,2);
-  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state??'')};
+  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state,null,2);
+  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state)};
   setChecked($('#factsToggle'),req.facts==='auto'); $('#langSelect').value=['pl','en'].includes(req.lang)?req.lang:'auto';
   $('#thinkSelect').value=['off','force'].includes(req.think)?req.think:''; setChecked($('#thinkTextToggle'),req.think_text===true);
   if([...$('#earlyExitSelect').options].some(o=>o.value===req.early_exit))$('#earlyExitSelect').value=req.early_exit; else $('#earlyExitSelect').value='';
@@ -835,13 +922,13 @@ window.preparePlaygroundLanguageSwitch=()=>{
   if($('#editJsonToggle').checked){
     let text=$('#requestJson').value;
     try {const request=JSON.parse(text);if(request&&typeof request==='object'&&!Array.isArray(request)){hadMedia=hadMedia||(Array.isArray(request.media)&&request.media.length>0);if('media' in request||'_elements' in request){delete request.media;delete request._elements;text=JSON.stringify(request,null,2);}}} catch {}
-    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia}));
+    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia,replayLocked,fetchInfo}));
     return;
   }
   const cards=[...document.querySelectorAll('#questions .question')];
   const stateInput=$('#stateInput'), state=stateInput._requestState&&stateInput.value===stateInput._requestState.text
     ?stateInput._requestState.value:parseStructuredText(stateInput.value);
-  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default'};
+  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default',...(sourceUrl!==null?{source_url:sourceUrl}:{})};
   const names=cards.map(card=>$('.q-name',card).value);
   const controls=cards.map(card=>[...card.querySelectorAll('input,select,textarea')].filter(el=>!el.closest('.choice-editor')).map(el=>el.type==='checkbox'?{checked:el.checked}:{value:el.value}));
   const choiceRows=cards.map(card=>ChoiceEditor.snapshot(card));
@@ -850,16 +937,16 @@ window.preparePlaygroundLanguageSwitch=()=>{
   cards.forEach((card,i)=>{request.questions[`__language_draft_${i}`]=parseQuestionCard(card)[1];});
   const model=selectedModel||$('#playgroundModel').value;
   if(model)request.model=model;
-  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows}));
+  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows,replayLocked,fetchInfo}));
 };
 function restorePlaygroundLanguageDraft(){
   const saved=sessionStorage.getItem(PLAYGROUND_DRAFT);if(!saved)return;
   sessionStorage.removeItem(PLAYGROUND_DRAFT);
   try{
     const draft=JSON.parse(saved);
-    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;}
+    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;try{const request=JSON.parse(draft.text);sourceUrl=typeof request?.source_url==='string'?request.source_url:null;}catch{sourceUrl=null;}replayLocked=Boolean(draft.replayLocked);}
     else if(draft.request){
-      setRequest(draft.request);
+      setRequest(draft.request,[],Boolean(draft.replayLocked));
       const cards=[...document.querySelectorAll('#questions .question')];
       cards.forEach((card,i)=>{
         ChoiceEditor.restore(card,draft.choiceRows?.[i]);
@@ -879,6 +966,7 @@ function restorePlaygroundLanguageDraft(){
       });
       syncRequest(true);
     }
+    fetchInfo=draft.fetchInfo||null;renderFetchProvenance();
     if(draft.hadMedia)showMediaError(t('Media must be attached again after changing language.'));
   }catch{}
 }
@@ -1110,7 +1198,7 @@ function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===
 $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
-$('#stateInput').addEventListener('input',()=>{$('#stateInput')._requestState=undefined;syncRequest();});
+$('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
   if($('#editJsonToggle').checked){
     try {$('#requestJson').value=JSON.stringify(buildRequest(),null,2);showMediaError();}
@@ -1125,10 +1213,11 @@ $('#editJsonToggle').addEventListener('change',()=>{
     const meta=elementPresetData(),media=Array.isArray(request.media)?request.media:[];
     const names=media.map(item=>selectedMedia.find(current=>current.data===item?.data)?.file.name);
     const marks=meta.marked.flatMap(record=>{const index=media.findIndex(item=>item?.data===record.markedData);return index<0?[]:[{...record,index}];});
-    if(!setRequest(request,names))restorePresetMediaFallback(request,names);
+    if(!setRequest(request,names,replayLocked))restorePresetMediaFallback(request,names);
     restoreElementMarks(marks);
   }
   $('#editJsonArea').hidden=!$('#editJsonToggle').checked;$('#builder').hidden=$('#editJsonToggle').checked;
+  renderStateEstimate();
 });
 $('#mediaInput').addEventListener('change',event=>selectMedia(Array.from(event.target.files||[])));
 $('#mediaDetail').addEventListener('change',()=>syncRequest());
@@ -1140,7 +1229,6 @@ $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox
 window.addEventListener('beforeunload',()=>selectedMedia.forEach(item=>URL.revokeObjectURL(item.url)));
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 function connectionEndpoint() {
   const settings=serveData.settings, serving=statusCache?.serving;
   if (serving?.url) return serving.url;
@@ -1282,7 +1370,6 @@ async function copyText(text, success=t('Copied to clipboard')) {
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
-let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
@@ -1389,13 +1476,14 @@ function renderPlaygroundModels(ready) {
   setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
   setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
   DecisionTools.refreshModels(ready);
+  renderStateEstimate();
 }
 function setPlaygroundMedia(kinds) {
   if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
   loadedMedia=kinds; renderSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
 }
-$('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
+$('#playgroundModel').addEventListener('change',e=>{cancelFetch();selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
 async function restartOne(id){await api('/api/restart',{method:'POST',body:JSON.stringify({id})});toast(`${t('Restarting {model}',{model:shortName(id)})}`);await refreshStatus();}
 $('#footerUnload').onclick=()=>act(async()=>{
@@ -1885,7 +1973,7 @@ function replayRequest(x) {
   selectedModel=x.model; localStorage.setItem('basal-ui.model',selectedModel);
   $('#playgroundModel').value=selectedModel; setPlaygroundMedia(readyModels().find(m=>m.id===selectedModel)?.media||[]);
   $('#results').innerHTML='';$('#rawDetails').hidden=true;$('#decideError').hidden=true;
-  setRequest(x.replay_request);
+  setRequest(x.replay_request,[],true);
   showView('playground',true);
 }
 function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
@@ -2023,7 +2111,7 @@ function inspectHandoff(request) {
   if(st.model!==request.model&&!(sv&&iv&&sv.family===iv.family&&sv.tier===iv.tier))
     return {blocked:t('the inspector runs {inspector}, this decision came from {model}: start the inspector with the bf16 weights of {weights}',{inspector:st.model,model:request.model,weights:sv?`${sv.family} ${sv.tier}`:request.model})};
   const body=structuredClone(request), notes=[];
-  for(const key of ['model','think','think_text','early_exit'])delete body[key];
+  for(const key of ['model','think','think_text','early_exit','source_url'])delete body[key];
   const tasks=Object.entries(body.questions||{}).filter(([,q])=>TASK_TYPES.includes(q?.type)).map(([n])=>n);
   tasks.forEach(n=>delete body.questions[n]);
   if(!Object.keys(body.questions||{}).length)return {blocked:t('basal-viz explains decision questions; this request has only task questions')};
@@ -2053,6 +2141,7 @@ const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model statu
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
+  if(name!=='playground'){if($('#fetchDialog').open)closeFetch();else cancelFetch();}
   const wasDashboard=!$('#dashboard').hidden;
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
