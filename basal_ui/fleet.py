@@ -506,7 +506,27 @@ class Fleet:
         if self.engine_addon_installing and not self.stopping:
             raise RuntimeError("model operations are unavailable during Engine add-on installation")
 
+    def _check_finetune_delete(self):
+        if "finetune-delete" in self.reserved:
+            raise RuntimeError("model operations are unavailable during fine-tune output deletion")
+
+    def _check_pending_adapter(self, options):
+        from .finetune import _directory
+
+        for record in getattr(self.settings_mod, "finetune_results", lambda: [])():
+            try:
+                path = _directory(record)
+                quarantine = path.with_name(f".{path.name}.deleting").resolve()
+            except (ValueError, OSError):
+                continue
+            for key in ("adapter", "think_adapter"):
+                if value := (options or {}).get(key):
+                    selected = Path(value).expanduser().resolve()
+                    if selected == quarantine or quarantine in selected.parents:
+                        raise RuntimeError("fine-tune output is pending cleanup")
+
     def _check_job_start(self, kind, target):
+        self._check_finetune_delete()
         if self.engine_addon_installing and (kind != "engine-addon" or target != self._engine_addon_job_target):
             raise RuntimeError("jobs are unavailable during Engine add-on installation")
 
@@ -576,6 +596,8 @@ class Fleet:
         """A private, unremembered child for a job (its memory counted in the budget); stop_temporary ends it."""
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
+            self._check_pending_adapter(options)
             if kind in self.temporary:
                 raise RuntimeError(f"a {kind} child is already running")
             if self.stopping:
@@ -613,6 +635,7 @@ class Fleet:
         budget); release(kind) frees them."""
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
             if kind in self.reserved:
                 raise RuntimeError(f"a {kind} job already holds memory")
             self.check_budget(needed)
@@ -627,6 +650,8 @@ class Fleet:
         model_id = assessment.variant.id
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
+            self._check_pending_adapter(options)
             if assessment.variant.family == "attached":
                 if not any(r.get("id") == model_id for r in self.settings_mod.attached_models()):
                     raise RuntimeError("attached model is no longer registered")
@@ -701,6 +726,8 @@ class Fleet:
         model_id = assessment.variant.id
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
+            self._check_pending_adapter(options)
             if model_id in self.draining:
                 raise RuntimeError("model is unavailable during maintenance")
             current = self.runners.get(model_id)

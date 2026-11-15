@@ -328,7 +328,7 @@ class FineTune:
             if record.get("id") != model_id:
                 continue
             try:
-                path = _safe_directory(record)
+                path = _safe_directory(record, missing=record.get("state") == "cleanup_pending")
                 row = {
                     "name": _name(record.get("name")),
                     "output": str(path),
@@ -336,7 +336,11 @@ class FineTune:
                     "adapter": None,
                     "ready": False,
                 }
-                if record.get("state") == "ready":
+                if record.get("state") == "cleanup_pending":
+                    row["cleanup_pending"] = True
+                    row["retained_path"] = str(path.with_name(f".{path.name}.deleting"))
+                    row["error"] = "Cleanup is incomplete; retry deletion"
+                elif record.get("state") == "ready":
                     _complete(path)
                     row.update(_report(path / "finetune.json"))
                     row["adapter"] = _adapter(path)
@@ -366,6 +370,9 @@ class FineTune:
                 output = _directory(record).resolve()
             except (ValueError, OSError):
                 continue
+            quarantine = output.with_name(f".{output.name}.deleting")
+            if selected == quarantine or quarantine in selected.parents:
+                raise ValueError("fine-tune output is pending cleanup")
             if selected == output or output in selected.parents:
                 if (
                     record.get("id") != model_id
@@ -542,7 +549,6 @@ class FineTune:
                     staged = True
                 else:
                     _owned_stat(parent_fd, quarantine.name, record)
-                total = _removed_bytes(parent_fd, quarantine.name)
             except BaseException as exc:
                 if staged:
                     try:
@@ -557,20 +563,22 @@ class FineTune:
             self.deleting.add((model_id, name))
             self.fleet.reserved["finetune-delete"] = 0
         try:
-            try:
-                self.settings.remove_finetune(model_id, name)
-            except BaseException as exc:
+            pending = {**record, "state": "cleanup_pending"}
+            if record.get("state") != "cleanup_pending":
                 try:
-                    os.rename(quarantine.name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-                    if not any(
-                        r.get("id") == model_id and r.get("name") == name for r in self.settings.finetune_results()
-                    ):
+                    self.settings.put_finetune(pending)
+                except BaseException as exc:
+                    try:
+                        os.rename(quarantine.name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
                         self.settings.put_finetune(record)
-                except (OSError, ValueError) as restore:
-                    raise RuntimeError(f"registry recovery failed; inspect {path} and {quarantine}: {restore}") from exc
-                raise
+                    except (OSError, ValueError) as restore:
+                        raise RuntimeError(
+                            f"registry recovery failed; inspect {path} and {quarantine}: {restore}"
+                        ) from exc
+                    raise
             try:
                 _owned_stat(parent_fd, quarantine.name, record)
+                total = _removed_bytes(parent_fd, quarantine.name)
                 flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
                 output_fd = os.open(quarantine.name, flags, dir_fd=parent_fd)
                 try:
@@ -589,6 +597,12 @@ class FineTune:
                     "retained_path": str(quarantine),
                     "cleanup_error": str(exc),
                 }
+            try:
+                self.settings.remove_finetune(model_id, name)
+            except BaseException:
+                if not any(r.get("id") == model_id and r.get("name") == name for r in self.settings.finetune_results()):
+                    self.settings.put_finetune(pending)
+                raise
             return {"removed_bytes": total, "missing": False}
         finally:
             os.close(parent_fd)

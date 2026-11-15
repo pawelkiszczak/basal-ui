@@ -936,8 +936,9 @@ function calibrationChip(answer,entry) {
   return '';
 }
 // a task answer's `automated`: {max_error: true (use as is) | false (review) | null (no certificate for the task)}
-function automatedChips(automated,entry) {
-  if(entry?.attached_uncalibrated||!automated||typeof automated!=='object')return '';
+function automatedChips(automated,entry,answer) {
+  const hasCalibration=Boolean(entry&&(Object.keys(entry.certified||{}).length||Object.keys(entry.temperature_per_prim||{}).length||entry.calibration||entry.calibration_file||entry.selected_calibration||entry.shipped_calibration));
+  if((answer&&(!hasCalibration||answer.deferred===true||answer.refused!=null||typeof answer.max_error==='string'||certificateGap(answer,entry)))||entry?.attached_uncalibrated||!automated||typeof automated!=='object')return '';
   return Object.entries(automated).map(([risk,v])=>{
     const at=`${(Number(risk)*100).toFixed(0)}%`;
     return v===true?`<span data-certification-evidence class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span data-certification-evidence class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span data-certification-evidence class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
@@ -947,7 +948,7 @@ function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
   for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
-  parts.push(automatedChips(answer.automated,entry));
+  parts.push(automatedChips(answer.automated,entry,answer));
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
@@ -1000,14 +1001,14 @@ const RESULT_VIEWS={
   verify(a,q,entry){
     const claims=q.claims, text=k=>Array.isArray(claims)?claims[Number(k)]:claims?.[k];
     const verdict=v=>`<span class="badge ${v==='supported'?'fit-fits':v==='contradicted'?'fit-too_large':'fit-tight'}">${esc(t(v))}</span>`;
-    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated,entry)}</td></tr>`).join('');
+    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Claim')}</th><th>${t('Verdict')}</th><th>${t('Confidence')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div>`+metaLine(t('All supported: {answer}',{answer:a.all_supported?t('yes'):t('no')})+((a.not_supported||[]).length?` · ${t('not supported: {items}',{items:esc(a.not_supported.join(', '))})}`:''));
   },
   compress(a){
     return `<pre class="compressed">${esc(a.compressed)}</pre>`+metaLine(t('kept {kept} of {total} {unit}s · {compressed}/{original} chars ({ratio})',{kept:(a.kept||[]).length,total:(a.units||[]).length,unit:esc(a.unit),compressed:esc(a.compressed_chars),original:esc(a.original_chars),ratio:esc(a.ratio)}));
   },
   extract(a,q,entry){
-    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated,entry)}</td></tr>`).join('');
+    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Field')}</th><th>${t('Value')}</th><th>${t('Confidence')}</th><th>${t('Source')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div><details><summary>${t('data')}</summary><pre>${esc(JSON.stringify(a.data,null,2))}</pre></details>`;
   },
 };

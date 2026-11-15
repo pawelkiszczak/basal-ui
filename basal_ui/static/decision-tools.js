@@ -24,26 +24,29 @@
     const reportedConfidence = answer.confidence ?? answer.set_confidence;
     const confidence = reportedConfidence == null ? null : Number(reportedConfidence);
     const applicable = Number.isFinite(confidence) && !answer.deferred && typeof answer.max_error !== 'string' && !gap && answer.confidence != null && (t1 != null || t5 != null);
+    const taskItems = answer.type === 'verify' ? answer.claims : answer.type === 'extract' ? answer.fields : null;
+    const taskApplicable = Boolean(entry && (Object.keys(entry.certified || {}).length || Object.keys(entry.temperature_per_prim || {}).length || entry.calibration || entry.calibration_file || entry.selected_calibration || entry.shipped_calibration) && taskItems && !answer.deferred && answer.refused == null && typeof answer.max_error !== 'string' && !gap && Object.values(taskItems).some(item => Object.values(item?.automated || {}).some(value => value === true || value === false)));
     const reasons = [];
-    if (answer.deferred) reasons.push(t('This answer was deferred; thresholds do not change that decision.'));
+    if (taskApplicable) reasons.push(t('This task reports automation for its individual claims or fields.'));
+    else if (answer.deferred) reasons.push(t('This answer was deferred; thresholds do not change that decision.'));
     if (typeof answer.max_error === 'string') reasons.push(t('The requested max_error is not certified: {reason}', {reason: answer.max_error}));
     if (gap) reasons.push(gap);
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && applicable)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && applicable)
       reasons.push(t('The served calibration and answer scope are applicable; thresholds shown are model-reported values.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && reportedConfidence == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && reportedConfidence == null)
       reasons.push(t('This answer does not report a confidence value.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && answer.confidence == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && answer.confidence == null)
       reasons.push(t('Individual confidence is not reported for this answer.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && !Number.isFinite(confidence))
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && !Number.isFinite(confidence))
       reasons.push(t('The reported confidence is not a finite number.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && !['choice', 'noul', 'score'].includes(type))
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && !['choice', 'noul', 'score'].includes(type))
       reasons.push(t('No certified thresholds are available for this answer type.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && t1 == null && t5 == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && t1 == null && t5 == null)
       reasons.push(t('No certified thresholds are reported for this model and answer type.'));
     const reason = reasons.join(' ');
-    const status = applicable ? t('Thresholds apply to this answer') : t('Threshold applicability not established');
+    const status = taskApplicable ? t('Task automation reported for this answer') : applicable ? t('Thresholds apply to this answer') : t('Threshold applicability not established');
     const thresholds = `<dl class="dt-thresholds"><div><dt>${t('1% error threshold')}</dt><dd>${t1 == null ? t('Not reported') : esc(Number(t1).toFixed(4))}</dd></div><div><dt>${t('5% error threshold')}</dt><dd>${t5 == null ? t('Not reported') : esc(Number(t5).toFixed(4))}</dd></div></dl>`;
-    return `<aside data-certification-evidence class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
+    return `<aside data-certification-evidence class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable || taskApplicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
   }
 
   function answerPanel(name, answer, q, entry) {

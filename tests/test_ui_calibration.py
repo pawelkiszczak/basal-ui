@@ -207,10 +207,8 @@ def test_base_calibration_evidence_is_not_presented_for_an_adapter(tmp_path, con
         assert shipped["warning"] == "The base calibration does not certify adapter weights"
 
 
+@pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter")
 def test_served_adapter_certificates_require_matching_identity(tmp_path, config):
-    if not engine.feature("adapter"):
-        assert not engine.feature("adapter")
-        return
     (config / "basal.json").write_text('{"layout":"canonical"}')
     adapter = tmp_path / "adapter"
     adapter.mkdir()

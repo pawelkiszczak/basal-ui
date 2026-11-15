@@ -258,8 +258,14 @@ def test_partial_cleanup_reports_retained_owned_location(tmp_path, monkeypatch):
             retained = Path(result["retained_path"])
             assert response.status_code == 200 and result["removed_bytes"] == 0
             assert (retained / "second").read_text() == "second"
-            assert settings.finetune_results() == []
+            assert settings.finetune_results()[0]["state"] == "cleanup_pending"
+            assert client.get("/api/finetune", params={"id": "mini"}).json()["results"][0]["retained_path"] == str(
+                retained
+            )
             assert not fleet.reserved
+            monkeypatch.setattr(finetune, "_remove_contents", real_remove)
+            assert client.post("/api/finetune/delete", json={"id": "mini", "name": "partial"}).status_code == 200
+            assert settings.finetune_results() == []
     finally:
         monkeypatch.setattr(finetune, "_remove_contents", real_remove)
         fleet.shutdown()
@@ -287,14 +293,16 @@ def test_registry_failure_restores_intact_output(tmp_path, monkeypatch, after_co
         "inode": info.st_ino,
     }
     settings.put_finetune(record)
-    original_remove = settings.remove_finetune
+    original_put = settings.put_finetune
 
-    def fail_remove(*args):
-        if after_commit:
-            original_remove(*args)
-        raise OSError("disk full")
+    def fail_put(value):
+        if value.get("state") == "cleanup_pending":
+            if after_commit:
+                original_put(value)
+            raise OSError("disk full")
+        original_put(value)
 
-    monkeypatch.setattr(settings, "remove_finetune", fail_remove)
+    monkeypatch.setattr(settings, "put_finetune", fail_put)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         response = client.post("/api/finetune/delete", json={"id": "mini", "name": "owned"})
         assert response.status_code == 400
@@ -484,3 +492,110 @@ def test_http_finetune_errors_have_actionable_codes(tmp_path, monkeypatch):
         assert ownership.status_code == 400 and ownership.json()["code"] == "finetune_ownership"
         output.unlink()
         moved.rename(output)
+
+
+@pytest.mark.parametrize("fail_cleanup", [False, True])
+def test_delete_excludes_prepared_admissions_and_releases_barrier(tmp_path, monkeypatch, fail_cleanup):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    settings.set_models_dir(str(tmp_path))
+    fleet = make_fleet(tmp_path, HW)
+    service = finetune.FineTune(fleet, settings, lambda: HW, None)
+    path = tmp_path / "adapters" / "mini" / "held"
+    path.mkdir(parents=True, mode=0o700)
+    (path / "data").write_text("synthetic")
+    info = path.stat()
+    settings.put_finetune(
+        {
+            "id": "mini",
+            "name": "held",
+            "root": str(tmp_path.resolve()),
+            "state": "incomplete",
+            "device": info.st_dev,
+            "inode": info.st_ino,
+        }
+    )
+    entered, proceed = threading.Event(), threading.Event()
+    original = finetune._remove_contents
+
+    def held(fd):
+        entered.set()
+        assert proceed.wait(5)
+        if fail_cleanup:
+            raise OSError("synthetic cleanup failure")
+        original(fd)
+
+    monkeypatch.setattr(finetune, "_remove_contents", held)
+    errors = []
+
+    def delete():
+        try:
+            service.delete("mini", "held")
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=delete)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        assessment = SimpleNamespace(variant=MINI, est_memory_bytes=1)
+        adapter = str(path / "lora")
+        quarantine_adapter = str(path.with_name(".held.deleting") / "lora")
+        with pytest.raises(RuntimeError, match="deletion"):
+            fleet.load(assessment, options={"adapter": adapter})
+        with pytest.raises(RuntimeError, match="deletion"):
+            fleet.start_temporary("test", assessment, None, options={"adapter": quarantine_adapter})
+        with pytest.raises(RuntimeError, match="deletion"):
+            fleet.restart(assessment, options={"adapter": adapter})
+        with pytest.raises(RuntimeError, match="deletion"):
+            fleet.reserve("test", 1)
+        with pytest.raises(RuntimeError, match="deletion"):
+            fleet.jobs.start("test", "mini", "test", lambda job: None)
+    finally:
+        proceed.set()
+        thread.join(5)
+    assert not thread.is_alive() and not errors
+    if fail_cleanup:
+        with pytest.raises(RuntimeError, match="pending cleanup"):
+            fleet.load(assessment, options={"adapter": quarantine_adapter})
+    fleet.reserve("test", 1)
+    fleet.release("test")
+    fleet.shutdown()
+
+
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_final_registry_failure_retains_cleanup_record(tmp_path, monkeypatch, after_commit):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    settings.set_models_dir(str(tmp_path))
+    fleet = make_fleet(tmp_path, HW)
+    service = finetune.FineTune(fleet, settings, lambda: HW, None)
+    path = tmp_path / "adapters" / "mini" / "last"
+    path.mkdir(parents=True, mode=0o700)
+    (path / "data").write_text("synthetic")
+    info = path.stat()
+    settings.put_finetune(
+        {
+            "id": "mini",
+            "name": "last",
+            "root": str(tmp_path.resolve()),
+            "state": "incomplete",
+            "device": info.st_dev,
+            "inode": info.st_ino,
+        }
+    )
+    remove = settings.remove_finetune
+
+    def fail(*args):
+        if after_commit:
+            remove(*args)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(settings, "remove_finetune", fail)
+    with pytest.raises(OSError, match="disk full"):
+        service.delete("mini", "last")
+    assert settings.finetune_results()[0]["state"] == "cleanup_pending"
+    assert service.results("mini")[0]["cleanup_pending"]
+    assert not path.exists() and not path.with_name(".last.deleting").exists()
+    monkeypatch.setattr(settings, "remove_finetune", remove)
+    assert service.delete("mini", "last")["missing"]
+    assert settings.finetune_results() == []
+    fleet.shutdown()
