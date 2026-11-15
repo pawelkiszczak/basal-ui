@@ -447,3 +447,11 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+## Preset URL import
+
+`POST /api/presets/import-url` accepts `{"url": "https://example.com/presets.json"}` and returns
+`{"presets": {"load": {}, "request": {}}, "count": 0}` with the resulting presets and processed entry count.
+Only public HTTP(S) addresses and `application/json` responses up to 1 MiB are accepted; redirects are checked too.
+Entries use the same validation, replacement and deletion rules as `PUT /api/presets`, in load then request order.
+A failed entry can leave earlier entries saved. Request preset root `model` is removed.

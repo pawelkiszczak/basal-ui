@@ -4,6 +4,16 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "code:fetch_address_refused": "Adres URL musi wskazywać publiczny adres HTTP lub HTTPS bez danych logowania.",
+  "code:fetch_dns_error": "Nie można rozpoznać adresu URL. Sprawdź adres i spróbuj ponownie.",
+  "code:fetch_unsupported_type": "Plik presetów musi mieć typ application/json.",
+  "code:fetch_too_large": "Plik presetów przekracza limit 1 MiB.",
+  "code:fetch_invalid_json": "Plik nie zawiera poprawnego JSON.",
+  "code:fetch_json_precision": "Plik zawiera liczbę, której nie można bezpiecznie zachować.",
+  "code:fetch_unsupported_encoding": "Kodowanie odpowiedzi nie jest obsługiwane.",
+  "code:fetch_redirect_error": "Przekierowanie jest nieprawidłowe lub jest ich zbyt wiele.",
+  "code:presets_invalid_pack": "Nieprawidłowy pakiet presetów. Sprawdź strukturę pliku.",
+  "code:presets_partial_import": "Import przerwany. Wcześniejsze presety mogły zostać zapisane; sprawdź plik i spróbuj ponownie.",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",
@@ -307,6 +317,9 @@ const PL = {
   "Import": "Importuj",
   "Import presets": "Importuj presety",
   "Imported": "Zaimportowano",
+  "Import from URL": "Importuj z URL",
+  "Enter the presets URL": "Wprowadź URL presetów",
+  "Importing…": "Importowanie…",
   "Imported {count} presets": "Zaimportowano {count} presetów",
   "In flight": "W toku",
   "Individual confidence is not reported for this answer.": "Dla tej odpowiedzi nie podano indywidualnej wartości pewności.",

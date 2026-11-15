@@ -393,8 +393,8 @@ const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','v
 const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['act','tool','classify','verify','extract'];
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
-let presetData={load:{},request:{}},presetTarget='load';
-async function loadPresets() {try{presetData=await api('/api/presets');renderRequestPresets();renderLoadPresets();}catch{}}
+let presetData={load:{},request:{}},presetTarget='load',presetGeneration=0;
+async function loadPresets() {const generation=++presetGeneration;try{const data=await api('/api/presets');if(generation!==presetGeneration)return;presetData=data;renderRequestPresets();renderLoadPresets();}catch{}}
 function renderRequestPresets() {
   const select=$('#examples'), current=select.value;
   const saved=Object.keys(presetData.request||{});
@@ -438,6 +438,13 @@ $('#exportPresets').onclick=()=>act(async()=>{
   a.href=url;a.download='presets.json';a.click();URL.revokeObjectURL(url);
 });
 $('#importPresetsButton').onclick=()=>$('#importPresets').click();
+$('#importPresetsUrl').onclick=()=>act(async()=>{
+  const url=prompt(t('Enter the presets URL'));if(url===null)return;
+  const button=$('#importPresetsUrl');button.disabled=true;button.textContent=t('Importing…');
+  try {const result=await api('/api/presets/import-url',{method:'POST',body:JSON.stringify({url})});await loadPresets();toast(t('Imported {count} presets',{count:result.count}));}
+  catch(e){await loadPresets();throw e;}
+  finally {button.disabled=false;button.textContent=t('Import from URL');}
+});
 $('#importPresets').onchange=()=>act(async()=>{
   const file=$('#importPresets').files[0];if(!file)return;
   const data=JSON.parse(await file.text());let count=0;

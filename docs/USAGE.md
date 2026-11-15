@@ -219,7 +219,7 @@ CUDA graph engine's kernel switches (`--gemma-attn`, `--merge`, `--lean`, `--tre
 repository: downloaded and served as that snapshot, which calibration and Inspect then read too; a **revision** chip
 marks the model in the catalog and on its loaded row). Each field shows only for the modes that read it. **Presets**
 save a set of options under a name to apply to any model; the Playground saves requests the same way (**Saved
-requests** in the examples list), and both export to and import from one `presets.json`. Only the values that differ
+requests** in the examples list), and both export to and import from one `presets.json`. Settings also imports a pack from a public HTTP(S) URL with `application/json` content, up to 1 MiB. Imports update entries in order; a failure can leave earlier entries saved. Only the values that differ
 from basal-serve's defaults are
 passed, and a combination basal-serve refuses shows its own message on the model's row. **Remember for this model**
 keeps them for its next plain Load; a restart and auto-load reuse the options the model runs with. The row lists them
@@ -535,3 +535,5 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+
+Settings URL import at 320 px, using a controlled test response: [English](images/presets-url-en-320.png) · [Polish](images/presets-url-pl-320.png).

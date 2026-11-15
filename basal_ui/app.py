@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anyio
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -30,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from . import backends, catalog, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
+from .fetch import FetchError, FetchManager
 from .fleet import Fleet
 from .gateway import Gateway
 from .history import History, replay_fields
@@ -106,6 +108,7 @@ def create_app(
     stats=None,
     history=None,
     addons=None,
+    preset_fetch_manager=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -119,6 +122,7 @@ def create_app(
     )
     gateway = gateway or Gateway(fleet, settings_mod, stats)
     addon_manager = addons or AddonManager(fleet, hardware_fn)
+    preset_fetch_manager = preset_fetch_manager or FetchManager(presets=True)
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -188,6 +192,7 @@ def create_app(
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
         yield
+        await preset_fetch_manager.close()
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:
@@ -687,6 +692,35 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return get_presets()
+
+    @app.post("/api/presets/import-url")
+    def import_presets_url(request: Request, body: dict = Body(...)):
+        try:
+            result = anyio.from_thread.run(preset_fetch_manager.run, body.get("url"), request)
+        except FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
+        pack = result["state"]
+        if (
+            not isinstance(pack, dict)
+            or not any(k in pack for k in ("load", "request"))
+            or any(k in pack and not isinstance(pack[k], dict) for k in ("load", "request"))
+        ):
+            return JSONResponse({"detail": "Invalid presets pack.", "code": "presets_invalid_pack"}, status_code=400)
+        count = 0
+        try:
+            for kind in ("load", "request"):
+                for name, value in pack.get(kind, {}).items():
+                    put_preset({"kind": kind, "name": name, "value": value})
+                    count += 1
+        except HTTPException as exc:
+            return JSONResponse(
+                {
+                    "detail": f"Import stopped; earlier presets may have been saved: {exc.detail}",
+                    "code": "presets_partial_import",
+                },
+                status_code=400,
+            )
+        return {"presets": get_presets(), "count": count}
 
     @app.get("/api/models/card")
     def get_model_card(id: str):
