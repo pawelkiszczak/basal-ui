@@ -224,3 +224,58 @@ def test_url_pack_reports_partial_persistence_error(tmp_path, monkeypatch):
         assert result.json()["code"] == "presets_partial_import"
         assert "secret path" not in result.text
         assert settings.presets()["load"] == {"first": {"mode": "eager"}}
+
+
+@pytest.mark.parametrize("failure", ["read", "invalid", "shape", "missing"])
+def test_url_pack_final_snapshot_failure_preserves_commits(tmp_path, monkeypatch, failure):
+    config = tmp_path / "settings.json"
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    original_read = type(config).read_text
+    original_update = settings.set_preset
+    armed = False
+
+    def read_text(path, *args, **kwargs):
+        if path == config and armed:
+            if failure == "read":
+                raise OSError("secret path")
+            if failure == "missing":
+                raise FileNotFoundError("secret path")
+            return "{" if failure == "invalid" else "[]"
+        return original_read(path, *args, **kwargs)
+
+    def update(kind, name, value):
+        nonlocal armed
+        original_update(kind, name, value)
+        armed = True
+
+    monkeypatch.setattr(type(config), "read_text", read_text)
+    monkeypatch.setattr(settings, "set_preset", update)
+
+    class Manager:
+        pack = {"load": {}}
+
+        async def run(self, url, request):
+            return {"state": self.pack}
+
+        async def close(self):
+            pass
+
+    manager = Manager()
+    fleet = make_fleet(tmp_path)
+    app = create_app(
+        catalog_fn=lambda **k: ([], "synthetic"), hardware_fn=lambda: HW, fleet=fleet, preset_fetch_manager=manager
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert not config.exists()
+        empty = client.post("/api/presets/import-url", json={"url": "http://example.com"})
+        assert empty.status_code == 200
+        assert empty.json() == {"presets": {"load": {}, "request": {}}, "count": 0}
+        manager.pack = {"load": {"first": {"mode": "eager"}}}
+        result = client.post("/api/presets/import-url", json={"url": "http://example.com"})
+        assert result.status_code == 500
+        assert result.json()["code"] == "presets_partial_import"
+        assert result.json()["detail"] and "secret path" not in result.text
+        assert settings.presets() == {"load": {}, "request": {}}
+        armed = False
+        assert settings.presets()["load"] == {"first": {"mode": "eager"}}
+        assert client.get("/api/presets").json()["load"] == {"first": {"mode": "eager"}}

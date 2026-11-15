@@ -670,10 +670,12 @@ def create_app(
             ],
         }
 
+    def preset_snapshot(data):
+        return {"load": data.get("load", {}), "request": data.get("request", {})}
+
     @app.get("/api/presets")
     def get_presets():
-        data = settings_mod.presets()
-        return {"load": data.get("load", {}), "request": data.get("request", {})}
+        return preset_snapshot(settings_mod.presets())
 
     def update_preset(body):
         kind, name, value = body.get("kind"), body.get("name"), body.get("value")
@@ -716,7 +718,10 @@ def create_app(
                 for name, value in pack.get(kind, {}).items():
                     update_preset({"kind": kind, "name": name, "value": value})
                     count += 1
-            return {"presets": get_presets(), "count": count}
+            return {
+                "presets": preset_snapshot(settings_mod.presets(strict=True, require_file=count > 0)),
+                "count": count,
+            }
         except HTTPException as exc:
             return JSONResponse(
                 {
