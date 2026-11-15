@@ -349,7 +349,7 @@ class Runner:
         try:
             revision = self.options.get("revision")
             path = catalog.is_downloaded(v, cache_dir, revision=revision)
-            if path is None and self.local_only:
+            if path is None and (self.local_only or v.local_dir is not None):
                 raise RuntimeError("downloaded model files are missing; this operation never downloads")
             path = path or self._download(v, gen, cache_dir, revision)
             if path is None:
@@ -490,6 +490,7 @@ class Fleet:
         self._engine_addon_job_target = None
         self.downloads = Downloads(self.event)
         self.jobs = Jobs(self.logs, self.event, start_lock=self.lock, start_guard=self._check_job_start)
+        self.jobs.model_guard = self._check_job_model
         self.draining: set[str] = set()
         self.leases: dict[Runner, int] = {}
         self.inflight: dict[object, tuple[str, str, float]] = {}  # each request being answered: (model, source, start)
@@ -508,6 +509,14 @@ class Fleet:
     def _check_job_start(self, kind, target):
         if self.engine_addon_installing and (kind != "engine-addon" or target != self._engine_addon_job_target):
             raise RuntimeError("jobs are unavailable during Engine add-on installation")
+
+    def _check_job_model(self, kind, model):
+        if (
+            isinstance(model, str)
+            and model.startswith("attached/")
+            and not any(r.get("id") == model for r in self.settings_mod.attached_models())
+        ):
+            raise RuntimeError("attached model is no longer registered")
 
     def event(self, level, message):
         self.logs["basal-ui"].append(f"{level} {message}")
@@ -618,6 +627,11 @@ class Fleet:
         model_id = assessment.variant.id
         with self.lock:
             self._check_addon_maintenance()
+            if assessment.variant.family == "attached":
+                if not any(r.get("id") == model_id for r in self.settings_mod.attached_models()):
+                    raise RuntimeError("attached model is no longer registered")
+                if not catalog.is_downloaded(assessment.variant, self.models_dir_fn()):
+                    raise RuntimeError("attached model files are missing")
             if self.stopping or (model_id in self.draining and _reservation is None):
                 raise RuntimeError("model is unavailable during maintenance")
             existing = self.runners.get(model_id)
@@ -792,7 +806,7 @@ class Fleet:
         """fn() with no model, job child and download running, atomically with load()."""
         with self.lock:
             self._check_addon_maintenance()
-            if self.runners or self.temporary or self.downloads.any_alive():
+            if self.runners or self.temporary or self.downloads.any_alive() or self.reserved or self.jobs.running():
                 raise RuntimeError("unload every model before changing the models directory")
             return fn()
 
@@ -800,6 +814,8 @@ class Fleet:
         """fn() while nothing uses the repository, atomically with load()."""
         with self.lock:
             self._check_addon_maintenance()
+            if "finetune" in self.reserved:
+                raise RuntimeError("wait for fine-tuning before deleting a model")
             if self.busy(repo):
                 raise RuntimeError("unload the model first")
             return fn()
@@ -954,6 +970,9 @@ class Fleet:
         left = self.jobs.join(JOB_SHUTDOWN_S)
         if left:
             self.event("warn", f"shutdown: jobs still running: {', '.join(left)}")
+        finetune = self.jobs.get("finetune")
+        if finetune and finetune.thread and finetune.thread.is_alive():
+            finetune.thread.join()
         self.unload(forget=False)
 
 

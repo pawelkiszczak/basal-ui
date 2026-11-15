@@ -188,6 +188,25 @@ def make_app(tmp_path, hw=HW):
     )
 
 
+def test_base_calibration_evidence_is_not_presented_for_an_adapter(tmp_path, config):
+    fleet, app = make_app(tmp_path)
+    if not engine.feature("adapter"):
+        assert engine.feature("adapter") is False
+        fleet.shutdown()
+        return
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text('{"peft_type":"LORA","r":1,"lora_alpha":1}')
+    (adapter / "adapter_model.safetensors").write_bytes(b"adapter")
+    (config / "basal.json").write_text('{"layout":"canonical"}')
+    (config / "CALIBRATION.json").write_text(json.dumps(FITTED))
+    settings.set_load_options("mini", {"adapter": str(adapter)})
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        shipped = client.get("/api/calibrations", params={"id": "mini"}).json()["shipped"]
+        assert shipped["thresholds"] == {} and shipped["gates"] == {}
+        assert shipped["warning"] == "The base calibration does not certify adapter weights"
+
+
 @pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.0)")
 def test_shipped_calibration_context_prefers_running_options_to_saved_options(tmp_path, config):
     adapter = tmp_path / "adapter"

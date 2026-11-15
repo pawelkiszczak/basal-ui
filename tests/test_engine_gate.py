@@ -99,7 +99,7 @@ def test_every_tested_release_is_in_the_range():
         assert engine.supported(version), version
 
 
-NEW_IN_2_5 = ("adapter", "viz_gemma4", "mcp_models", "mlx_recurrent", "int8", "viz_mlx")
+NEW_IN_2_5 = ("attach", "finetune", "adapter", "viz_gemma4", "mcp_models", "mlx_recurrent", "int8", "viz_mlx")
 
 
 def test_feature_probes_match_the_installed_engine():

@@ -104,6 +104,7 @@ function renderModels(data) {
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
+  document.dispatchEvent(new CustomEvent('app:models',{detail:modelData}));
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
@@ -1591,11 +1592,11 @@ function renderCalibrationFiles(id, d) {
     const fitted=f?.fitted_on&&typeof f.fitted_on==='object'?f.fitted_on:null, gates=f?.gates||{};
     const automated=Object.entries(gates.automated_at||{}).map(([k,v])=>`${(Number(k)*100).toFixed(0)}%: ${pct(v)} at ${pct(gates.automated_error?.[k])} error`).join(' · ');
     const checked=(d.selected||'')===value;
-    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
+    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?` <span class="reason">${esc(f.warning)}</span>`:''}${f?.error?` <span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>` <span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
   };
-  const ctx=d.shipped?.context||{}, context=d.shipped?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
+  const ctx=d.shipped?.context||{}, context=d.shipped?.file?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:`${t('Shipped default unavailable')}${d.shipped?.error?`: ${esc(d.shipped.error)}`:''}`;
   const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
-  const shipped=d.shipped?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
+  const shipped=d.shipped?.file?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
   $('#calibrationFiles').innerHTML=`<p class="muted">${context}<br>${selection}</p><div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
@@ -1712,7 +1713,7 @@ function optionInput(key, value) {
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
-    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${f.attrs||''}>`;
+    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${key==='adapter'?'list="ownedAdapters"':''} ${f.attrs||''}>${key==='adapter'?`<datalist id="ownedAdapters">${(optionsState.data.adapters||[]).map(path=>`<option value="${esc(path)}"></option>`).join('')}</datalist><p class="muted">${t('Choose a result or enter a custom adapter path. Saved settings apply on the next load.')}</p>`:''}`;
   return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}`;
 }
 const optionSectionOpen=new Map();  // section title → open, as the user left it (this session)
@@ -1751,7 +1752,7 @@ function updateOptionVisibility() {
   if(mode!=='fast-exit')notes.push(t('Early exit needs --mode fast-exit (the exit heads of basal-1.0, bf16 on a CUDA GPU).'));
   // LoRA adapters at load: only with an engine that takes --adapter (basal-ui's feature probe)
   const adapterBox=$('#opt-adapter'), adapterReason=optionsState.data.adapter_reason;
-  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); if(adapterReason){adapterBox.value='';adapterBox.title=ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params);}else adapterBox.title='';}
+  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); adapterBox.title=adapterReason?ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params):'';}
   $('#optExperimentalNote').textContent=notes.join(' ');
 }
 function collectOptions() {

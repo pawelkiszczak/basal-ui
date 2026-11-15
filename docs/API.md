@@ -29,8 +29,8 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 
 | Route | Contract |
 |---|---|
-| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
-| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `GET /api/addons` | Current Python environment and `media`/`gguf`/`finetune` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf` / `finetune`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
 | `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
@@ -41,6 +41,14 @@ The installer changes only declared extra dependencies in the current virtual en
 versions, never requests/reinstalls the Engine and verifies its identity afterward. Package changes are not
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
+
+### Fine-tuning
+
+`GET /api/finetune` reports availability and known model IDs; `?id=<model>` also returns that model's results, including incomplete or missing outputs. Availability reasons use `finetune_engine`, `finetune_addon`, `finetune_restart` or `finetune_platform`. The records survive an Engine downgrade. A ready row contains trusted `name`, `output`, `base` and `adapter` paths plus Native's `train_decisions`, `heldout_lines`, `scored`, `skipped`, `top1_before`, `top1_after`, `steps` and `seconds`. Null accuracy means no scored decisions; zero accuracy is a value. A training report is not a selectable calibration.
+
+`POST /api/finetune` accepts `id`, `input`, `out_name`, `epochs`, `lr`, `rank`, `alpha`, `holdout`, `max_len`, `grad_checkpointing` and optional `max_steps`; it returns 202 and the `finetune` job state with preflight counts. Input is semantically checked and copied privately before admission. The job uses local weights offline, reserves twice the estimated memory until its child exits, writes a private output without `--force`, and logs to `job:finetune`. `DELETE /api/finetune` requests cancellation.
+
+`POST /api/finetune/delete` takes a server-known `id` and `name`, never a client path. It rejects active adapter users and jobs; a successful response reports `removed_bytes` as logical regular-file bytes removed, not physical disk reclaimed. Failed or incomplete outputs remain recoverable. `GET /api/models/options` includes ready, base-associated `adapters` while retaining the custom adapter field. Saved options take effect on the next load; a running child retains its Active settings. Errors carry `finetune_error` or `finetune_busy` and diagnostic parameters.
 
 ### Batch path inspection
 

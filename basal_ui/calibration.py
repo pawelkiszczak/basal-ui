@@ -116,7 +116,7 @@ def served_certified(entry, local_dir, mode, options, selected=None) -> dict:
     """The certified thresholds of the calibration a basal-serve child loaded (`selected`, its --calibration, else the
     shipped file for its load options); {} when the child warned the file belongs to another model, or there is no
     readable file."""
-    if entry is None or entry.get("calibration_warning"):
+    if entry is None or entry.get("calibration_warning") or options.get("adapter"):
         return {}
     from basal.prompt import model_layout
 
