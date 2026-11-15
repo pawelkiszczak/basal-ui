@@ -1395,7 +1395,7 @@ function renderStatus(s) {
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   rowsSignature=signature;
-  if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
+  if(!ready.some(m=>m.id===selectedModel)&&ready.length){cancelFetch();selectedModel=ready[0].id;}
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;

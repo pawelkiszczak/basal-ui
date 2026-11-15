@@ -69,6 +69,59 @@ def test_html_and_json_content():
         fetch._content(b"pdf", "application/pdf")
 
 
+def test_article_header_and_json_precision_at_fetch_boundary(monkeypatch):
+    class Response:
+        status = 200
+        body = b""
+        content_type = "text/html"
+
+        def getheader(self, name, default=None):
+            return {"Content-Type": self.content_type}.get(name, default)
+
+        def read(self, limit):
+            return self.body[:limit]
+
+    class Connection:
+        def __init__(self, *args):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fetch, "checked_url", lambda url: (fetch.urlsplit(url), "example.com", 80, []))
+    monkeypatch.setattr(fetch, "_Connection", Connection)
+    Response.body = (
+        b"<title>Site</title><nav>Links</nav><article><header><h1>Recall details</h1>"
+        b"<p>Published today</p></header><p>Product recalled.</p></article>"
+    )
+    result = fetch.fetch("http://example.com/")
+    assert result["state"] == "Title: Site\nRecall details\nPublished today\nProduct recalled."
+    Response.content_type = "application/json"
+    Response.body = b'{"nested":[9007199254740993]}'
+    with pytest.raises(fetch.FetchError) as error:
+        fetch.fetch("http://example.com/")
+    assert error.value.code == "fetch_json_precision"
+    Response.body = b'{"nested":[-9007199254740992.0]}'
+    with pytest.raises(fetch.FetchError) as error:
+        fetch.fetch("http://example.com/")
+    assert error.value.code == "fetch_json_precision"
+    Response.body = b'{"id":"9007199254740993","max":9007199254740991,"min":-9007199254740991}'
+    state = fetch.fetch("http://example.com/")["state"]
+    import json
+
+    assert json.loads(json.dumps(state)) == {
+        "id": "9007199254740993",
+        "max": 9007199254740991,
+        "min": -9007199254740991,
+    }
+
+
 def test_checked_socket_host_and_tls_hostname(monkeypatch):
     sent, connected, sni = [], [], []
 
@@ -167,7 +220,7 @@ def test_worker_deadline_disconnect_and_shutdown_reap(monkeypatch):
             self.disconnected = disconnected
 
         async def is_disconnected(self):
-            return self.disconnected
+            return self.disconnected and len(children) >= 2
 
     async def exercise():
         manager = fetch.FetchManager()
@@ -185,6 +238,49 @@ def test_worker_deadline_disconnect_and_shutdown_reap(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(fetch, "TIMEOUT_S", 0.15)
+    asyncio.run(exercise())
+
+
+def test_delayed_spawn_timeout_disconnect_and_shutdown_cancel_creation(monkeypatch):
+    async def exercise():
+        started = asyncio.Event()
+        cancelled = []
+        launched = []
+
+        async def delayed_spawn(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+            launched.append(True)
+
+        class Request:
+            disconnected = False
+
+            async def is_disconnected(self):
+                return self.disconnected
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+        monkeypatch.setattr(fetch, "TIMEOUT_S", 0.05)
+        manager = fetch.FetchManager()
+        with pytest.raises(fetch.FetchError) as error:
+            await manager.run("http://example.com", Request())
+        assert error.value.code == "fetch_timeout" and not manager.tasks
+        request = Request()
+        request.disconnected = True
+        with pytest.raises(fetch.FetchError) as error:
+            await manager.run("http://example.com", request)
+        assert error.value.code == "fetch_cancelled" and not manager.tasks
+        started.clear()
+        task = asyncio.create_task(manager.run("http://example.com", Request()))
+        await started.wait()
+        await manager.close()
+        assert task.done() and not manager.tasks
+        await asyncio.sleep(0)
+        assert len(cancelled) == 2 and not launched
+
     asyncio.run(exercise())
 
 

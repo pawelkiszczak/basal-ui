@@ -10,6 +10,7 @@ import socket
 import ssl
 import sys
 from contextlib import suppress
+from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -131,8 +132,8 @@ class _Connection(http.client.HTTPConnection):
 
 
 class _ReadableHTML(HTMLParser):
-    DROP = {"script", "style", "nav", "header", "footer", "aside", "noscript", "svg"}
-    BLOCK = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "tr", "div", "section", "article", "br"}
+    DROP = {"script", "style", "nav", "footer", "aside", "noscript", "svg"}
+    BLOCK = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "tr", "div", "header", "section", "article", "br"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -182,11 +183,23 @@ def _content(data, content_type):
         def reject_constant(value):
             raise ValueError(f"Nonfinite JSON value: {value}")
 
+        def safe_number(value):
+            number = Decimal(value)
+            if number == number.to_integral_value() and abs(number) > 9007199254740991:
+                raise FetchError(
+                    "JSON contains an integer outside the safe browser range.", "fetch_json_precision", 422
+                )
+            return int(value) if "." not in value and "e" not in value.lower() else float(value)
+
         try:
-            value = json.loads(data.decode(encoding), parse_constant=reject_constant)
+            value = json.loads(
+                data.decode(encoding), parse_int=safe_number, parse_float=safe_number, parse_constant=reject_constant
+            )
             rendered = json.dumps(value, ensure_ascii=False, allow_nan=False)
             rendered.encode("utf-8")
-        except (ValueError, UnicodeError, RecursionError) as exc:
+        except FetchError:
+            raise
+        except (ValueError, UnicodeError, RecursionError, InvalidOperation) as exc:
             raise FetchError(f"Invalid JSON response: {exc}", "fetch_invalid_json", 502) from exc
         if len(rendered) > MAX_TEXT_CHARS:
             raise FetchError("JSON response exceeds the state limit.", "fetch_too_large", 413)
@@ -269,22 +282,25 @@ class FetchManager:
         exchange = None
         deadline = asyncio.get_running_loop().time() + TIMEOUT_S
         try:
-            spawn = asyncio.create_task(
-                asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    "basal_ui.fetch",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-            )
             try:
-                process = await asyncio.wait_for(
-                    asyncio.shield(spawn), timeout=max(0, deadline - asyncio.get_running_loop().time())
+                spawn = asyncio.create_task(
+                    asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-m",
+                        "basal_ui.fetch",
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
                 )
-            except asyncio.TimeoutError as exc:
-                raise FetchError("URL request timed out.", "fetch_timeout", 504) from exc
+                while not spawn.done():
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise FetchError("URL request timed out.", "fetch_timeout", 504)
+                    if await request.is_disconnected():
+                        raise FetchError("URL request cancelled.", "fetch_cancelled", 499)
+                    await asyncio.wait({spawn}, timeout=min(0.1, remaining))
+                process = await spawn
             except OSError as exc:
                 raise FetchError("Could not start URL fetch worker.") from exc
             exchange = asyncio.create_task(process.communicate(json.dumps(url).encode()))
@@ -306,7 +322,8 @@ class FetchManager:
             return result["result"]
         finally:
             if process is None and spawn is not None:
-                with suppress(Exception):
+                spawn.cancel()
+                with suppress(asyncio.CancelledError, Exception):
                     process = await spawn
             if process is not None and process.returncode is None:
                 with suppress(ProcessLookupError):

@@ -49,7 +49,7 @@ These privileged local routes retain the UI's Host/Origin protections; loopback 
 credentials, proxy settings or automatic redirect following. Every destination is checked for public unicast
 addresses before connecting; mixed public and non-public DNS results are refused. Responses are limited to 4 MiB,
 three redirects and 10 seconds for the entire operation, and text is truncated at 200,000 characters. JSON remains
-structured and is refused if invalid, nonfinite or too large for the state limit; unsupported content types and
+structured and is refused if invalid, nonfinite, contains an integer outside JavaScript's safe range, or is too large for the state limit; unsupported content types and
 content encodings are refused. Errors have English `detail` and a translation `code`. Cancelling or disconnecting
 the request and shutting down the app terminate the owned fetch process.
 
