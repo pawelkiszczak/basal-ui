@@ -50,7 +50,7 @@
     q ||= {};
     if (!answer || typeof answer !== 'object') return `<article class="answer dt-answer"><h3>${esc(name)}</h3><div class="dt-answer-layout"><div class="dt-answer-main"><pre>${esc(JSON.stringify(answer, null, 2))}</pre></div>${evidenceRail({}, q, entry)}</div></article>`;
     const type = answer.type || q.type || 'unknown', view = RESULT_VIEWS[type];
-    const body = view ? view(answer, q) : answer.probabilities && typeof answer.probabilities === 'object'
+    const body = view ? view(answer, q, entry) : answer.probabilities && typeof answer.probabilities === 'object'
       ? decisionView(name, answer, q) : `<pre>${esc(JSON.stringify(answer, null, 2))}</pre>`;
     return `<article class="answer dt-answer"><h3><span>${esc(name)}</span><span class="chip">${esc(type)}</span>${answer.experimental ? `<span class="badge experimental">${t('experimental')}</span>` : ''}</h3><div class="dt-answer-layout"><div class="dt-answer-main">${safetyStrip(answer, q, entry)}${thinkBlock(answer)}${body}</div>${evidenceRail(answer, q, entry)}</div></article>`;
   }

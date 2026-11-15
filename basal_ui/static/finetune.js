@@ -24,7 +24,7 @@
       <label class="finetune-check"><input id="finetuneCheckpointing" type="checkbox"> ${t('Gradient checkpointing')}</label>
     </div>
     <div class="manager-actions"><button type="button" id="finetuneStart" disabled>${t('Start fine-tuning')}</button><button type="button" id="finetuneCancel" hidden>${t('Cancel')}</button><a href="#logs/job%3Afinetune">${t('Logs')}</a></div>
-    <p id="finetuneProgress" role="status" aria-live="polite"></p><p id="finetuneValidation" class="muted"></p>
+    <p id="finetuneProgress" role="status" aria-live="polite"></p><p id="finetuneCleanup" class="reason" role="alert"></p><p id="finetuneValidation" class="muted"></p>
     <h4>${t('Fine-tune results')}</h4><div id="finetuneResults"></div>`;
   const select=$('#finetuneModel'), results=$('#finetuneResults'), progress=$('#finetuneProgress');
   let known=[], available=false, loading=false, seq=0, signature='', jobSignature='', pending=false;
@@ -69,7 +69,7 @@
     }catch(error){if(ticket===seq&&id===select.value){available=false;$('#finetuneAvailability').textContent=error.message;}}
     finally{if(ticket===seq&&id===select.value){loading=false;controls();status(statusCache?.jobs?.finetune);}}
   }
-  select.onchange=()=>{localStorage.setItem('basal-ui.finetuneModel',select.value);$('#finetuneValidation').textContent='';progress.textContent='';load();};
+  select.onchange=()=>{localStorage.setItem('basal-ui.finetuneModel',select.value);$('#finetuneValidation').textContent='';$('#finetuneCleanup').textContent='';progress.textContent='';load();};
   $('#finetuneStart').onclick=async()=>{
     const id=select.value, ticket=seq;if(!id)return;
     const data={id,input:$('#finetuneInput').value.trim(),out_name:$('#finetuneName').value.trim(),epochs:Number($('#finetuneEpochs').value),lr:Number($('#finetuneLr').value),rank:Number($('#finetuneRank').value),alpha:Number($('#finetuneAlpha').value),holdout:Number($('#finetuneHoldout').value),max_len:Number($('#finetuneMaxLen').value),grad_checkpointing:$('#finetuneCheckpointing').checked};
@@ -86,7 +86,7 @@
     const yes=await confirmDialog({title:t('Delete fine-tune output?'),description:t('Delete {name} and its full merged model, adapter and held-out labels? Saved load options may still point to its adapter.',{name}),confirmLabel:t('Delete output'),destructive:true});
     if(!yes||ticket!==seq||id!==select.value)return;
     button.disabled=true;
-    try{const result=await api('/api/finetune/delete',{method:'POST',body:JSON.stringify({id,name})});toast(t('Removed {bytes} bytes of files.',{bytes:result.removed_bytes??0}));if(ticket===seq&&id===select.value)await load();}
+    try{const result=await api('/api/finetune/delete',{method:'POST',body:JSON.stringify({id,name})});if(result.retained_path){const message=t('Cleanup was incomplete. Inspect the retained directory: {path}',{path:result.retained_path});toast(message,'error');if(ticket===seq&&id===select.value)$('#finetuneCleanup').textContent=message;}else toast(t('Removed {bytes} bytes of files.',{bytes:result.removed_bytes??0}));if(ticket===seq&&id===select.value)await load();}
     catch(error){if(ticket===seq&&id===select.value)progress.textContent=error.message;}
     finally{button.disabled=false;}
   };

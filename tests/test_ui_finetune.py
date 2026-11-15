@@ -220,11 +220,14 @@ def test_cancelled_training_keeps_recoverable_output(tmp_path, monkeypatch):
         fleet.shutdown()
 
 
-def test_partial_cleanup_restores_owned_record_for_retry(tmp_path, monkeypatch):
+def test_partial_cleanup_reports_retained_owned_location(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tests.test_ui_app import app_for
+
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     settings.set_models_dir(str(tmp_path))
-    fleet = make_fleet(tmp_path, HW)
-    service = finetune.FineTune(fleet, settings, lambda: HW, None)
+    app, fleet = app_for(tmp_path, [MINI])
     path = tmp_path / "adapters" / "mini" / "partial"
     path.mkdir(parents=True, mode=0o700)
     (path / "first").write_text("first")
@@ -249,17 +252,79 @@ def test_partial_cleanup_restores_owned_record_for_retry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(finetune, "_remove_contents", fail_after_removing_one)
     try:
-        with pytest.raises(RuntimeError, match="cleanup incomplete"):
-            service.delete("mini", "partial")
-        assert (path / "second").read_text() == "second"
-        assert settings.finetune_results() == [record]
-        assert not fleet.reserved
-        monkeypatch.setattr(finetune, "_remove_contents", real_remove)
-        assert service.delete("mini", "partial")["removed_bytes"] == len("second")
-        assert not settings.finetune_results()
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            response = client.post("/api/finetune/delete", json={"id": "mini", "name": "partial"})
+            result = response.json()
+            retained = Path(result["retained_path"])
+            assert response.status_code == 200 and result["removed_bytes"] == 0
+            assert (retained / "second").read_text() == "second"
+            assert settings.finetune_results() == []
+            assert not fleet.reserved
     finally:
         monkeypatch.setattr(finetune, "_remove_contents", real_remove)
         fleet.shutdown()
+
+
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_registry_failure_restores_intact_output(tmp_path, monkeypatch, after_commit):
+    from fastapi.testclient import TestClient
+
+    from tests.test_ui_app import app_for
+
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    settings.set_models_dir(str(tmp_path))
+    app, fleet = app_for(tmp_path, [MINI])
+    path = tmp_path / "adapters" / "mini" / "owned"
+    path.mkdir(parents=True, mode=0o700)
+    (path / "heldout.jsonl").write_text("synthetic labels")
+    info = path.stat()
+    record = {
+        "id": "mini",
+        "name": "owned",
+        "root": str(tmp_path.resolve()),
+        "state": "incomplete",
+        "device": info.st_dev,
+        "inode": info.st_ino,
+    }
+    settings.put_finetune(record)
+    original_remove = settings.remove_finetune
+
+    def fail_remove(*args):
+        if after_commit:
+            original_remove(*args)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(settings, "remove_finetune", fail_remove)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/finetune/delete", json={"id": "mini", "name": "owned"})
+        assert response.status_code == 400
+    assert (path / "heldout.jsonl").read_text() == "synthetic labels"
+    assert settings.finetune_results() == [record]
+    assert not path.with_name(".owned.deleting").exists()
+    fleet.shutdown()
+
+
+def test_merged_weights_require_index_or_canonical_file(tmp_path):
+    for name in ("basal.json", "config.json", "heldout.jsonl", "tokenizer.json"):
+        (tmp_path / name).write_text("synthetic")
+    shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    for name in shards:
+        (tmp_path / name).write_bytes(b"weight")
+    with pytest.raises(ValueError, match="merged weights"):
+        finetune._complete(tmp_path)
+    (tmp_path / shards[0]).unlink()
+    with pytest.raises(ValueError, match="merged weights"):
+        finetune._complete(tmp_path)
+    (tmp_path / shards[0]).write_bytes(b"weight")
+    index = tmp_path / "model.safetensors.index.json"
+    index.write_text(json.dumps({"weight_map": {"a": shards[0], "b": shards[1]}}))
+    finetune._complete(tmp_path)
+    (tmp_path / shards[1]).unlink()
+    with pytest.raises(ValueError, match="merged weights"):
+        finetune._complete(tmp_path)
+    index.unlink()
+    (tmp_path / "model.safetensors").write_bytes(b"weight")
+    finetune._complete(tmp_path)
 
 
 def test_http_returns_owned_report_and_rejects_wrong_base(tmp_path, monkeypatch):
@@ -366,3 +431,56 @@ def test_attached_registry_discovery_preserves_missing_files_and_certification(t
         response = client.post("/api/load", json={"id": model_id})
         assert response.status_code in (400, 409)
         assert settings.attached_models()[0]["id"] == model_id
+
+
+def test_http_finetune_errors_have_actionable_codes(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tests.test_ui_app import app_for
+
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    settings.set_models_dir(str(tmp_path))
+    model = tmp_path / "base"
+    model.mkdir()
+    (model / "basal.json").write_text("{}")
+    monkeypatch.setattr(finetune.catalog, "is_downloaded", lambda *args, **kwargs: model)
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(app.state.finetune, "availability", lambda: (True, None, None))
+    output = tmp_path / "adapters" / "mini" / "owned"
+    output.mkdir(parents=True, mode=0o700)
+    info = output.stat()
+    settings.put_finetune(
+        {
+            "id": "mini",
+            "name": "owned",
+            "root": str(tmp_path.resolve()),
+            "state": "incomplete",
+            "device": info.st_dev,
+            "inode": info.st_ino,
+        }
+    )
+
+    class Runner:
+        options = {"adapter": str(output / "lora")}
+
+    runner = Runner()
+    fleet.retiring[runner] = 0
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        name = client.post("/api/finetune", json={"id": "mini", "out_name": "../bad"}).json()
+        assert name["code"] == "finetune_name"
+        parameter = client.post("/api/finetune", json={"id": "mini", "out_name": "new", "rank": True}).json()
+        assert parameter["code"] == "finetune_parameter" and parameter["params"]["parameter"] == "rank"
+        source = client.post("/api/finetune", json={"id": "mini", "out_name": "new", "input": ""}).json()
+        assert source["code"] == "finetune_input"
+        missing = client.post("/api/finetune/delete", json={"id": "mini", "name": "unknown"}).json()
+        assert missing["code"] == "finetune_missing"
+        busy = client.post("/api/finetune/delete", json={"id": "mini", "name": "owned"})
+        assert busy.status_code == 409 and busy.json()["code"] == "finetune_active_adapter"
+        fleet.retiring.clear()
+        moved = output.with_name("moved")
+        output.rename(moved)
+        output.symlink_to(moved, target_is_directory=True)
+        ownership = client.post("/api/finetune/delete", json={"id": "mini", "name": "owned"})
+        assert ownership.status_code == 400 and ownership.json()["code"] == "finetune_ownership"
+        output.unlink()
+        moved.rename(output)

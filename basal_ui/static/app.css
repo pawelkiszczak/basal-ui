@@ -173,5 +173,5 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 .finetune-result{border:1px solid var(--line);border-radius:8px;padding:16px;margin-top:12px;min-width:0}
 .finetune-result h5,.finetune-result p{margin:0 0 10px}
 .finetune-path,.finetune-path code{overflow-wrap:anywhere;word-break:break-word}
-#finetuneProgress,#finetuneValidation,#finetuneAvailability{overflow-wrap:anywhere}
+#finetuneProgress,#finetuneCleanup,#finetuneValidation,#finetuneAvailability{overflow-wrap:anywhere}
 .opt-field p{font-size:12px;line-height:1.45;margin:5px 0 0;overflow-wrap:anywhere}

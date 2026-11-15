@@ -168,9 +168,9 @@ def run_tool(job, module, argv, out_path=None, on_json=None, env=None):
         proc.wait()
     finally:
         finished.set()
-        if proc.poll() is None:
-            terminate(proc)
         watcher.join()
+        if proc.poll() is None or (os.name == "posix" and _group_alive(proc.pid)):
+            terminate(proc)
     if job.cancel.is_set():
         raise Cancelled()
     if proc.returncode:

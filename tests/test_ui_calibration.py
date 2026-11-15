@@ -207,6 +207,34 @@ def test_base_calibration_evidence_is_not_presented_for_an_adapter(tmp_path, con
         assert shipped["warning"] == "The base calibration does not certify adapter weights"
 
 
+def test_served_adapter_certificates_require_matching_identity(tmp_path, config):
+    if not engine.feature("adapter"):
+        assert not engine.feature("adapter")
+        return
+    (config / "basal.json").write_text('{"layout":"canonical"}')
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (config / "CALIBRATION.json").write_text(json.dumps(FITTED))
+    entry = {"adapter": "lora@abc", "orders": 2}
+    options = {"adapter": str(adapter)}
+    assert calibration.served_certified(entry, config, "eager", options) == {}
+    chosen = tmp_path / "selected.json"
+    cal = {**FITTED, "fitted_on": {"model": str(config), "adapter": "lora@abc", "orders": 2}}
+    chosen.write_text(json.dumps(cal))
+    assert calibration.served_certified(entry, config, "eager", options, str(chosen)) == {"0.05": {"choice": 0.93}}
+    (adapter / "CALIBRATION.json").write_text(json.dumps(cal))
+    assert calibration.served_certified(entry, config, "eager", options) == {"0.05": {"choice": 0.93}}
+    cal["fitted_on"]["adapter"] = "lora@different"
+    chosen.write_text(json.dumps(cal))
+    assert calibration.served_certified(entry, config, "eager", options, str(chosen)) == {}
+    assert (
+        calibration.served_certified(
+            {**entry, "calibration_warning": "mismatch"}, config, "eager", options, str(chosen)
+        )
+        == {}
+    )
+
+
 @pytest.mark.skipif(not engine.feature("adapter"), reason="needs an engine that takes --adapter (2.5.0)")
 def test_shipped_calibration_context_prefers_running_options_to_saved_options(tmp_path, config):
     adapter = tmp_path / "adapter"

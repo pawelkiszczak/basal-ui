@@ -257,9 +257,31 @@ def create_app(
     @app.exception_handler(HTTPException)
     async def http_error(request, exc):
         if request.url.path.startswith("/api/finetune"):
-            code = "finetune_busy" if exc.status_code == 409 else "finetune_error"
+            message = str(exc.detail)
+            parameter = message.split(" ", 1)[0]
+            if parameter in {"epochs", "lr", "rank", "alpha", "holdout", "max_len", "max_steps", "grad_checkpointing"}:
+                code, params = "finetune_parameter", {"parameter": parameter, "message": message}
+            elif message.startswith("out_name"):
+                code, params = "finetune_name", {"message": message}
+            elif message.startswith(("input ", "cannot read labelled", "line ", "need training decisions")):
+                code, params = "finetune_input", {"message": message}
+            elif "active adapter" in message:
+                code, params = "finetune_active_adapter", {"message": message}
+            elif "active jobs" in message or "shutting down" in message or "maintenance" in message:
+                code, params = "finetune_jobs_busy", {"message": message}
+            elif "already exists" in message or "already holds memory" in message:
+                code, params = "finetune_duplicate", {"message": message}
+            elif "unknown fine-tune output" in message or "output is missing" in message:
+                code, params = "finetune_missing", {"message": message}
+            elif message.startswith(("unknown model", "download ", "fine-tuning requires")):
+                code, params = "finetune_model", {"message": message}
+            elif any(word in message for word in ("ownership", "symlink", "directory changed", "output root")):
+                code, params = "finetune_ownership", {"message": message}
+            else:
+                code = "finetune_busy" if exc.status_code == 409 else "finetune_error"
+                params = {"message": message}
             return JSONResponse(
-                {"detail": str(exc.detail), "code": code, "params": {"message": str(exc.detail)}},
+                {"detail": message, "code": code, "params": params},
                 status_code=exc.status_code,
                 headers=exc.headers,
             )

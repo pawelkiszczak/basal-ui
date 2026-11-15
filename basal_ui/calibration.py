@@ -116,11 +116,37 @@ def served_certified(entry, local_dir, mode, options, selected=None) -> dict:
     """The certified thresholds of the calibration a basal-serve child loaded (`selected`, its --calibration, else the
     shipped file for its load options); {} when the child warned the file belongs to another model, or there is no
     readable file."""
-    if entry is None or entry.get("calibration_warning") or options.get("adapter"):
+    if entry is None or entry.get("calibration_warning"):
         return {}
     from basal.prompt import model_layout
 
     try:
+        if options.get("adapter"):
+            from types import SimpleNamespace
+
+            from basal.server import load_calibration
+
+            identity = entry.get("adapter")
+            if not isinstance(identity, str) or not identity:
+                return {}
+            adapter_path = Path(options["adapter"]).expanduser().resolve()
+            adapter = SimpleNamespace(path=adapter_path, name=adapter_path.name, identity=identity)
+            kind, default_quant = MODES[mode][:2]
+            cal, _, warning = load_calibration(
+                Path(local_dir),
+                kind,
+                selected,
+                options.get("quant") or default_quant,
+                entry.get("orders") or options.get("orders") or 2,
+                preset=options.get("vllm_preset"),
+                layout=options.get("layout") or model_layout(Path(local_dir)),
+                adapter=adapter,
+            )
+            if warning or calibration_mismatch(cal, str(local_dir), Path(local_dir), adapter=adapter):
+                return {}
+            if selected and not (isinstance(cal.get("fitted_on"), dict) and cal["fitted_on"].get("model")):
+                return {}
+            return certified_table(cal)
         path = (
             Path(selected)
             if selected

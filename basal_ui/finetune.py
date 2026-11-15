@@ -219,7 +219,7 @@ def _complete(path):
             raise ValueError("fine-tune weights index is invalid")
         weights = [path / name for name in names]
     else:
-        weights = list(path.glob("*.safetensors"))
+        weights = [path / "model.safetensors"]
     if not weights or any(p.is_symlink() or not p.is_file() or not p.stat().st_size for p in weights):
         raise ValueError("fine-tune merged weights are missing")
 
@@ -558,6 +558,18 @@ class FineTune:
             self.fleet.reserved["finetune-delete"] = 0
         try:
             try:
+                self.settings.remove_finetune(model_id, name)
+            except BaseException as exc:
+                try:
+                    os.rename(quarantine.name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                    if not any(
+                        r.get("id") == model_id and r.get("name") == name for r in self.settings.finetune_results()
+                    ):
+                        self.settings.put_finetune(record)
+                except (OSError, ValueError) as restore:
+                    raise RuntimeError(f"registry recovery failed; inspect {path} and {quarantine}: {restore}") from exc
+                raise
+            try:
                 _owned_stat(parent_fd, quarantine.name, record)
                 flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
                 output_fd = os.open(quarantine.name, flags, dir_fd=parent_fd)
@@ -570,15 +582,13 @@ class FineTune:
                     os.rmdir(quarantine.name, dir_fd=parent_fd)
                 finally:
                     os.close(output_fd)
-            except ValueError as exc:
-                raise RuntimeError(f"cleanup retained at {quarantine}: {exc}") from exc
-            except OSError as exc:
-                try:
-                    os.rename(quarantine.name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-                except OSError as restore:
-                    raise RuntimeError(f"cleanup incomplete at {quarantine}: {exc}; restore failed: {restore}") from exc
-                raise RuntimeError(f"cleanup incomplete at {path}: {exc}") from exc
-            self.settings.remove_finetune(model_id, name)
+            except (ValueError, OSError) as exc:
+                return {
+                    "removed_bytes": 0,
+                    "missing": False,
+                    "retained_path": str(quarantine),
+                    "cleanup_error": str(exc),
+                }
             return {"removed_bytes": total, "missing": False}
         finally:
             os.close(parent_fd)
