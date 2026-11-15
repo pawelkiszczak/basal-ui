@@ -1775,3 +1775,93 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_mcp_picker_merge_refresh_and_token_is_not_saved(page):
+    view(page, "playground")
+    original = {"type": "function", "function": {"name": "local", "description": "Local", "parameters": {}}}
+    page.evaluate(
+        "tool => setRequest({state: 'x', questions: {q: {type: 'tool', instructions: 'weather', tools: [tool]}}})",
+        original,
+    )
+    catalogue = [
+        {"name": "weather", "description": "Forecast", "inputSchema": {"type": "object"}},
+        {"name": "clock", "description": "Time", "inputSchema": {"type": "object"}},
+    ]
+    bodies = []
+
+    def imported(route):
+        bodies.append(route.request.post_data_json)
+        route.fulfill(json={"tools": catalogue})
+
+    page.route("**/api/mcp/tools", imported)
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-url").fill("http://localhost:9000/mcp")
+    page.locator("#mcp-token").fill("test-secret")
+    page.locator("#mcp-import").click()
+    sync_api.expect(page.locator(".mcp-item")).to_have_count(2)
+    page.locator(".mcp-item").nth(1).locator("input").uncheck()
+    page.locator("#mcp-apply").click()
+    question = page.evaluate("() => buildRequest().questions.q")
+    assert question["tools"] == [original, catalogue[0]]
+    assert question["_mcp_source"]["selected"] == ["weather"]
+    assert bodies[0]["token"] == "test-secret"
+    assert "test-secret" not in json.dumps(question)
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-import").click()
+    sync_api.expect(page.locator(".mcp-item")).to_have_count(2)
+    assert page.locator(".mcp-item").nth(0).locator("input").is_checked()
+    assert not page.locator(".mcp-item").nth(1).locator("input").is_checked()
+    assert "token" not in bodies[1]
+    page.locator("#mcp-close").click()
+
+
+def test_mcp_picker_ignores_late_result_after_close(page):
+    view(page, "playground")
+    page.evaluate("() => setRequest({state:'x', questions:{q:{type:'tool',tools:[{name:'local',inputSchema:{}}]}}})")
+    page.evaluate("""() => {
+      window.originalFetch = window.fetch;
+      window.fetch = (url, options) => String(url) === '/api/mcp/tools'
+        ? new Promise(resolve => { window.finishMcp = () => resolve(new Response(JSON.stringify({tools:[{name:'late',inputSchema:{}}]}), {status:200})); })
+        : window.originalFetch(url, options);
+    }""")
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-url").fill("http://localhost:9000/mcp")
+    page.locator("#mcp-token").fill("temporary-secret")
+    page.locator("#mcp-import").click()
+    page.wait_for_function("() => !!window.finishMcp")
+    page.locator("#mcp-close").click()
+    page.evaluate(
+        "() => { setRequest({state:'new', questions:{other:{type:'tool',tools:[{name:'current',inputSchema:{}}]}}}); window.finishMcp(); }"
+    )
+    page.locator(".mcp-open").click()
+    assert page.locator(".mcp-item").count() == 0
+    assert page.locator("#mcp-token").input_value() == ""
+    assert page.evaluate("() => buildRequest().questions.other.tools[0].name") == "current"
+    assert "temporary-secret" not in page.evaluate("() => JSON.stringify({...localStorage, ...sessionStorage})")
+    page.locator("#mcp-close").click()
+    page.evaluate("() => { window.fetch = window.originalFetch; }")
+
+
+def test_mcp_language_draft_keeps_offline_tools_without_token(page):
+    view(page, "playground")
+    request = {
+        "state": {"_mcp_source": "business"},
+        "questions": {
+            "q": {
+                "type": "tool",
+                "tools": [{"name": "weather", "inputSchema": {"_mcp_source": "schema"}}],
+                "_mcp_source": {"url": "http://localhost:9000/mcp", "selected": ["weather"]},
+            }
+        },
+    }
+    page.evaluate("request => setRequest(request)", request)
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-token").fill("draft-secret")
+    draft = page.evaluate(
+        "() => { preparePlaygroundLanguageSwitch(); return sessionStorage.getItem('basal-ui.language-draft'); }"
+    )
+    assert "draft-secret" not in draft
+    page.locator("#mcp-close").click()
+    page.evaluate("() => restorePlaygroundLanguageDraft()")
+    assert page.evaluate("() => buildRequest()") == request

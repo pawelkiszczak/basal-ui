@@ -447,3 +447,9 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+### MCP tool import and shortlist
+
+`POST /api/mcp/tools` accepts `{ "url": "http://localhost:PORT/mcp", "token": "..." }` (token optional) and returns `{ "tools": [...] }`. It initializes a streamable HTTP MCP session and follows up to 20 pages within a 10-second operation and 4 MiB response budget. Explicit loopback servers are allowed; other hosts must resolve exclusively to public unicast addresses, and bearer tokens for remote hosts require HTTPS. The token is operation-only; failures include an English `detail` and a `code`.
+
+`POST /api/tools/shortlist` accepts `{ "tools": [...], "query": "...", "k": 40 }` and returns ranked original definitions in `tools`. Ranking uses local BM25 and does not call a model or an MCP tool.

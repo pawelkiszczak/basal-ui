@@ -535,3 +535,7 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+
+Tool questions can import and refresh a streamable HTTP MCP catalogue, select tools, and shortlist them locally by the question instructions. Saved requests and presets retain the selected definitions and source selection for offline use; bearer tokens are never saved. The picker reports the Active model's remaining option slots when its prompt format is known, including other enabled options.
+
+![MCP tool picker with a synthetic catalogue and no active model](images/mcp-tools.png)

@@ -14,7 +14,8 @@ window.RequestCode = (() => {
     }
     const model = $('#playgroundModel').value || body.model;
     if (!model) throw new Error(t('Choose a model before generating API examples.'));
-    return {...body, model};
+    const limitError = toolBudgetError(body, model); if (limitError) throw new Error(limitError);
+    return {...stripMcpMetadata(body), model};
   }
   function python(value, pad = '') {
     if (value == null) return 'None';

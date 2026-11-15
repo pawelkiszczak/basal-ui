@@ -3,8 +3,10 @@ loaded model's private basal-serve; the answers go to a JSONL file, one line per
 to the child: they are not counted in the statistics or the history (as benchmarks)."""
 
 import json
+import tempfile
 from pathlib import Path
 
+from .fleet import strip_mcp_metadata
 from .jobs import run_tool
 
 
@@ -18,6 +20,15 @@ def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, ear
     runner = fleet.ready(model_id)
     total = sum(1 for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip())
     job.progress("running", 0, total)
+    lines = Path(input_path).read_text(encoding="utf-8").splitlines(keepends=True)
+    cleaned = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+            clean = strip_mcp_metadata(item)
+            cleaned.append(json.dumps(clean, ensure_ascii=False) + "\n" if clean != item else line)
+        except (ValueError, TypeError):
+            cleaned.append(line)
     args = [
         "--input",
         str(input_path),
@@ -30,7 +41,14 @@ def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, ear
     ]
     if early_exit:
         args += ["--early-exit", str(early_exit)]
-    summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
+    if cleaned != lines:
+        with tempfile.TemporaryDirectory(prefix="basal-ui-batch-") as directory:
+            clean_input = Path(directory) / "input.jsonl"
+            clean_input.write_text("".join(cleaned), encoding="utf-8")
+            args[1] = str(clean_input)
+            summary = run_tool(job, "run", args)
+    else:
+        summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
     if summary is None:
         raise RuntimeError("basal-run printed no summary")
     job.progress("running", total, total)

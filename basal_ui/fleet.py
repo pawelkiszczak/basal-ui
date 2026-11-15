@@ -1,6 +1,7 @@
 """The loaded models: one basal-serve child per Runner, owned by the Fleet with their downloads, logs, jobs, statistics and history."""
 
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import os
@@ -56,6 +57,17 @@ def rss_by_pgid() -> dict[int, int]:
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             totals[int(parts[0])] = totals.get(int(parts[0]), 0) + int(parts[1]) * 1024
     return totals
+
+
+def strip_mcp_metadata(body):
+    """Remove UI question provenance without changing the recorded request."""
+    if not isinstance(body, dict) or not isinstance(body.get("questions"), dict):
+        return body
+    result = copy.deepcopy(body)
+    for question in result["questions"].values():
+        if isinstance(question, dict):
+            question.pop("_mcp_source", None)
+    return result
 
 
 class Downloads:
@@ -875,7 +887,7 @@ class Fleet:
         with self.lease(model_id) as runner, self.answering(model_id, source):
             t0 = time.perf_counter()
             try:
-                response = runner.decide(body, path)
+                response = runner.decide(strip_mcp_metadata(body), path)
             except httpx.HTTPError as exc:
                 self._record(
                     model_id,
@@ -910,7 +922,7 @@ class Fleet:
         with self.lease(model_id) as runner, self.answering(model_id, source):
             t0 = time.perf_counter()
             try:
-                response = await runner.adecide(client, body, path)
+                response = await runner.adecide(client, strip_mcp_metadata(body), path)
             except httpx.HTTPError as exc:
                 await asyncio.to_thread(
                     self._record,
