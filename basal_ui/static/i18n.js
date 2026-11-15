@@ -5,6 +5,9 @@
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
   "code:fetch_address_refused": "Adres URL musi wskazywać publiczny adres HTTP lub HTTPS bez danych logowania.",
+  "code:fetch_http_error": "Serwer zwrócił błąd HTTP. Sprawdź adres pliku i spróbuj ponownie.",
+  "code:fetch_failed": "Nie udało się pobrać pliku. Sprawdź połączenie i adres, a następnie spróbuj ponownie.",
+  "code:fetch_timeout": "Pobieranie trwało zbyt długo. Sprawdź połączenie i spróbuj ponownie.",
   "code:fetch_dns_error": "Nie można rozpoznać adresu URL. Sprawdź adres i spróbuj ponownie.",
   "code:fetch_unsupported_type": "Plik presetów musi mieć typ application/json.",
   "code:fetch_too_large": "Plik presetów przekracza limit 1 MiB.",
@@ -13,7 +16,7 @@ const PL = {
   "code:fetch_unsupported_encoding": "Kodowanie odpowiedzi nie jest obsługiwane.",
   "code:fetch_redirect_error": "Przekierowanie jest nieprawidłowe lub jest ich zbyt wiele.",
   "code:presets_invalid_pack": "Nieprawidłowy pakiet presetów. Sprawdź strukturę pliku.",
-  "code:presets_partial_import": "Import przerwany. Wcześniejsze presety mogły zostać zapisane; sprawdź plik i spróbuj ponownie.",
+  "code:presets_partial_import": "Import przerwany. Wcześniejsze presety mogły zostać zapisane; sprawdź plik i miejsce na dysku, a następnie spróbuj ponownie.",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",

@@ -45,11 +45,9 @@ def test_transport_restrictions(monkeypatch):
     )
     monkeypatch.setattr(fetch, "_Connection", Connection)
     response = Connection.response = Response()
-    response.body = json.dumps({"request": {"large": {"questions": {"q": {"text": "x" * 220000}}}}}).encode()
-    assert (
-        len(fetch.fetch("http://example.com", presets=True)["state"]["request"]["large"]["questions"]["q"]["text"])
-        == 220000
-    )
+    pack = {"request": {"large": {"questions": {"q": {"text": "x" * 220000}}, "state": [1, 0.25, True, None]}}}
+    response.body = json.dumps(pack).encode()
+    assert fetch.fetch("http://example.com", presets=True)["state"] == pack
     for body, content_type, code in [
         (b"{}", "text/plain", "fetch_unsupported_type"),
         (b"x" * (1024 * 1024 + 1), "application/json", "fetch_too_large"),
@@ -124,3 +122,106 @@ def test_real_worker_refuses_loopback_before_mutation(tmp_path, monkeypatch):
         assert response.status_code == 400
         assert response.json()["code"] == "fetch_address_refused"
         assert client.get("/api/presets").json() == before
+
+
+def test_url_pack_boundary_parity_and_persistence(tmp_path, monkeypatch):
+    config = tmp_path / "settings.json"
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    monkeypatch.setattr(
+        fetch.socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 80))]
+    )
+    monkeypatch.setattr(fetch, "_Connection", Connection)
+    response = Connection.response = Response()
+
+    class Manager:
+        async def run(self, url, request):
+            return fetch.fetch(url, presets=True)
+
+        async def close(self):
+            pass
+
+    fleet = make_fleet(tmp_path)
+    app = create_app(
+        catalog_fn=lambda **k: ([], "synthetic"), hardware_fn=lambda: HW, fleet=fleet, preset_fetch_manager=Manager()
+    )
+    pack = {
+        "load": {"existing": {"mode": "eager"}, "delete": None},
+        "request": {
+            "existing": {
+                "model": "ignore",
+                "questions": {"q": {"type": "choice"}},
+                "state": {"text": "z" * 220001, "typed": [1, 0.25, True, None]},
+            }
+        },
+    }
+    encoded = json.dumps(pack, separators=(",", ":")).encode()
+    response.body = encoded + b" " * (1024 * 1024 - len(encoded))
+    assert len(response.body) == 1024 * 1024
+    initial = [
+        ("load", "existing", {"mode": "fast-exit"}),
+        ("load", "delete", {"mode": "eager"}),
+        ("load", "unrelated", {"mode": "eager"}),
+        ("request", "existing", {"questions": {"old": {"type": "choice"}}}),
+        ("request", "unrelated", {"questions": {"keep": {"type": "choice"}}}),
+    ]
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+
+        def put(kind, name, value):
+            result = client.put("/api/presets", json={"kind": kind, "name": name, "value": value})
+            assert result.status_code == 200
+            return result.json()
+
+        for entry in initial:
+            put(*entry)
+        for kind in ("load", "request"):
+            for name, value in pack[kind].items():
+                file_result = put(kind, name, value)
+        config.unlink()
+        for entry in initial:
+            put(*entry)
+        result = client.post("/api/presets/import-url", json={"url": "http://example.com/pack"})
+        assert result.status_code == 200 and result.json()["count"] == 3
+        assert result.json()["presets"] == file_result == settings.presets()
+        saved = settings.load()["presets"]
+        assert saved == file_result
+        assert saved["request"]["existing"] == {k: v for k, v in pack["request"]["existing"].items() if k != "model"}
+        assert [type(v) for v in saved["request"]["existing"]["state"]["typed"]] == [int, float, bool, type(None)]
+        assert saved["load"]["unrelated"] == {"mode": "eager"} and "delete" not in saved["load"]
+        assert saved["request"]["unrelated"]["questions"] == {"keep": {"type": "choice"}}
+        assert not fleet.runners
+        response.body += b" "
+        assert len(response.body) == 1024 * 1024 + 1
+        refused = client.post("/api/presets/import-url", json={"url": "http://example.com/pack"})
+        assert refused.status_code == 413 and refused.json()["code"] == "fetch_too_large"
+        assert settings.load()["presets"] == saved
+
+
+def test_url_pack_reports_partial_persistence_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    original = settings.set_preset
+
+    def fail_second(kind, name, value):
+        if name == "second":
+            raise OSError("secret path")
+        return original(kind, name, value)
+
+    monkeypatch.setattr(settings, "set_preset", fail_second)
+
+    class Manager:
+        async def run(self, url, request):
+            return {"state": {"load": {"first": {"mode": "eager"}, "second": {"mode": "eager"}}}}
+
+        async def close(self):
+            pass
+
+    fleet = make_fleet(tmp_path)
+    app = create_app(
+        catalog_fn=lambda **k: ([], "synthetic"), hardware_fn=lambda: HW, fleet=fleet, preset_fetch_manager=Manager()
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        result = client.post("/api/presets/import-url", json={"url": "http://example.com"})
+        assert result.status_code == 500
+        assert result.json()["code"] == "presets_partial_import"
+        assert "earlier presets may have been saved" in result.json()["detail"]
+        assert "secret path" not in result.text
+        assert settings.presets()["load"] == {"first": {"mode": "eager"}}

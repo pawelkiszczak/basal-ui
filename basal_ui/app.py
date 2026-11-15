@@ -672,10 +672,10 @@ def create_app(
 
     @app.get("/api/presets")
     def get_presets():
-        return {"load": settings_mod.presets().get("load", {}), "request": settings_mod.presets().get("request", {})}
+        data = settings_mod.presets()
+        return {"load": data.get("load", {}), "request": data.get("request", {})}
 
-    @app.put("/api/presets")
-    def put_preset(body: dict = Body(...)):
+    def update_preset(body):
         kind, name, value = body.get("kind"), body.get("name"), body.get("value")
         try:
             if kind == "load" and value is not None:
@@ -691,6 +691,10 @@ def create_app(
             settings_mod.set_preset(kind, name, value)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/presets")
+    def put_preset(body: dict = Body(...)):
+        update_preset(body)
         return get_presets()
 
     @app.post("/api/presets/import-url")
@@ -710,8 +714,9 @@ def create_app(
         try:
             for kind in ("load", "request"):
                 for name, value in pack.get(kind, {}).items():
-                    put_preset({"kind": kind, "name": name, "value": value})
+                    update_preset({"kind": kind, "name": name, "value": value})
                     count += 1
+            return {"presets": get_presets(), "count": count}
         except HTTPException as exc:
             return JSONResponse(
                 {
@@ -720,7 +725,14 @@ def create_app(
                 },
                 status_code=400,
             )
-        return {"presets": get_presets(), "count": count}
+        except OSError:
+            return JSONResponse(
+                {
+                    "detail": "Import stopped; earlier presets may have been saved. Check storage and retry.",
+                    "code": "presets_partial_import",
+                },
+                status_code=500,
+            )
 
     @app.get("/api/models/card")
     def get_model_card(id: str):

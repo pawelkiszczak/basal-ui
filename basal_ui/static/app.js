@@ -415,7 +415,8 @@ $('#presetNameSave').onclick=()=>act(async()=>{
   let value;
   try { value=presetTarget==='load'?collectOptions():$('#editJsonToggle').checked?JSON.parse($('#requestJson').value):buildRequest(); if(presetTarget==='request')value._elements=elementPresetData(); }
   catch(e) { toast(e.message,'error');$('.q-name:invalid')?.reportValidity();return; }
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  ++presetGeneration;presetData=data;
   $('#presetNameDialog').close(); renderLoadPresets();renderRequestPresets();toast(t('Preset saved'));
 });
 $('#examples').addEventListener('change',e=>{
@@ -430,7 +431,8 @@ $('#examples').addEventListener('change',e=>{
   }else if(item)setRequest({state:item.state,questions:item.questions});
 });
 async function deletePreset(kind,name) {
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  ++presetGeneration;presetData=data;
   renderLoadPresets();renderRequestPresets();toast(t('Preset deleted'));
 }
 $('#exportPresets').onclick=()=>act(async()=>{
