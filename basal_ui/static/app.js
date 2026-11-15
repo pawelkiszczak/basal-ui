@@ -1063,18 +1063,17 @@ function thinkBlock(a) {
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
   return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · <span data-certification-evidence>${t('calibration')} ${esc(t(think.calibration??'—'))}; </span>${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
-function attachedEvidenceStamp(id) {
-  if(!String(id||'').startsWith('attached/'))return '';
+function modelEvidenceStamp(id) {
   const m=(statusCache?.models||[]).find(item=>item.id===id);
-  return JSON.stringify(m?[m.id,m.state,m.generation,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.calibration_warning,m.entry?.adapter]:null);
+  return JSON.stringify(m?[m.id,m.state,m.generation,m.mode,m.options,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.temperature_per_prim,m.entry?.calibration,m.entry?.calibration_file,m.entry?.calibration_warning,m.entry?.adapter,m.entry?.orders,m.entry?.layout,m.entry?.context]:null);
 }
-function invalidateAttachedEvidence(node) {
-  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===attachedEvidenceStamp(node.dataset.evidenceModel))return;
+function invalidateModelEvidence(node) {
+  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===modelEvidenceStamp(node.dataset.evidenceModel))return;
   node.querySelectorAll('[data-certification-evidence]').forEach(element=>element.remove());
   const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
   node.prepend(notice);node.dataset.evidenceStale='1';
 }
-function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=attachedEvidenceStamp(request.model)) {
+function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=modelEvidenceStamp(request.model)) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
@@ -1089,7 +1088,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
   const inspectReason=String(request.model||'').startsWith('attached/')?t('attached models cannot be inspected'):null;
   $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
-  const results=$('#results');results.dataset.evidenceModel=String(request.model||'').startsWith('attached/')?request.model:'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateAttachedEvidence(results);
+  const results=$('#results');results.dataset.evidenceModel=request.model||'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateModelEvidence(results);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1112,7 +1111,7 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  const evidenceStamp=attachedEvidenceStamp(request.model);
+  const evidenceStamp=modelEvidenceStamp(request.model);
   try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
@@ -1321,7 +1320,7 @@ function renderManagerSummary() {
 }
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
-  invalidateAttachedEvidence($('#results'));DecisionTools.invalidateAttachedEvidence();
+  invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;

@@ -154,7 +154,7 @@
       return item ? {kind: item.kind, data: item.data, file: item.file, elements: item.elements ? structuredClone(item.elements) : undefined} : null;
     });
     const entries = Object.fromEntries(models.map(model => [model.id, structuredClone(modelEntry(model.id))]));
-    const stamps = Object.fromEntries(models.map(model => [model.id, attachedEvidenceStamp(model.id)]));
+    const stamps = Object.fromEntries(models.map(model => [model.id, modelEvidenceStamp(model.id)]));
     const prompt = $('#decisionCompare .dt-prompt');
     prompt.hidden = false;
     prompt.innerHTML = `<strong>${t('Frozen request snapshot')}</strong><pre>${esc(displayRequest(snapshot))}</pre>`;
@@ -171,7 +171,7 @@
       grid.innerHTML = settled.map(result => `<article class="dt-model-result" data-model="${esc(result.model.id)}">${result.error
         ? `<h3>${esc(result.model.id)}</h3><p class="dt-used">${t('Request sent')}: <code>${esc(result.model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(result.model.id)})}</summary><pre>${esc(displayRequest(result.request))}</pre></details><div class="error-box" role="alert">${esc(result.error.message || String(result.error))}</div>`
         : `<h3>${esc(result.model.id)}</h3>${renderResults(result.data, result.request, entries[result.model.id], mediaSnapshot)}`}</article>`).join('');
-      grid.querySelectorAll('.dt-model-result').forEach(card=>{if(card.dataset.model.startsWith('attached/')){card.dataset.evidenceModel=card.dataset.model;card.dataset.evidenceStamp=stamps[card.dataset.model];invalidateAttachedEvidence(card);}});
+      grid.querySelectorAll('.dt-model-result').forEach(card=>{card.dataset.evidenceModel=card.dataset.model;card.dataset.evidenceStamp=stamps[card.dataset.model];invalidateModelEvidence(card);});
     } catch (error) {
       if (run === sequence) setError(error.message || String(error));
     } finally {
@@ -191,6 +191,6 @@
     reconcileSelects();
   }
 
-  window.DecisionTools = {answerPanel, refreshModels, invalidateAttachedEvidence:()=>document.querySelectorAll('#decisionCompare .dt-model-result').forEach(invalidateAttachedEvidence)};
+  window.DecisionTools = {answerPanel, refreshModels, invalidateModelEvidence:()=>document.querySelectorAll('#decisionCompare .dt-model-result').forEach(invalidateModelEvidence)};
   document.addEventListener('DOMContentLoaded', () => { mount(); refreshModels(readyModels()); });
 })();
