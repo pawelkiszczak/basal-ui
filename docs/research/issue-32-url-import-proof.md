@@ -12,3 +12,31 @@ All commands used the shared read-only issue 22 environment via `UV_PROJECT_ENVI
 Imports run load then request entries through the existing per-item update path. A later invalid entry can leave earlier entries saved; same-name values replace, null deletes, unrelated entries survive, and the request root `model` is removed. Strict JSON numbers follow the borrowed Fetch fidelity policy; invalid precision is refused. JSON packs are limited to 1 MiB before parsing and do not inherit the Playground's 200,000-character State limit.
 
 Not run: hosted CI, real public-network transport, real-model E2E, screen reader, native 200% zoom and physical-device testing. No model was loaded. These focused checks do not establish release acceptance.
+
+## Commands and proposed PR body
+
+The focused Python commands, with the environment described above, were:
+
+```sh
+uv run --no-sync pytest -q tests/test_ui_preset_url.py tests/test_ui_app.py::test_presets_validate_and_strip_request_model /Users/pawelkiszczak/orca/workspaces/basal-ui/issue-28-fetch-web-nov15/tests/test_ui_fetch.py -k 'not local_route_and_shutdown and not decision_history'
+uv run --no-sync pytest -q tests/test_ui_preset_url.py::test_real_worker_refuses_loopback_before_mutation
+uv run --no-sync ruff check basal_ui/app.py basal_ui/fetch.py basal_ui/preset_fetch.py tests/test_ui_preset_url.py
+uv run --no-sync ruff format --check basal_ui/app.py basal_ui/fetch.py basal_ui/preset_fetch.py tests/test_ui_preset_url.py
+uv run --no-sync python .local-issue32/ui_proof.py
+```
+
+The first command preceded the addition of the separate worker test; the temporary UI harness was removed after the captures. The initial broader selection used `-k 'not fetch_route'`, which did not exclude the two unrelated tests described above.
+
+Suggested title: `Import presets from a URL`
+
+Suggested body:
+
+> **tl;dr:** Import a shared JSON preset pack from Settings or `POST /api/presets/import-url`, using the reviewed public-address guard and a 1 MiB response limit.
+>
+> **Assumptions:** Entries merge in file-import order through the existing per-entry validation; an error can leave earlier entries saved. Numbers that cannot survive browser JSON transport are refused. No registry or automatic updates are added.
+>
+> **Engine impact:** None; no Engine pin or model behavior changes.
+>
+> **Baseline and observed proof:** PR 79 supplies the reviewed network backend; the focused backend and preset checks passed, as did isolated English and Polish 320 px browser checks. See `docs/research/issue-32-url-import-proof.md` for exact results and unrun gates.
+>
+> **Door / Blast Radius:** The new endpoint downloads anonymous JSON through a fixed owned worker and updates only named preset entries. `basal_ui/fetch.py` overlaps PR 79 and requires integration with that shared backend; retain it on rollback if another consumer uses it.
