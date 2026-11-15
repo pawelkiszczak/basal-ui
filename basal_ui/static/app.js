@@ -891,8 +891,8 @@ function resultHeadline(name, answer, requestQuestion) {
   return null;
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
-const modelEntry=id=>(statusCache?.models||[]).find(m=>m.id===id)?.entry||null;
-const uncalibrated=entry=>Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length;
+const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(String(id).startsWith('attached/'))return {...entry,attached_uncalibrated:!entry||model.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length};return entry||null;};
+const uncalibrated=entry=>Boolean(entry?.attached_uncalibrated)||(Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length);
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
   if(type==='tool')return 'choice';  // a single tool decision is deferred against the choice threshold
@@ -909,6 +909,7 @@ function certificateGap(answer, entry) {
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
   if(answer.calibration!=null&&answer.calibration!=='validated')return `calibration: ${answer.calibration}`;
+  if(entry?.attached_uncalibrated)return t('no active certified thresholds for this Attached model');
   if(uncalibrated(entry))return t('the probabilities are not calibrated');
   return null;
 }
@@ -926,6 +927,7 @@ function automationBadge(answer,q,entry) {
 }
 function calibrationChip(answer,entry) {
   const c=answer.calibration;
+  if(entry?.attached_uncalibrated)return `<span class="badge fit-tight">${t('uncalibrated')}</span>`;
   if(c==='validated')return `<span class="badge fit-fits">${t('calibrated')}</span>`;
   if(c==='unvalidated')return `<span class="badge fit-tight">${t(answer.type==='act'?'calibration not validated for this question shape':'unvalidated — fitted on other option orders')}</span>`;
   if(c==='text')return `<span class="badge fit-tight">${t('fitted on text (media request)')}</span>`;
@@ -938,19 +940,20 @@ function automatedChips(automated) {
   if(!automated||typeof automated!=='object')return '';
   return Object.entries(automated).map(([risk,v])=>{
     const at=`${(Number(risk)*100).toFixed(0)}%`;
-    return v===true?`<span class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
+    return v===true?`<span data-certification-evidence class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span data-certification-evidence class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span data-certification-evidence class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
   }).join(' ');
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
+  for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
+  if(!entry?.attached_uncalibrated)parts.push(automatedChips(answer.automated));
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
 }
 function resultBanners(entry,u) {
-  let html=entry?.calibration_warning?`<div class="error-box">${esc(entry.calibration_warning)}</div>`:'';
+  let html=entry?.calibration_warning?`<div data-certification-evidence class="error-box">${esc(entry.calibration_warning)}</div>`:'';
   const truncated=u?.truncated;
   if(truncated)html+=`<div class="error-box">${t('State truncated to the context: dropped {dropped} of {total} tokens (kept {head} from the start, {tail} from the end)',{dropped:esc(truncated.dropped_tokens),total:esc(truncated.state_tokens),head:esc(truncated.head_tokens),tail:esc(truncated.tail_tokens)})}</div>`;
   return html;
@@ -1057,9 +1060,20 @@ function thinkBlock(a) {
   const think=a.think, used=a.meta?.think;
   if(think?.skipped)return `<div class="chips"><span class="chip muted">${t('thinking skipped ({reason})',{reason:esc(think.skipped)})}</span></div>`;
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
-  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · ${t('calibration')} ${esc(t(think.calibration??'—'))}; ${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
+  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · <span data-certification-evidence>${t('calibration')} ${esc(t(think.calibration??'—'))}; </span>${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
-function renderResults(data, request, mediaSnapshot=selectedMedia) {
+function attachedEvidenceStamp(id) {
+  if(!String(id||'').startsWith('attached/'))return '';
+  const m=(statusCache?.models||[]).find(item=>item.id===id);
+  return JSON.stringify(m?[m.id,m.state,m.generation,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.calibration_warning,m.entry?.adapter]:null);
+}
+function invalidateAttachedEvidence(node) {
+  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===attachedEvidenceStamp(node.dataset.evidenceModel))return;
+  node.querySelectorAll('[data-certification-evidence]').forEach(element=>element.remove());
+  const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
+  node.prepend(notice);node.dataset.evidenceStale='1';
+}
+function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=attachedEvidenceStamp(request.model)) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
@@ -1072,7 +1086,9 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const inspectReason=String(request.model||'').startsWith('attached/')?t('attached models cannot be inspected'):null;
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const results=$('#results');results.dataset.evidenceModel=String(request.model||'').startsWith('attached/')?request.model:'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateAttachedEvidence(results);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1095,7 +1111,8 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
+  const evidenceStamp=attachedEvidenceStamp(request.model);
+  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
 }
@@ -1303,6 +1320,7 @@ function renderManagerSummary() {
 }
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  invalidateAttachedEvidence($('#results'));DecisionTools.invalidateAttachedEvidence();
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
