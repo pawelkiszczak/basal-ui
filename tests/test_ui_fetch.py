@@ -103,15 +103,19 @@ def test_article_header_and_json_precision_at_fetch_boundary(monkeypatch):
     result = fetch.fetch("http://example.com/")
     assert result["state"] == "Title: Site\nRecall details\nPublished today\nProduct recalled."
     Response.content_type = "application/json"
-    Response.body = b'{"nested":[9007199254740993]}'
-    with pytest.raises(fetch.FetchError) as error:
-        fetch.fetch("http://example.com/")
-    assert error.value.code == "fetch_json_precision"
-    Response.body = b'{"nested":[-9007199254740992.0]}'
-    with pytest.raises(fetch.FetchError) as error:
-        fetch.fetch("http://example.com/")
-    assert error.value.code == "fetch_json_precision"
-    Response.body = b'{"id":"9007199254740993","max":9007199254740991,"min":-9007199254740991}'
+    for raw in (
+        b"9007199254740993",
+        b"-9007199254740992.0",
+        b"9.007199254740993e15",
+        b"1.0000000000000001",
+        b"1e-400",
+        b"-0.0",
+    ):
+        Response.body = b'{"nested":[' + raw + b"]}"
+        with pytest.raises(fetch.FetchError) as error:
+            fetch.fetch("http://example.com/")
+        assert error.value.code == "fetch_json_precision"
+    Response.body = b'{"id":"9007199254740993","max":9007199254740991,"min":-9007199254740991,"small":0.1,"exp":1e-7}'
     state = fetch.fetch("http://example.com/")["state"]
     import json
 
@@ -119,6 +123,8 @@ def test_article_header_and_json_precision_at_fetch_boundary(monkeypatch):
         "id": "9007199254740993",
         "max": 9007199254740991,
         "min": -9007199254740991,
+        "small": 0.1,
+        "exp": 1e-7,
     }
 
 
@@ -210,34 +216,44 @@ def test_worker_deadline_disconnect_and_shutdown_reap(monkeypatch):
     original = asyncio.create_subprocess_exec
     children = []
 
-    async def spawn(*args, **kwargs):
-        child = await original(sys.executable, "-c", "import time; time.sleep(30)", **kwargs)
-        children.append(child)
-        return child
-
-    class Request:
-        def __init__(self, disconnected=False):
-            self.disconnected = disconnected
-
-        async def is_disconnected(self):
-            return self.disconnected and len(children) >= 2
-
     async def exercise():
+        ready = asyncio.Event()
+
+        async def spawn(*args, **kwargs):
+            child = await original(sys.executable, "-c", "import time; time.sleep(30)", **kwargs)
+            children.append(child)
+            ready.set()
+            return child
+
+        class Request:
+            disconnected = False
+
+            async def is_disconnected(self):
+                return self.disconnected
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(fetch, "TIMEOUT_S", 2)
         manager = fetch.FetchManager()
-        with pytest.raises(fetch.FetchError) as error:
-            await manager.run("http://example.com", Request())
-        assert error.value.code == "fetch_timeout" and children[-1].returncode is not None
-        with pytest.raises(fetch.FetchError) as error:
-            await manager.run("http://example.com", Request(True))
-        assert error.value.code == "fetch_cancelled" and children[-1].returncode is not None
         task = asyncio.create_task(manager.run("http://example.com", Request()))
-        while len(children) < 3:
-            await asyncio.sleep(0.001)
+        await asyncio.wait_for(ready.wait(), 5)
+        with pytest.raises(fetch.FetchError) as error:
+            await task
+        assert error.value.code == "fetch_timeout" and children[-1].returncode is not None
+        monkeypatch.setattr(fetch, "TIMEOUT_S", 5)
+        ready.clear()
+        request = Request()
+        task = asyncio.create_task(manager.run("http://example.com", request))
+        await asyncio.wait_for(ready.wait(), 5)
+        request.disconnected = True
+        with pytest.raises(fetch.FetchError) as error:
+            await task
+        assert error.value.code == "fetch_cancelled" and children[-1].returncode is not None
+        ready.clear()
+        task = asyncio.create_task(manager.run("http://example.com", Request()))
+        await asyncio.wait_for(ready.wait(), 5)
         await manager.close()
         assert task.done() and children[-1].returncode is not None and not manager.tasks
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(fetch, "TIMEOUT_S", 0.15)
     asyncio.run(exercise())
 
 

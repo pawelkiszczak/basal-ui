@@ -136,7 +136,8 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   **Fetch URL** loads one public HTTP(S) page on the app server into editable State without sending a Decision.
   HTML becomes readable text, JSON stays structured, and plain text stays text. The note shows the original and final
   URL, type, byte count and truncation; review the result before sending. Fetch is anonymous and bounded to 4 MiB,
-  10 seconds, three redirects and 200,000 text characters; larger JSON is refused rather than partly reconstructed.
+  10 seconds, three redirects and 200,000 text characters; larger JSON or numbers that cannot survive the browser
+  round trip are refused rather than silently changed.
   The State token estimate divides UTF-8 bytes by four and omits questions, options, media and prompt overhead; it
   is not a fit guarantee. Active context limit and policy come from the loaded model, and actual Decision usage wins.
   Cancel stops the fetch. The final URL is saved with the request in History; Replay restores the recorded State and

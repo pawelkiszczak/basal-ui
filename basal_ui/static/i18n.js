@@ -30,7 +30,7 @@ const PL = {
   "code:fetch_unsupported_type": "Ten typ zawartości nie jest obsługiwany. Wybierz stronę HTML, JSON lub tekst.",
   "code:fetch_unsupported_encoding": "To kodowanie odpowiedzi nie jest obsługiwane. Wybierz inny adres.",
   "code:fetch_invalid_json": "Odpowiedź nie zawiera poprawnego JSON. Sprawdź adres URL.",
-  "code:fetch_json_precision": "JSON zawiera liczbę całkowitą spoza bezpiecznego zakresu przeglądarki. Wybierz inne źródło lub użyj identyfikatora tekstowego.",
+  "code:fetch_json_precision": "JSON zawiera liczbę, której nie można bezpiecznie zachować. Wybierz inne źródło lub użyj wartości tekstowej.",
   "code:fetch_http_error": "Serwer strony zwrócił błąd HTTP. Sprawdź adres URL lub spróbuj później.",
   "code:fetch_redirect_error": "Przekierowanie jest nieprawidłowe lub jest ich zbyt wiele. Sprawdź adres URL.",
   " Options": " Opcje",

@@ -185,11 +185,14 @@ def _content(data, content_type):
 
         def safe_number(value):
             number = Decimal(value)
-            if number == number.to_integral_value() and abs(number) > 9007199254740991:
-                raise FetchError(
-                    "JSON contains an integer outside the safe browser range.", "fetch_json_precision", 422
-                )
-            return int(value) if "." not in value and "e" not in value.lower() else float(value)
+            converted = float(value)
+            if (
+                (number.is_zero() and number.is_signed())
+                or (number == number.to_integral_value() and abs(number) > 9007199254740991)
+                or Decimal(str(converted)) != number
+            ):
+                raise FetchError("JSON contains a number that cannot be preserved safely.", "fetch_json_precision", 422)
+            return int(value) if "." not in value and "e" not in value.lower() else converted
 
         try:
             value = json.loads(
