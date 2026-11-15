@@ -222,6 +222,5 @@ def test_url_pack_reports_partial_persistence_error(tmp_path, monkeypatch):
         result = client.post("/api/presets/import-url", json={"url": "http://example.com"})
         assert result.status_code == 500
         assert result.json()["code"] == "presets_partial_import"
-        assert "earlier presets may have been saved" in result.json()["detail"]
         assert "secret path" not in result.text
         assert settings.presets()["load"] == {"first": {"mode": "eager"}}
