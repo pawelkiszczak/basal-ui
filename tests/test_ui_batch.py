@@ -125,22 +125,23 @@ def test_batch_strips_question_metadata_without_rounding_or_touching_input(tmp_p
     original = (
         '{"state":{"value":0.123456789012345678,"_mcp_source":"business"},'
         '"questions":{"q":{"type":"tool","_mcp_source":{"url":"local"},'
-        '"tools":[{"name":"weather","inputSchema":{"_mcp_source":"schema"}}]}}}\n'
-        "not-json\n"
+        '"tools":[{"name":"weather","inputSchema":{"_mcp_source":"schema"}}]}}}\r\n'
+        "not-json\r\n"
     )
-    source.write_text(original)
+    source.write_bytes(original.encode())
     received = {}
 
     def run(job, module, args):
         path = Path(args[args.index("--input") + 1])
         received["path"] = path
-        received["lines"] = path.read_text().splitlines()
+        received["bytes"] = path.read_bytes()
+        received["lines"] = received["bytes"].decode().splitlines()
         return {"items": 2}
 
     from pathlib import Path
 
     monkeypatch.setattr(batch, "run_tool", run)
-    job = SimpleNamespace(progress=lambda *args: None)
+    job = SimpleNamespace(progress=lambda *args: None, check=lambda: None)
     fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1:1"))
     result = batch.run_batch(job, fleet, "model", source, tmp_path / "out.jsonl")
     row = json.loads(received["lines"][0], parse_float=Decimal)
@@ -148,7 +149,8 @@ def test_batch_strips_question_metadata_without_rounding_or_touching_input(tmp_p
     assert row["state"]["_mcp_source"] == "business"
     assert "_mcp_source" not in row["questions"]["q"]
     assert row["questions"]["q"]["tools"][0]["inputSchema"]["_mcp_source"] == "schema"
-    assert received["lines"][1] == "not-json" and source.read_text() == original
+    assert received["lines"][1] == "not-json" and source.read_bytes() == original.encode()
+    assert received["bytes"].endswith(b"\r\nnot-json\r\n")
     assert result["input"] == str(source) and not received["path"].exists()
 
 
@@ -170,10 +172,152 @@ def test_batch_removes_sanitized_input_when_runner_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(batch, "run_tool", fail)
     with pytest.raises(RuntimeError, match="cancelled"):
         batch.run_batch(
-            SimpleNamespace(progress=lambda *args: None),
+            SimpleNamespace(progress=lambda *args: None, check=lambda: None),
             SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1:1")),
             "model",
             source,
             tmp_path / "out.jsonl",
         )
     assert not owned[0].exists() and source.exists()
+
+
+def test_ordinary_batch_runs_native_when_temp_copy_unavailable(client, child, tmp_path, monkeypatch):
+    from basal_ui import batch
+
+    source = tmp_path / "ordinary.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+
+    def no_temp(*args, **kwargs):
+        raise OSError("temporary storage unavailable")
+
+    monkeypatch.setattr(batch.tempfile, "TemporaryDirectory", no_temp)
+    assert client.post("/api/batch", json={"id": "mini", "input": str(source)}).status_code == 202
+    job = wait_batch(client)
+    assert job["phase"] == "done", job
+    assert len(child.seen) == 1 and job["result"]["input"] == str(source)
+
+
+@pytest.mark.parametrize("checkpoint", [1, 4, 6])
+def test_batch_cancellation_at_scan_copy_and_spawn_boundary(tmp_path, monkeypatch, checkpoint):
+    import threading
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+    from basal_ui.jobs import Cancelled
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"questions":{"q":{"_mcp_source":{"url":"local"}}}}\n{}\n')
+    entered, release = threading.Event(), threading.Event()
+    spawned, errors = [], []
+
+    class Job:
+        calls = 0
+
+        def progress(self, *args):
+            pass
+
+        def check(self):
+            self.calls += 1
+            if self.calls == checkpoint:
+                entered.set()
+                assert release.wait(5)
+                raise Cancelled()
+
+    monkeypatch.setattr(batch.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(batch, "run_tool", lambda *args: spawned.append(True))
+
+    def execute():
+        try:
+            batch.run_batch(
+                Job(),
+                SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1:1")),
+                "m",
+                source,
+                tmp_path / "out",
+            )
+        except Cancelled:
+            errors.append("cancelled")
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    assert entered.wait(5)
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive() and errors == ["cancelled"] and not spawned
+    assert not list(tmp_path.glob("basal-ui-batch-*"))
+
+
+def test_batch_deep_valid_row_reaches_native_input_without_provenance(tmp_path, monkeypatch):
+    from decimal import Decimal
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    state = {"_mcp_source": "business", "value": "leaf"}
+    for _ in range(600):
+        state = {"child": state}
+    body = {
+        "state": state,
+        "questions": {
+            "q": {
+                "_mcp_source": {"url": "local"},
+                "tools": [{"name": "weather", "inputSchema": {"_mcp_source": "schema"}}],
+            }
+        },
+    }
+    row = json.dumps(body).replace('"value": "leaf"', '"value": 0.123456789012345678') + "\n"
+    source = tmp_path / "deep.jsonl"
+    source.write_text(row)
+    observed = []
+
+    def consumer(job, module, args):
+        observed.append(json.loads(Path(args[1]).read_text(), parse_float=Decimal))
+        return {"items": 1}
+
+    monkeypatch.setattr(batch, "run_tool", consumer)
+    batch.run_batch(
+        SimpleNamespace(progress=lambda *args: None, check=lambda: None),
+        SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1:1")),
+        "m",
+        source,
+        tmp_path / "out",
+    )
+    sent = observed[0]
+    leaf = sent["state"]
+    for _ in range(600):
+        leaf = leaf["child"]
+    assert leaf == {"_mcp_source": "business", "value": Decimal("0.123456789012345678")}
+    assert "_mcp_source" not in sent["questions"]["q"]
+    assert sent["questions"]["q"]["tools"][0]["inputSchema"]["_mcp_source"] == "schema"
+    assert source.read_text() == row
+
+
+def test_deep_batch_reaches_fake_child_via_native_cli(client, child, tmp_path):
+    state = {"_mcp_source": "business"}
+    for _ in range(600):
+        state = {"child": state}
+    body = {
+        "state": state,
+        "questions": {
+            "q": {
+                "type": "tool",
+                "_mcp_source": {"url": "local"},
+                "tools": [{"name": "weather", "inputSchema": {"_mcp_source": "schema"}}],
+            }
+        },
+    }
+    original = json.dumps(body) + "\n"
+    source = tmp_path / "deep-native.jsonl"
+    source.write_text(original)
+    assert client.post("/api/batch", json={"id": "mini", "input": str(source)}).status_code == 202
+    job = wait_batch(client)
+    assert job["phase"] == "done", job
+    assert len(child.seen) == 1
+    sent = child.seen[0][1]
+    assert "_mcp_source" not in sent["questions"]["q"]
+    assert sent["questions"]["q"]["tools"][0]["inputSchema"]["_mcp_source"] == "schema"
+    leaf = sent["state"]
+    for _ in range(600):
+        leaf = leaf["child"]
+    assert leaf["_mcp_source"] == "business" and source.read_text() == original

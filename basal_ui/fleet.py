@@ -1,7 +1,6 @@
 """The loaded models: one basal-serve child per Runner, owned by the Fleet with their downloads, logs, jobs, statistics and history."""
 
 import asyncio
-import copy
 import dataclasses
 import hashlib
 import os
@@ -63,11 +62,13 @@ def strip_mcp_metadata(body):
     """Remove UI question provenance without changing the recorded request."""
     if not isinstance(body, dict) or not isinstance(body.get("questions"), dict):
         return body
-    result = copy.deepcopy(body)
-    for question in result["questions"].values():
-        if isinstance(question, dict):
-            question.pop("_mcp_source", None)
-    return result
+    questions = body["questions"]
+    changed = {
+        name: {key: value for key, value in question.items() if key != "_mcp_source"}
+        for name, question in questions.items()
+        if isinstance(question, dict) and "_mcp_source" in question
+    }
+    return {**body, "questions": {**questions, **changed}} if changed else body
 
 
 class Downloads:

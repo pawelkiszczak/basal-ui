@@ -21,14 +21,39 @@ def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, ear
     class Number(str):
         pass
 
-    def encode(value):
-        if isinstance(value, Number):
-            return value
-        if isinstance(value, list):
-            return "[" + ",".join(encode(item) for item in value) + "]"
-        if isinstance(value, dict):
-            return "{" + ",".join(json.dumps(key) + ":" + encode(item) for key, item in value.items()) + "}"
-        return json.dumps(value)
+    def parse(line):
+        try:
+            return json.loads(line, parse_int=Number, parse_float=Number, parse_constant=Number)
+        except json.JSONDecodeError:
+            return None
+
+    def metadata(item):
+        questions = item.get("questions") if isinstance(item, dict) else None
+        return (
+            [question for question in questions.values() if isinstance(question, dict) and "_mcp_source" in question]
+            if isinstance(questions, dict)
+            else []
+        )
+
+    def write_value(target, value):
+        stack = [(False, value)]
+        while stack:
+            raw, item = stack.pop()
+            if raw or isinstance(item, Number):
+                target.write(item)
+            elif isinstance(item, (list, dict)):
+                entries = list(item.items()) if isinstance(item, dict) else list(enumerate(item))
+                target.write("{" if isinstance(item, dict) else "[")
+                stack.append((True, "}" if isinstance(item, dict) else "]"))
+                for index in range(len(entries) - 1, -1, -1):
+                    key, child = entries[index]
+                    if index < len(entries) - 1:
+                        stack.append((True, ","))
+                    stack.append((False, child))
+                    if isinstance(item, dict):
+                        stack.append((True, json.dumps(key) + ":"))
+            else:
+                target.write(json.dumps(item))
 
     args = [
         "--input",
@@ -42,43 +67,42 @@ def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, ear
     ]
     if early_exit:
         args += ["--early-exit", str(early_exit)]
-    with tempfile.TemporaryDirectory(prefix="basal-ui-batch-") as directory:
-        clean_input = Path(directory) / "input.jsonl"
-        total, changed = 0, False
-        with (
-            Path(input_path).open(encoding="utf-8", newline="") as source,
-            clean_input.open("w", encoding="utf-8", newline="") as target,
-        ):
-            for line in source:
-                total += bool(line.strip())
-                try:
-                    item = json.loads(line, parse_int=Number, parse_float=Number, parse_constant=Number)
-                    questions = item.get("questions") if isinstance(item, dict) else None
-                    if isinstance(questions, dict):
-                        removed = False
-                        for question in questions.values():
-                            if isinstance(question, dict) and "_mcp_source" in question:
-                                del question["_mcp_source"]
-                                removed = True
-                        if removed:
-                            ending = (
-                                "\r\n"
-                                if line.endswith("\r\n")
-                                else "\n"
-                                if line.endswith("\n")
-                                else "\r"
-                                if line.endswith("\r")
-                                else ""
-                            )
-                            line = encode(item) + ending
-                            changed = True
-                except (ValueError, TypeError, RecursionError):
-                    pass
-                target.write(line)
-        job.progress("running", 0, total)
-        if changed:
-            args[1] = str(clean_input)
+    total, changed = 0, False
+    with Path(input_path).open(encoding="utf-8", newline="") as source:
+        for line in source:
+            job.check()
+            total += bool(line.strip())
+            if not changed:
+                changed = bool(metadata(parse(line)))
+    job.progress("running", 0, total)
+    job.check()
+    if not changed:
         summary = run_tool(job, "run", args)
+    else:
+        with tempfile.TemporaryDirectory(prefix="basal-ui-batch-") as directory:
+            clean_input = Path(directory) / "input.jsonl"
+            with (
+                Path(input_path).open(encoding="utf-8", newline="") as source,
+                clean_input.open("w", encoding="utf-8", newline="") as target,
+            ):
+                for line in source:
+                    job.check()
+                    item = parse(line)
+                    questions = metadata(item)
+                    if questions:
+                        for question in questions:
+                            del question["_mcp_source"]
+                        write_value(target, item)
+                        if line.endswith("\r\n"):
+                            target.write("\r\n")
+                        elif line.endswith(("\r", "\n")):
+                            target.write(line[-1])
+                    else:
+                        target.write(line)
+            args[1] = str(clean_input)
+            job.check()
+            summary = run_tool(job, "run", args)
+
     if summary is None:
         raise RuntimeError("basal-run printed no summary")
     job.progress("running", total, total)

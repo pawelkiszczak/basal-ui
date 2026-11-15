@@ -487,3 +487,58 @@ def test_shortlist_large_sparse_query_keeps_original_forms_and_stable_ties():
     result = mcp_import.shortlist(tools, query, 3)
     assert result == [tools[700], tools[0], tools[1]]
     assert result[0] is tools[700]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_deep_request_forwarding_preserves_recorded_request(tmp_path, monkeypatch, asynchronous):
+    import asyncio
+
+    import httpx
+
+    from tests.test_ui_app import make_fleet
+
+    nested = {"_mcp_source": "business"}
+    for _ in range(600):
+        nested = {"child": nested}
+    body = {
+        "state": nested,
+        "questions": {
+            "q": {
+                "type": "tool",
+                "_mcp_source": {"url": "local"},
+                "tools": [{"name": "x", "inputSchema": {"_mcp_source": "schema"}}],
+            }
+        },
+    }
+    body = json.loads(json.dumps(body))
+    nested = body["state"]
+    sent = []
+
+    class Runner:
+        def decide(self, request, path):
+            sent.append(request)
+            return httpx.Response(200, json={"answers": {}})
+
+        async def adecide(self, client, request, path):
+            return self.decide(request, path)
+
+    runner = Runner()
+    fleet = make_fleet(tmp_path)
+    fleet.stats = None
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(fleet, "ready", lambda _: runner)
+    if asynchronous:
+        asyncio.run(fleet.adecide("model", body))
+    else:
+        fleet.decide("model", body)
+    assert "_mcp_source" not in sent[0]["questions"]["q"]
+    assert sent[0]["state"] is nested and body["questions"]["q"]["_mcp_source"] == {"url": "local"}
+    assert sent[0]["questions"]["q"]["tools"][0]["inputSchema"]["_mcp_source"] == "schema"
+    records = fleet.history.list()
+    assert len(records) == 1
+    recorded = fleet.history.get(records[0]["id"])["request"]
+    assert recorded["questions"]["q"]["_mcp_source"] == {"url": "local"}
+    leaf = recorded["state"]
+    for _ in range(600):
+        leaf = leaf["child"]
+    assert leaf["_mcp_source"] == "business"
