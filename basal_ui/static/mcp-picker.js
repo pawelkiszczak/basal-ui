@@ -58,6 +58,7 @@ function toolBudgetError(request, model) {
       JSON.stringify([...s.card.querySelectorAll('[data-extra]')].map(x => x.checked)) === s.extras;
   }
   function merged() {
+    if (state.ranked) return state.ranked.filter(item => state.selected.has(toolName(item)));
     const out = [...state.original], positions = new Map(out.map((x, i) => [toolName(x), i]));
     for (const item of state.items.filter(x => state.selected.has(x.name))) {
       const index = positions.get(item.name);
@@ -67,14 +68,15 @@ function toolBudgetError(request, model) {
   }
   function render() {
     if (!state) return;
-    get('list').innerHTML = state.items.map((item, i) => `<label class="mcp-item"><input type="checkbox" data-index="${i}" ${state.selected.has(item.name) ? 'checked' : ''}><span><strong>${esc(item.name)}</strong><br>${esc(item.description || '')}</span></label>`).join('');
+    const displayed = state.ranked || state.items;
+    get('list').innerHTML = displayed.map((item, i) => {const def=toolDefinition(item), name=toolName(item); return `<label class="mcp-item"><input type="checkbox" data-index="${i}" ${state.selected.has(name) ? 'checked' : ''}><span><strong>${esc(name)}</strong><br>${esc(def.description || '')}</span></label>`;}).join('');
     const total = merged().length, extras = JSON.parse(state.extras).filter(Boolean).length, limit = toolLimit(state.model);
     const clashes = merged().some(item => [...state.card.querySelectorAll('[data-extra]:checked')].some(extra => extra.dataset.extra === toolName(item)));
     get('status').textContent = t('{selected} selected, {total} merged tools.', {selected:state.selected.size,total}) + ' ' +
       (limit ? t('{remaining} option slots remaining.', {remaining:limit-total-extras}) : t('Active prompt format is unknown; option limit cannot be checked.')) +
       (total > 50 ? ' ' + t('More than 50 tools: shortlist first.') : '') +
       (limit !== null && total + extras > limit ? ' ' + t('Tools and other options exceed the active model limit of {limit}.', {limit}) : '');
-    get('apply').disabled = !state.items.length || clashes || (limit !== null && total + extras > limit);
+    get('apply').disabled = !(state.ranked || state.items).length || clashes || (limit !== null && total + extras > limit);
     if (clashes) error(t('A tool name clashes with another enabled option.'));
   }
   function error(message) { get('error').textContent = message; }
@@ -94,19 +96,19 @@ function toolBudgetError(request, model) {
     let original; try { original = text.trim() ? JSON.parse(text) : []; if (!Array.isArray(original) || original.some(x => !validTool(x)) || new Set(original.map(toolName)).size !== original.length) throw Error(); }
     catch { toast(t('Fix the tools JSON before importing.'), 'error'); return; }
     const source = card._extra?._mcp_source;
-    state = {card, opener:button, name:$('.q-name',card).value, toolsText:text, instructions:$('.q-instructions-input',card).value, model:$('#playgroundModel').value, extras:JSON.stringify([...card.querySelectorAll('[data-extra]')].map(x=>x.checked)), original, items:[], selected:new Set(), remembered:source};
+    state = {card, opener:button, name:$('.q-name',card).value, toolsText:text, instructions:$('.q-instructions-input',card).value, model:$('#playgroundModel').value, extras:JSON.stringify([...card.querySelectorAll('[data-extra]')].map(x=>x.checked)), original, items:[], selected:new Set(), remembered:source, imported:false, ranked:null};
     get('url').value = typeof source?.url === 'string' ? source.url : ''; state.url = get('url').value;
     get('token').value = ''; get('k').value = '40'; error(''); render(); dialog.showModal(); get('url').focus();
   });
   document.addEventListener('input', event => { if (state && (state.card.contains(event.target) || event.target.matches('#playgroundModel, #requestJson'))) { state.stale = true; invalidate(); error(t('Question changed. Close and reopen the picker.')); } });
   document.addEventListener('change', event => { if (state && (state.card.contains(event.target) || event.target.matches('#playgroundModel, #editJsonToggle, #examples'))) { state.stale = true; invalidate(); error(t('Question changed. Close and reopen the picker.')); } });
-  get('url').addEventListener('input', () => { invalidate(); if (state) { state.url = get('url').value; state.items = []; state.selected.clear(); render(); } });
-  get('import').onclick = () => { const s=state, token=get('token').value, url=get('url').value; s.url=url; operation('/api/mcp/tools', {url,...(token ? {token} : {})}, result => { s.items=result.tools; s.selected=new Set(s.remembered?.url === url && Array.isArray(s.remembered.selected) ? s.items.filter(x=>s.remembered.selected.includes(x.name)).map(x=>x.name) : s.items.map(x=>x.name)); }); };
-  get('all').onclick = () => { invalidate(); state.selected = new Set(state.items.map(x=>x.name)); render(); };
+  get('url').addEventListener('input', () => { invalidate(); if (state) { state.url = get('url').value; state.items = []; state.selected.clear(); state.ranked = null; state.imported = false; render(); } });
+  get('import').onclick = () => { const s=state, token=get('token').value, url=get('url').value; s.url=url; operation('/api/mcp/tools', {url,...(token ? {token} : {})}, result => { if (s.ranked) s.original=merged(); s.ranked=null; s.imported=true; s.items=result.tools; s.selected=new Set(s.remembered?.url === url && Array.isArray(s.remembered.selected) ? s.items.filter(x=>s.remembered.selected.includes(x.name)).map(x=>x.name) : s.items.map(x=>x.name)); }); };
+  get('all').onclick = () => { invalidate(); state.selected = new Set((state.ranked || state.items).map(toolName)); render(); };
   get('none').onclick = () => { invalidate(); state.selected.clear(); render(); };
-  get('list').onchange = event => { invalidate(); const item=state.items[Number(event.target.dataset.index)]; if (!item) return; event.target.checked ? state.selected.add(item.name) : state.selected.delete(item.name); render(); };
-  get('shortlist').onclick = () => { const s=state, k=Number(get('k').value), limit=toolLimit(s.model), extras=JSON.parse(s.extras).filter(Boolean).length; if (!Number.isInteger(k) || k<1 || k>255 || (limit && k>limit-extras)) return error(t('Choose K within the remaining option limit.')); operation('/api/tools/shortlist', {tools:s.items, query:s.instructions, k}, result => { const previous=s.selected; s.selected=new Set(result.tools.map(x=>x.name)); if (limit && merged().length+extras>limit) { s.selected=previous; error(t('Choose K within the remaining option limit.')); } }); };
-  get('apply').onclick = () => { const s=state; if (!current(s)) return error(t('Question changed. Close and reopen the picker.')); const result=merged(), limit=toolLimit(s.model), extras=JSON.parse(s.extras).filter(Boolean).length; if (limit && result.length+extras>limit) return error(t('Tools and other options exceed the active model limit of {limit}.', {limit})); $('[data-f="tools"]',s.card).value=JSON.stringify(result,null,2); s.card._extra._mcp_source={url:s.url,selected:[...s.selected]}; if (s.card._orig?.type === 'tool') s.card._orig.q._mcp_source = structuredClone(s.card._extra._mcp_source); syncRequest(); close(); };
+  get('list').onchange = event => { invalidate(); const item=(state.ranked || state.items)[Number(event.target.dataset.index)]; if (!item) return; const name=toolName(item); event.target.checked ? state.selected.add(name) : state.selected.delete(name); render(); };
+  get('shortlist').onclick = () => { const s=state, k=Number(get('k').value), limit=toolLimit(s.model), extras=JSON.parse(s.extras).filter(Boolean).length; if (!Number.isInteger(k) || k<1 || k>255 || (limit && k>limit-extras)) return error(t('Choose K within the remaining option limit.')); const tools=merged(); operation('/api/tools/shortlist', {tools, query:s.instructions, k}, result => { s.ranked=result.tools; s.selected=new Set(result.tools.map(toolName)); }); };
+  get('apply').onclick = () => { const s=state; if (!current(s)) return error(t('Question changed. Close and reopen the picker.')); const result=merged(), limit=toolLimit(s.model), extras=JSON.parse(s.extras).filter(Boolean).length; if (limit && result.length+extras>limit) return error(t('Tools and other options exceed the active model limit of {limit}.', {limit})); $('[data-f="tools"]',s.card).value=JSON.stringify(result,null,2); const names=new Set(result.map(toolName)); const source=s.imported?{url:s.url,selected:[...s.selected].filter(n=>s.items.some(item=>toolName(item)===n))}:s.remembered; if(source && typeof source.url==='string' && Array.isArray(source.selected)) s.card._extra._mcp_source={url:source.url,selected:source.selected.filter(n=>names.has(n))}; if (s.card._orig?.type === 'tool') { if(s.card._extra._mcp_source) s.card._orig.q._mcp_source=structuredClone(s.card._extra._mcp_source); else delete s.card._orig.q._mcp_source; } syncRequest(); close(); };
   get('close').onclick = close;
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
 })();

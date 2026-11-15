@@ -91,23 +91,42 @@ def list_tools(body):
                 return None
             kind = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
             if kind == "text/event-stream":
-                lines = []
+                lines, line = [], bytearray()
+                after_cr = False
                 while True:
-                    line = response.readline(budget + 1)
-                    budget -= len(line)
+                    chunk = response.read1(min(4096, budget + 1))
+                    budget -= len(chunk)
                     if budget < 0:
                         fail("MCP responses exceed 4 MiB.", "mcp_too_large", 413)
-                    if not line:
+                    if not chunk:
                         fail("MCP stream ended before its response.")
-                    if line in (b"\n", b"\r\n"):
-                        if lines:
-                            message = decode(b"\n".join(lines))
-                            lines = []
-                            if isinstance(message, dict) and message.get("id") == ident:
-                                break
-                    elif line.startswith(b"data:"):
-                        value = line[5:].rstrip(b"\r\n")
-                        lines.append(value[1:] if value.startswith(b" ") else value)
+                    for byte in chunk:
+                        if after_cr and byte == 10:
+                            after_cr = False
+                            continue
+                        after_cr = False
+                        if byte in (10, 13):
+                            after_cr = byte == 13
+                            if not line:
+                                if lines:
+                                    message = decode(b"\n".join(lines))
+                                    lines = []
+                                    if (
+                                        isinstance(message, dict)
+                                        and "method" not in message
+                                        and type(message.get("id")) is int
+                                        and message["id"] == ident
+                                    ):
+                                        break
+                            elif line.startswith(b"data:"):
+                                value = bytes(line[5:])
+                                lines.append(value[1:] if value.startswith(b" ") else value)
+                            line.clear()
+                        else:
+                            line.append(byte)
+                    else:
+                        continue
+                    break
             elif kind == "application/json" or kind.endswith("+json"):
                 data = response.read(budget + 1)
                 budget -= len(data)
@@ -227,8 +246,7 @@ def shortlist(tools, query, k=40):
         norm = 1.2 * (0.25 + 0.75 * length / average)
         return sum(
             math.log(1 + (len(documents) - df[t] + 0.5) / (df[t] + 0.5)) * counts[t] * 2.2 / (counts[t] + norm)
-            for t in terms
-            if counts[t]
+            for t in counts.keys() & terms
         )
 
     return [tools[i] for i in sorted(range(len(tools)), key=lambda i: -score(documents[i]))[:k]]

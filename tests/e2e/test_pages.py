@@ -1865,3 +1865,22 @@ def test_mcp_language_draft_keeps_offline_tools_without_token(page):
     page.locator("#mcp-close").click()
     page.evaluate("() => restorePlaygroundLanguageDraft()")
     assert page.evaluate("() => buildRequest()") == request
+
+
+def test_mcp_picker_shortlists_existing_tools_offline(page):
+    view(page, "playground")
+    tools = [{"name": f"tool{i}", "description": "ordinary", "inputSchema": {}} for i in range(12)]
+    tools[8] = {"type": "function", "function": {"name": "weather", "description": "forecast", "parameters": {}}}
+    source = {"url": "http://localhost:9000/mcp", "selected": ["weather", "tool0"]}
+    page.evaluate(
+        "([tools, source]) => setRequest({state:'x',questions:{q:{type:'tool',instructions:'forecast',tools,_mcp_source:source}}})",
+        [tools, source],
+    )
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-k").fill("2")
+    page.locator("#mcp-shortlist").click()
+    sync_api.expect(page.locator(".mcp-item")).to_have_count(2)
+    page.locator("#mcp-apply").click()
+    question = page.evaluate("() => buildRequest().questions.q")
+    assert question["tools"] == [tools[8], tools[0]]
+    assert question["_mcp_source"] == source

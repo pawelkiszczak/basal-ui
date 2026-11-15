@@ -113,3 +113,67 @@ def test_batch_refuses_bad_input(client, tmp_path, body, status, message):
     body = {**body, "input": {"GOOD": str(good), "BAD": str(bad)}.get(body["input"], body["input"])}
     response = client.post("/api/batch", json=body)
     assert response.status_code == status and message in response.json()["detail"]
+
+
+def test_batch_strips_question_metadata_without_rounding_or_touching_input(tmp_path, monkeypatch):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    source = tmp_path / "source.jsonl"
+    original = (
+        '{"state":{"value":0.123456789012345678,"_mcp_source":"business"},'
+        '"questions":{"q":{"type":"tool","_mcp_source":{"url":"local"},'
+        '"tools":[{"name":"weather","inputSchema":{"_mcp_source":"schema"}}]}}}\n'
+        "not-json\n"
+    )
+    source.write_text(original)
+    received = {}
+
+    def run(job, module, args):
+        path = Path(args[args.index("--input") + 1])
+        received["path"] = path
+        received["lines"] = path.read_text().splitlines()
+        return {"items": 2}
+
+    from pathlib import Path
+
+    monkeypatch.setattr(batch, "run_tool", run)
+    job = SimpleNamespace(progress=lambda *args: None)
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1:1"))
+    result = batch.run_batch(job, fleet, "model", source, tmp_path / "out.jsonl")
+    row = json.loads(received["lines"][0], parse_float=Decimal)
+    assert row["state"]["value"] == Decimal("0.123456789012345678")
+    assert row["state"]["_mcp_source"] == "business"
+    assert "_mcp_source" not in row["questions"]["q"]
+    assert row["questions"]["q"]["tools"][0]["inputSchema"]["_mcp_source"] == "schema"
+    assert received["lines"][1] == "not-json" and source.read_text() == original
+    assert result["input"] == str(source) and not received["path"].exists()
+
+
+def test_batch_removes_sanitized_input_when_runner_fails(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"questions":{"q":{"_mcp_source":{"url":"local"}}}}\n')
+    owned = []
+
+    def fail(job, module, args):
+        owned.append(Path(args[args.index("--input") + 1]))
+        assert owned[0].exists()
+        raise RuntimeError("cancelled")
+
+    monkeypatch.setattr(batch, "run_tool", fail)
+    with pytest.raises(RuntimeError, match="cancelled"):
+        batch.run_batch(
+            SimpleNamespace(progress=lambda *args: None),
+            SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1:1")),
+            "model",
+            source,
+            tmp_path / "out.jsonl",
+        )
+    assert not owned[0].exists() and source.exists()

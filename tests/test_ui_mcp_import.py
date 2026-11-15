@@ -235,8 +235,8 @@ def test_stream_events_and_cursor_loop(monkeypatch):
         def getheader(self, name, default=None):
             return {"Content-Type": "text/event-stream"}.get(name, default)
 
-        def readline(self, size):
-            return self.stream.readline(size)
+        def read1(self, size):
+            return self.stream.read(min(size, 3))
 
         def close(self):
             pass
@@ -415,15 +415,75 @@ def test_manager_deadline_reaps_worker(monkeypatch):
 
         class Request:
             async def is_disconnected(self):
+                if started.is_set():
+                    monkeypatch.setattr(loop, "time", lambda: real_time() + fetch.TIMEOUT_S + 1)
                 return False
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-        monkeypatch.setattr(fetch, "TIMEOUT_S", 0.2)
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
         manager = fetch.FetchManager("basal_ui.mcp_import")
         with pytest.raises(FetchError) as error:
             await manager.run({"url": "http://localhost/mcp"}, Request())
         assert error.value.code == "fetch_timeout"
         assert started.is_set() and killed.is_set() and not manager.tasks
+        monkeypatch.setattr(loop, "time", real_time)
         await manager.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("ending", [b"\n", b"\r", b"\r\n"])
+def test_sse_ignores_server_request_with_matching_id_and_returns_before_eof(monkeypatch, ending):
+    import socket
+
+    class Response:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def getheader(self, name, default=None):
+            return {"Content-Type": "text/event-stream"}.get(name, default)
+
+        def read1(self, size):
+            assert self.payload, "matching response should return without waiting for EOF"
+            chunk, self.payload = self.payload[:1], self.payload[1:]
+            return chunk
+
+    class Connection:
+        def __init__(self, *args):
+            pass
+
+        def request(self, method, path, body=None, headers=None):
+            self.message = json.loads(body)
+
+        def getresponse(self):
+            request = self.message
+            if request["method"] == "notifications/initialized":
+                return Response(b"")
+            ident = request["id"]
+            result = (
+                {"protocolVersion": "2025-03-26"} if ident == 1 else {"tools": [{"name": "weather", "inputSchema": {}}]}
+            )
+            server_request = json.dumps({"jsonrpc": "2.0", "id": ident, "method": "sampling/createMessage"}).encode()
+            response = json.dumps({"jsonrpc": "2.0", "id": ident, "result": result}).encode()
+            return Response(b"data: " + server_request + ending * 2 + b"data: " + response + ending * 2)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80))]
+    )
+    monkeypatch.setattr(mcp_import, "_Connection", Connection)
+    assert mcp_import.list_tools({"url": "http://localhost/mcp"}) == {"tools": [{"name": "weather", "inputSchema": {}}]}
+
+
+def test_shortlist_large_sparse_query_keeps_original_forms_and_stable_ties():
+    tools = [{"name": f"tool{i}", "description": "ordinary", "inputSchema": {}} for i in range(1000)]
+    tools[700] = {"type": "function", "function": {"name": "weather", "description": "forecast", "parameters": {}}}
+    query = " ".join(f"absent{i}" for i in range(5000)) + " forecast"
+    result = mcp_import.shortlist(tools, query, 3)
+    assert result == [tools[700], tools[0], tools[1]]
+    assert result[0] is tools[700]
