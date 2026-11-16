@@ -120,7 +120,7 @@ def test_forwarding_counts_and_records_api_decisions(fleet):
 
 
 def test_a_history_write_error_does_not_fail_the_api_answer(fleet, monkeypatch):
-    def full_disk(record):
+    def full_disk(record, **_kwargs):
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(fleet.history, "append", full_disk)
@@ -393,3 +393,18 @@ def test_port_in_use_is_reported_and_lan_url_is_used_for_all_interfaces(fleet, m
     assert gateway.status()["url"] == "http://192.0.2.10:8123"
     gateway.status()
     assert calls == [1]
+
+
+def test_async_gateway_retains_audio_only_when_enabled(fleet):
+    body = {"model": "b/two", "state": {"data": "ordinary"}, "questions": {}, "audio": ["data:audio/wav;base64,QUJD"]}
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        assert client.post("/v1/systemone", json=body).status_code == 200
+        settings.set_keep_history_audio(True)
+        assert client.post("/v1/systemone", json=body).status_code == 200
+        settings.set_keep_history_audio(False)
+        assert client.post("/v1/systemone", json=body).status_code == 200
+    rows = fleet.history.list(order="asc")
+    assert fleet.history.detail(rows[0]["id"], True)["replay_request"] is None
+    assert fleet.history.detail(rows[1]["id"], True)["replay_request"] == body
+    assert fleet.history.detail(rows[2]["id"], True)["replay_request"] is None
+    assert "QUJD" not in str(fleet.history.detail(rows[1]["id"]))

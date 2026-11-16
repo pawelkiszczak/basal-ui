@@ -447,3 +447,9 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+## History audio retention
+
+`GET /api/settings` returns `keep_history_audio` (default `false`) and the read-only `history_audio_budget_bytes` (268435456). `PUT /api/settings` accepts the boolean `keep_history_audio`; disabling it preserves existing retained audio. The oldest audio expires when the budget is needed, while History rows remain. Images are not retained and clearing History deletes retained audio.
+
+History lists and ordinary `GET /api/history/{id}` remain redacted. A detail can indicate `replay_requires_audio: true`; only an explicit `GET /api/history/{id}?replay=true` requests the complete replay payload. If retained audio is unavailable, `replay_error_code` is `history_audio_unavailable`; missing images can also prevent Replay. No audio bytes are loaded by routine History polling.

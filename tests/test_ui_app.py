@@ -1178,3 +1178,81 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_history_audio_settings_and_explicit_replay(tmp_path):
+    app, fleet = app_for(tmp_path, [])
+    body = {"state": "business", "audio": ["data:audio/wav;base64,QUJD"]}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/settings").json()["keep_history_audio"] is False
+        assert client.get("/api/settings").json()["history_audio_budget_bytes"] == 268435456
+        assert client.put("/api/settings", json={"keep_history_audio": 1}).status_code == 400
+        assert client.put("/api/settings", json={"keep_history_audio": True}).json()["keep_history_audio"] is True
+        fleet._record("mini", body, "/v1/systemone", "playground", 200, {}, 1)
+        item = client.get("/api/history").json()["items"][0]
+        normal_response = client.get("/api/history/" + item["id"])
+        assert normal_response.headers["cache-control"] == "no-store"
+        normal = normal_response.json()
+        assert normal["replay_requires_audio"] and "QUJD" not in str(normal)
+        replay_response = client.get("/api/history/" + item["id"], params={"replay": "true"})
+        assert replay_response.headers["cache-control"] == "no-store"
+        replay = replay_response.json()
+        assert replay["replay_request"]["audio"] == body["audio"]
+        assert "QUJD" not in str(replay["request"])
+        client.put("/api/settings", json={"keep_history_audio": False})
+        assert client.get("/api/history/" + item["id"], params={"replay": "true"}).json()["replay_request"]
+
+
+def test_async_recording_does_not_block_loop_and_drains_on_cancellation(tmp_path, monkeypatch):
+    import asyncio
+
+    fleet = make_fleet(tmp_path)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def record(*_args):
+        entered.set()
+        release.wait()
+        finished.set()
+
+    monkeypatch.setattr(fleet, "_record", record)
+
+    async def exercise():
+        task = asyncio.create_task(fleet._arecord())
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+        fleet.shutdown()
+
+
+def test_sync_fleet_audio_recording_and_storage_failure_preserve_answer(tmp_path, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    runner = Runner()
+    runner.state, runner.model = "ready", "mini"
+    fleet.runners["mini"] = runner
+    sent = []
+
+    def decide(_runner, body, path):
+        sent.append((body, path))
+        return httpx.Response(200, json={"answers": {}})
+
+    monkeypatch.setattr(Runner, "decide", decide)
+    settings.set_keep_history_audio(True)
+    body = {"state": {"data": "ordinary"}, "media": [{"type": "audio", "data": "QUJD"}]}
+    assert fleet.decide("mini", body).status_code == 200
+    row = fleet.history.list()[0]
+    assert fleet.history.detail(row["id"], True)["replay_request"] == {"model": "mini", **body}
+    assert sent == [(body, "/v1/systemone")]
+    monkeypatch.setattr(fleet.history, "append", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("failed")))
+    assert fleet.decide("mini", body).status_code == 200
+    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    assert not fleet.leases and not fleet.inflight

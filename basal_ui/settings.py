@@ -94,6 +94,20 @@ def set_check_updates(enabled: bool) -> bool:
     return enabled
 
 
+def keep_history_audio() -> bool:
+    return load().get("keep_history_audio") is True
+
+
+@_locked
+def set_keep_history_audio(enabled: bool) -> bool:
+    if not isinstance(enabled, bool):
+        raise ValueError("keep_history_audio must be a boolean")
+    data = load()
+    data["keep_history_audio"] = enabled
+    save(data)
+    return enabled
+
+
 def presets() -> dict:
     value = load().get("presets")
     value = value if isinstance(value, dict) else {}

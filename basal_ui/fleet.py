@@ -817,9 +817,14 @@ class Fleet:
                 self.stats.record(model_id, data, latency_ms, ok=200 <= status < 300, endpoint=endpoint, method=method)
             if self.history is not None:
                 request = {"model": model_id, **body} if path == "/v1/systemone" else body
-                self.history.append(make_record(model_id, source, request, status, data, latency_ms))
+                self.history.append(
+                    make_record(model_id, source, request, status, data, latency_ms),
+                    body=request,
+                    keep_audio=self.settings_mod.keep_history_audio,
+                )
         except OSError as exc:
-            self.event("error", f"decision not recorded: {exc}")
+            message = f"[Errno {exc.errno}] {os.strerror(exc.errno)}" if exc.errno else "storage failed"
+            self.event("error", f"decision not recorded: {message}")
 
     @staticmethod
     def _json(response):
@@ -904,6 +909,14 @@ class Fleet:
             )
             return response
 
+    async def _arecord(self, *args):
+        task = asyncio.create_task(asyncio.to_thread(self._record, *args))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
     async def adecide(
         self, model_id, body, path="/v1/systemone", source="api", client=None, endpoint=None, method="POST"
     ):
@@ -912,8 +925,7 @@ class Fleet:
             try:
                 response = await runner.adecide(client, body, path)
             except httpx.HTTPError as exc:
-                await asyncio.to_thread(
-                    self._record,
+                await self._arecord(
                     model_id,
                     body,
                     path,
@@ -926,8 +938,7 @@ class Fleet:
                 )
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
-            await asyncio.to_thread(
-                self._record,
+            await self._arecord(
                 model_id,
                 body,
                 path,

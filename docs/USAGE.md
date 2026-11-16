@@ -160,6 +160,14 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   because they refer to spans in the state's text; the raw JSON request still rejects evidence with media. Inspect's
   example list leaves the media examples out (the lens reads text only).
 
+## Recording audio in the Playground
+
+Select a ready model loaded with audio support and choose **Record audio**. The browser asks for microphone permission only after this action; HTTPS or a loopback address and a supported browser are required. The meter shows the microphone input and does not play it through speakers. Press **Stop recording** or Escape to finish; leaving the Playground cancels the recording. Changing the request, attachments or selected model cancels unfinished work. Sending is unavailable until capture and preparation finish. A clip is appended to existing attachments and can be played, renamed or removed. It uses mono 16 kHz signed 16-bit PCM WAV and the ordinary model, eight-item and 20 MiB-per-file checks.
+
+The capture automatically stops before 30 seconds: this conservative ceiling assumes the current Omni audio window, since a window is not exposed by model metadata. Longer or empty decoded clips are refused rather than truncated. Switching UI language drops attachments with a warning, including recorded clips.
+
+**Settings → Memory & storage → Keep audio in History** is off by default. When enabled and saved, History retains audio only, up to its displayed 256 MiB budget. Oldest clips expire as needed while their History rows remain; turning it off stops new retention but keeps existing audio. Clear History deletes retained audio. Images are never retained, and audio is retrieved only when Replay is selected. Saved request presets can include audio independently of this setting.
+
 ## Playground comparison, API examples and calibration evidence
 
 **Compare loaded models** runs the current request against two different ready models. Both receive the same

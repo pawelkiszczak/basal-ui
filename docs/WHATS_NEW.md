@@ -1,5 +1,7 @@
 # Unreleased
 
+- Record audio in the Playground as a playable PCM WAV attachment, with an opt-in bounded audio-only History retention setting and on-demand Replay. [Usage](USAGE.md#recording-audio-in-the-playground)
+
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)
