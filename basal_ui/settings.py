@@ -94,18 +94,45 @@ def set_check_updates(enabled: bool) -> bool:
     return enabled
 
 
+class HistoryAudioPolicyError(OSError):
+    """The saved audio policy cannot be read or changed safely."""
+
+
+def _audio_policy_data():
+    try:
+        value = json.loads(_settings_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise HistoryAudioPolicyError("History audio policy unavailable") from exc
+    if not isinstance(value, dict) or (
+        "keep_history_audio" in value and not isinstance(value["keep_history_audio"], bool)
+    ):
+        raise HistoryAudioPolicyError("History audio policy unavailable")
+    return value
+
+
 def keep_history_audio() -> bool:
-    return load().get("keep_history_audio") is True
+    try:
+        return _locked(lambda: _audio_policy_data().get("keep_history_audio", False))()
+    except OSError as exc:
+        raise HistoryAudioPolicyError("History audio policy unavailable") from exc
 
 
-@_locked
 def set_keep_history_audio(enabled: bool) -> bool:
     if not isinstance(enabled, bool):
         raise ValueError("keep_history_audio must be a boolean")
-    data = load()
-    data["keep_history_audio"] = enabled
-    save(data)
-    return enabled
+
+    def update():
+        data = _audio_policy_data()
+        data["keep_history_audio"] = enabled
+        save(data)
+        return enabled
+
+    try:
+        return _locked(update)()
+    except (OSError, CorruptSettings) as exc:
+        raise HistoryAudioPolicyError("History audio policy unavailable") from exc
 
 
 def presets() -> dict:

@@ -62,7 +62,7 @@ def _directory(path):
     return fd
 
 
-def _valid(record, ref):
+def valid_ref(record, ref):
     return (
         isinstance(ref, dict)
         and isinstance(ref.get("name"), str)
@@ -75,9 +75,24 @@ def _valid(record, ref):
     )
 
 
+def _matches(fd, ref):
+    if not isinstance(ref.get("dev"), int) or not isinstance(ref.get("ino"), int):
+        return False
+    try:
+        info = os.stat(ref["name"], dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(info.st_mode)
+        and info.st_nlink == 1
+        and info.st_uid == os.getuid()
+        and (info.st_dev, info.st_ino) == (ref["dev"], ref["ino"])
+    )
+
+
 def remove(fd, record):
     ref = record.get("_audio")
-    if _valid(record, ref):
+    if valid_ref(record, ref) and _matches(fd, ref):
         with contextlib.suppress(FileNotFoundError):
             os.unlink(ref["name"], dir_fd=fd)
 
@@ -91,33 +106,64 @@ def usage(fd):
     return total
 
 
-def write(fd, record, body, records, path):
+def reserve(path, record, body, records):
     values = [value for _, value in audio_paths(body)]
-    if not values:
-        return
     data = json.dumps(values, ensure_ascii=False).encode("utf-8")
     if len(data) > BUDGET:
         raise OSError("History audio exceeds the storage budget")
-    used = usage(fd)
-    for old in records:
-        if used + len(data) <= BUDGET:
-            break
-        ref = old.get("_audio")
-        if _valid(old, ref):
-            remove(fd, old)
-            used = usage(fd)
-    if used + len(data) > BUDGET:
-        raise OSError("History audio storage budget is full")
-    name = record["id"] + "_" + uuid.uuid4().hex
-    blob = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=fd)
-    record["_audio"] = {"name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    fd = _directory(path)
+    blob = None
     try:
-        with os.fdopen(blob, "wb") as f:
-            journal_add(path, [record])
-            f.write(data)
+        used = usage(fd)
+        evicted = []
+        for old in records:
+            if used + len(data) <= BUDGET:
+                break
+            ref = old.get("_audio")
+            if valid_ref(old, ref) and _matches(fd, ref):
+                used -= os.stat(ref["name"], dir_fd=fd, follow_symlinks=False).st_size
+                evicted.append(old)
+        if used + len(data) > BUDGET:
+            raise OSError("History audio storage budget is full")
+        name = record["id"] + "_" + uuid.uuid4().hex
+        blob = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=fd)
+        info = os.fstat(blob)
+        record["_audio"] = {
+            "name": name,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "dev": info.st_dev,
+            "ino": info.st_ino,
+        }
+        journal_add(path, [record])
+        return fd, blob, evicted, data
     except BaseException:
-        os.unlink(name, dir_fd=fd)
+        if blob is not None:
+            os.close(blob)
+            remove(fd, record)
+            record.pop("_audio", None)
+        os.close(fd)
         raise
+
+
+def fill(path, record, reservation):
+    fd, blob, _, data = reservation
+    ref = record["_audio"]
+    if not _matches(fd, ref) or usage(fd) + len(data) > BUDGET:
+        raise OSError("History audio storage is unavailable")
+    with os.fdopen(os.dup(blob), "wb") as stream:
+        stream.write(data)
+
+
+def close_reservation(path, record, reservation, committed):
+    fd, blob, _, _ = reservation
+    try:
+        if not committed:
+            remove(fd, record)
+            record.pop("_audio", None)
+    finally:
+        os.close(blob)
+        os.close(fd)
 
 
 def _journal(path):
@@ -131,7 +177,7 @@ def _pending(path):
         return []
     except (ValueError, UnicodeError) as exc:
         raise OSError("Invalid History audio cleanup journal") from exc
-    if not isinstance(value, list) or any(not isinstance(r, dict) or not _valid(r, r.get("_audio")) for r in value):
+    if not isinstance(value, list) or any(not isinstance(r, dict) or not valid_ref(r, r.get("_audio")) for r in value):
         raise OSError("Invalid History audio cleanup journal")
     return value
 
@@ -139,7 +185,7 @@ def _pending(path):
 def journal_add(path, records):
     from . import settings
 
-    additions = [{"id": r["id"], "_audio": r["_audio"]} for r in records if _valid(r, r.get("_audio"))]
+    additions = [{"id": r["id"], "_audio": r["_audio"]} for r in records if valid_ref(r, r.get("_audio"))]
     if additions:
         settings._write_private(_journal(path), json.dumps(_pending(path) + additions))
 
@@ -150,7 +196,7 @@ def cleanup(path, records):
     pending = _pending(path)
     if not pending:
         return
-    live = {r.get("_audio", {}).get("name") for r in records if _valid(r, r.get("_audio"))}
+    live = {r.get("_audio", {}).get("name") for r in records if valid_ref(r, r.get("_audio"))}
     fd = _directory(path)
     try:
         for record in pending:
@@ -163,24 +209,30 @@ def cleanup(path, records):
 
 def available(fd, record):
     ref = record.get("_audio")
-    if not _valid(record, ref):
+    if not valid_ref(record, ref):
         return False
     try:
         info = os.stat(ref["name"], dir_fd=fd, follow_symlinks=False)
-        return stat.S_ISREG(info.st_mode) and info.st_size == ref["size"]
+        return _matches(fd, ref) and info.st_size == ref["size"]
     except OSError:
         return False
 
 
 def restore(fd, record):
     ref = record.get("_audio")
-    if not _valid(record, ref):
+    if not valid_ref(record, ref):
         return None
     try:
         blob = os.open(ref["name"], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd)
         with os.fdopen(blob, "rb") as f:
             info = os.fstat(f.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size != ref["size"]:
+            if (
+                not _matches(fd, ref)
+                or (info.st_dev, info.st_ino) != (ref.get("dev"), ref.get("ino"))
+                or info.st_nlink != 1
+                or info.st_uid != os.getuid()
+                or info.st_size != ref["size"]
+            ):
                 return None
             data = f.read(ref["size"] + 1)
         if hashlib.sha256(data).hexdigest() != ref["sha256"]:

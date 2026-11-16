@@ -125,12 +125,12 @@ def make_record(model, source, body, status, response_json, latency_ms) -> dict:
 
 
 def _summary(record: dict) -> dict:
-    return {k: v for k, v in record.items() if k not in ("request", "response", "_audio")}
+    return {k: v for k, v in record.items() if k not in ("request", "response", "_audio", "_audio_expired")}
 
 
 def replay_fields(request: dict) -> dict:
     """Build a Playground request from a recorded native or Decisions API request."""
-    from .compat import decision_body
+    from .compat import decision_body, systemone_media
 
     if not isinstance(request, dict):
         return {
@@ -148,7 +148,7 @@ def replay_fields(request: dict) -> dict:
             if request.get("model") is not None:
                 replay["model"] = request["model"]
         else:
-            replay = request
+            replay = systemone_media(request) if "audio" in request or "images" in request else request
         return {"replay_request": replay, "replay_error": None}
     except (TypeError, ValueError) as exc:
         detail = exc.args[0] if exc.args else exc
@@ -171,20 +171,35 @@ class History:
             self.records.append(record)
 
     def _read_file(self, strict=False) -> list:
-        """Every valid record in the file, counting its lines (corrupt ones included) into self.lines."""
+        """Read valid rows; mutations require a complete, undamaged file."""
         out = []
+        seen = set()
         self.lines = 0
         try:
             for line in self.path.read_text(encoding="utf-8").splitlines():
                 self.lines += 1
                 try:
                     record = json.loads(line)
-                except ValueError:
+                except ValueError as exc:
+                    if strict:
+                        raise OSError("History metadata is invalid") from exc
                     continue
-                if isinstance(record, dict) and isinstance(record.get("id"), str):
-                    out.append(record)
+                if not isinstance(record, dict) or not isinstance(record.get("id"), str) or not record["id"]:
+                    if strict:
+                        raise OSError("History metadata is invalid")
+                    continue
+                if strict and (
+                    record["id"] in seen
+                    or ("_audio" in record and not history_audio.valid_ref(record, record["_audio"]))
+                ):
+                    raise OSError("History metadata is invalid")
+                seen.add(record["id"])
+                out.append(record)
         except FileNotFoundError:
             pass
+        except UnicodeError as exc:
+            if strict:
+                raise OSError("History metadata is invalid") from exc
         except OSError:
             if strict:
                 raise
@@ -194,51 +209,58 @@ class History:
         from . import settings
 
         def write():
-            # Disk, not this process's cache, decides rotation and audio expiry.
             existing = self._read_file(strict=True)
             history_audio.cleanup(self.path, existing)
-            fd = None
+            reservation = None
+            committed = False
             try:
                 if (
                     body is not None
                     and (keep_audio() if callable(keep_audio) else keep_audio)
-                    and list(history_audio.audio_paths(body))
+                    and any(history_audio.audio_paths(body))
                 ):
-                    fd = history_audio._directory(self.path)
-                    history_audio.write(fd, record, body, existing, self.path)
-                expired = self._append_record(record, existing)
-            except BaseException:
-                if fd is not None:
-                    history_audio.remove(fd, record)
-                record.pop("_audio", None)
-                raise
+                    reservation = history_audio.reserve(self.path, record, body, existing)
+                evicted = reservation[2] if reservation else []
+                candidate = []
+                evicted_ids = {r["id"] for r in evicted}
+                for old in existing:
+                    if old["id"] in evicted_ids:
+                        old = {k: v for k, v in old.items() if k != "_audio"}
+                        old["_audio_expired"] = True
+                    candidate.append(old)
+                self._append_record(record, candidate, existing, evicted, bool(reservation))
+                committed = True
+                self.records.append(record)
+                if reservation:
+                    history_audio.cleanup(self.path, self._read_file(strict=True))
+                    history_audio.fill(self.path, record, reservation)
+                else:
+                    history_audio.cleanup(self.path, self._read_file(strict=True))
             finally:
-                if fd is not None:
-                    os.close(fd)
-            self.records.append(record)
-            if expired or record.get("_audio"):
-                history_audio.cleanup(self.path, [*existing, record] if not expired else self._read_file(strict=True))
+                if reservation:
+                    history_audio.close_reservation(self.path, record, reservation, committed)
 
         with self.lock:
             settings._locked(write)()
 
-    def _append_record(self, record, existing):
+    def _append_record(self, record, candidate, existing, evicted, atomic):
         from . import settings
 
-        line = json.dumps(record, ensure_ascii=False) + "\n"
+        records = [*candidate, record]
+        expired = []
         if self.lines + 1 > self.keep + 500:
-            kept = [*existing, record][-self.keep :]
             expired = existing[: max(0, len(existing) + 1 - self.keep)]
-            history_audio.journal_add(self.path, expired)
-            settings._write_private(self.path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept))
-            self.lines = len(kept)
-            return [r for r in expired if r.get("_audio")]
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(line)
-        self.lines += 1
-        return []
+            records = records[-self.keep :]
+        history_audio.journal_add(self.path, [*evicted, *expired])
+        if atomic or expired:
+            settings._write_private(self.path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
+            self.lines = len(records)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self.lines += 1
 
     def detail(self, record_id, replay=False):
         from . import settings
@@ -249,6 +271,14 @@ class History:
                 return None
             public = {k: v for k, v in record.items() if k != "_audio"}
             request = record.get("request", {})
+            if record.get("_audio_expired"):
+                public.pop("_audio_expired", None)
+                return {
+                    **public,
+                    "replay_request": None,
+                    "replay_error": "History audio is unavailable or expired.",
+                    "replay_error_code": "history_audio_unavailable",
+                }
             if not record.get("_audio"):
                 return {**public, **replay_fields(request)}
             # Mask audio placeholders to check for independently missing images.

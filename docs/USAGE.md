@@ -166,7 +166,9 @@ Select a ready model loaded with audio support and choose **Record audio**. The 
 
 The capture automatically stops before 30 seconds: this conservative ceiling assumes the current Omni audio window, since a window is not exposed by model metadata. Longer or empty decoded clips are refused rather than truncated. Switching UI language drops attachments with a warning, including recorded clips.
 
-**Settings → Memory & storage → Keep audio in History** is off by default. When enabled and saved, History retains audio only, up to its displayed 256 MiB budget. Oldest clips expire as needed while their History rows remain; turning it off stops new retention but keeps existing audio. Clear History deletes retained audio. Images are never retained, and audio is retrieved only when Replay is selected. Saved request presets can include audio independently of this setting.
+**Settings → Memory & storage → Keep audio in History** is off by default. When enabled and saved, History retains audio only, up to its displayed 256 MiB budget. Oldest clips expire as needed while their History rows remain; turning it off stops new retention but keeps existing audio. Clear History deletes retained audio. Images are never retained, and audio is retrieved only when Replay is selected. Saved request presets can include audio independently of this setting. If the saved policy cannot be read, the switch shows an unknown state and stays disabled; reload after fixing the settings file or its access. A failed save response triggers one readback, and an unconfirmed readback is also shown as unknown.
+
+History commits its retention and expiration metadata before removing old clips or filling the newly reserved audio file. A failure before that commit preserves earlier retained clips; a later storage failure can leave a committed row with audio unavailable. Only app-owned audio files with matching recorded identity are read or removed. Audio files from the unshipped experimental prototype that lack that identity are not automatically trusted or deleted; retain them for manual recovery if needed.
 
 ## Playground comparison, API examples and calibration evidence
 

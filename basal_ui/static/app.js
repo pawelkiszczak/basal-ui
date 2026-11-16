@@ -18,7 +18,7 @@ async function api(path, options={}) {
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    const error=new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);error.code=data?.code;throw error;
   }
   return data;
 }
@@ -238,6 +238,7 @@ document.addEventListener('click',event=>{
   $('#modelLoaderDialog').close();
 });
 let audioSettingsVersion=0, audioSettingsRead=0, audioSettingsSaving=false;
+$('#keepHistoryAudio').indeterminate=true;$('#keepHistoryAudio').setAttribute('aria-checked','mixed');
 function audioSettingsUnknown() {
   const input=$('#keepHistoryAudio');input.indeterminate=true;input.setAttribute('aria-checked','mixed');input.disabled=true;
   $('#historyAudioError').textContent=t('History audio setting is unknown. Reload the page to check it.');$('#historyAudioError').hidden=false;
@@ -256,7 +257,7 @@ async function loadSettings() {
     $('#defaultModelsDirHint').textContent = t('Default: {path}',{path:settings.default_models_dir});
     setChecked($('#checkUpdates'),settings.check_updates!==false);
     if(eligible && !audioSettingsSaving && version===audioSettingsVersion && read===audioSettingsRead){if(applyAudioSettings(settings))$('#historyAudioError').hidden=true;else audioSettingsUnknown();}
-  } catch (e) { $('#modelsDirError').textContent = e.message; if(eligible && !audioSettingsSaving && version===audioSettingsVersion && read===audioSettingsRead)audioSettingsUnknown(); }
+  } catch (e) { $('#modelsDirError').textContent = e.code==='history_audio_policy_unavailable'?'':e.message; if(eligible && !audioSettingsSaving && version===audioSettingsVersion && read===audioSettingsRead)audioSettingsUnknown(); }
 }
 async function refreshUpdates() {
   try {
@@ -2009,7 +2010,7 @@ async function replayRequest(x) {
   if(needsAudio){try{x=await api(`/api/history/${encodeURIComponent(x.id)}?replay=true`);}catch(e){if(intent===replayIntent)toast(e.message,'error');return;}if(intent!==replayIntent||context!==location.hash)return;}
   if(x.replay_error||!x.replay_request){toast(historyReplayError(x)||t('This request cannot be replayed.'),'error');return;}
   if(needsAudio && (!Array.isArray(x.replay_request.media) || !x.replay_request.media.some(m=>m?.type==='audio' && typeof m.data==='string' && m.data.length>0) || x.replay_request.media.some(m=>!m || !['audio','image'].includes(m.type) || typeof m.data!=='string' || !/^(?:[A-Za-z0-9+/]+={0,2}|data:[^,]+;base64,[A-Za-z0-9+/]+={0,2})$/.test(m.data)))){toast(t('History audio is unavailable or has expired.'),'error');return;}
-  if(needsAudio){try{if(!x.replay_request.state || !x.replay_request.questions || typeof x.replay_request.questions!=='object')throw new Error();for(const m of x.replay_request.media){if(!atob(m.data.replace(/^data:[^,]+;base64,/,'')))throw new Error();}}catch{toast(t('History audio is unavailable or has expired.'),'error');return;}}
+  if(needsAudio){try{if(!Object.hasOwn(x.replay_request,'state') || x.replay_request.state==null || !x.replay_request.questions || typeof x.replay_request.questions!=='object')throw new Error();for(const m of x.replay_request.media){if(!atob(m.data.replace(/^data:[^,]+;base64,/,'')))throw new Error();}}catch{toast(t('History audio is unavailable or has expired.'),'error');return;}}
   if(!readyModels().some(m=>m.id===x.model)){toast(t('Model {model} is not loaded',{model:x.model}),'error');return;}
   selectedModel=x.model; localStorage.setItem('basal-ui.model',selectedModel);
   $('#playgroundModel').value=selectedModel; setPlaygroundMedia(readyModels().find(m=>m.id===selectedModel)?.media||[]);

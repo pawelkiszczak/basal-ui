@@ -481,6 +481,14 @@ def create_app(
             "history_audio_budget_bytes": HISTORY_AUDIO_BUDGET,
         }
 
+    @app.exception_handler(settings.HistoryAudioPolicyError)
+    async def history_audio_policy_error(_request: Request, _exc: settings.HistoryAudioPolicyError):
+        return JSONResponse(
+            {"detail": "History audio setting is unavailable.", "code": "history_audio_policy_unavailable"},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/api/settings")
     def get_settings():
         return settings_response()
