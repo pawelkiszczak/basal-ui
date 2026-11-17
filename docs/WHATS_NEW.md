@@ -20,6 +20,8 @@
   takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
 
+- Separate Calibration file warnings and errors so each message is readable.
+
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
   evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.
