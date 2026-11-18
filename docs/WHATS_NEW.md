@@ -1,5 +1,6 @@
 # Unreleased
 
+- Optionally unload idle models after a configured number of minutes; remembered models remain available for auto-load.
 - Error toasts stay visible until dismissed; informational toasts pause while hovered or focused.
 - Navigate views with a translated skip link, focused headings and page titles; use arrow keys to switch model tabs.
 
