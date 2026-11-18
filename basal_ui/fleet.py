@@ -32,11 +32,11 @@ ENGINE_TIMEOUT_MARGIN_S = 30
 
 def upstream_error(exc):
     if isinstance(exc, httpx.ReadTimeout):
-        return (
-            504,
-            f"basal-serve did not respond within {getattr(exc, 'basal_read_timeout', READ_TIMEOUT_S):g} seconds",
-            "UPSTREAM_TIMEOUT",
-        )
+        limit = getattr(exc, "basal_read_timeout", READ_TIMEOUT_S)
+        message = "basal-serve did not respond"
+        if limit is not None:
+            message += f" within {limit:g} seconds"
+        return 504, message, "UPSTREAM_TIMEOUT"
     return 502, f"basal-serve: {exc}", "UPSTREAM_ERROR"
 
 
@@ -942,11 +942,12 @@ class Fleet:
     ):
         with self.lease(model_id) as runner, self.answering(model_id, source):
             t0 = time.perf_counter()
+            timeout = client.timeout if source == "benchmark" else None
             try:
-                kwargs = {"timeout": client.timeout} if source == "benchmark" else {}
+                kwargs = {"timeout": timeout} if timeout is not None else {}
                 response = await runner.adecide(client, body, path, **kwargs)
             except httpx.HTTPError as exc:
-                exc.basal_read_timeout = runner.read_timeout()
+                exc.basal_read_timeout = timeout.read if timeout is not None else runner.read_timeout()
                 status, message, code = upstream_error(exc)
                 await asyncio.to_thread(
                     self._record,

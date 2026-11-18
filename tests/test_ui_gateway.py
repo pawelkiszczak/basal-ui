@@ -477,11 +477,13 @@ def test_forwarding_timeout_covers_active_engine_deadline():
 
 
 def test_benchmark_retains_client_timeout(tmp_path):
+    from basal_ui.fleet import upstream_error
+
     sent = []
 
     def child(request):
         sent.append(request.extensions["timeout"])
-        return httpx.Response(200, json={"answers": {}})
+        raise httpx.ReadTimeout("synthetic read timeout")
 
     fleet = Fleet(lambda: tmp_path, lambda: "cpu", settings, lambda: HW)
     runner = Runner()
@@ -491,8 +493,12 @@ def test_benchmark_retains_client_timeout(tmp_path):
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(child), timeout=300) as client:
             body = {"state": "synthetic", "questions": {"q": {"type": "noul"}}}
-            await fleet.adecide("a/one", body, source="benchmark", client=client)
-            await fleet.adecide("a/one", body, source="api", client=client)
+            for source, seconds in (("benchmark", 300), ("api", 600)):
+                with pytest.raises(httpx.ReadTimeout) as caught:
+                    await fleet.adecide("a/one", body, source=source, client=client)
+                status, message, code = upstream_error(caught.value)
+                assert (status, code) == (504, "UPSTREAM_TIMEOUT")
+                assert f"within {seconds} seconds" in message
 
     asyncio.run(run())
     assert sent[0] == dict.fromkeys(("connect", "read", "write", "pool"), 300)
