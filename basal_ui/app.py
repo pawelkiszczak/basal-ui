@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, engine, hardware, settings
+from . import backends, catalog, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -848,7 +848,6 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
-            "mlx_forward_available": "--mlx-forward" in engine.serve_flags(),
             "adapter_reason": adapter_reason,
             "adapter_reason_code": adapter_code,
             "adapter_reason_params": adapter_params,
@@ -1029,6 +1028,8 @@ def create_app(
         options = load_options.validate(selected, assessment.mode)
         if active is not None:
             options.update(active)
+        else:
+            options["mlx_forward"] = selected.get("mlx_forward")
         return (
             local_dir,
             assessment,

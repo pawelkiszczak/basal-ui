@@ -1626,7 +1626,7 @@ function renderCalibrationFiles(id, d) {
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
 const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
 const OPTION_SECTIONS=[
-  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed','mlx_forward']],
+  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed']],
   ['Determinism & orders',['deterministic','orders','auto_tau','auto_band']],
   ['Batching',['max_batch','wait_ms','batch_window_ms','soam']],
   ['Caching',['state_cache_gb','prefix_cache']],
@@ -1637,7 +1637,6 @@ const OPTION_SECTIONS=[
   ['Experimental',['think','think_tokens','think_python','think_url','think_calibration','think_model','think_adapter','think_memory','think_max_len','think_log','early_exit']],
 ];
 const OPTION_FIELDS={
-  mlx_forward:{label:'MLX forward',kind:'select',values:[[null,'mlx-lm (default)'],['mlx-lm','mlx-lm'],['basal','basal']],modes:['mlx','mlx-q8']},
   mlx_packed:{label:'MLX packed (opt-in)',kind:'bool',modes:['mlx','mlx-q8']},
   quant:{label:'Quantisation',kind:'select',values:[[null,'as the mode'],['fp8','fp8'],['nvfp4','nvfp4'],['q8','q8 (mlx)']],modes:[...GRAPH_MODES,'mlx','mlx-q8']},
   attn:{label:'Attention kernel',kind:'select',values:['auto','fa2','fa3','fa4','cudnn'],modes:GRAPH_MODES},
@@ -1714,7 +1713,7 @@ function optionInput(key, value) {
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
     :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${f.attrs||''}>`;
-  return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}${key==='mlx_forward'&&!optionsState.data.mlx_forward_available?`<small>${t('Installed Engine does not support MLX forward.')}</small>`:''}`;
+  return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}`;
 }
 const optionSectionOpen=new Map();  // section title → open, as the user left it (this session)
 function renderOptionsForm(values) {
@@ -1735,9 +1734,6 @@ const optionModes=()=>optionsState.media?optionsState.data.media_modes:optionsSt
 function selectedOptionMode() { return $('#optionsForm input[name=optMode]:checked')?.value||optionModes().find(m=>m.default)?.mode; }
 function updateOptionVisibility() {
   const mode=selectedOptionMode(), think=optionsState.data.think||{};
-  const forward=$('#opt-mlx_forward');
-  forward.disabled=!optionsState.data.mlx_forward_available;
-  forward.title=forward.disabled?t('Installed Engine does not support MLX forward.'):'';
   const packed=$('#opt-mlx_packed'), packedReason=optionsState.data.mlx_packed_reason;
   const packedReasonText=ts(packedReason,optionsState.data.mlx_packed_reason_code,optionsState.data.mlx_packed_reason_params);
   packed.disabled=Boolean(packedReason)||optionsState.media||!['mlx','mlx-q8'].includes(mode);

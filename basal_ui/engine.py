@@ -129,13 +129,3 @@ def bench_flags():
         for arg in node.args
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("--")
     )
-
-
-@functools.cache
-def serve_flags():
-    """Long options declared by the installed basal-serve parser."""
-    try:
-        parser = importlib.import_module("basal.server").parser()
-        return frozenset(flag for action in parser._actions for flag in action.option_strings if flag.startswith("--"))
-    except (ImportError, AttributeError):
-        return frozenset()

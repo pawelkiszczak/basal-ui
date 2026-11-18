@@ -13,7 +13,7 @@ from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
 from .catalog import _cuda_graph, _quantized_hardware_reason
-from .engine import feature, serve_flags
+from .engine import feature
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
 # gdn_graph.refused; 2.5.0 lifted the 2.4 refusals of the caches, compact rows and --lean), MLX from 2.5.0 ("mlx_recurrent")
@@ -55,7 +55,6 @@ DEFAULTS = {
     "think_url": None,
     "early_exit": "off",
     "mlx_packed": False,
-    "mlx_forward": None,
     "layout": None,
     "adapter": None,
     # the CUDA graph engine's kernel switches
@@ -98,7 +97,6 @@ CHOICES = {
     "template_prefix": ("auto", "on", "off"),
     "fp8_accum": ("fast", "full"),
     "eager_forward": (None, "basal", "hf"),
-    "mlx_forward": (None, "mlx-lm", "basal"),
     "vllm_fast_prefill": ("auto", "off"),
     "dtype": ("bfloat16", "float16", "float32"),
     "layout": (None, *LAYOUTS),
@@ -195,8 +193,6 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
             if value is not None and value not in MODES:
                 raise ValueError(f"load option mode must be one of {list(MODES)}")
         elif key in CHOICES:
-            if key == "mlx_forward" and value is not None and "--mlx-forward" not in serve_flags():
-                raise ValueError("load option mlx_forward: installed Engine does not support --mlx-forward")
             if value not in CHOICES[key]:
                 raise ValueError(f"load option {key} must be one of {[c for c in CHOICES[key] if c is not None]}")
         elif key in BOOLS:

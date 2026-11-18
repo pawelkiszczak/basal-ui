@@ -366,8 +366,8 @@ three other measurements, one at a time:
   loaded, measured (latency with one and both option orders, decisions per second, agreement with the first mode,
   accuracy, load time, memory) and freed in turn. Its memory is counted in the budget while it runs (twice the
   estimate with `eager-fp32`); a mode that fails is listed with its error. The Active load settings supply the
-  adapter and MLX forward when `basal-bench` declares the corresponding flags; for an unloaded model, Saved load
-  settings are used for these options. Other comparison settings continue to use Saved load settings. Older Engines
+  adapter and any Active MLX forward setting when `basal-bench` declares the corresponding flags; for an unloaded
+  model, Saved load settings are used. Other comparison settings continue to use Saved load settings. Older Engines
   omit unsupported flags.
 
 The last 20 results per model stay in the stats file and are shown side by side. Benchmark requests are not counted
