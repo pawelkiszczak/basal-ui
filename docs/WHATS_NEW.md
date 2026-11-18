@@ -49,8 +49,6 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   Inspect follows the saved language and supports keyboard History activation, reduced motion, and forced colors.
 - Run the release CI matrix after merges to `stage` and `main`. [Release process](../CONTRIBUTING.md#releasing)
 
-- Run the CI matrix after merges to `stage` and `main`.
-
 # 0.1.0
 
 Stable release, tag `v0.1.0`. Includes the review fixes and Studio redesign with the selected contributor-inspired
