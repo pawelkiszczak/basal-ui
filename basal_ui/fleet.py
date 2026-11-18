@@ -18,7 +18,7 @@ import httpx
 
 from . import catalog, hardware, settings
 from . import options as load_options
-from .compat import child_request
+from .compat import DECISIONS, child_request, openai_error_body
 from .history import make_record
 from .jobs import Jobs, LogBuffer, terminate
 
@@ -26,6 +26,22 @@ START_TIMEOUT_S = 1800  # --mode fast compiles for 4-17 minutes on the first sta
 MODEL_LOGS_KEPT = 10  # log buffers of unloaded models kept for the Logs view
 RSS_INTERVAL_S = 2  # `ps` runs at most this often for the resident memory of the children
 JOB_SHUTDOWN_S = 30  # shutdown waits this long for cancelled jobs before unloading the models
+READ_TIMEOUT_S = 600
+ENGINE_TIMEOUT_MARGIN_S = 30
+
+
+def upstream_error(exc):
+    if isinstance(exc, httpx.ReadTimeout):
+        return (
+            504,
+            f"basal-serve did not respond within {getattr(exc, 'basal_read_timeout', READ_TIMEOUT_S):g} seconds",
+            "UPSTREAM_TIMEOUT",
+        )
+    return 502, f"basal-serve: {exc}", "UPSTREAM_ERROR"
+
+
+def upstream_error_body(path, status, message, code):
+    return openai_error_body(status, message, code) if path in DECISIONS else {"error": message, "code": code}
 
 
 def _lan_ip():
@@ -457,12 +473,21 @@ class Runner:
                 raise RuntimeError(f"model {self.model} is not ready ({self.state})")
             return self.base_url + path
 
+    def read_timeout(self):
+        # #65 can supply the active Engine deadline in options when that capability is exposed.
+        deadline = self.options.get("request_timeout")
+        return max(READ_TIMEOUT_S, deadline + ENGINE_TIMEOUT_MARGIN_S) if deadline else READ_TIMEOUT_S
+
     def decide(self, body, path="/v1/systemone"):
         """basal-serve's answer to a System One or OpenAI Decisions request (path), in the path's shape."""
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(httpx.post(self._url("/v1/systemone"), json=child_body, timeout=120))
+        response = reply(
+            httpx.post(
+                self._url("/v1/systemone"), json=child_body, timeout=httpx.Timeout(120, read=self.read_timeout())
+            )
+        )
         response.extensions["basal.inference"] = True
         return response
 
@@ -470,7 +495,11 @@ class Runner:
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(await client.post(self._url("/v1/systemone"), json=child_body))
+        response = reply(
+            await client.post(
+                self._url("/v1/systemone"), json=child_body, timeout=httpx.Timeout(120, read=self.read_timeout())
+            )
+        )
         response.extensions["basal.inference"] = True
         return response
 
@@ -877,13 +906,15 @@ class Fleet:
             try:
                 response = runner.decide(body, path)
             except httpx.HTTPError as exc:
+                exc.basal_read_timeout = runner.read_timeout()
+                status, message, code = upstream_error(exc)
                 self._record(
                     model_id,
                     body,
                     path,
                     source,
-                    502,
-                    {"error": f"basal-serve: {exc}"},
+                    status,
+                    upstream_error_body(path, status, message, code),
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
@@ -912,14 +943,32 @@ class Fleet:
             try:
                 response = await runner.adecide(client, body, path)
             except httpx.HTTPError as exc:
+                exc.basal_read_timeout = runner.read_timeout()
+                status, message, code = upstream_error(exc)
                 await asyncio.to_thread(
                     self._record,
                     model_id,
                     body,
                     path,
                     source,
-                    502,
-                    {"error": f"basal-serve: {exc}"},
+                    status,
+                    upstream_error_body(path, status, message, code),
+                    (time.perf_counter() - t0) * 1000,
+                    endpoint,
+                    method,
+                )
+                raise
+            except asyncio.CancelledError as exc:
+                if not exc.args or exc.args[0] != "client disconnected":
+                    raise
+                await asyncio.to_thread(
+                    self._record,
+                    model_id,
+                    body,
+                    path,
+                    source,
+                    499,
+                    {"error": "client disconnected", "code": "CLIENT_DISCONNECTED"},
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,

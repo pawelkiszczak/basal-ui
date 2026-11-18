@@ -943,7 +943,10 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         except httpx.HTTPError as exc:
-            raise HTTPException(502, f"basal-serve: {exc}") from exc
+            from .fleet import upstream_error
+
+            status, message, _ = upstream_error(exc)
+            raise HTTPException(status, message) from exc
         return Response(
             r.content,
             status_code=r.status_code,

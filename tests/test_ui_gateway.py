@@ -393,3 +393,122 @@ def test_port_in_use_is_reported_and_lan_url_is_used_for_all_interfaces(fleet, m
     assert gateway.status()["url"] == "http://192.0.2.10:8123"
     gateway.status()
     assert calls == [1]
+
+
+def test_read_timeout_and_disconnect_accounting_with_delayed_child(tmp_path, child, monkeypatch):
+    import time
+
+    from basal_ui import fleet as fleet_module
+
+    monkeypatch.setattr(fleet_module, "READ_TIMEOUT_S", 0.1)
+    fleet = Fleet(
+        lambda: tmp_path,
+        lambda: "cpu",
+        settings,
+        lambda: HW,
+        stats=Stats(tmp_path / "stats.json"),
+        history=History(tmp_path / "history.jsonl"),
+    )
+    runner = Runner()
+    runner.state, runner.model, runner.base_url = "ready", "a/one", child.url
+    fleet.runners["a/one"] = runner
+    child.gate.clear()
+    body = {"model": "a/one", "state": "synthetic", "questions": {"q": {"type": "noul"}}}
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        result = client.post("/v1/systemone", json=body)
+        assert result.status_code == 504
+        assert result.json() == {"error": "basal-serve did not respond within 0.1 seconds", "code": "UPSTREAM_TIMEOUT"}
+        result = client.post(
+            "/v1/decisions",
+            json={
+                "model": "a/one",
+                "input": "synthetic",
+                "questions": [{"type": "predicate", "instructions": "Is it?"}],
+            },
+        )
+        assert result.status_code == 504 and result.json()["error"]["code"] == "UPSTREAM_TIMEOUT"
+    records = fleet.history.list()
+    assert [record["status"] for record in records] == [504, 504]
+    assert fleet.history.get(records[0]["id"])["response"] == result.json()
+    assert fleet.stats.snapshot()["models"]["a/one"]["errors"] == 2
+    assert fleet.stats.traffic_snapshot(15)["errors"] == 2
+
+    monkeypatch.setattr(fleet_module, "READ_TIMEOUT_S", 10)
+    settings.update_serve({"enabled": True, "port": free_port()})
+    gateway = Gateway(fleet, settings, fleet.stats)
+    try:
+        gateway.start()
+        with socket.create_connection(("127.0.0.1", gateway.snapshot["port"])) as sock:
+            payload = json.dumps(body).encode()
+            sock.sendall(
+                b"POST /v1/systemone HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(payload)).encode()
+                + b"\r\n\r\n"
+                + payload
+            )
+            deadline = time.monotonic() + 3
+            while len(child.seen) < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(child.seen) == 3
+        deadline = time.monotonic() + 3
+        while len(fleet.history.list()) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert fleet.history.list()[0]["status"] == 499
+        assert not fleet.leases and not fleet.inflight
+    finally:
+        child.gate.set()
+        gateway.stop()
+
+
+def test_forwarding_timeout_covers_active_engine_deadline():
+    runner = Runner()
+    assert runner.read_timeout() == 600
+    runner.options = {"request_timeout": 900}
+    assert runner.read_timeout() == 930
+
+
+def test_transport_failures_and_sync_timeout_are_recorded(fleet, monkeypatch):
+    async def offline(self, client, body, path="/v1/systemone"):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(Runner, "adecide", offline)
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        response = client.post("/v1/decisions", json={"model": "a/one", "input": "x", "questions": []})
+    assert response.status_code == 502 and response.json()["error"]["code"] == "UPSTREAM_ERROR"
+    assert fleet.history.get(fleet.history.list()[0]["id"])["response"] == response.json()
+
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(httpx, "post", timeout)
+    runner = fleet.runners["a/one"]
+    runner.base_url = "http://child"
+    with pytest.raises(httpx.ReadTimeout):
+        fleet.decide("a/one", {"state": "x", "questions": {"q": {"type": "noul"}}})
+    record = fleet.history.get(fleet.history.list()[0]["id"])
+    assert record["status"] == 504 and record["response"]["code"] == "UPSTREAM_TIMEOUT"
+
+
+def test_mcp_timeout_reports_gateway_error_and_records_it(fleet, monkeypatch):
+    pytest.importorskip("mcp")
+
+    async def timeout(self, client, body, path="/v1/systemone"):
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(Runner, "adecide", timeout)
+    headers = {"Accept": "application/json, text/event-stream", "Host": "127.0.0.1:8793"}
+    with TestClient(build_app(fleet, fleet.stats, mcp=True), base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/mcp",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "decide", "arguments": {"state": "synthetic", "question": "?"}},
+            },
+        ).json()["result"]
+    assert response["isError"] and "504 UPSTREAM_TIMEOUT" in response["content"][0]["text"]
+    record = fleet.history.get(fleet.history.list()[0]["id"])
+    assert record["status"] == 504 and record["source"] == "mcp"
+    assert record["response"]["code"] == "UPSTREAM_TIMEOUT"
