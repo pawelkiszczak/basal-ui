@@ -1107,6 +1107,13 @@ def test_the_load_options_dialog_lists_the_modes(page, text_model):
     assert dialog.locator('input[name="optMode"]').count() == len(MODE_ORDER)  # every basal-serve mode, int8 included
     assert dialog.locator('input[name="optMode"][disabled]').count() >= 1
     sync_api.expect(dialog.locator("#optExperimentalNote")).not_to_be_empty()
+    assert dialog.locator("#opt-soam option").all_text_contents() == ["auto", "on", "off"]
+    assert dialog.locator("#opt-long_lane option").all_text_contents() in (
+        ["off", "on"],
+        ["on", "off"],
+        ["auto", "on", "off"],
+    )
+
     for key, modes in (("gemma_attn", "fast"), ("eager_attn", "eager"), ("merge", "fast"), ("ple_offload", "eager")):
         field = dialog.locator(f'[data-opt="{key}"]')  # each switch shows for the backend that reads it
         assert modes in field.get_attribute("data-modes").split() and (
@@ -2692,6 +2699,16 @@ def test_comparison_server_keyboard_attach_and_detach(page, child, tmp_path):
     sync_api.expect(page.locator("#decisionServers h2")).to_have_text("Serwery decyzji")
     page.locator("#decisionServerUrl").fill("https://example.com")
     sync_api.expect(page.locator("#decisionServerConsentText")).to_contain_text("hosta example.com")
+
+
+def test_calibration_origin_warning_appears_on_model_row(page):
+    manager_tab(page, "library")
+    page.evaluate("""() => renderLoadedRows([{
+      id: 'synthetic', state: 'ready', media: [], options: {}, health: {},
+      calibration_origin_warning: 'basal: warning: copied calibration',
+      calibration_origin_warning_code: 'calibration_origin'
+    }])""")
+    sync_api.expect(page.locator("#loadedModels .model-row .reason")).to_have_text("basal: warning: copied calibration")
 
 
 def test_answer_sets_and_conditional_replay_in_browser(page, ui, text_model):

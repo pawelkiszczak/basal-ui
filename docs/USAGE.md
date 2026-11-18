@@ -239,6 +239,8 @@ clearing it. Rails stack below their content when there is not enough width to r
 
 ## Load options
 
+![Load options for a model](images/load-options.png)
+
 **⚙ Options** next to every Load button (and **⚙** next to a loaded model's Restart) opens the load options of that
 model in collapsible sections (Engine and any section holding a non-default value open; a section you open or close
 stays that way for the next dialog in the session; a collapsed section still saves its values):
@@ -249,7 +251,8 @@ A ROCm GPU, although PyTorch reports CUDA, is offered none of the NVIDIA-only mo
 Ollama and llama-server take the URL of the running service), quantisation, attention kernels,
 dtype, the vLLM preset, GPU share and KV-sharing fast prefill, the Gemma 4 eager forward, attention and per-layer
 embedding offload (`--eager-forward`, `--eager-attn`, `--ple-offload`), the exit heads directory, determinism, option
-orders and the `auto` band, batching, the state and prefix caches, the scheduler and long-request lane, the **prompt
+orders and the `auto` band, batching, SOAM (`auto` follows the Engine default), the state and prefix caches, the
+scheduler and long-request lane (choices and default follow the installed Engine), the **prompt
 layout** (`--layout canonical`, `state_twice` or `qfirst` for prompt-format-2 models trained on it; default: the
 model's basal.json; a non-canonical layout is refused with the state or prefix cache, and a loaded row shows it as a
 `layout` chip), the **context
@@ -257,7 +260,8 @@ policy** (truncate the middle of the state, or refuse with 422; the share kept f
 CUDA graph engine's kernel switches (`--gemma-attn`, `--merge`, `--lean`, `--tree`, `--batches`, `--readout-layer`,
 `--template-prefix`, `--fp8-accum`), `--strict-calibration` and a **revision** (a commit, tag or branch of the
 repository: downloaded and served as that snapshot, which calibration and Inspect then read too; a **revision** chip
-marks the model in the catalog and on its loaded row). Each field shows only for the modes that read it. **Presets**
+marks the model in the catalog and on its loaded row). A warning on the model row reports calibration fitted on other
+model files; Logs has the Engine details. Older Saved load settings and imported load presets are migrated on use. Each field shows only for the modes that read it. **Presets**
 save a set of options under a name to apply to any model; the Playground saves requests the same way (**Saved
 requests** in the examples list), and both export to and import from one `presets.json`. Settings also imports a pack from a public HTTP(S) URL with `application/json` content, up to 1 MiB. Imports update entries in order; a failure can leave earlier entries saved. Only the values that differ
 from basal-serve's defaults are

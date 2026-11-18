@@ -32,7 +32,7 @@ def test_a_supported_release_runs_as_is(monkeypatch):
     }
 
 
-@pytest.mark.parametrize("version", ["2.6.0", "2.4.0", "not-a-version"])
+@pytest.mark.parametrize("version", ["2.9.0", "2.4.0", "not-a-version"])
 def test_an_engine_outside_the_range_is_refused_unless_unchecked(monkeypatch, version):
     fake_engine(monkeypatch, version)
     monkeypatch.delenv(engine.UNCHECKED_ENV, raising=False)
@@ -75,18 +75,45 @@ def test_the_command_refuses_before_importing_the_engine(tmp_path):
     assert f"basal-ui supports engine {engine.SUPPORTED_RANGE}, found 9.0.0" in result.stderr
 
 
+@pytest.mark.parametrize("choices,default", [(["on", "off"], "off"), (["auto", "on", "off"], "auto")])
+def test_serve_option_reads_parser_declaration(monkeypatch, choices, default):
+    import argparse
+    from types import SimpleNamespace
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--long-lane", choices=choices, default=default)
+    monkeypatch.setattr(engine.importlib, "import_module", lambda name: SimpleNamespace(parser=lambda: parser))
+    engine.serve_option.cache_clear()
+    try:
+        assert engine.serve_option("--long-lane") == (tuple(choices), default)
+        assert engine.serve_option("--not-declared") is None
+    finally:
+        engine.serve_option.cache_clear()
+
+
 def test_every_pin_names_the_tested_release():
     """basal_ui/engine.py holds the engine release; uv's source, the install lines and CI must name the same one
     (bumping it: CONTRIBUTING.md, "Bumping the engine")."""
+    assert engine.TESTED_RELEASES == ("2.4.1", "2.5.0", "2.5.1", "2.6.0", "2.8.0")
+    assert engine.SUPPORTED_RANGE == ">=2.4.1,<2.9"
     assert engine.PINNED_RELEASE in engine.SUPPORTED
+    lock = (ROOT / "uv.lock").read_text()
+    assert f'name = "basal"\nversion = "{engine.PINNED_RELEASE}"\nsource = {{ url = "{engine.ENGINE_URL}" }}' in lock
     source = re.search(r'^basal = \{ url = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.M).group(1)
     assert source == engine.ENGINE_URL, "pyproject.toml [tool.uv.sources] basal names another release"
     for doc in ("README.md", "docs/E2E.md", "CONTRIBUTING.md"):
         text = unquote((ROOT / doc).read_text())
-        tags = set(re.findall(r"archive/refs/tags/v(\S+?)\.tar\.gz", text))
+        tag_pattern = r"archive/refs/tags/v(\S+?)\.tar\.gz"
+        if doc == "README.md":
+            before, _, stable = text.partition("### PyPI package")
+            stable, _, after = stable.partition("## Supported engine range")
+            assert set(re.findall(tag_pattern, stable)) == {"2.4.1"}
+            text = before + after
+        tags = set(re.findall(tag_pattern, text))
         assert tags <= {engine.PINNED_RELEASE}, f"{doc} installs engine {tags}"
         assert tags or doc == "CONTRIBUTING.md", f"{doc} lost its install line"
-        ranges = set(re.findall(r">=\d[\d.]*,<\d[\d.]*", text))
+        current = text.split("## Stage gate", 1)[0] if doc == "docs/E2E.md" else text
+        ranges = set(re.findall(r">=\d[\d.]*,<\d[\d.]*", current))
         assert ranges <= {engine.SUPPORTED_RANGE}, f"{doc} names range {ranges}"
     # The vX.Y.Z comments pin Actions. The matrix derives its Engine releases.
     ci = (ROOT / ".github/workflows/release-ci.yml").read_text()

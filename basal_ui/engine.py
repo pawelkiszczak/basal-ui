@@ -12,8 +12,8 @@ from packaging.version import InvalidVersion, Version
 
 ENGINE_REPO = "rkinas/basal"
 # every release basal-ui is tested with; CI runs each; the last is the pin
-TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1")
-SUPPORTED_RANGE = ">=2.4.1,<2.6"  # bump with TESTED_RELEASES
+TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1", "2.6.0", "2.8.0")
+SUPPORTED_RANGE = ">=2.4.1,<2.9"  # bump with TESTED_RELEASES
 SUPPORTED = SpecifierSet(SUPPORTED_RANGE)
 UNCHECKED_ENV = "BASAL_UI_ENGINE_UNCHECKED"
 PINNED_RELEASE = TESTED_RELEASES[-1]
