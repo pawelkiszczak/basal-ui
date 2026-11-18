@@ -103,7 +103,7 @@ def test_attach_decide_accounting_gateway_and_detach(app_client, child, tmp_path
     answer = response.json()["answers"]["q"]
     assert answer["calibrated"] is False and "calibration" not in answer and "automated" not in answer
     assert child.seen[-1][1]["model"] == "provider/model"
-    assert child.headers[-1]["Authorization"] == "Bearer secret-for-test"
+    assert child.request_headers[-1]["Authorization"] == "Bearer secret-for-test"
     stats = client.get("/api/stats").json()["models"][model_id]
     assert stats["requests"] == 1 and stats["questions"] == 1
     traffic = client.get("/api/traffic").json()
@@ -184,7 +184,7 @@ def test_batch_real_subprocess_preflight_and_accounting(app_client, child, tmp_p
     log = fleet.logs["job:batch"].text()
     assert "basal.run" in log and "--url" in log and "secret-for-test" not in log
     assert len(child.seen) == 2 and all(x[1]["model"] == "provider/model" for x in child.seen)
-    assert all(h["Authorization"] == "Bearer secret-for-test" for h in child.headers)
+    assert all(h["Authorization"] == "Bearer secret-for-test" for h in child.request_headers)
     assert fleet.stats.snapshot()["models"][model_id]["requests"] == 2
     assert fleet.stats.traffic_snapshot(15)["requests"] == 2
     assert [(r["source"], r["server"]) for r in fleet.history.list()] == [("batch", "Local")] * 2
@@ -471,7 +471,7 @@ def test_mcp_filters_comparison_for_listing_default_and_explicit_selection(app_c
             assert listed["structuredContent"]["models"] == ["basal"]
         result = rpc(gateway, "decide", {"state": "synthetic", "question": "Pick"})
         assert not result.get("isError")
-        assert child.headers[-1].get("Authorization") is None
+        assert child.request_headers[-1].get("Authorization") is None
         if engine.feature("mcp_models"):
             rejected = rpc(gateway, "decide", {"state": "synthetic", "question": "Pick", "model": model["id"]})
             assert rejected["isError"] and "not loaded" in rejected["content"][0]["text"]
@@ -521,7 +521,7 @@ def test_servers_and_keys_restore_after_restart(app_client, child, tmp_path):
         )
         assert ready["entry"]["server"] == saved["id"]
         assert restarted.post("/api/decide", json={**BODY, "model": model["id"]}).status_code == 200
-        assert child.headers[-1]["Authorization"] == "Bearer secret-for-test"
+        assert child.request_headers[-1]["Authorization"] == "Bearer secret-for-test"
 
 
 def test_short_key_preserves_discovery_and_answer_identifiers(app_client, child):

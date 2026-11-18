@@ -1,15 +1,31 @@
 """Load options: the engine modes this machine offers, options reaching basal-serve, the context policy, basal-serve's
 own refusals, and options remembered for a model."""
 
+from contextlib import contextmanager
+
 import pytest
 
 from basal_ui.engine import feature
 from basal_ui.options import MODE_ORDER
-from tests.e2e.support import CHOICE, context_of, long_state
+from tests.e2e.support import CHOICE, known_context_limit, long_state, verified_context
 
 
 def options_of(ui, model_id):
     return ui.get("/api/models/options", params={"id": model_id})
+
+
+@contextmanager
+def restore_model(ui, model_id):
+    original = ui.model(model_id)
+    if original and original["state"] in ("starting", "downloading"):
+        original = ui.wait_model(model_id)
+    assert original is None or original["state"] == "ready"
+    try:
+        yield
+    finally:
+        ui.unload(model_id)
+        if original is not None:
+            ui.load(model_id, original["options"])
 
 
 def test_the_mode_list_covers_every_mode_and_offers_the_default(ui, text_model, hardware):
@@ -28,17 +44,26 @@ def test_the_mode_list_covers_every_mode_and_offers_the_default(ui, text_model, 
 def test_options_reach_basal_serve_and_the_context_policy_applies(ui, text_model):
     model_id = text_model["id"]
     chosen = {"deterministic": True, "orders": "2", "context_overflow": "refuse"}
-    m = ui.load(model_id, chosen)
-    assert m["command"][-5:] == ["--deterministic", "--orders", "2", "--context-overflow", "refuse"]
-    context = context_of(m["entry"])
-    assert context["overflow"] == "refuse" and m["entry"].get("orders") in (2, "2")
-    limit = context["limit"]
-    body = {"state": long_state(limit), "questions": {"q": {"type": "noul", "instructions": "Czy to umowa najmu?"}}}
-    refused = ui.decide(model_id, body, expect=(422,))
-    assert "the prompt is" in refused["error"] and refused["code"] == "INVALID_REQUEST"
-    assert ui.decide(model_id, CHOICE)["answers"]["dept"]["choice"]
-    ui.load(model_id)  # back to the defaults
-    assert "--deterministic" not in ui.model(model_id)["command"]
+    original = ui.model(model_id)
+    with restore_model(ui, model_id):
+        m = ui.load(model_id, chosen)
+        assert m["command"][-5:] == ["--deterministic", "--orders", "2", "--context-overflow", "refuse"]
+        assert verified_context(m)["overflow"] == "refuse" and m["entry"].get("orders") in (2, "2")
+        assert ui.decide(model_id, CHOICE)["answers"]["dept"]["choice"]
+    restored = ui.model(model_id)
+    assert (restored is None) == (original is None)
+    if original is not None:
+        assert restored["options"] == original["options"]
+
+
+def test_context_refuses_an_overlong_prompt(ui, text_model):
+    model_id = text_model["id"]
+    with restore_model(ui, model_id):
+        m = ui.load(model_id, {"deterministic": True, "orders": "2", "context_overflow": "refuse"})
+        limit = known_context_limit(m)
+        body = {"state": long_state(limit), "questions": {"q": {"type": "noul", "instructions": "Czy to umowa najmu?"}}}
+        refused = ui.decide(model_id, body, expect=(422,))
+        assert "the prompt is" in refused["error"] and refused["code"] == "INVALID_REQUEST"
 
 
 def test_invalid_unavailable_and_refused_combinations(ui, text_model):
