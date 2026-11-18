@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import json
 import math
 import os
 import struct
@@ -439,6 +440,97 @@ def test_startup_timeout_kills_child_process_group(tmp_path, monkeypatch):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild process survived startup timeout")
+
+
+def test_runner_detached_stdin_and_fatal_startup_log(tmp_path):
+    if os.name != "posix":
+        pytest.skip("closing the launcher stdin requires POSIX")
+    child = (
+        "import sys; assert sys.stdin.read() == ''; "
+        "print('Fatal Python error: init_sys_streams', file=sys.stderr); "
+        "print('OSError: [Errno 9] Bad file descriptor', file=sys.stderr); "
+        "print('<no Python frame>', file=sys.stderr); sys.exit(1)"
+    )
+    launcher = f"""
+import json, os, sys, time
+from types import SimpleNamespace
+from basal_ui import catalog
+from basal_ui.fleet import Runner
+os.close(0)
+catalog.is_downloaded = lambda *args, **kwargs: {str(tmp_path)!r}
+runner = Runner(models_dir_fn=lambda: {str(tmp_path)!r})
+runner._build_command = lambda *args: [sys.executable, '-c', {child!r}]
+assessment = SimpleNamespace(variant=SimpleNamespace(id='synthetic', repo='synthetic', weights_bytes=0),
+                             mode='eager', est_memory_bytes=0)
+runner.load(assessment)
+deadline = time.monotonic() + 5
+while runner.status()['state'] != 'error' and time.monotonic() < deadline:
+    time.sleep(0.01)
+print(json.dumps({{'status': runner.status(), 'log': runner.log.text()}}))
+"""
+    result = subprocess.run([sys.executable, "-c", launcher], capture_output=True, text=True, timeout=10, check=True)
+    data = json.loads(result.stdout)
+    assert data["status"]["state"] == "error"
+    assert "OSError: [Errno 9] Bad file descriptor" in data["status"]["error"]
+    assert data["log"].endswith("<no Python frame>")
+
+
+def test_runner_exit_excerpt_is_bounded_without_truncating_log():
+    runner = Runner()
+    runner.log.append("x" * 3000)
+    runner.log.append("OSError: [Errno 9] Bad file descriptor")
+    runner.log.append("<no Python frame>")
+    error = runner._exit_error(SimpleNamespace(returncode=1), None)
+    assert len(error) < 2100 and "OSError: [Errno 9] Bad file descriptor" in error
+    assert runner.log.text().startswith("x" * 3000)
+
+
+@pytest.mark.parametrize("later_exit", [False, True])
+def test_runner_exit_waits_for_log_reader(tmp_path, monkeypatch, later_exit):
+    runner = Runner(models_dir_fn=lambda: tmp_path)
+    assessment = catalog.assess(MINI, HW)
+    release = tmp_path / "exit"
+    code = (
+        "import pathlib,sys,time; "
+        + (f"p=pathlib.Path({str(release)!r}); \nwhile not p.exists(): time.sleep(0.01)\n" if later_exit else "")
+        + "print('OSError: [Errno 9] Bad file descriptor', file=sys.stderr); "
+        "print('<no Python frame>', file=sys.stderr); sys.exit(1)"
+    )
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(runner, "_build_command", lambda *args: [sys.executable, "-c", code])
+    read = runner._read_logs
+    entered, unblock = threading.Event(), threading.Event()
+
+    def delayed_read(proc):
+        entered.set()
+        assert unblock.wait(5)
+        read(proc)
+
+    monkeypatch.setattr(runner, "_read_logs", delayed_read)
+    if later_exit:
+        monkeypatch.setattr(
+            "basal_ui.fleet.httpx.get",
+            lambda *args, **kwargs: httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", args[0])),
+        )
+        monkeypatch.setattr(runner, "_models_entry", lambda media: (None, []))
+    try:
+        runner.load(assessment)
+        assert entered.wait(2)
+        if later_exit:
+            wait_for(lambda: runner.status()["state"] == "ready")
+            release.touch()
+        wait_for(lambda: runner.process is not None and runner.process.poll() is not None)
+        timer = threading.Timer(0.1, unblock.set)
+        timer.start()
+        wait_for(lambda: runner.status()["state"] == "error")
+        timer.join()
+        error = runner.status()["error"]
+        assert "OSError: [Errno 9] Bad file descriptor" in error
+        assert "<no Python frame>" in runner.log.text()
+        assert len(error) < 2100
+    finally:
+        unblock.set()
+        runner.unload()
 
 
 def test_api_serve_settings_and_key_routes(tmp_path):
@@ -1157,6 +1249,47 @@ def test_revision_reaches_cached_check_and_download_but_not_child_flags(tmp_path
     del runner._build_command
     command = runner._build_command(MINI, tmp_path, assessment, False, 1, settings.serve_settings())
     assert "--revision" not in command
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("case", ["defaults", "selected", "override"])
+def test_loaded_model_metadata_preserves_child_values_and_fills_missing_values(tmp_path, monkeypatch, native, case):
+    native_context = {"limit": None, "overflow": "native", "truncate_head": 0.7}
+    native_certified = {"0.01": {"choice": 0.99}}
+    entry = {"name": MINI.id}
+    if native:
+        entry.update(context=native_context, certified=native_certified)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(calibration, "served_certified", lambda *args: {"0.05": {"choice": 0.8}})
+    monkeypatch.setattr(
+        "basal_ui.fleet.subprocess.Popen",
+        lambda *args, **kwargs: SimpleNamespace(stdout=__import__("io").StringIO(), poll=lambda: None, pid=0),
+    )
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda url, **kwargs: httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", url)),
+    )
+    runner = Runner(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu")
+    runner.model = MINI.id
+    if case != "defaults":
+        runner.options = {"context_overflow": "refuse", "truncate_head": 0.2}
+    if case == "override":
+        runner.extra_args = ("--context-overflow", "truncate", "--truncate-head", "0.8")
+    runner._models_entry = lambda media: (entry, [])
+    runner._start(catalog.assess(MINI, HW), runner.gen, cache_dir=tmp_path, serve=settings.serve_settings())
+    fleet = make_fleet(tmp_path)
+    fleet.runners[MINI.id] = runner
+    from basal_ui.gateway import build_app
+
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        result = client.get("/v1/models").json()["models"][0]
+    expected = {
+        "defaults": {"limit": None, "overflow": "truncate", "truncate_head": 1 / 3},
+        "selected": {"limit": None, "overflow": "refuse", "truncate_head": 0.2},
+        "override": {"limit": None, "overflow": "truncate", "truncate_head": 0.8},
+    }
+    assert result["context"] == (native_context if native else expected[case])
+    assert result["certified"] == (native_certified if native else {"0.05": {"choice": 0.8}})
 
 
 @pytest.mark.parametrize(("port", "capability"), [("FP8", (8, 0)), ("NVFP4", (9, 0))])

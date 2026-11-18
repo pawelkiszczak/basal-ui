@@ -152,6 +152,7 @@ class Runner:
         self.lock = threading.RLock()
         self.gen = 0
         self.process = None
+        self.log_thread = None
         self.rss_bytes = None
         self._reset()
 
@@ -197,7 +198,7 @@ class Runner:
         with self.lock:
             if self.state == "ready" and self.process and self.process.poll() is not None:
                 self.state = "error"
-                self.error = f"basal-serve exited ({self.process.returncode}): {self.log.last() or ''}"
+                self.error = self._exit_error(self.process, self.log_thread)
                 self.event("error", f"{self.model}: {self.error}")
             if (
                 self.state == "ready"
@@ -373,6 +374,7 @@ class Runner:
                 self.serve_snapshot = _child_settings(serve, self._calibration(v))
                 self.process = proc = subprocess.Popen(
                     command,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -385,13 +387,13 @@ class Runner:
                     },
                     **options,
                 )
+                self.log_thread = log_thread = threading.Thread(target=self._read_logs, args=(proc,), daemon=True)
+                log_thread.start()
             self.event("info", f"{v.id}: basal-serve starting on 127.0.0.1:{port}: {shlex.join(map(str, command))}")
-            threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
             deadline = time.monotonic() + START_TIMEOUT_S
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
-                    time.sleep(0.2)  # let the log reader drain the last lines
-                    raise RuntimeError(f"basal-serve exited ({proc.returncode}): {self.log.last() or 'no output'}")
+                    raise RuntimeError(self._exit_error(proc, log_thread))
                 try:
                     if httpx.get(self.base_url + "/health", timeout=1).status_code == 200:
                         entry, media_kinds = self._models_entry(media)
@@ -404,6 +406,18 @@ class Runner:
                                 "certified": served_certified(
                                     entry, path, assessment.mode, self.options, self._calibration(v)
                                 ),
+                            }
+                        if entry is not None and "context" not in entry:
+                            from basal.server import parser
+
+                            args, _ = parser().parse_known_args(command[3:])
+                            entry = {
+                                **entry,
+                                "context": {
+                                    "limit": None,
+                                    "overflow": args.context_overflow,
+                                    "truncate_head": args.truncate_head,
+                                },
                             }
                         with self.lock:
                             if gen != self.gen:
@@ -436,6 +450,13 @@ class Runner:
     def _read_logs(self, proc):
         for line in proc.stdout:
             self.log.append(line.rstrip())
+
+    def _exit_error(self, proc, log_thread):
+        # A descendant may keep stdout open after the child exits; never block status indefinitely.
+        if log_thread:
+            log_thread.join(timeout=1)
+        excerpt = self.log.text().strip()[-2000:] or "no output"
+        return f"basal-serve exited ({proc.returncode}): {excerpt}"
 
     def unload(self):
         proc, _ = self.detach()
@@ -484,7 +505,7 @@ class Fleet:
         self.models_dir_fn, self.platform_fn = models_dir_fn, platform_fn
         self.settings_mod, self.hardware_fn = settings_mod, hardware_fn
         self.stats, self.history = stats, history
-        self.internal_secret = secrets.token_urlsafe(32)
+        self.internal_secret = os.environ.get("BASAL_UI_ADMIN_KEY") or secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.runners: dict[str, Runner] = {}
         self.logs: dict[str, LogBuffer] = {"basal-ui": LogBuffer()}
@@ -897,6 +918,29 @@ class Fleet:
         with self.lock:
             runners = list(self.runners.items())
         return [model_id for model_id, runner in runners if runner.status()["state"] == "ready"]
+
+    def metrics_snapshot(self):
+        """Ready model count and native child identities without health probes or leases."""
+        with self.lock:
+            ready = []
+            for model, runner in self.runners.items():
+                if isinstance(runner, Runner):
+                    with runner.lock:
+                        if runner.state == "ready" and (runner.process is None or runner.process.poll() is None):
+                            ready.append((model, runner, runner.gen, runner.base_url))
+                elif runner.state == "ready":
+                    ready.append((model, runner, None, None))
+            return len(ready), [item for item in ready if isinstance(item[1], Runner) and item[3]]
+
+    def metrics_current(self, model, runner, generation, url):
+        with self.lock, runner.lock:
+            return (
+                self.runners.get(model) is runner
+                and runner.gen == generation
+                and runner.state == "ready"
+                and runner.base_url == url
+                and (runner.process is None or runner.process.poll() is None)
+            )
 
     def model_entries(self):
         """The ready models for GET /v1/models: id, the child's own entry, the time it became ready."""
