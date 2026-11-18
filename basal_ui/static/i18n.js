@@ -53,7 +53,6 @@ const PL = {
   "server not reachable: {error}": "serwer jest nieosiągalny: {error}",
   "two separate forwards": "dwa osobne przebiegi",
   "a forward": "przebieg",
-
   "basal · decision visualiser": "basal · wizualizacja decyzji",
   "basal decision visualiser": "wizualizacja decyzji basal",
   "loading model…": "ładowanie modelu…",
@@ -232,7 +231,6 @@ const PL = {
   "Comparison server returned HTTP {status}": "Serwer porównawczy zwrócił HTTP {status}",
   "Invalid Comparison server response": "Nieprawidłowa odpowiedź serwera porównawczego",
   "Ordinary basal Batch is not counted in Usage or History. Comparison Batch is recorded in both.": "Zwykłe zadania Batch modelu basal nie są uwzględniane w użyciu ani historii. Zadania Batch modelu porównawczego są zapisywane w obu miejscach.",
-
   "Decisions servers require text descriptions in {field}": "Serwery Decisions wymagają tekstowych opisów w {field}",
   "basal-run does not grade gold on full requests; use simple items": "basal-run nie ocenia pól gold w pełnych żądaniach; użyj prostych rekordów",
   "name must be a non-empty string": "Nazwa nie może być pusta",
@@ -340,6 +338,7 @@ const PL = {
   "final": "wynik",
   "average (raw)": "średnia (surowa)",
   "raw": "surowe",
+  "code:UPSTREAM_TIMEOUT": "basal-serve nie odpowiedział w ciągu {seconds} s.",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",
