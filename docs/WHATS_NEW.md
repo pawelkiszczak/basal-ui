@@ -1,5 +1,7 @@
 # Unreleased
 
+- Hover effects appear only on hover-capable pointers, so touch taps do not leave controls looking hovered.
+
 - Inspect wraps its header and long labels on narrow screens and respects the browser's default text size.
 - Optionally unload idle models after a configured number of minutes; remembered models remain available for auto-load.
 - Error toasts stay visible until dismissed; informational toasts pause while hovered or focused.
