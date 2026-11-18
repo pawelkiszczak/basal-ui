@@ -1,5 +1,7 @@
 # Unreleased
 
+
+- The API server exposes admin-gated Prometheus metrics at `/metrics`, including available per-model Engine metrics grouped by metric family. Set `BASAL_UI_ADMIN_KEY` before startup to authenticate an external scraper.
 - On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
 - Dialogs announce their purpose to screen readers using translated names.
 
