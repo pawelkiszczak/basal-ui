@@ -250,6 +250,8 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 #runIdentity,#runOrderCheck{white-space:normal;height:auto;min-height:36px}
 .mcp-dialog{width:min(640px,calc(100vw - 24px));overflow:auto;overflow-wrap:anywhere}.mcp-dialog>label{display:block;margin-top:8px}.mcp-dialog input[type=url],.mcp-dialog input[type=password]{width:100%;min-width:0}.mcp-actions,.mcp-dialog .dialog-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.mcp-item{display:flex;gap:8px;align-items:start;padding:8px;border-bottom:1px solid var(--line)}.mcp-item span{min-width:0}.mcp-dialog #mcp-error{color:var(--danger)}
 #attachDialog select{line-height:normal;max-width:100%}
+.schedule-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px;margin-top:14px}.schedule-form>label:not(.schedule-check){display:grid;gap:4px;min-width:0}.schedule-form input,.schedule-form select{width:100%;min-width:0}.schedule-form .schedule-check{display:flex;gap:8px;align-items:center}.schedule-form .schedule-check input{width:auto}.schedule-form .controls,.schedule-form p{grid-column:1/-1}.schedule-run{overflow-wrap:anywhere;font-size:13px}.schedule-form [hidden]{display:none!important}
+#schedulePanel,#scheduleList,#scheduleList .model-row{min-width:0;max-width:100%}#scheduleList .model-row{grid-template-columns:minmax(0,1fr);overflow-wrap:anywhere}#scheduleList .controls{min-width:0;flex-wrap:wrap}#batch [role=tab][aria-selected=true]{background:var(--white);border-color:var(--line)}
 
 .comparison-badge { display: inline-block; max-width: 100%; }
 .comparison-badge summary { cursor: pointer; }

@@ -672,7 +672,9 @@ def test_comparison_batch_snapshot_is_removed_on_rejected_start_and_failure(app_
 
 
 def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path, monkeypatch):
-    from basal_ui import batch
+    import threading
+
+    from basal_ui import batch, jobs
 
     client, fleet = app_client
     _, model = attach(client, child)
@@ -687,11 +689,21 @@ def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path
         snapshots.append(args[-1])
         return original(*args, **kwargs)
 
+    stopped = threading.Event()
+    terminate = jobs.terminate
+
+    def stop_process(proc):
+        terminate(proc)
+        stopped.set()
+
+    monkeypatch.setattr(jobs, "terminate", stop_process)
     monkeypatch.setattr(fleet, "start_model_job", capture)
     try:
         assert client.post("/api/batch", json=body).status_code == 202
         wait_for(lambda: bool(child.seen), 30)
         assert client.delete("/api/batch").status_code == 200
+        assert stopped.wait(10)
+        child.gate.set()
         job = wait_for(
             lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
         )

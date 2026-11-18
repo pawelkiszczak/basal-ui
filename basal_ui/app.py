@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import base64
 import dataclasses
+import io
 import ipaddress
 import json
 import math
@@ -48,6 +49,7 @@ EXAMPLES = Path(__file__).parent / "examples"
 MEDIA = EXAMPLES / "media"  # the files the bundled examples name in media[i].file
 MIME = {".png": "image/png", ".jpg": "image/jpeg", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".flac": "audio/flac"}
 AUTO_LOAD_STOP_S = 30  # shutdown waits this long for a stalled auto-load (catalog, download) before moving on
+SCHEDULE_INTERVAL_S = 30
 FAMILY_ORDER = {f"basal-{n}": i for i, n in enumerate(("2.0", "omni-1.1", "omni-1.0", "omni", "1.5", "1.0"))}
 
 
@@ -118,6 +120,7 @@ def create_app(
     finetune=None,
     preset_fetch_manager=None,
     mcp_importer=None,
+    schedules=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -137,6 +140,100 @@ def create_app(
     finetune_manager = finetune or FineTune(fleet, settings_mod, hardware_fn, addon_manager)
     preset_fetch_manager = preset_fetch_manager or FetchManager(presets=True)
     mcp_importer = mcp_importer or FetchManager("basal_ui.mcp_import")
+    from . import batch, paths
+    from .schedules import Schedules
+
+    def start_scheduled_batch(spec, source, output, signature, runner, row):
+        snapshot = None
+        try:
+            try:
+                batch.validate_runner(runner)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
+            if output.resolve() == source.resolve():
+                raise RuntimeError("output must not be the input file")
+            fd, name = tempfile.mkstemp(prefix=".basal-ui-schedule-", suffix=".jsonl", dir=output.parent)
+            snapshot = Path(name)
+            with (
+                os.fdopen(fd, "wb") as target,
+                paths._open(source) as raw,
+                io.TextIOWrapper(raw, encoding="utf-8", errors="surrogateescape", newline="") as stream,
+            ):
+                before = os.fstat(raw.fileno())
+                if [before.st_size, before.st_mtime_ns] != signature:
+                    raise RuntimeError("input changed while preparing the Batch")
+                first = True
+                for number, line in enumerate(stream, 1):
+                    if schedule_stop.is_set():
+                        return None
+                    try:
+                        target.write(line.encode("utf-8"))
+                    except UnicodeEncodeError as exc:
+                        raise RuntimeError(f"{source.name}: line {number}: invalid UTF-8") from exc
+                    if not line.strip():
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except (ValueError, RecursionError):
+                        item = None
+                    if not isinstance(item, dict) or not ("questions" in item or "options" in item):
+                        raise RuntimeError(f"{source.name}: line {number} is not a Batch request")
+                    if (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison":
+                        error = batch.validate_comparison_item(item, runner)
+                        if error:
+                            raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
+                    if first:
+                        try:
+                            _, reason = paths._row_shape(item)
+                        except RecursionError as exc:
+                            raise RuntimeError(
+                                f"{source.name}: line {number}: request nesting exceeds the parser limit"
+                            ) from exc
+                        if reason:
+                            raise RuntimeError(f"{source.name}: line {number}: {reason}")
+                        first = False
+                after = os.fstat(raw.fileno())
+                if [after.st_size, after.st_mtime_ns] != signature:
+                    raise RuntimeError("input changed while preparing the Batch")
+            if first:
+                raise RuntimeError(f"{source.name}: no requests")
+
+            def reserve():
+                fleet.start_model_job(
+                    "batch",
+                    spec["model"],
+                    f"{spec['model']} on {source.name}",
+                    batch.run_scheduled,
+                    fleet,
+                    spec["model"],
+                    source,
+                    snapshot,
+                    output,
+                    spec["concurrency"],
+                    runner,
+                    spec["overwrite"],
+                    settings_mod,
+                    spec,
+                    row,
+                    runner_expected=runner,
+                )
+                return fleet.jobs.get("batch")
+
+            with fleet.lock:
+                if schedule_stop.is_set():
+                    return None
+                job = settings_mod.reserve_schedule(spec, reserve)
+            if job is None:
+                return None
+            snapshot = None
+            return job
+        except (OSError, UnicodeDecodeError) as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
+
+    schedules = schedules or Schedules(settings_mod, fleet, start_scheduled_batch)
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -244,6 +341,15 @@ def create_app(
                 print(f"basal-ui: auto-load of {last['id']} skipped: {exc}", file=sys.stderr)
                 fleet.event("warn", f"auto-load of {last['id']} skipped: {exc}")
 
+    schedule_stop = threading.Event()
+
+    def schedule_timer():
+        while not schedule_stop.wait(SCHEDULE_INTERVAL_S):
+            try:
+                schedules.run_due()
+            except Exception as exc:  # noqa: BLE001 — keep the timer alive and expose errors
+                fleet.event("error", f"scheduled Batch scan failed: {exc}")
+
     @asynccontextmanager
     async def lifespan(_app):
         auto_load_thread = None
@@ -260,11 +366,17 @@ def create_app(
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
         fleet.start_idle_timer()
+        schedule_stop.clear()
+        schedule_thread = threading.Thread(target=schedule_timer, name="basal-ui-schedules", daemon=True)
+        schedule_thread.start()
+        _app.state.schedule_thread = schedule_thread
         yield
+        schedule_stop.set()
         await mcp_importer.close()
         await preset_fetch_manager.close()
         await fetch_manager.close()
         await asyncio.to_thread(fleet.stop_idle_timer)
+        await asyncio.to_thread(schedule_thread.join)
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:
@@ -277,6 +389,10 @@ def create_app(
         # Inspection's worker and pending load callbacks need this event loop to finish while shutdown waits.
         await asyncio.to_thread(inspector.stop)
         await asyncio.to_thread(fleet.shutdown)
+        active = schedules.active
+        if active is not None and active[2].thread is not None:
+            await asyncio.to_thread(active[2].thread.join)
+        await asyncio.to_thread(schedules._finish_active)
         stats.close()
         settings_mod.remove_keys_file()
 
@@ -351,6 +467,8 @@ def create_app(
             return {"tools": shortlist(body.get("tools"), body.get("query"), body.get("k", 40))}
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc), "code": "mcp_invalid_request"})
+
+    app.state.schedules = schedules
 
     @app.middleware("http")
     async def protect_engine_installation(request: Request, call_next):
@@ -1567,6 +1685,10 @@ def create_app(
             raise HTTPException(400, "max_error must be a number between 0 and 1 (exclusive).")
         return presets.questions(name, lang=None if lang == "auto" else lang, state=state, max_error=max_error)
 
+    @app.get("/api/jobs")
+    def get_jobs():
+        return {"jobs": fleet.jobs.states()}
+
     @app.get("/api/examples")
     def get_examples():
         return examples()
@@ -2433,6 +2555,95 @@ def create_app(
 
         return batch.capabilities()
 
+    def schedule_definition(body):
+        from .schedules import validate
+
+        try:
+            spec = validate(body)
+            for key in ("input_dir", "output_dir"):
+                result = paths.check(spec[key], key)
+                if not result["ok"]:
+                    raise ValueError(f"{key}: {result['code']}")
+            return spec
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/schedules")
+    def list_schedules():
+        return {"schedules": schedules.list()}
+
+    @app.post("/api/schedules", status_code=201)
+    def create_schedule(body: dict = Body(...)):
+        try:
+            return schedules.create(schedule_definition(body))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/schedules/{schedule_id}")
+    def update_schedule(schedule_id: str, body: dict = Body(...)):
+        from .schedules import validate
+
+        try:
+            validator = validate if set(body) <= {"paused", "paused_reason"} else schedule_definition
+            return schedules.update(schedule_id, body, validator)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.delete("/api/schedules/{schedule_id}")
+    def delete_schedule(schedule_id: str):
+        try:
+            schedules.delete(schedule_id)
+            return {"deleted": schedule_id}
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.post("/api/schedules/{schedule_id}/pause")
+    def pause_schedule(schedule_id: str):
+        from .schedules import validate
+
+        try:
+            return schedules.update(schedule_id, {"paused": True}, validate)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.post("/api/schedules/{schedule_id}/resume")
+    def resume_schedule(schedule_id: str):
+        from .schedules import validate
+
+        try:
+            return schedules.update(schedule_id, {"paused": False, "paused_reason": None}, validate)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
+    @app.post("/api/schedules/{schedule_id}/run")
+    def run_schedule(schedule_id: str):
+        try:
+            return schedules.run_now(schedule_id)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/schedules/{schedule_id}/preview")
+    def preview_schedule(schedule_id: str):
+        try:
+            return schedules.preview(schedule_id)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/schedules/{schedule_id}/runs")
+    def schedule_runs(schedule_id: str, cursor: int = 0):
+        if cursor < 0:
+            raise HTTPException(400, "cursor must be non-negative")
+        try:
+            return schedules.runs(schedule_id, cursor)
+        except KeyError as exc:
+            raise HTTPException(404, "schedule not found") from exc
+
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
         from . import batch
@@ -2478,10 +2689,11 @@ def create_app(
             lines = [(n, line) for n, line in enumerate(source_bytes.decode("utf-8").splitlines(), 1) if line.strip()]
         except (OSError, UnicodeDecodeError) as exc:
             raise HTTPException(400, f"cannot read {source}: {getattr(exc, 'strerror', None) or exc}") from exc
+        items = []
         for n, line in lines:
             try:
                 item = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 item = None
             is_state_only = preset and isinstance(item, dict) and "questions" not in item and "question" not in item
             if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
@@ -2499,6 +2711,7 @@ def create_app(
                     },
                     status_code=400,
                 )
+            items.append((n, item))
         if not lines:
             raise HTTPException(400, f"{source} has no lines")
         out = Path(body["output"]).expanduser() if body.get("output") else batch.default_output(source)
@@ -2537,6 +2750,10 @@ def create_app(
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
+        try:
+            batch.validate_runner(runner)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         early_exit = body.get("early_exit")
         levels = (runner.models_entry or {}).get("early_exit") or []
         if early_exit is not None and early_exit not in levels:
@@ -2546,55 +2763,18 @@ def create_app(
                 if levels
                 else f"{model_id} has no early exits (basal-serve --mode fast-exit)",
             )
-        from .fleet import ComparisonRunner, strip_mcp_metadata
-
-        if isinstance(runner, ComparisonRunner):
-            from basal.run import to_request
-
-            from .compat import comparison_request
-
-            for n, line in lines:
-                item = json.loads(line)
+        comparison = (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison"
+        snapshot = None
+        if comparison:
+            for n, item in items:
                 if preset and "questions" not in item and "question" not in item:
                     from basal.presets import questions
 
                     item["questions"] = questions(preset, None if lang == "auto" else lang, item["state"])
-                if "questions" in item and "gold" in item:
-                    raise HTTPException(
-                        400,
-                        {
-                            "code": "UNSUPPORTED_FOR_COMPARISON",
-                            "detail": f"{source.name}: line {n}: basal-run does not grade gold on full requests; use simple items",
-                        },
-                    )
-                permitted = (
-                    {"id", "state", "questions", "early_exit", "gold"}
-                    if "questions" in item
-                    else {"id", "state", "question", "options", "type", "gold"}
-                )
-                extra = set(item) - permitted
-                if extra:
-                    raise HTTPException(
-                        400,
-                        {
-                            "code": "UNSUPPORTED_FOR_COMPARISON",
-                            "detail": f"{source.name}: line {n}: basal-run would discard {sorted(extra)[0]}",
-                        },
-                    )
-                try:
-                    request = strip_mcp_metadata(to_request(item, early_exit))
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise HTTPException(400, f"{source.name}: line {n}: {exc}") from exc
-                refusal = comparison_request(
-                    request, runner.image_input, runner.option_limit, bool(runner.server.get("decisions_url"))
-                )
-                if refusal is not None:
-                    error = refusal.json()
-                    raise HTTPException(
-                        400, {"code": error["code"], "detail": f"{source.name}: line {n}: {error['error']}"}
-                    )
-        snapshot = None
-        if isinstance(runner, ComparisonRunner):
+                error = batch.validate_comparison_item(item, runner, early_exit)
+                if error:
+                    detail = f"{source.name}: line {n}: {error['detail']}"
+                    raise HTTPException(400, {**error, "detail": detail} if error.get("code") else detail)
             fd, name = tempfile.mkstemp(prefix="basal-ui-comparison-", suffix=".jsonl")
             snapshot = Path(name)
             try:
@@ -2603,8 +2783,9 @@ def create_app(
             except BaseException:
                 snapshot.unlink(missing_ok=True)
                 raise
+        started = False
         try:
-            return fleet.start_model_job(
+            result = fleet.start_model_job(
                 "batch",
                 model_id,
                 f"{model_id} on {source.name}",
@@ -2620,21 +2801,19 @@ def create_app(
                 choice,
                 stop_after,
                 caps["restart"],
-                *([runner, snapshot] if snapshot is not None else [None, None]),
-                runner_expected=runner if isinstance(runner, ComparisonRunner) else None,
+                runner,
+                snapshot,
+                runner_expected=runner,
             )
+            started = True
+            return result
         except KeyError as exc:
-            if snapshot is not None:
-                snapshot.unlink(missing_ok=True)
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
-            if snapshot is not None:
-                snapshot.unlink(missing_ok=True)
             raise HTTPException(409, str(exc)) from exc
-        except BaseException:
-            if snapshot is not None:
+        finally:
+            if snapshot is not None and not started:
                 snapshot.unlink(missing_ok=True)
-            raise
 
     @app.delete("/api/batch")
     def cancel_batch():
