@@ -599,6 +599,7 @@ const PL = {
   "Cancelled.": "Anulowano.",
   "Cascade": "Kaskada",
   "Cascade kind": "Rodzaj kaskady",
+  "Use lowercase letters, numbers and hyphens. Start with a letter or number, up to 40 characters.": "Użyj małych liter, cyfr i łączników. Zacznij od litery lub cyfry, maksymalnie 40 znaków.",
   "Cascades": "Kaskady",
   "Certified error thresholds": "Certyfikowane progi błędu",
   "Certified thresholds": "Certyfikowane progi",
