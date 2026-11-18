@@ -290,7 +290,7 @@ async function loadModel(id, media=false, mode=null) {
   if(mode)return openLoadOptions(id,media,'load',mode);
   statusSequence++;
   try { await api('/api/load', {method:'POST', body:JSON.stringify({id,...(media?{media:true}:{})})}); toast(t('Model load started')); await refreshStatus(); }
-  catch (e) { showStatusError(e.message); toast(e.message,'error'); }
+  catch (e) { showStatusError(e.message); }
 }
 function showStatusError(text) { if(text)toast(text,'error'); }
 function mediaTitle(kinds) { return kinds.map(kind => kind === 'image' ? t('images') : kind === 'audio' ? t('audio') : kind).join(` ${t('and')} `); }
