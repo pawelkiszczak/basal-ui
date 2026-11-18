@@ -13,6 +13,7 @@ import httpx
 from basal.bench import DEFAULT_QUESTIONS
 from basal.loadtest import body
 
+from .engine import bench_flags
 from .jobs import Cancelled, run_tool
 
 MIN_ITEMS = 10
@@ -333,6 +334,11 @@ def bench_args(local_dir, modes, n, lat_n, gguf, options) -> list[str]:
         args += ["--ollama-model", options["ollama_model"]]
     if options.get("mlx_packed"):
         args.append("--mlx-packed")
+    flags = bench_flags()
+    for key in ("adapter", "mlx_forward"):
+        flag = "--" + key.replace("_", "-")
+        if options.get(key) and flag in flags:
+            args += [flag, options[key]]
     return args
 
 

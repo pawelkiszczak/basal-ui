@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -848,6 +848,7 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
+            "mlx_forward_available": "--mlx-forward" in engine.serve_flags(),
             "adapter_reason": adapter_reason,
             "adapter_reason_code": adapter_code,
             "adapter_reason_params": adapter_params,
@@ -1015,7 +1016,19 @@ def create_app(
         local_dir = downloaded(variant)
         current = hw()
         assessment = catalog.assess(variant, current)
-        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        selected = settings_mod.load_options(variant.id)
+        with fleet.lock:
+            runner = fleet.runners.get(variant.id)
+            active = (
+                {key: runner.options.get(key) for key in ("adapter", "mlx_forward")}
+                if (runner is not None and runner.status()["state"] == "ready")
+                else None
+            )
+        if active is not None:
+            selected = {key: value for key, value in selected.items() if key not in active}
+        options = load_options.validate(selected, assessment.mode)
+        if active is not None:
+            options.update(active)
         return (
             local_dir,
             assessment,

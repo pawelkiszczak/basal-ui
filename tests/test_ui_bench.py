@@ -262,3 +262,101 @@ def test_mode_comparison_runs_basal_bench_and_reserves_its_memory(tmp_path, monk
             "mode": "ollama",
             "error": "basal-bench exited (1): no Ollama server",
         }
+
+
+@pytest.mark.parametrize("flags", [set(), {"--adapter", "--mlx-forward"}])
+@pytest.mark.parametrize("values", [{}, {"adapter": "/tmp/adapter", "mlx_forward": "basal"}])
+def test_comparison_flags_follow_installed_bench(monkeypatch, flags, values):
+    monkeypatch.setattr(bench, "bench_flags", lambda: flags)
+    options = {"ollama_url": "http://localhost", "llamacpp_url": "http://localhost", **values}
+    argv = bench.bench_args("/model", ["mlx"], 10, 5, None, options)
+    for key in ("adapter", "mlx_forward"):
+        flag = "--" + key.replace("_", "-")
+        assert (flag in argv) == (flag in flags and key in values)
+        if flag in argv:
+            assert argv[argv.index(flag) + 1] == values[key]
+
+
+@pytest.mark.parametrize("load_errors", [None, 3])
+def test_determinism_result_preserves_engine_shape(tmp_path, monkeypatch, load_errors):
+    from types import SimpleNamespace
+
+    result = {"requests": 5, "identical": 5, "max_abs_diff": 0, "decision_flips": 0, "concurrency": 2}
+    if load_errors is not None:
+        result["load_errors"] = load_errors
+    from basal_ui import jobs
+
+    def popen(command, **kwargs):
+        from pathlib import Path
+
+        Path(command[command.index("--out") + 1]).write_text(json.dumps({"url": "private", "determinism": result}))
+        return SimpleNamespace(stdout=[], wait=lambda: None, returncode=0)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    stats = Stats(tmp_path / "stats.json")
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://local"), stats=stats)
+    job = Job("benchmark", "mini", "test", LogBuffer())
+    out = bench.loadtest_job(job, fleet, "mini", "bundled", [], {**bench.LOADTEST_DEFAULTS, "determinism": 5})
+    assert out["determinism"] == result and "url" not in out
+    assert stats.snapshot()["benchmarks"]["mini"][0]["determinism"] == result
+
+
+def test_comparison_uses_active_options_before_saved(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+    monkeypatch.setattr(bench, "bench_flags", lambda: {"--adapter", "--mlx-forward"})
+    monkeypatch.setattr("basal_ui.options.serve_flags", lambda: {"--mlx-forward"})
+    calls = []
+
+    def run(job, module, argv, out_path=None, on_json=None):
+        calls.append(argv)
+        on_json({"mode": "eager", "n": 10})
+
+    monkeypatch.setattr(bench, "run_tool", run)
+    app, fleet = make_app(tmp_path, monkeypatch, variants=[BF16])
+    runner = Runner()
+    runner.state, runner.model, runner.options = "ready", "bf16", {"mlx_forward": "basal", "adapter": "/active"}
+    fleet.runners["bf16"] = runner
+    settings.set_load_options("bf16", {"mlx_forward": "mlx-lm"})
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"id": "bf16", "kind": "modes", "modes": ["eager"], "n": 10, "lat_n": 5}
+        assert client.post("/api/benchmark", json=body).status_code == 202
+        assert finished(client)["phase"] == "done"
+        assert calls[0][calls[0].index("--mlx-forward") + 1] == "basal"
+        assert calls[0][calls[0].index("--adapter") + 1] == "/active"
+        runner.state = "idle"
+        assert client.post("/api/benchmark", json=body).status_code == 202
+        assert finished(client)["phase"] == "done"
+        assert calls[1][calls[1].index("--mlx-forward") + 1] == "mlx-lm"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('def main():\n    ap.add_argument("--model")\n', {"--model"}),
+        (
+            'def main():\n    ap.add_argument("--model")\n    ap.add_argument("--adapter")\n'
+            '    ap.add_argument("--mlx-forward", dest="mlx_forward")\n',
+            {"--model", "--adapter", "--mlx-forward"},
+        ),
+    ],
+    ids=["2.4.1", "2.8"],
+)
+def test_bench_flag_probe_reads_installed_parser_declarations(monkeypatch, source, expected):
+    from basal_ui import engine
+
+    engine.bench_flags.cache_clear()
+    monkeypatch.setattr(engine.inspect, "getsource", lambda _: source)
+    try:
+        assert engine.bench_flags() == expected
+    finally:
+        engine.bench_flags.cache_clear()
+
+
+def test_mlx_forward_load_option_is_probed(monkeypatch):
+    from basal_ui import options
+
+    monkeypatch.setattr(options, "serve_flags", lambda: set())
+    with pytest.raises(ValueError, match="does not support --mlx-forward"):
+        options.validate({"mlx_forward": "basal"})
+    monkeypatch.setattr(options, "serve_flags", lambda: {"--mlx-forward"})
+    assert options.args({"mlx_forward": "basal"}) == ["--mlx-forward", "basal"]

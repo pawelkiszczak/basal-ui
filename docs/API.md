@@ -92,7 +92,8 @@ paths, like basal-serve's own errors.
 
 `GET /v1/stats` returns basal-ui's statistics: `{"models": {id: {"requests", "questions", "errors", "input_tokens",
 "avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
-"avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
+"avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. Determinism results preserve the Engine’s optional
+`determinism.load_errors` count. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
 ### Recent Decision traffic
