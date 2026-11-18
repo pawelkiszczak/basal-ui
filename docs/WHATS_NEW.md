@@ -34,6 +34,7 @@
 - Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
   per-model log remains available in Logs.
 - Load options keeps the latest selected model and action when earlier responses arrive late.
+- Use logical layout properties throughout the app and Inspect to prepare for right-to-left layouts.
 - Extend the Decision forwarding read timeout to 600 seconds, report gateway read timeouts as 504
   `UPSTREAM_TIMEOUT`, and cancel forwarding on client disconnect. Engine computation may continue after disconnect;
   see [API.md](API.md#several-models-behind-basal-ui).
