@@ -606,7 +606,8 @@ class Fleet:
 
     def _check_job_model(self, kind, model):
         if (
-            isinstance(model, str)
+            kind != "attach"
+            and isinstance(model, str)
             and model.startswith("attached/")
             and not any(r.get("id") == model for r in self.settings_mod.attached_models())
         ):
@@ -727,6 +728,7 @@ class Fleet:
             self._check_finetune_delete()
             self._check_pending_adapter(options)
             if assessment.variant.family == "attached":
+                self._check_job_model("load", model_id)
                 if not any(r.get("id") == model_id for r in self.settings_mod.attached_models()):
                     raise RuntimeError("attached model is no longer registered")
                 if not catalog.is_downloaded(assessment.variant, self.models_dir_fn()):
@@ -1237,6 +1239,9 @@ class Fleet:
         left = self.jobs.join(JOB_SHUTDOWN_S)
         if left:
             self.event("warn", f"shutdown: jobs still running: {', '.join(left)}")
+        attach = self.jobs.get("attach")
+        if attach and attach.thread and attach.thread.is_alive():
+            attach.thread.join()
         finetune = self.jobs.get("finetune")
         if finetune and finetune.thread and finetune.thread.is_alive():
             finetune.thread.join()

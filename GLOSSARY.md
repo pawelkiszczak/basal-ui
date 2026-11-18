@@ -37,6 +37,9 @@ Whether basal-ui supports a backend on the app host's platform and hardware. Sep
 **Model compatibility**:
 Whether a model's architecture and format can run with a backend and execution mode after required dependencies are installed. Separate from memory fit.
 
+**Attached model**:
+A curated chat model linked into an Engine model directory for serving Decisions, without retraining. Its initial calibration has no certified thresholds.
+
 **Inference test**:
 An explicit, isolated check of one downloaded model, revision and execution mode using a fixed short decision. Passing is not a general accuracy or performance certification.
 

@@ -81,6 +81,9 @@
 
 - Separate Calibration file warnings and errors so each message is readable.
 
+- Model manager can attach `Qwen/Qwen3-4B` with Engine 2.5's `basal-attach`; it appears as an **Attached** model,
+  serves in supported modes, and remains marked uncalibrated until a Selected calibration is fitted. It can be removed
+  when unloaded; Attached models are excluded from suggestions and Inspect. [USAGE.md](USAGE.md#attached-models)
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
   evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.
