@@ -1,5 +1,7 @@
 # Unreleased
 
+- Dialogs announce their purpose to screen readers using translated names.
+
 - Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
   per-model log remains available in Logs.
 
