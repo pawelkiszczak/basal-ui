@@ -114,7 +114,8 @@ async function openBackendTest(id){
   $('#backendTestError').hidden=true;$('#startBackendTest').disabled=!models.length;
   updateBackendTestModes();
   const state=await api('/api/status');
-  $('#backendUnloadChoices').innerHTML=state.models.length?state.models.map(m=>{
+  const owned=state.models.filter(m=>m.kind!=='comparison');
+  $('#backendUnloadChoices').innerHTML=owned.length?owned.map(m=>{
     const idle=m.state==='ready'&&m.health?.reachable===true&&m.health.running===0&&m.health.queued===0;
     return `<label class="backend-unload"><input type="checkbox" value="${esc(m.id)}" data-generation="${esc(m.generation||'')}" ${idle?'':'disabled'}><span>${esc(m.id)} <small class="muted">${idle?t('idle; rechecked before unloading'):t('busy or activity unknown')}</small></span></label>`;
   }).join(''):`<p class="muted">${t('No running models.')}</p>`;

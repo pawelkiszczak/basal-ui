@@ -140,11 +140,21 @@ def test_inventory_lists_only_declared_and_machine_supported_extras(monkeypatch)
     monkeypatch.setattr(addons, "_extra_installed", lambda extra: False)
     subject = manager(SimpleNamespace(platform="rocm", engines=frozenset({"rocm"})), {"media", "gguf"})
     data = subject.inventory()
-    media, gguf = data["extras"]
+    media, gguf, finetune = data["extras"]
     assert media["compatible"] is True
     assert gguf["compatible"] is False
     assert gguf["installed"] is False
+    assert finetune["compatible"] is False
+    assert finetune["reason_code"] == "addon_missing_extra"
     assert data["environment"]["python"] == addons.sys.executable
+
+
+def test_finetune_inventory_uses_declared_requirements_and_peft_probe(monkeypatch):
+    monkeypatch.setattr(addons, "_extra_installed", lambda extra: extra == "finetune")
+    subject = manager(extras={"finetune"})
+    subject.requirements_fn = lambda extra: ("peft>=0.17",)
+    item = next(item for item in subject.inventory()["extras"] if item["id"] == "finetune")
+    assert item["installed"] and item["requirements"] == ["peft>=0.17"]
 
 
 def test_install_requires_explicit_confirmation_and_refuses_active_models(monkeypatch):
