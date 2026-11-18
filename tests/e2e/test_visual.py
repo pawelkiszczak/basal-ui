@@ -44,6 +44,33 @@ def navigate(page, name):
     assert not page.locator(".nav-tools").evaluate("(el) => el.open")
 
 
+@pytest.mark.parametrize("width", [390, 768, 1099, 1100, 1440])
+def test_quick_actions_order_and_keyboard_boundary(page, width):
+    page.set_viewport_size({"width": width, "height": 844})
+    if page.locator("#quickActionsRail").is_hidden():
+        page.locator("#toggleQuickActions").focus()
+        page.keyboard.press("Enter")
+        assert page.evaluate("document.activeElement.id") == "quickActionSearch"
+    page.locator("#openSettings").focus()
+    page.keyboard.press("Enter")
+    sync_api.expect(page.locator("#settings")).to_be_visible()
+    main, rail = page.evaluate("""() => [document.querySelector('main'), document.querySelector('#quickActionsRail')]
+      .map(el => { const r = el.getBoundingClientRect(); return {x:r.x, y:r.y, width:r.width, height:r.height}; })""")
+    if width <= 1099:
+        assert rail["y"] >= main["y"] + main["height"]
+    else:
+        assert rail["x"] >= main["x"] + main["width"]
+    page.locator("#saveMemory").focus()
+    page.keyboard.press("Tab")
+    assert page.evaluate("document.activeElement.id") == "closeQuickActions"
+    page.keyboard.press("Shift+Tab")
+    assert page.evaluate("document.activeElement.id") == "saveMemory"
+    page.locator("#quickActionSearch").focus()
+    page.keyboard.press("Escape")
+    assert page.locator("#quickActionsRail").is_hidden()
+    assert page.evaluate("document.activeElement.id") == "toggleQuickActions"
+
+
 def test_all_views_fit_responsive_widths_and_question_controls_stay_named(page, tmp_path):
     views = (
         "dashboard",
