@@ -1,6 +1,31 @@
 # Unreleased
 
 - Inspect wraps its header and long labels on narrow screens and respects the browser's default text size.
+- Optionally unload idle models after a configured number of minutes; remembered models remain available for auto-load.
+- Error toasts stay visible until dismissed; informational toasts pause while hovered or focused.
+- Navigate views with a translated skip link, focused headings and page titles; use arrow keys to switch model tabs.
+
+- Inspect has more readable muted text, respects reduced motion and marks the selected tab in forced colors.
+
+- Keep Hardware metrics, Stats and Benchmark numbers, and Benchmark and Batch progress steady with tabular numerals;
+  align numeric table columns with their headings.
+
+- Inspect history supports keyboard activation, and question editor controls have accessible labels.
+
+- Route app component colors and Mark elements annotations through semantic tokens; side navigation now follows the current theme.
+
+- Form controls have more visible borders in light and dark themes, including the Inspect view.
+
+- Match good and active status indicators to the orange skin in light and dark themes, while retaining status labels.
+
+- The API server exposes admin-gated Prometheus metrics at `/metrics`, including available per-model Engine metrics grouped by metric family. Set `BASAL_UI_ADMIN_KEY` before startup to authenticate an external scraper.
+- On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
+- Dialogs announce their purpose to screen readers using translated names.
+
+- Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
+  per-model log remains available in Logs.
+
+- Load options keeps the latest selected model and action when earlier responses arrive late.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)
@@ -20,6 +45,12 @@
   basal-2.0-mini since 2 November) is no longer reported as not downloaded when its local copy lacks them. A download
   takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
+- Add Engine capability probes for router, attach, fine-tuning, presets, order checking, and the declared serve and
+  calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
+- For an Engine that does not report context metadata, show the parsed child overflow policy and truncation share; the
+  context limit remains unknown because the child may impose a backend-specific limit.
+
+- Separate Calibration file warnings and errors so each message is readable.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
@@ -28,6 +59,8 @@
 - Correct the Backend Inference test persistence regression to distinguish user data from read-lock sidecars.
   Read-only Stats polling must not count private Decisions or change settings, history or persisted statistics.
   Runtime behavior is unchanged.
+
+- Run the CI matrix after merges to `stage` and `main`.
 
 # 0.1.0
 
