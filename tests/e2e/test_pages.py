@@ -681,12 +681,13 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
         {slot: 'recommended', id: packed.id, why: packedText, why_code: 'suggest_packed', why_params: packedParams},
         {slot: 'multimodal', id: multimodal.id, why: multimodalText,
           why_code: 'suggest_multimodal', why_params: multimodalParams});
-      renderModels(data);
       return {data, unavailable,
               suggestion: data.suggestions.find(s => s.why_code),
               packed: data.suggestions.find(s => s.id === packed.id),
               multimodal: data.suggestions.find(s => s.id === multimodal.id)};
     }""")
+    page.route(re.compile(r"/api/models(?:\?.*)?$"), lambda route: route.fulfill(json=fixture["data"]))
+    page.evaluate("() => loadModels()")
     unavailable, suggestion = fixture["unavailable"], fixture["suggestion"]
     assert unavailable and suggestion
     assert unavailable["family"] in {"basal-1.0", "basal-1.5"}
@@ -737,7 +738,6 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.evaluate("localStorage.setItem('basal-ui.lang', 'en')")
     page.reload()
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
-    page.evaluate("data => renderModels(data)", fixture["data"])
     view(page, "models")
     page.click("#allModelsTab")
     page.check("#notRunnableToggle")

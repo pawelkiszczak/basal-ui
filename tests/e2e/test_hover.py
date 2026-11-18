@@ -73,6 +73,7 @@ def test_mounted_hover_and_touch(ui, tmp_path):
                 page.keyboard.press("Enter")
                 assert page.locator("#playground").is_visible()
                 page.locator('.side-nav button[data-view="dashboard"]').click()
+                sync_api.expect(page.locator("#dashboard")).to_be_visible()
                 nav = page.locator('.side-nav button[data-view="playground"]')
                 check_pointer(page, nav, touch, tmp_path / f"nav-{touch}.png")
                 nav.tap() if touch else nav.click()

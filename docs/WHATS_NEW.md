@@ -1,113 +1,53 @@
-# Unreleased
+# 0.2.0
 
+This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
-- Define escalation and Blend Cascades over ready local models, with an optional private fallback endpoint.
-- Schedule Batch runs over changed JSONL files, with local-time intervals, protected outputs and run history.
-- Attach external Decision servers in Model manager → Library to compare their reported models in Playground or Batch. Comparison Decisions are recorded with server provenance and have no basal calibration or automation certificate; external models are excluded from the API server and basal-only tools.
+## Models and inference
 
-- Import and refresh MCP tool catalogues in tool questions, with local BM25 shortlisting.
-- On Engines with Batch resume support, choose Resume or Restart for unfinished output, set the unanswered-line
-  stop threshold, and see retained progress and the Engine's reason when a run stops. [USAGE](USAGE.md#batch)
-- Import preset packs from public URLs in Settings.
-- Add Fine-tune to Model manager and the declared Engine add-ons, with private labelled snapshots, cancellable training, held-out reports, base-associated adapter selection and guarded output deletion. The Engine range is unchanged. Interrupted output cleanup remains registered and can be retried.
-  A local Native 2.5.1 one-step MPS run on synthetic labels with basal-2.0-mini exercised training, adapter serving and deletion; one scored held-out Decision is pipeline evidence, not a quality claim. Native Windows remains unavailable under the private-output capability gate.
-- Insert Engine question sets into the Playground as editable cards, with language and optional abstention target.
-- Fetch a public HTTP(S) page into editable Playground State, with bounded anonymous loading, provenance in History,
-  and Replay that restores the recorded State without re-fetching. [Usage](USAGE.md)
-- Calibration offers parser-supported conformal levels and compatible kept thresholds, and shows new Engine report
-  metadata while retaining older reports. [Usage](USAGE.md#custom-calibration)
-- Improved text spacing and navigation wrapping for readable zoomed layouts.
-- Use consistent bordered card surfaces and restore side-navigation state transitions, respecting reduced motion.
-- Hover effects appear only on hover-capable pointers, so touch taps do not leave controls looking hovered.
-- Inspect wraps its header and long labels on narrow screens and respects the browser's default text size.
-- Optionally unload idle models after a configured number of minutes; remembered models remain available for auto-load.
-- Error toasts stay visible until dismissed; informational toasts pause while hovered or focused.
-- Navigate views with a translated skip link, focused headings and page titles; use arrow keys to switch model tabs.
-- Inspect has more readable muted text, respects reduced motion and marks the selected tab in forced colors.
-- Keep Hardware metrics, Stats and Benchmark numbers, and Benchmark and Batch progress steady with tabular numerals;
-  align numeric table columns with their headings.
-- Inspect follows the saved English or Polish language preference.
-- Inspect history supports keyboard activation, and question editor controls have accessible labels.
-- Route app component colors and Mark elements annotations through semantic tokens; side navigation now follows the current theme.
-- Form controls have more visible borders in light and dark themes, including the Inspect view.
-- Match good and active status indicators to the orange skin in light and dark themes, while retaining status labels.
-- The API server exposes admin-gated Prometheus metrics at `/metrics`, including available per-model Engine metrics grouped by metric family. Set `BASAL_UI_ADMIN_KEY` before startup to authenticate an external scraper.
-- On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
-- Dialogs announce their purpose to screen readers using translated names.
-- Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
-  per-model log remains available in Logs.
-- Load options keeps the latest selected model and action when earlier responses arrive late, including when its dialog is reopened immediately.
-- Use logical layout properties throughout the app and Inspect to prepare for right-to-left layouts.
-- Extend the Decision forwarding read timeout to 600 seconds, report gateway read timeouts as 504
-  `UPSTREAM_TIMEOUT`, and cancel forwarding on client disconnect. Engine computation may continue after disconnect;
-  see [API.md](API.md#several-models-behind-basal-ui).
-- **Playground answer sets and conditional questions:** edit coverage and gates when supported by the Engine; see
-  answer sets, abstention, coverage notes and skipped questions. History preserves truncation details and Replay
-  retains native question fields. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
-- Mode comparisons use the Active adapter and MLX forward when supported by `basal-bench`; determinism results show
-  Engine-reported load errors. [USAGE.md](USAGE.md#statistics-and-benchmarks)
-- The Playground supports experimental rank questions on Engines that provide them, with candidate screening and a best-first ranking.
-- Playground validation highlights the correct question card when its name contains surrounding spaces and distinguishes Engine overload from other service failures.
-- Record audio in the Playground as a playable PCM WAV attachment, with an opt-in bounded audio-only History retention setting, explicit unknown-policy errors and on-demand Replay. [Usage](USAGE.md#recording-audio-in-the-playground)
-- Calibration fits and compares the layout in one snapshot of active or saved load settings, including its model revision and mode. Invalid model metadata leaves fitted files available and shows the shipped calibration as unavailable. Imported and fitted files are labelled, layout mismatches are flagged, and saved-row refits preserve the original layout.
-- basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
-  adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
-- basal-ui supports Engine `>=2.4.1,<2.9` and pins **2.8.0**; CI tests 2.4.1, 2.5.0, 2.5.1, 2.6.0 and 2.8.0.
-  Long-request lane choices follow the installed parser, SOAM offers auto/on/off, and older Saved load settings and
-  presets are migrated. Recurrent model predictions follow the Engine's accelerated GPU architectures and a foreign
-  calibration warning appears on the model row.
-  [README](../README.md#supported-engine-range)
-- With engine 2.5.0 the API server's MCP `decide` / `decide_many` tools take a `model` argument and `list_models`
-  names the loaded models; the Playground's MCP example then targets the selected model instead of refusing it.
-  Without `model` the first loaded model answers, as on 2.4.1. [API.md](API.md#mcp-routing)
-- Load options expose the installed Engine's server limits. Dashboard shows stalled calls and lane counts; the gateway preserves typed limit refusals and Retry-After.
-- With engine 2.5.0 basal-omni-pico can be loaded with `--mode mlx` on Apple Silicon (bf16 weights); `mlx-q8`,
-  quantised MLX weights and the state or prefix cache are refused with the engine's reasons before loading. The
-  default mode stays eager.
-- The load options list `--mode int8` (engine 2.5.0): basal-omni ultra in bf16 on NVIDIA GPUs of compute capability
-  8.0+; elsewhere the mode is shown unavailable with the reason.
-- With engine 2.5.0 Inspect reads the MLX ports of basal-1.0, basal-1.5 and basal-2.0 on Apple Silicon
-  (basal-viz `--mode mlx`). [USAGE.md](USAGE.md#inspect)
-- The LoRA adapter load option says it needs engine 2.5.0 (it shipped there, not in 2.5.1), and the API server keeps
-  the `code` of a basal-serve error body (2.5.0) instead of deriving it from the status.
-- A model whose Hugging Face repository now ships engine 2.5's prepared start-up kernels (`prepared/<key>/`, e.g.
-  basal-2.0-mini since 2 November) is no longer reported as not downloaded when its local copy lacks them. A download
-  takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
-  engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
-- Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
-  the option-order check. Results and per-path probability deltas are saved with the other benchmark results. Batch
-  also offers Engine question presets with `auto`, Polish or English wording, including state-only input previews.
-  [USAGE.md](USAGE.md#batch), [API.md](API.md#batch-presets)
-- Add Engine capability probes for router, attach, fine-tuning, presets, order checking, and the declared serve and
-  calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
-- For an Engine that does not report context metadata, show the parsed child overflow policy and truncation share; the
-  context limit remains unknown because the child may impose a backend-specific limit.
-- `GLOSSARY.md` adds **Decision server**, **Comparison model**, **Attached model** and **Cascade**; ADR 0004 records
-  why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
-  ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
-  `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
-- Every engine 2.5 `basal-serve` load option is in Load options — the second read (`--reread` and its combine,
-  token and image controls), `--order-average`, `--prepared`, `--compile-scope`, `--graph-memory-gb` (which sizes the
-  fit estimate), `--mlx-forward` / `--mlx-compute`, the FP8 / NVFP4 quantisation switches, `--state-cache-lock` /
-  `--state-cache-bits`, `--long-lane-gdn` for recurrent models,
-  `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
-  not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
-  value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
+- Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
+  optional chat fallback. Playground and API responses identify the answering tier. Blend and fallback answers carry
+  no automation certificate. Escalation without fallback also works in Batch.
+- Attach [external Decision servers](USAGE.md#decision-servers-and-comparison-models) for Comparison in the Playground
+  and Batch. History records the originating server, and Comparison confidence is uncalibrated.
+- Attach curated chat models such as `Qwen/Qwen3-4B` using the Engine. Attached models appear in the Library while
+  their calibration and compatibility are validated separately. [Attached models](USAGE.md#attached-models)
+- Fine-tune on labelled Decisions with private inputs and outputs, cancellable training, held-out reports,
+  base-associated adapter selection, and guarded cleanup. The host must support private adapter output.
+- Schedule Batch over folders of JSONL files with local-time intervals, protected outputs, and run history. On Engines
+  with Batch resume support, choose Resume or Restart after an interruption. Set the unanswered-line limit and use
+  Engine question presets with automatic, Polish or English wording. [Batch](USAGE.md#batch)
 
-- Separate Calibration file warnings and errors so each message is readable.
+## Playground and History
 
-- Model manager can attach `Qwen/Qwen3-4B` with Engine 2.5's `basal-attach`; it appears as an **Attached** model,
-  serves in supported modes, and remains marked uncalibrated until a Selected calibration is fitted. It can be removed
-  when unloaded; Attached models are excluded from suggestions and Inspect. [USAGE.md](USAGE.md#attached-models)
-- Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
-- Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
-  evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.
+- Build Decisions with editable Engine question sets, conditional questions, answer sets, abstention targets,
+  and experimental rank questions when the installed Engine provides them.
+- Fetch a public HTTP(S) page into editable State with provenance. Replay restores the recorded State without a
+  second fetch and preserves native question fields and truncation details.
+- Record a microphone clip as PCM WAV in the Playground. History can retain bounded audio copies when explicitly
+  enabled, and Replay retrieves retained clips on demand. [Recording audio](USAGE.md#recording-audio-in-the-playground)
+- Import MCP tool catalogues into tool questions and shortlist locally. Import request and load presets from public URLs.
+- Keep Load options tied to the latest model and dialog, including immediate reopen. Send Engine errors to the matching
+  question cards, distinguish overload, and retain persistent error toasts.
 
-- Correct the Backend Inference test persistence regression to distinguish user data from read-lock sidecars.
-  Read-only Stats polling must not count private Decisions or change settings, history or persisted statistics.
-  Runtime behavior is unchanged.
+## Engine, calibration, and operations
 
-- Run the CI matrix after merges to `stage` and `main`.
+- Support Engine `>=2.4.1,<2.9` with a source pin of **2.8.0**. Capabilities are probed at runtime. Release CI covers
+  Engine 2.4.1, 2.5.0, 2.5.1, 2.6.0, and 2.8.0 on Ubuntu and macOS.
+- Load options follow the installed Engine's CLI. They include long-lane and SOAM choices, server limits, second reads,
+  prepared kernels, graph memory, quantization, cache controls, and MLX options where supported. Earlier Saved settings
+  and presets are migrated. Prepared kernels are optional for a cached model. [Load options](USAGE.md#load-options)
+- Fit Calibration using one snapshot of the model revision, Execution mode, and prompt layout. Keep compatible shipped
+  thresholds, inspect conformal levels, and preserve layout when refitting saved rows. Calibration warnings identify
+  mismatches and invalid metadata. Benchmarks include the Identity gate, option-order checks, and active adapter/MLX
+  settings where supported. [Calibration and benchmarks](USAGE.md#custom-calibration)
+- Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
+  reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
+  lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
+- Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
+  detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
+- Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
+  Inspect follows the saved language and supports keyboard History activation, reduced motion, and forced colors.
+- Run the release CI matrix after merges to `stage` and `main`. [Release process](../CONTRIBUTING.md#releasing)
 
 # 0.1.0
 
