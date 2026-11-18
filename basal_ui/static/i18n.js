@@ -4,6 +4,7 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Engine default": "Domyślna wartość silnika",
   "Does {candidate} match?": "Czy {candidate} pasuje?",
   "rank (experimental)": "rank (eksperymentalne)",
   "This Engine does not support rank questions.": "Ten silnik nie obsługuje pytań rank.",
