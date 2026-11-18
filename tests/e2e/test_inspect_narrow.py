@@ -27,6 +27,10 @@ def test_inspect_narrow_labels(ui):
           out.replaceChildren(result);
         }""")
         page.wait_for_selector(".legend i")
+        assert page.locator(".chart .dl title").first.text_content() == (
+            "Długi opis opcji do sprawdzenia zawijania tekstu, który powinien być widoczny w całości. 75%"
+        )
+        assert page.locator(".legend i").first.text_content().startswith("Długi opis opcji")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert page.evaluate("""() => [...document.querySelectorAll('.hist .q, .hist .a, .legend i, .hbars .txt, .cmp .txt')]
           .every(e => e.scrollWidth <= e.clientWidth && e.scrollHeight <= e.clientHeight)""")

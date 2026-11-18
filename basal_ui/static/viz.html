@@ -538,7 +538,9 @@ function layerChart(q) {
       for (let i = 1; i < ys.length; i++) if (ys[i].y - ys[i - 1].y < 14) ys[i].y = ys[i - 1].y + 14;
       for (const { j, y: yy } of ys) {
         const t = svgEl("text", { x: x(L - 1) + 10, y: yy + 4, class: "dl" });
-        const s = q.options[j]; t.textContent = (s.length > 18 ? s.slice(0, 17) + "…" : s) + " " + pct(q.layers[L - 1][j], 0); svg.append(t);
+        const s = q.options[j], value = pct(q.layers[L - 1][j], 0);
+        t.textContent = (s.length > 18 ? s.slice(0, 17) + "…" : s) + " " + value;
+        const title = svgEl("title"); title.textContent = s + " " + value; t.append(title); svg.append(t);
       }
     }
     const cross = svgEl("line", { y1: m.t, y2: H - m.b, stroke: "var(--ink-2)", "stroke-width": 1, visibility: "hidden" });
