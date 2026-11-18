@@ -109,6 +109,65 @@ def isolated_ui(tmp_path):
     assert not left, f"basal-serve children left running after Dashboard E2E: {left}"
 
 
+def test_calibration_file_messages_are_separate_and_escaped(browser, tmp_path):
+    # Snapshot of the calibration response; rendering does not require a model or fitting.
+    messages = [
+        "Warning: " + "The calibration data needs further review before use. " * 3,
+        "Error: " + "The saved report could not be checked for this model. " * 3,
+        "First warning: " + "Some labels were omitted from the fit. " * 4,
+        "Second warning: <img src=x onerror=alert(1)> " + "Review each result carefully. " * 4,
+    ]
+    data = {
+        "selected": "/synthetic.json",
+        "shipped": {"file": "/shipped.json", "context": {"mode": "eager", "layout": "canonical"}},
+        "files": [
+            {
+                "file": "/synthetic.json",
+                "when": 1700000000,
+                "imported": True,
+                "warning": messages[0],
+                "error": messages[1],
+                "warnings": messages[2:],
+                "has_report": True,
+                "rows": "/synthetic.jsonl",
+            }
+        ],
+    }
+    app = UI(tmp_path)
+    app.settings.write_text(json.dumps({"check_updates": False, "auto_load": False}))
+    app.start()
+    context = browser.new_context(viewport={"width": 1000, "height": 900}, service_workers="block")
+    context.route_web_socket("**/*", lambda ws: ws.close())
+    context.route(
+        "**/*", lambda route: route.continue_() if route.request.url.startswith(app.url + "/") else route.abort()
+    )
+    try:
+        page = context.new_page()
+        page.goto(app.url + "/")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_function("() => statusCache !== null")
+        page.evaluate(
+            """data => {
+          document.querySelector('#calibrationModel').innerHTML = '<option value="synthetic">synthetic</option>';
+          document.querySelector('[data-page=manager]').hidden = false;
+          document.querySelector('#manager-calibration').hidden = false;
+          renderCalibrationFiles('synthetic', data);
+        }""",
+            data,
+        )
+        row = page.locator("#calibrationFiles tbody tr").last
+        reasons = row.locator(".reason")
+        assert reasons.all_text_contents() == messages
+        assert row.locator("img").count() == 0
+        assert row.locator("input[type=radio]").is_checked()
+        assert row.locator("[data-report]").count() == row.locator("[data-refit]").count() == 1
+        boxes = [row.locator("label").bounding_box()] + [reasons.nth(i).bounding_box() for i in range(4)]
+        assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(boxes, boxes[1:], strict=False))
+    finally:
+        context.close()
+        assert not app.stop()
+
+
 def test_dashboard_default_records_real_decisions_and_resets_model_traffic(browser, isolated_ui, text_model):
     model_id = text_model["id"]
     isolated_ui.load(model_id)

@@ -1,6 +1,12 @@
 # Unreleased
 
 - On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
+- Dialogs announce their purpose to screen readers using translated names.
+
+- Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
+  per-model log remains available in Logs.
+
+- Load options keeps the latest selected model and action when earlier responses arrive late.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)
@@ -20,6 +26,12 @@
   basal-2.0-mini since 2 November) is no longer reported as not downloaded when its local copy lacks them. A download
   takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
+- Add Engine capability probes for router, attach, fine-tuning, presets, order checking, and the declared serve and
+  calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
+- For an Engine that does not report context metadata, show the parsed child overflow policy and truncation share; the
+  context limit remains unknown because the child may impose a backend-specific limit.
+
+- Separate Calibration file warnings and errors so each message is readable.
 
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
@@ -28,6 +40,8 @@
 - Correct the Backend Inference test persistence regression to distinguish user data from read-lock sidecars.
   Read-only Stats polling must not count private Decisions or change settings, history or persisted statistics.
   Runtime behavior is unchanged.
+
+- Run the CI matrix after merges to `stage` and `main`.
 
 # 0.1.0
 
