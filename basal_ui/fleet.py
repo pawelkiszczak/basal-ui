@@ -152,6 +152,7 @@ class Runner:
         self.lock = threading.RLock()
         self.gen = 0
         self.process = None
+        self.log_thread = None
         self.rss_bytes = None
         self._reset()
 
@@ -196,7 +197,7 @@ class Runner:
         with self.lock:
             if self.state == "ready" and self.process and self.process.poll() is not None:
                 self.state = "error"
-                self.error = f"basal-serve exited ({self.process.returncode}): {self.log.last() or ''}"
+                self.error = self._exit_error(self.process, self.log_thread)
                 self.event("error", f"{self.model}: {self.error}")
             if (
                 self.state == "ready"
@@ -372,6 +373,7 @@ class Runner:
                 self.serve_snapshot = _child_settings(serve, self._calibration(v))
                 self.process = proc = subprocess.Popen(
                     command,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -384,13 +386,13 @@ class Runner:
                     },
                     **options,
                 )
+                self.log_thread = log_thread = threading.Thread(target=self._read_logs, args=(proc,), daemon=True)
+                log_thread.start()
             self.event("info", f"{v.id}: basal-serve starting on 127.0.0.1:{port}: {shlex.join(map(str, command))}")
-            threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
             deadline = time.monotonic() + START_TIMEOUT_S
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
-                    time.sleep(0.2)  # let the log reader drain the last lines
-                    raise RuntimeError(f"basal-serve exited ({proc.returncode}): {self.log.last() or 'no output'}")
+                    raise RuntimeError(self._exit_error(proc, log_thread))
                 try:
                     if httpx.get(self.base_url + "/health", timeout=1).status_code == 200:
                         entry, media_kinds = self._models_entry(media)
@@ -403,6 +405,18 @@ class Runner:
                                 "certified": served_certified(
                                     entry, path, assessment.mode, self.options, self._calibration(v)
                                 ),
+                            }
+                        if entry is not None and "context" not in entry:
+                            from basal.server import parser
+
+                            args, _ = parser().parse_known_args(command[3:])
+                            entry = {
+                                **entry,
+                                "context": {
+                                    "limit": None,
+                                    "overflow": args.context_overflow,
+                                    "truncate_head": args.truncate_head,
+                                },
                             }
                         with self.lock:
                             if gen != self.gen:
@@ -434,6 +448,13 @@ class Runner:
     def _read_logs(self, proc):
         for line in proc.stdout:
             self.log.append(line.rstrip())
+
+    def _exit_error(self, proc, log_thread):
+        # A descendant may keep stdout open after the child exits; never block status indefinitely.
+        if log_thread:
+            log_thread.join(timeout=1)
+        excerpt = self.log.text().strip()[-2000:] or "no output"
+        return f"basal-serve exited ({proc.returncode}): {excerpt}"
 
     def unload(self):
         proc, _ = self.detach()
