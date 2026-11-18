@@ -68,8 +68,10 @@ graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA G
 On macOS Apple Silicon with Engine 2.8.0 and MLX, an offline cached `Remek/basal-2.0-mini` ran
 `tests/e2e/test_load_options.py`: 6 passed and the pico-only test skipped because pico was not downloaded.
 The browser load-options and synthetic calibration-warning row checks each passed in Chromium; the load-options
-screenshot was captured from that real model. Settings and auxiliary caches were isolated. This is not the complete
-release E2E gate; CUDA and other hardware remain untested.
+screenshot was captured from that real model. A separate load used copied metadata with a synthetic foreign
+calibration and read the shared weights through a symlink: Engine 2.8 emitted its origin warning and the model row
+showed it. Settings and auxiliary caches were isolated. This is not the complete release E2E gate; CUDA and other
+hardware remain untested.
 
 ## Stage gate, engine 2.5.1, 2026-11-02
 

@@ -103,18 +103,6 @@ FEATURES = {
 }
 
 
-def _flags(module):
-    """Long options declared by an Engine console script's parser."""
-    parser = importlib.import_module(module).parser()
-    return frozenset(s for action in parser._actions for s in action.option_strings if s.startswith("--")) - {"--help"}
-
-
-@functools.cache
-def serve_flags():
-    """Long options declared by basal-serve."""
-    return _flags("basal.server")
-
-
 def feature(name):
     """Whether the installed Engine provides capability `name` (a key of FEATURES)."""
     return FEATURES[name]()
