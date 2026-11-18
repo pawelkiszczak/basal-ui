@@ -39,7 +39,7 @@
 .quick-action-list>button{display:grid;gap:5px;text-align:left;padding:12px 10px;min-width:0;border-color:transparent;background:transparent}
 @media (hover: hover){.quick-action-list>button:hover{background:var(--paper);border-color:var(--line)}}
 .quick-action-list strong{font-size:12px;font-weight:650;overflow-wrap:anywhere}
-.quick-action-list small,.quick-actions-hint{font-size:11px;line-height:1.65;color:var(--muted);overflow-wrap:anywhere}
+.quick-action-list small,.quick-actions-hint{font-size:11px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}
 .quick-actions-hint{margin:24px 0 0}
 .settings-layout{display:grid;grid-template-columns:minmax(170px,230px) minmax(0,1fr);gap:32px;align-items:start}
 .settings-categories{display:grid;gap:8px;padding:20px 12px;background:var(--paper);border:1px solid var(--line);border-radius:12px}

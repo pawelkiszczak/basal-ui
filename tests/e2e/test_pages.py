@@ -168,6 +168,44 @@ def test_calibration_file_messages_are_separate_and_escaped(browser, tmp_path):
         assert not app.stop()
 
 
+@pytest.mark.parametrize("width", [390, 1099, 1100, 1440, 1920])
+def test_polish_navigation_hit_targets_and_keyboard(browser, isolated_ui, width):
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    page = context.new_page()
+    try:
+        page.goto(isolated_ui.url)
+        page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
+        page.reload()
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache")
+        settings = page.locator("#openSettings")
+        tools = page.locator(".nav-tools > summary")
+        settings.click(timeout=5000)
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        tools.click(timeout=5000)
+        assert page.locator(".nav-tools").evaluate("(el) => el.open")
+        tools.press("Enter")
+        assert not page.locator(".nav-tools").evaluate("(el) => el.open")
+        tools.focus()
+        tools.press("Tab")
+        assert settings.evaluate("(el) => document.activeElement === el")
+        assert settings.evaluate(
+            "(el) => getComputedStyle(el).outlineStyle !== 'none' || getComputedStyle(el).boxShadow !== 'none'"
+        )
+        settings.press("Enter")
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert page.evaluate("""() => {
+            const el = document.createElement('h3');
+            document.querySelector('.model-card-body').append(el);
+            const style = getComputedStyle(el);
+            const ratio = parseFloat(style.lineHeight) / parseFloat(style.fontSize);
+            el.remove();
+            return ratio >= 1.2 && ratio <= 1.3;
+        }""")
+    finally:
+        context.close()
+
+
 def test_dashboard_default_records_real_decisions_and_resets_model_traffic(browser, isolated_ui, text_model):
     model_id = text_model["id"]
     isolated_ui.load(model_id)
