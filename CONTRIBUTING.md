@@ -57,20 +57,15 @@ it is not release acceptance on `stage` or validation of other hardware.
 A fix made on `stage` (found while testing a release candidate) goes back with a pull request `stage` → `dev`, so
 `dev` never loses it.
 
-CI (`.github/workflows/ci.yml`: Ruff check and format, the unit tests, Ubuntu and macOS × Python 3.10 and 3.13 ×
-every tested engine release) runs on every push to `dev`, `stage` and `main` and on every pull request into them, in
-either direction: `dev` → `stage`, `stage` → `dev`, `stage` → `main`. Its last job, `ci-ok`, passes only when every
-matrix job passed; it is the one check branch protection requires (the matrix job names change with the engine
-releases). CD is `publish.yml`: a `v<version>` tag on `main` builds the package, waits for approval in the `pypi`
-environment, publishes to PyPI and creates the GitHub release (see [Releasing](#releasing)).
+Release CI (`.github/workflows/release-ci.yml`) runs after merges to `stage` and `main`. It runs Ruff and
+unit tests on Ubuntu and macOS with Python 3.10 and 3.13 across the tested Engine releases. The `ci-ok` job
+summarizes the matrix for the merged commit. Run relevant validation locally before merging a feature PR.
+CD uses the `v<version>` tag workflow described in [Releasing](#releasing).
 
-Branch protection on GitHub enforces this:
-
-| | `dev` | `stage` | `main` |
+| GitHub branch protection | `dev` | `stage` | `main` |
 |---|---|---|---|
-| changes only through a pull request with `ci-ok` green | yes | yes | yes |
-| the pull request must be up to date with the branch | no | yes | yes |
-| applies to admins too | no (the maintainer may push a fix directly) | yes | yes |
+| changes go through a pull request | yes | yes | yes |
+| applies to admins too | no | yes | yes |
 | force pushes and deletion | refused | refused | refused |
 
 No review approval is required: the project has one maintainer, who cannot approve their own pull requests.
@@ -81,10 +76,6 @@ One topic per PR, opened against `dev`. The template (`.github/PULL_REQUEST_TEMP
 whether the engine range is affected, the tests run (`make lint`, `make test`, and `make e2e` with the hardware for
 changes that touch loading, serving or the pages), refreshed screenshots for visible changes and a
 `docs/WHATS_NEW.md` bullet.
-
-GitHub may require a maintainer to approve a fork's workflow before checks appear. Review the proposed code before
-approving that run, then wait for the matrix and required `ci-ok` check to pass before merging. Workflow approval
-starts CI; it is not a substitute for passing checks.
 
 ## Screenshots
 
@@ -132,8 +123,8 @@ a package: publication requires the tag workflow and approval of its `pypi` depl
 2. Open the pull request `dev` → `stage`. On `stage`, run the e2e gate on real hardware (`make e2e`, `docs/E2E.md`)
    and record the run (models, hardware, results) in that pull request; fixes go to `stage` and back to `dev`
    (`stage` → `dev`).
-3. Open the pull request `stage` → `main` and wait for the required checks before merging.
-4. After it merges, tag `v<version>` on `main` and push the tag. Before building or publishing, `publish.yml`
+3. After release CI and E2E pass on `stage`, merge the pull request `stage` → `main`.
+4. After release CI passes on the merged `main` commit, tag `v<version>` on `main` and push the tag. Before building or publishing, `publish.yml`
    checks that the tagged commit is on `main`, the tag matches `pyproject.toml`, and WHATS_NEW has a nonempty
    `# <version>` section (for this release, `# 0.1.0`).
 5. Review the build and approve the waiting `pypi` deployment in GitHub Actions. It uploads to PyPI using trusted
