@@ -181,3 +181,49 @@ def test_rank_feature_gate_matches_installed_engine(page, ui):
         )
         assert page.locator(".rank-unavailable").is_visible()
         assert page.locator('[data-f="candidates"]').is_disabled()
+
+
+def test_rank_error_routing_and_status_refresh_preserve_other_controls(page, ui):
+    if not ui.get("/api/status")["features"]["rank"]:
+        pytest.skip("Engine lacks rank questions")
+    test_pages.view(page, "playground")
+    request = {
+        "state": "s",
+        "questions": {
+            'it\'s "quoted"': {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["a"]},
+            "second": {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["b"]},
+            "other": {"type": "choice", "instructions": "Choose", "criteria": {"a": "A", "b": "B"}},
+        },
+    }
+    page.evaluate("r => setRequest(r)", request)
+    cards = page.locator(".question")
+    page.evaluate(
+        "() => { const x=$('.question:last-child .q-instructions-input'); x.disabled=true; renderStatus(statusCache); }"
+    )
+    assert cards.nth(2).locator(".q-instructions-input").is_disabled()
+    page.evaluate("() => { const x=$('.question [data-f=candidates]'); x.disabled=true; renderStatus(statusCache); }")
+    assert cards.first.locator('[data-f="candidates"]').is_disabled()
+    page.evaluate(
+        "() => { renderStatus({...statusCache,features:{...statusCache.features,rank:false}}); renderStatus({...statusCache,features:{...statusCache.features,rank:true}}); }"
+    )
+    assert cards.first.locator('[data-f="candidates"]').is_disabled()
+    assert not cards.first.locator('[data-f="top"]').evaluate("element => element.disabled")
+    cases = [
+        ("rank questions do not take media", [True, True, False]),
+        (
+            "10001 rank candidates in this request, more than the 10000 this server takes per request (basal-serve --rank-max-candidates)",
+            [True, True, False],
+        ),
+        (
+            "a rank request is longer than the context (--context-overflow truncate would cut its list); lower chunk",
+            [True, True, False],
+        ),
+        ("question 'it\\'s \"quoted\"': bad candidate", [True, False, False]),
+        ("unrelated request error", [False, False, False]),
+    ]
+    for message, expected in cases:
+        page.evaluate(
+            "([msg,r]) => { document.querySelectorAll('.q-error').forEach(x=>{x.hidden=true;x.textContent='';}); showQuestionErrors(msg,r); }",
+            [message, request],
+        )
+        assert [cards.nth(i).locator(".q-error").is_visible() for i in range(3)] == expected

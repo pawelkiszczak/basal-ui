@@ -18,7 +18,7 @@ async function api(path, options={}) {
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
-    const error=new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`); error.status=response.status; error.detail=message; throw error;
+    const error=new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`); error.status=response.status; error.detail=raw; throw error;
   }
   return data;
 }
@@ -570,12 +570,18 @@ function setCostMode(card, mode) {
   }
   card._costMode=mode; renderCostMatrix(card,true); updateCardVisibility(card);
 }
+function updateRankAvailability(card) {
+  const unavailable=$('.q-type',card).value==='rank'&&!rankAvailable;
+  card.querySelectorAll('.q-instructions-input,.q-fields input,.q-fields textarea,.q-fields select').forEach(input=>{
+    if(unavailable&&!input.disabled){input.disabled=true;input._rankDisabled=true;}
+    else if(!unavailable&&input._rankDisabled){input.disabled=false;delete input._rankDisabled;}
+  });
+  const reason=$('.rank-unavailable',card);if(reason)reason.hidden=!unavailable;
+}
 function updateCardVisibility(card) {
   const type=$('.q-type',card).value, on=f=>Boolean($(`[data-f="${f}"]`,card)?.checked), show=(sel,visible)=>card.querySelectorAll(sel).forEach(x=>x.hidden=!visible);
   const multiTool=type==='tool'&&on('multi');
-  const unavailable=type==='rank'&&!rankAvailable;
-  card.querySelectorAll('.q-instructions-input,.q-fields input,.q-fields textarea,.q-fields select').forEach(input=>input.disabled=unavailable);
-  const reason=$('.rank-unavailable',card);if(reason)reason.hidden=!unavailable;
+  if(type==='rank'||$('.q-instructions-input',card)._rankDisabled)updateRankAvailability(card);
   show('.q-shared',type!=='rank');
   show('.evidence-only',EVIDENCE_TYPES.includes(type)&&!multiTool);
   show('.max-error-only',MAX_ERROR_TYPES.includes(type)&&!multiTool);
@@ -1100,6 +1106,23 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
 function showDecideError(message) { $('#decideError').textContent=message; $('#decideError').hidden=false; }
+// Engine formats question names with Python repr, choosing double quotes when that avoids escaping a single quote.
+function engineName(name) {
+  const quote=name.includes("'")&&!name.includes('"')?'"':"'";
+  const escaped=name.replace(/[\\'"\x00-\x1f\x7f]/g,c=>{
+    if(c===quote||c==='\\')return '\\'+c;
+    if(c==='\n')return '\\n';if(c==='\r')return '\\r';if(c==='\t')return '\\t';
+    return c.charCodeAt(0)<32||c.charCodeAt(0)===127?`\\x${c.charCodeAt(0).toString(16).padStart(2,'0')}`:c;
+  });
+  return quote+escaped+quote;
+}
+function showQuestionErrors(detail, request) {
+  const rankError=detail==='rank questions do not take media'||/^\d+ rank candidates in this request, more than the \d+ this server takes per request \(basal-serve --rank-max-candidates\)$/.test(detail)||detail==='a rank request is longer than the context (--context-overflow truncate would cut its list); lower chunk';
+  document.querySelectorAll('.question').forEach(card=>{
+    const name=$('.q-name',card).value, named=detail.startsWith(`question ${engineName(name)}:`);
+    if(named||(rankError&&request.questions?.[name]?.type==='rank')){const box=$('.q-error',card);box.textContent=detail;box.hidden=false;}
+  });
+}
 async function sendDecision() {
   $('#decideError').hidden=true; $('#results').innerHTML='';
   let request;const jsonMode=$('#editJsonToggle').checked;
@@ -1120,7 +1143,7 @@ async function sendDecision() {
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
   catch(e) {
-    if(e.status===422&&!jsonMode)document.querySelectorAll('.question').forEach(card=>{const name=$('.q-name',card).value; if(e.detail?.includes(`question '${name}'`)||e.detail?.includes(`question "${name}"`)){const box=$('.q-error',card);box.textContent=e.detail;box.hidden=false;}});
+    if(e.status===422&&!jsonMode)showQuestionErrors(String(e.detail||''),request);
     showDecideError(e.message); toast(e.message,'error');
   }
   finally { $('#sendButton').disabled=false; }
@@ -1349,7 +1372,7 @@ function renderStatus(s) {
   renderLoadedRows(models);
   renderManagerSummary();
   if($('#modelLoaderDialog').open)renderModelLoader();
-  rankAvailable=Boolean(s.features?.rank); document.querySelectorAll('.q-type option[value=rank]').forEach(option=>{option.disabled=!rankAvailable;option.title=rankAvailable?'':t('This Engine does not support rank questions.');}); document.querySelectorAll('.question').forEach(card=>{card.querySelector('.rank-gate-reason').hidden=rankAvailable;updateCardVisibility(card);});
+  rankAvailable=Boolean(s.features?.rank); document.querySelectorAll('.q-type option[value=rank]').forEach(option=>{option.disabled=!rankAvailable;option.title=rankAvailable?'':t('This Engine does not support rank questions.');}); document.querySelectorAll('.question').forEach(card=>{card.querySelector('.rank-gate-reason').hidden=rankAvailable;if($('.q-type',card).value==='rank')updateRankAvailability(card);});
   renderInference(s);
   renderPlaygroundModels(ready);
   renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);

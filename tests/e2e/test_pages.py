@@ -1815,3 +1815,29 @@ def test_rank_builder_pastes_candidates_and_preserves_groups(page, ui):
     page.evaluate("q => setRequest({state:'s',questions:{q}})", q)
     page.locator('[data-f="chunk"]').fill("5")
     assert page.evaluate("() => buildRequest().questions.q.candidates") == q["candidates"]
+
+
+def test_rank_media_engine_error_reaches_only_rank_cards(page, text_model):
+    if not feature("rank"):
+        pytest.skip("Engine lacks rank questions")
+    view(page, "playground")
+    request = {
+        "state": "text",
+        "questions": {
+            "first": {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["a"]},
+            "second": {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["b"]},
+            "other": {"type": "choice", "instructions": "Choose", "criteria": {"a": "A", "b": "B"}},
+        },
+        "media": [{"type": "image", "data": "aGVsbG8="}],
+    }
+    page.evaluate("r => setRequest(r)", request)
+    # The text model has no media capability; bypass only the UI capability check to exercise the Engine's refusal.
+    with page.expect_response(lambda response: response.url.endswith("/api/decide")) as result:
+        page.evaluate("() => { loadedMedia=['image']; $('#sendButton').click(); }")
+    response = result.value
+    assert response.status == 422 and response.json()["error"] == "rank questions do not take media"
+    sync_api.expect(page.locator("#decideError")).to_contain_text("rank questions do not take media")
+    cards = page.locator(".question")
+    for index in (0, 1):
+        sync_api.expect(cards.nth(index).locator(".q-error")).to_have_text("rank questions do not take media")
+    sync_api.expect(cards.nth(2).locator(".q-error")).to_be_hidden()
