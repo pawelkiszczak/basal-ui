@@ -2507,3 +2507,208 @@ def test_runner_calibration_origin_warning_is_process_scoped():
     runner.process = SimpleNamespace(stdout=[])
     runner._read_logs(old)
     assert runner.status()["calibration_origin_warning"] is None
+
+
+def test_unavailable_audio_storage_preserves_ordinary_history(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    settings.save({"keep_history_audio": True})
+    monkeypatch.setattr(history_audio, "supported", lambda: False)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        prefs = client.get("/api/settings").json()
+        assert prefs["history_audio_available"] is False and prefs["keep_history_audio"] is False
+        refusal = client.put("/api/settings", json={"keep_history_audio": True})
+        assert refusal.status_code == 400 and refusal.json()["code"] == "history_audio_unsupported"
+        request = {"state": "synthetic", "media": [{"type": "audio", "data": "QUJD"}]}
+        fleet._record(MINI.id, request, "/v1/systemone", "playground", 200, {}, 1)
+        record = fleet.history.list()[0]
+        assert fleet.history.detail(record["id"], True)["replay_request"] is None
+        assert not history_audio.storage_present(fleet.history.path)
+
+
+def test_history_audio_settings_and_explicit_replay(tmp_path):
+    app, fleet = app_for(tmp_path, [])
+    body = {"state": "business", "audio": ["data:audio/wav;base64,QUJD"]}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/settings").json()["keep_history_audio"] is False
+        assert client.get("/api/settings").json()["history_audio_budget_bytes"] == 268435456
+        assert client.put("/api/settings", json={"keep_history_audio": 1}).status_code == 400
+        assert client.put("/api/settings", json={"keep_history_audio": True}).json()["keep_history_audio"] is True
+        fleet._record("mini", body, "/v1/systemone", "playground", 200, {}, 1)
+        item = client.get("/api/history").json()["items"][0]
+        normal_response = client.get("/api/history/" + item["id"])
+        assert normal_response.headers["cache-control"] == "no-store"
+        normal = normal_response.json()
+        assert normal["replay_requires_audio"] and "QUJD" not in str(normal)
+        replay_response = client.get("/api/history/" + item["id"], params={"replay": "true"})
+        assert replay_response.headers["cache-control"] == "no-store"
+        replay = replay_response.json()
+        assert replay["replay_request"]["media"] == [{"type": "audio", "data": "QUJD"}]
+        assert "QUJD" not in str(replay["request"])
+        client.put("/api/settings", json={"keep_history_audio": False})
+        assert client.get("/api/history/" + item["id"], params={"replay": "true"}).json()["replay_request"]
+
+
+def test_async_recording_does_not_block_loop_and_drains_on_cancellation(tmp_path, monkeypatch):
+    import asyncio
+
+    fleet = make_fleet(tmp_path)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def record(*_args):
+        entered.set()
+        release.wait()
+        finished.set()
+
+    monkeypatch.setattr(fleet, "_record", record)
+
+    async def exercise():
+        task = asyncio.create_task(fleet._arecord())
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+        fleet.shutdown()
+
+
+def test_sync_fleet_audio_recording_and_storage_failure_preserve_answer(tmp_path, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    runner = Runner()
+    runner.state, runner.model = "ready", "mini"
+    fleet.runners["mini"] = runner
+    sent = []
+
+    def decide(_runner, body, path):
+        sent.append((body, path))
+        return httpx.Response(200, json={"answers": {}})
+
+    monkeypatch.setattr(Runner, "decide", decide)
+    settings.set_keep_history_audio(True)
+    body = {"state": {"data": "ordinary"}, "media": [{"type": "audio", "data": "QUJD"}]}
+    assert fleet.decide("mini", body).status_code == 200
+    row = fleet.history.list()[0]
+    assert fleet.history.detail(row["id"], True)["replay_request"] == {"model": "mini", **body}
+    assert sent == [(body, "/v1/systemone")]
+    monkeypatch.setattr(fleet.history, "append", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("failed")))
+    assert fleet.decide("mini", body).status_code == 200
+    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    assert not fleet.leases and not fleet.inflight
+
+
+def test_audio_policy_failure_is_coded_and_preserves_other_settings(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    settings.save({"keep_history_audio": True, "unrelated": {"preserve": "value"}})
+    path = tmp_path / "settings.json"
+    original = path.read_bytes()
+    real_read = Path.read_text
+
+    def fail_settings(self, *args, **kwargs):
+        if self == path:
+            raise OSError("private path or bytes must not escape")
+        return real_read(self, *args, **kwargs)
+
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client, monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", fail_settings)
+        reply = client.get("/api/settings")
+        assert reply.status_code == 503 and reply.json()["code"] == "history_audio_policy_unavailable"
+        assert "private path" not in reply.text
+        reply = client.put("/api/settings", json={"keep_history_audio": False})
+        assert reply.status_code == 503 and reply.json()["code"] == "history_audio_policy_unavailable"
+    assert path.read_bytes() == original
+    assert settings.keep_history_audio() is True
+
+
+@pytest.mark.parametrize("damage", [b"{broken", b"[]", b"\xff"])
+def test_audio_policy_corruption_never_reports_false_or_overwrites(tmp_path, damage):
+    path = tmp_path / "settings.json"
+    path.write_bytes(damage)
+    with pytest.raises(settings.HistoryAudioPolicyError):
+        settings.keep_history_audio()
+    with pytest.raises(settings.HistoryAudioPolicyError):
+        settings.set_keep_history_audio(False)
+    assert path.read_bytes() == damage
+
+
+@pytest.mark.parametrize("audio_storage", [False, True])
+def test_invalid_history_utf8_does_not_fail_sync_decision(audio_storage, tmp_path, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    runner = Runner()
+    runner.state, runner.model = "ready", "mini"
+    fleet.runners["mini"] = runner
+    monkeypatch.setattr(Runner, "decide", lambda *_: httpx.Response(200, json={"answers": {}}))
+    if audio_storage:
+        history_path = fleet.history.path
+        history_path.with_name(history_path.name + ".audio").mkdir(mode=0o700)
+    fleet.history.path.write_bytes(b"\xff")
+    assert fleet.decide("mini", {"state": "ordinary"}).status_code == 200
+    if audio_storage:
+        assert fleet.history.path.read_bytes() == b"\xff"
+        assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    else:
+        assert fleet.history.path.read_bytes().splitlines()[0] == b"\xff"
+        assert len(fleet.history.list()) == 1
+        assert "decision not recorded" not in (fleet.logs.get("basal-ui").text() if "basal-ui" in fleet.logs else "")
+
+
+def test_audio_policy_one_shot_read_failure_keeps_other_settings(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    settings.save({"keep_history_audio": True, "unrelated": {"preserve": "value"}})
+    path = tmp_path / "settings.json"
+    before = path.read_bytes()
+    real_read = Path.read_text
+    failed = False
+
+    def first_read_fails(self, *args, **kwargs):
+        nonlocal failed
+        if self == path and not failed:
+            failed = True
+            raise OSError("temporary failure")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", first_read_fails)
+    with pytest.raises(settings.HistoryAudioPolicyError):
+        settings.set_keep_history_audio(False)
+    assert path.read_bytes() == before
+    assert settings.load()["unrelated"] == {"preserve": "value"}
+
+
+def test_audio_policy_read_failure_keeps_successful_sync_decision(tmp_path, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    runner = Runner()
+    runner.state, runner.model = "ready", "mini"
+    fleet.runners["mini"] = runner
+    monkeypatch.setattr(Runner, "decide", lambda *_: httpx.Response(200, json={"answers": {}}))
+    settings.set_keep_history_audio(True)
+    monkeypatch.setattr(
+        settings, "_audio_policy_data", lambda: (_ for _ in ()).throw(settings.HistoryAudioPolicyError())
+    )
+    assert fleet.decide("mini", {"state": "ordinary"}).status_code == 200
+    assert fleet.history.list() == []
+    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+
+
+@pytest.mark.parametrize("damage", [b"{broken", b"[]", b"\xff"])
+def test_audio_policy_corruption_returns_coded_api_error(tmp_path, damage):
+    app, _ = app_for(tmp_path, [])
+    path = tmp_path / "settings.json"
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        path.write_bytes(damage)
+        for reply in (client.get("/api/settings"), client.put("/api/settings", json={"keep_history_audio": False})):
+            assert reply.status_code == 503
+            assert reply.json()["code"] == "history_audio_policy_unavailable"
+            assert reply.headers["cache-control"] == "no-store"
+        assert path.read_bytes() == damage
+        path.unlink()
