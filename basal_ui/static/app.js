@@ -120,6 +120,7 @@ function renderModels(data) {
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
+  document.dispatchEvent(new CustomEvent('app:models',{detail:modelData}));
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
@@ -1018,8 +1019,8 @@ function resultHeadline(name, answer, requestQuestion) {
   return null;
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
-const modelEntry=id=>(statusCache?.models||[]).find(m=>m.id===id)?.entry||null;
-const uncalibrated=entry=>Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length;
+const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(String(id).startsWith('attached/'))return {...entry,attached_uncalibrated:!entry||model.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length};return entry||null;};
+const uncalibrated=entry=>Boolean(entry?.attached_uncalibrated)||(Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length);
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
   if(type==='tool')return 'choice';  // a single tool decision is deferred against the choice threshold
@@ -1036,6 +1037,7 @@ function certificateGap(answer, entry) {
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
   if(answer.calibration!=null&&answer.calibration!=='validated')return `calibration: ${answer.calibration}`;
+  if(entry?.attached_uncalibrated)return t('no active certified thresholds for this Attached model');
   if(uncalibrated(entry))return t('the probabilities are not calibrated');
   return null;
 }
@@ -1053,6 +1055,7 @@ function automationBadge(answer,q,entry) {
 }
 function calibrationChip(answer,entry) {
   const c=answer.calibration;
+  if(entry?.attached_uncalibrated)return `<span class="badge fit-tight">${t('uncalibrated')}</span>`;
   if(c==='validated')return `<span class="badge fit-fits">${t('calibrated')}</span>`;
   if(c==='unvalidated')return `<span class="badge fit-tight">${t(answer.type==='act'?'calibration not validated for this question shape':'unvalidated — fitted on other option orders')}</span>`;
   if(c==='text')return `<span class="badge fit-tight">${t('fitted on text (media request)')}</span>`;
@@ -1061,23 +1064,25 @@ function calibrationChip(answer,entry) {
   return '';
 }
 // a task answer's `automated`: {max_error: true (use as is) | false (review) | null (no certificate for the task)}
-function automatedChips(automated) {
-  if(!automated||typeof automated!=='object')return '';
+function automatedChips(automated,entry,answer) {
+  const hasCalibration=Boolean(entry&&(Object.keys(entry.certified||{}).length||Object.keys(entry.temperature_per_prim||{}).length||entry.calibration||entry.calibration_file||entry.selected_calibration||entry.shipped_calibration));
+  if((answer&&(!hasCalibration||answer.deferred===true||answer.refused!=null||typeof answer.max_error==='string'||certificateGap(answer,entry)))||entry?.attached_uncalibrated||!automated||typeof automated!=='object')return '';
   return Object.entries(automated).map(([risk,v])=>{
     const at=`${(Number(risk)*100).toFixed(0)}%`;
-    return v===true?`<span class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
+    return v===true?`<span data-certification-evidence class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span data-certification-evidence class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span data-certification-evidence class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
   }).join(' ');
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
+  for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
+  parts.push(automatedChips(answer.automated,entry,answer));
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
 }
 function resultBanners(entry,u) {
-  let html=entry?.calibration_warning?`<div class="error-box">${esc(entry.calibration_warning)}</div>`:'';
+  let html=entry?.calibration_warning?`<div data-certification-evidence class="error-box">${esc(entry.calibration_warning)}</div>`:'';
   const truncated=u?.truncated;
   if(truncated)html+=`<div class="error-box">${t('State truncated to the context: dropped {dropped} of {total} tokens (kept {head} from the start, {tail} from the end)',{dropped:esc(truncated.dropped_tokens),total:esc(truncated.state_tokens),head:esc(truncated.head_tokens),tail:esc(truncated.tail_tokens)})}</div>`;
   return html;
@@ -1121,17 +1126,17 @@ const RESULT_VIEWS={
     const head=multi?chipList(a.labels,'no label'):headlineDiv(`${esc(a.label)}${labelOf(q,a.label)?` · ${esc(labelOf(q,a.label))}`:''}`);
     return head+metaLine(multi?t('set confidence {confidence}',{confidence:pct(a.set_confidence)}):`${t('Confidence')}: ${pct(a.confidence)}`)+probBars(a.scores,q,new Set(multi?a.labels:[a.label]));
   },
-  verify(a,q){
+  verify(a,q,entry){
     const claims=q.claims, text=k=>Array.isArray(claims)?claims[Number(k)]:claims?.[k];
     const verdict=v=>`<span class="badge ${v==='supported'?'fit-fits':v==='contradicted'?'fit-too_large':'fit-tight'}">${esc(t(v))}</span>`;
-    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated)}</td></tr>`).join('');
+    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Claim')}</th><th>${t('Verdict')}</th><th>${t('Confidence')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div>`+metaLine(t('All supported: {answer}',{answer:a.all_supported?t('yes'):t('no')})+((a.not_supported||[]).length?` · ${t('not supported: {items}',{items:esc(a.not_supported.join(', '))})}`:''));
   },
   compress(a){
     return `<pre class="compressed">${esc(a.compressed)}</pre>`+metaLine(t('kept {kept} of {total} {unit}s · {compressed}/{original} chars ({ratio})',{kept:(a.kept||[]).length,total:(a.units||[]).length,unit:esc(a.unit),compressed:esc(a.compressed_chars),original:esc(a.original_chars),ratio:esc(a.ratio)}));
   },
-  extract(a){
-    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated)}</td></tr>`).join('');
+  extract(a,q,entry){
+    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Field')}</th><th>${t('Value')}</th><th>${t('Confidence')}</th><th>${t('Source')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div><details><summary>${t('data')}</summary><pre>${esc(JSON.stringify(a.data,null,2))}</pre></details>`;
   },
 };
@@ -1184,9 +1189,19 @@ function thinkBlock(a) {
   const think=a.think, used=a.meta?.think;
   if(think?.skipped)return `<div class="chips"><span class="chip muted">${t('thinking skipped ({reason})',{reason:esc(think.skipped)})}</span></div>`;
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
-  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · ${t('calibration')} ${esc(t(think.calibration??'—'))}; ${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
+  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · <span data-certification-evidence>${t('calibration')} ${esc(t(think.calibration??'—'))}; </span>${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
-function renderResults(data, request, mediaSnapshot=selectedMedia) {
+function modelEvidenceStamp(id) {
+  const m=(statusCache?.models||[]).find(item=>item.id===id);
+  return JSON.stringify(m?[m.id,m.state,m.generation,m.mode,m.options,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.temperature_per_prim,m.entry?.calibration,m.entry?.calibration_file,m.entry?.calibration_warning,m.entry?.adapter,m.entry?.orders,m.entry?.layout,m.entry?.context]:null);
+}
+function invalidateModelEvidence(node) {
+  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===modelEvidenceStamp(node.dataset.evidenceModel))return;
+  node.querySelectorAll('[data-certification-evidence]').forEach(element=>element.remove());
+  const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
+  node.prepend(notice);node.dataset.evidenceStale='1';
+}
+function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=modelEvidenceStamp(request.model)) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
@@ -1199,7 +1214,9 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const inspectReason=String(request.model||'').startsWith('attached/')?t('attached models cannot be inspected'):null;
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const results=$('#results');results.dataset.evidenceModel=request.model||'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateModelEvidence(results);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1222,7 +1239,8 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
+  const evidenceStamp=modelEvidenceStamp(request.model);
+  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
 }
@@ -1429,6 +1447,7 @@ function renderManagerSummary() {
 }
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
@@ -1744,9 +1763,9 @@ function renderCalibrationFiles(id, d) {
     const checked=(d.selected||'')===value;
     return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<div class="reason">${esc(f.warning)}</div>`:''}${f?.error?`<div class="reason">${esc(f.error)}</div>`:''}${(f?.warnings||[]).map(w=>`<div class="reason">${esc(w)}</div>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
   };
-  const ctx=d.shipped?.context||{}, context=d.shipped?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
+  const ctx=d.shipped?.context||{}, context=d.shipped?.file?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:`${t('Shipped default unavailable')}${d.shipped?.error?`: ${esc(d.shipped.error)}`:''}`;
   const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
-  const shipped=d.shipped?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
+  const shipped=d.shipped?.file?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
   $('#calibrationFiles').innerHTML=`<p class="muted">${context}<br>${selection}</p><div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
@@ -1883,7 +1902,7 @@ function optionInput(key, value) {
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
-    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${f.attrs||''}>`;
+    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${key==='adapter'?'list="ownedAdapters"':''} ${f.attrs||''}>${key==='adapter'?`<datalist id="ownedAdapters">${(optionsState.data.adapters||[]).map(path=>`<option value="${esc(path)}"></option>`).join('')}</datalist><p class="muted">${t('Choose a result or enter a custom adapter path. Saved settings apply on the next load.')}</p>`:''}`;
   return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}`;
 }
 const optionSectionOpen=new Map();  // section title → open, as the user left it (this session)
@@ -1923,7 +1942,7 @@ function updateOptionVisibility() {
   if(mode!=='fast-exit')notes.push(t('Early exit needs --mode fast-exit (the exit heads of basal-1.0, bf16 on a CUDA GPU).'));
   // LoRA adapters at load: only with an engine that takes --adapter (basal-ui's feature probe)
   const adapterBox=$('#opt-adapter'), adapterReason=optionsState.data.adapter_reason;
-  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); if(adapterReason){adapterBox.value='';adapterBox.title=ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params);}else adapterBox.title='';}
+  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); adapterBox.title=adapterReason?ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params):'';}
   $('#optExperimentalNote').textContent=notes.join(' ');
 }
 function collectOptions() {

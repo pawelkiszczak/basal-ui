@@ -24,33 +24,36 @@
     const reportedConfidence = answer.confidence ?? answer.set_confidence;
     const confidence = reportedConfidence == null ? null : Number(reportedConfidence);
     const applicable = Number.isFinite(confidence) && !answer.deferred && typeof answer.max_error !== 'string' && !gap && answer.confidence != null && (t1 != null || t5 != null);
+    const taskItems = answer.type === 'verify' ? answer.claims : answer.type === 'extract' ? answer.fields : null;
+    const taskApplicable = Boolean(entry && (Object.keys(entry.certified || {}).length || Object.keys(entry.temperature_per_prim || {}).length || entry.calibration || entry.calibration_file || entry.selected_calibration || entry.shipped_calibration) && taskItems && !answer.deferred && answer.refused == null && typeof answer.max_error !== 'string' && !gap && Object.values(taskItems).some(item => Object.values(item?.automated || {}).some(value => value === true || value === false)));
     const reasons = [];
-    if (answer.deferred) reasons.push(t('This answer was deferred; thresholds do not change that decision.'));
+    if (taskApplicable) reasons.push(t('This task reports automation for its individual claims or fields.'));
+    else if (answer.deferred) reasons.push(t('This answer was deferred; thresholds do not change that decision.'));
     if (typeof answer.max_error === 'string') reasons.push(t('The requested max_error is not certified: {reason}', {reason: answer.max_error}));
     if (gap) reasons.push(gap);
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && applicable)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && applicable)
       reasons.push(t('The served calibration and answer scope are applicable; thresholds shown are model-reported values.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && reportedConfidence == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && reportedConfidence == null)
       reasons.push(t('This answer does not report a confidence value.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && answer.confidence == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && answer.confidence == null)
       reasons.push(t('Individual confidence is not reported for this answer.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && !Number.isFinite(confidence))
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && !Number.isFinite(confidence))
       reasons.push(t('The reported confidence is not a finite number.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && !['choice', 'noul', 'score'].includes(type))
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && !['choice', 'noul', 'score'].includes(type))
       reasons.push(t('No certified thresholds are available for this answer type.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && t1 == null && t5 == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && t1 == null && t5 == null)
       reasons.push(t('No certified thresholds are reported for this model and answer type.'));
     const reason = reasons.join(' ');
-    const status = applicable ? t('Thresholds apply to this answer') : t('Threshold applicability not established');
+    const status = taskApplicable ? t('Task automation reported for this answer') : applicable ? t('Thresholds apply to this answer') : t('Threshold applicability not established');
     const thresholds = `<dl class="dt-thresholds"><div><dt>${t('1% error threshold')}</dt><dd>${t1 == null ? t('Not reported') : esc(Number(t1).toFixed(4))}</dd></div><div><dt>${t('5% error threshold')}</dt><dd>${t5 == null ? t('Not reported') : esc(Number(t5).toFixed(4))}</dd></div></dl>`;
-    return `<aside class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
+    return `<aside data-certification-evidence class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable || taskApplicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
   }
 
   function answerPanel(name, answer, q, entry) {
     q ||= {};
     if (!answer || typeof answer !== 'object') return `<article class="answer dt-answer"><h3>${esc(name)}</h3><div class="dt-answer-layout"><div class="dt-answer-main"><pre>${esc(JSON.stringify(answer, null, 2))}</pre></div>${evidenceRail({}, q, entry)}</div></article>`;
     const type = answer.type || q.type || 'unknown', view = RESULT_VIEWS[type];
-    const body = view ? view(answer, q) : answer.probabilities && typeof answer.probabilities === 'object'
+    const body = view ? view(answer, q, entry) : answer.probabilities && typeof answer.probabilities === 'object'
       ? decisionView(name, answer, q) : `<pre>${esc(JSON.stringify(answer, null, 2))}</pre>`;
     return `<article class="answer dt-answer"><h3><span>${esc(name)}</span><span class="chip">${esc(type)}</span>${answer.experimental ? `<span class="badge experimental">${t('experimental')}</span>` : ''}</h3><div class="dt-answer-layout"><div class="dt-answer-main">${safetyStrip(answer, q, entry)}${thinkBlock(answer)}${body}</div>${evidenceRail(answer, q, entry)}</div></article>`;
   }
@@ -151,6 +154,7 @@
       return item ? {kind: item.kind, data: item.data, file: item.file, elements: item.elements ? structuredClone(item.elements) : undefined} : null;
     });
     const entries = Object.fromEntries(models.map(model => [model.id, structuredClone(modelEntry(model.id))]));
+    const stamps = Object.fromEntries(models.map(model => [model.id, modelEvidenceStamp(model.id)]));
     const prompt = $('#decisionCompare .dt-prompt');
     prompt.hidden = false;
     prompt.innerHTML = `<strong>${t('Frozen request snapshot')}</strong><pre>${esc(displayRequest(snapshot))}</pre>`;
@@ -167,6 +171,7 @@
       grid.innerHTML = settled.map(result => `<article class="dt-model-result" data-model="${esc(result.model.id)}">${result.error
         ? `<h3>${esc(result.model.id)}</h3><p class="dt-used">${t('Request sent')}: <code>${esc(result.model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(result.model.id)})}</summary><pre>${esc(displayRequest(result.request))}</pre></details><div class="error-box" role="alert">${esc(result.error.message || String(result.error))}</div>`
         : `<h3>${esc(result.model.id)}</h3>${renderResults(result.data, result.request, entries[result.model.id], mediaSnapshot)}`}</article>`).join('');
+      grid.querySelectorAll('.dt-model-result').forEach(card=>{card.dataset.evidenceModel=card.dataset.model;card.dataset.evidenceStamp=stamps[card.dataset.model];invalidateModelEvidence(card);});
     } catch (error) {
       if (run === sequence) setError(error.message || String(error));
     } finally {
@@ -181,18 +186,11 @@
     mount();
     const nextReady = Array.isArray(models) ? models.filter(model => model?.id && model.state === 'ready') : [];
     const signature = JSON.stringify(nextReady.map(model => [model.id, model.media || []]));
-    if (signature !== readySignature) {
-      readySignature = signature;
-      sequence++;
-      running = false;
-      const grid = $('#decisionCompare .dt-grid');
-      if (grid) grid.replaceChildren();
-      $('#decisionCompare .dt-prompt').hidden = true;
-    }
+    if (signature !== readySignature) readySignature = signature;
     ready = nextReady;
     reconcileSelects();
   }
 
-  window.DecisionTools = {answerPanel, refreshModels};
+  window.DecisionTools = {answerPanel, refreshModels, invalidateModelEvidence:()=>document.querySelectorAll('#decisionCompare .dt-model-result').forEach(invalidateModelEvidence)};
   document.addEventListener('DOMContentLoaded', () => { mount(); refreshModels(readyModels()); });
 })();

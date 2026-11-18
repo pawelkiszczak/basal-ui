@@ -408,6 +408,15 @@ otherwise Saved load settings. Reports show available identity digests, kept sou
 design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
 [Advanced calibration controls](images/calibration-advanced.png).
 
+## Fine-tuning on labelled Decisions
+
+In **Model manager → Calibration → Fine-tune**, select a downloaded bf16 basal or Attached model, enter the path to labelled JSONL and a new output name, then choose epochs, learning rate, LoRA rank and alpha, held-out share, maximum sequence length, gradient checkpointing and an optional optimizer-step limit. The Engine must expose fine-tuning and its declared `finetune` add-on must be installed; use **Backends → Engine add-ons** and restart when prompted. The input format is the same labelled request format as Calibration. Native trains choice, noul, score and act questions and skips multi and task decisions. The preflight reports skipped types and requires both training decisions and held-out groups; the file is copied privately and never rewritten.
+
+The cancellable job reserves twice the model's estimated memory. Native writes both a full merged checkpoint and `lora/` under `<models dir>/adapters/<model slug>/<name>/`; plan for the full checkpoint's disk space. The original base weights remain unchanged. Results report held-out accuracy before and after, training and held-out counts, scored decisions and skips. A run with no scored decisions has no accuracy result; accuracy is not a certificate or a quality guarantee. The upstream fine-tuning implementation was tested on Apple Silicon with basal-omni-pico; other GPUs remain untested.
+
+A completed adapter for the same base and revision is suggested in the existing Load options adapter field; a custom adapter path still works. Saving an option changes the next load, while a running model keeps its Active settings until restart. The Engine validates mode and quantisation compatibility and adapter calibration identity. A base calibration does not certify changed adapter weights: calibrate the adapted model on held-out data. Delete a result from its card to remove the full output and held-out labels; unload active adapter users and stop jobs first. Saved load options are not Active leases and can still contain a path to a deleted adapter. Missing, incomplete, and cleanup-pending records remain visible for cleanup. If deletion is interrupted or fails, return to the model and retry deletion; the retained path is shown on the result card.
+
+Private output creation and deletion require descriptor-relative directory operations and ownership checks. Fine-tuning is unavailable on native Windows and other systems without those operations; the app reports the reason rather than using unverified ownership or deletion.
 ## History and logs
 
 **History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:

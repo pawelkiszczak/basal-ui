@@ -238,3 +238,12 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 
 .fetch-dialog{width:min(560px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto}.fetch-dialog input{width:100%;min-width:0}.fetch-provenance{overflow-wrap:anywhere;white-space:pre-line}.fetch-dialog .dialog-actions{display:flex;gap:8px;flex-wrap:wrap}
 .playground-shell{min-width:0}
+
+#finetuneBlock{margin-top:20px;min-width:0}
+#finetuneBlock .manager-fields{align-items:start}
+#finetuneBlock .finetune-check{display:flex;align-items:center;gap:8px;min-width:0}
+.finetune-result{border:1px solid var(--line);border-radius:8px;padding:16px;margin-top:12px;min-width:0}
+.finetune-result h5,.finetune-result p{margin:0 0 10px}
+.finetune-path,.finetune-path code{overflow-wrap:anywhere;word-break:break-word}
+#finetuneProgress,#finetuneError,#finetuneCleanup,#finetuneValidation,#finetuneAvailability{overflow-wrap:anywhere}
+.opt-field p{font-size:12px;line-height:1.45;margin:5px 0 0;overflow-wrap:anywhere}

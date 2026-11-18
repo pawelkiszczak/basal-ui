@@ -393,6 +393,39 @@ def calibration_selection() -> dict:
     return {k: v for k, v in value.items() if isinstance(v, str)} if isinstance(value, dict) else {}
 
 
+def attached_models() -> list[dict]:
+    value = load().get("attached", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+def finetune_results() -> list[dict]:
+    value = load().get("finetune", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def put_finetune(record: dict) -> None:
+    data = load()
+    records = data.get("finetune", [])
+    if not isinstance(records, list):
+        raise ValueError("fine-tune registry is corrupt")
+    key = (record["id"], record["name"])
+    data["finetune"] = [r for r in records if not isinstance(r, dict) or (r.get("id"), r.get("name")) != key] + [record]
+    save(data)
+
+
+@_locked
+def remove_finetune(model_id: str, name: str) -> None:
+    data = load()
+    records = data.get("finetune", [])
+    if not isinstance(records, list):
+        raise ValueError("fine-tune registry is corrupt")
+    data["finetune"] = [
+        r for r in records if not isinstance(r, dict) or (r.get("id"), r.get("name")) != (model_id, name)
+    ]
+    save(data)
+
+
 @_locked
 def select_calibration(model_id: str, path: str | None) -> None:
     """Use `path` for the model from its next start; None returns it to the shipped calibration."""

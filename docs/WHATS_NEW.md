@@ -1,5 +1,8 @@
 # Unreleased
 
+- Add Fine-tune to Model manager and the declared Engine add-ons, with private labelled snapshots, cancellable training, held-out reports, base-associated adapter selection and guarded output deletion. The Engine range is unchanged. Interrupted output cleanup remains registered and can be retried.
+  A local Native 2.5.1 one-step MPS run on synthetic labels with basal-2.0-mini exercised training, adapter serving and deletion; one scored held-out Decision is pipeline evidence, not a quality claim. Native Windows remains unavailable under the private-output capability gate.
+
 - Insert Engine question sets into the Playground as editable cards, with language and optional abstention target.
 
 - Fetch a public HTTP(S) page into editable Playground State, with bounded anonymous loading, provenance in History,
