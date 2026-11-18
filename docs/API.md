@@ -95,6 +95,47 @@ paths, like basal-serve's own errors.
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
+### Prometheus metrics
+
+`GET /metrics` returns Prometheus 0.0.4 text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. Lifetime counters can decrease after a statistics reset. Rolling 15-minute counts are gauges because they can decrease as the window advances or after a reset. Each ready native Engine child's available text metrics are included with its loaded ID as a `model` label. Samples are grouped by metric family, including histogram and summary subseries. Children that do not respond within two seconds, return a non-text response or do not support metrics are skipped; Cascades and Comparison models are never scraped.
+
+The basal-ui metric names are:
+
+| Metric | Labels | Type | Unit |
+|---|---|---|---|
+| `basal_ui_requests_total` | `model` | counter | requests |
+| `basal_ui_questions_total` | `model` | counter | questions |
+| `basal_ui_errors_total` | `model` | counter | failed requests |
+| `basal_ui_input_tokens_total` | `model` | counter | input tokens |
+| `basal_ui_latency_seconds` | `model`, `quantile` (`0.5` or `0.95`) | gauge | seconds |
+| `basal_ui_latency_seconds_avg` | `model` | gauge | seconds |
+| `basal_ui_traffic_requests_total` | `endpoint`, `method` | gauge | requests in 15 minutes |
+| `basal_ui_traffic_errors_total` | `endpoint`, `method` | gauge | failed requests in 15 minutes |
+| `basal_ui_models_loaded` | none | gauge | ready models |
+
+Latency quantiles use at most 1,000 retained samples per model, not the complete lifetime distribution.
+Average latency uses lifetime recorded requests. Unavailable latency values are omitted.
+
+To enable authenticated scraping, create a secret file accessible to both basal-ui and Prometheus and start basal-ui with its contents in `BASAL_UI_ADMIN_KEY` (set **Require an API key** in the API server settings):
+
+```sh
+umask 077
+uv run --no-project python -c 'import secrets; print(secrets.token_urlsafe(32))' > /secure/path/basal-admin-key
+BASAL_UI_ADMIN_KEY="$(cat /secure/path/basal-admin-key)" basal-ui
+```
+
+Keep the secret file readable only by the operator and Prometheus. Set the environment variable before starting basal-ui; an unset or empty value generates a random internal key. Only its digest is saved in the per-process key file; it is not exposed in the UI. Restart basal-ui to change it. Prometheus uses the same secret file below (omit `authorization` when keys are disabled):
+
+```yaml
+scrape_configs:
+  - job_name: basal-ui
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    authorization:
+      type: Bearer
+      credentials_file: /secure/path/basal-admin-key
+```
+
 ### Recent Decision traffic
 
 The local UI app (not the API-server gateway) exposes `GET /api/traffic?minutes=15` and

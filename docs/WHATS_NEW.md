@@ -3,6 +3,15 @@
 - Keep Hardware metrics, Stats and Benchmark numbers, and Benchmark and Batch progress steady with tabular numerals;
   align numeric table columns with their headings.
 
+- Inspect history supports keyboard activation, and question editor controls have accessible labels.
+
+- Route app component colors and Mark elements annotations through semantic tokens; side navigation now follows the current theme.
+
+- Form controls have more visible borders in light and dark themes, including the Inspect view.
+
+- Match good and active status indicators to the orange skin in light and dark themes, while retaining status labels.
+
+- The API server exposes admin-gated Prometheus metrics at `/metrics`, including available per-model Engine metrics grouped by metric family. Set `BASAL_UI_ADMIN_KEY` before startup to authenticate an external scraper.
 - On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
 - Dialogs announce their purpose to screen readers using translated names.
 
