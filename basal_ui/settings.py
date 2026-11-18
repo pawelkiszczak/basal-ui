@@ -318,6 +318,7 @@ def last_models(data: dict | None = None) -> list[dict]:
 
 
 DEFAULT_RESERVE = 2 * 1024**3
+MAX_IDLE_UNLOAD_MINUTES = 2**53 - 1
 
 
 def memory_settings() -> dict:
@@ -327,23 +328,42 @@ def memory_settings() -> dict:
     return {
         "budget_bytes": budget if type(budget) is int else None,
         "reserve_bytes": reserve if type(reserve) is int and reserve >= 0 else DEFAULT_RESERVE,
+        "idle_unload_minutes": value.get("idle_unload_minutes")
+        if type(value.get("idle_unload_minutes")) is int
+        and 1 <= value["idle_unload_minutes"] <= MAX_IDLE_UNLOAD_MINUTES
+        else None,
     }
+
+
+@_locked
+def with_idle_unload_state(callback):
+    data = load()
+    revision = data.get("_idle_unload_revision", 0)
+    revision = revision if type(revision) is int and revision >= 0 else 0
+    return callback(memory_settings()["idle_unload_minutes"], revision)
 
 
 @_locked
 def update_memory(patch: dict) -> dict:
     """budget_bytes: null (the hardware budget) or at least 1 GiB; reserve_bytes: kept free, >= 0."""
-    unknown = set(patch) - {"budget_bytes", "reserve_bytes"}
+    unknown = set(patch) - {"budget_bytes", "reserve_bytes", "idle_unload_minutes"}
     if unknown:
         raise ValueError(f"unknown memory setting: {min(unknown)}")
-    value = {**memory_settings(), **patch}
+    previous = memory_settings()
+    value = {**previous, **patch}
     if value["budget_bytes"] is not None and (
         type(value["budget_bytes"]) is not int or value["budget_bytes"] < 1024**3
     ):
         raise ValueError("budget_bytes must be null or at least 1 GiB")
     if type(value["reserve_bytes"]) is not int or value["reserve_bytes"] < 0:
         raise ValueError("reserve_bytes must be a non-negative integer")
+    idle = value["idle_unload_minutes"]
+    if idle is not None and (type(idle) is not int or not 1 <= idle <= MAX_IDLE_UNLOAD_MINUTES):
+        raise ValueError(f"idle_unload_minutes must be null or an integer from 1 to {MAX_IDLE_UNLOAD_MINUTES}")
     data = load()
+    if idle != previous["idle_unload_minutes"]:
+        revision = data.get("_idle_unload_revision", 0)
+        data["_idle_unload_revision"] = (revision if type(revision) is int and revision >= 0 else 0) + 1
     data["memory"] = value
     save(data)
     return value

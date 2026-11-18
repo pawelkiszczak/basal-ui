@@ -1,6 +1,6 @@
 version: 2
 # Pull requests go to the default branch, `dev` (CONTRIBUTING.md, "Branches and CI"). One grouped pull request per
-# ecosystem and week keeps the CI load down; each still needs `ci-ok` green to merge.
+# ecosystem and week keeps the review load down.
 updates:
   - package-ecosystem: github-actions
     directory: /
