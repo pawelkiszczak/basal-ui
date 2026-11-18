@@ -187,8 +187,11 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
         raise ValueError("options must be an object")  # noqa: TRY004 — validation exposes a ValueError API
     out = dict(DEFAULTS)
     for key, value in options.items():
-        if key == "long_lane" and isinstance(value, bool):
-            value = "on" if value else DEFAULTS[key]
+        if key == "long_lane":
+            if isinstance(value, bool):
+                value = "on" if value else "off"
+            elif value == "auto" and value not in CHOICES[key]:
+                value = DEFAULTS[key]
         elif key == "soam" and isinstance(value, bool):
             value = "auto" if value else "off"
         if key not in DEFAULTS:

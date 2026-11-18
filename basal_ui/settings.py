@@ -175,9 +175,7 @@ def _migrate_options(value):
     changed = False
     for item in entries:
         if isinstance(item.get("long_lane"), bool):
-            from .engine import serve_option
-
-            item["long_lane"] = "on" if item["long_lane"] else (serve_option("--long-lane") or ((), "off"))[1]
+            item["long_lane"] = "on" if item["long_lane"] else "off"
             changed = True
         if isinstance(item.get("soam"), bool):
             item["soam"] = "auto" if item["soam"] else "off"
