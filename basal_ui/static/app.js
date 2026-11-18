@@ -800,9 +800,11 @@ function renderGateOptions(card) {
     remove.type='button';
     remove.textContent=t('Remove condition on {question}: {answer}',{question:name,answer:typeof value==='string'?value:JSON.stringify(value)});
     remove.onclick=()=>{
-      const current=Object.entries(extra.ask_if||{});
-      const remaining=current.map(([key,answers])=>[key,key===name&&Array.isArray(answers)?answers.filter(answer=>answer!==value):answers]).filter(([,answers])=>!Array.isArray(answers)||answers.length);
-      if(remaining.length)extra.ask_if=Object.fromEntries(remaining);else delete extra.ask_if;
+      const remaining={...extra.ask_if}, answers=remaining[name];
+      if(!Array.isArray(answers))return;
+      const kept=answers.filter(answer=>answer!==value);
+      if(kept.length)remaining[name]=kept;else delete remaining[name];
+      if(Object.keys(remaining).length)extra.ask_if=remaining;else delete extra.ask_if;
       renderGateOptions(card);$('.q-gates summary',card).focus();syncRequest();
     };
     other.append(remove);
