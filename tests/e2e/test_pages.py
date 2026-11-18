@@ -1808,3 +1808,39 @@ def test_answer_sets_and_conditional_replay_in_browser(page, ui, text_model):
     assert saved["replay_request"]["questions"] == request["questions"]
     page.evaluate("r => replayRequest(r)", saved)
     assert page.evaluate("() => buildRequest().questions") == request["questions"]
+
+
+def test_conditional_questions_follow_renamed_and_removed_sources(browser, ui):
+    status = ui.get("/api/status")
+    status["features"]["conditional_questions"] = True
+    status["models"] = [{"id": "synthetic", "state": "ready", "media": [], "entry": {}}]
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.goto(f"{ui.url}/#playground")
+        page.wait_for_function("statusCache?.features?.conditional_questions")
+        page.evaluate("""() => setRequest({state: 'synthetic', questions: {
+            first: {type: 'noul', instructions: 'First?'},
+            independent: {type: 'noul', instructions: 'Independent?'},
+            next: {type: 'noul', instructions: 'Next?', depends_on: ['first', 'independent'],
+                   ask_if: {first: ['false'], independent: ['true']}}
+        }})""")
+        source, dependent = page.locator(".question").first, page.locator(".question").last
+        dependent.locator(".q-gates summary").click()
+        source.locator(".q-name").fill("renamed")
+        source.locator(".q-name").press("Tab")
+        sync_api.expect(dependent.locator('[data-dependency="renamed"]')).to_be_checked()
+        sync_api.expect(dependent.locator('[data-gate-question="renamed"][data-gate-answer="false"]')).to_be_checked()
+        assert page.evaluate("buildRequest().questions.next") == {
+            "type": "noul",
+            "instructions": "Next?",
+            "depends_on": ["renamed", "independent"],
+            "ask_if": {"renamed": ["false"], "independent": ["true"]},
+        }
+        source.locator(".remove-question").click()
+        remaining = page.evaluate("buildRequest().questions.next")
+        assert remaining["depends_on"] == ["independent"]
+        assert remaining["ask_if"] == {"independent": ["true"]}
+    finally:
+        context.close()

@@ -757,12 +757,27 @@ function renderSharedFields(card) {
 function refreshOpenGates(except) {
   document.querySelectorAll('.question').forEach(card=>{if(card!==except&&$('.q-gates',card)?.open)renderGateOptions(card);});
 }
+function updateGateReferences(name, replacement) {
+  if(name===replacement||[...document.querySelectorAll('.q-name')].some(input=>input.value===name))return;
+  for(const card of document.querySelectorAll('.question')){
+    const extra=card._extra;
+    if(Array.isArray(extra.depends_on)&&extra.depends_on.includes(name)){
+      const deps=[...new Set(extra.depends_on.map(key=>key===name?replacement:key).filter(key=>key!==undefined))];
+      if(deps.length)extra.depends_on=deps;else delete extra.depends_on;
+    }
+    if(extra.ask_if&&Object.hasOwn(extra.ask_if,name)){
+      const gates=Object.entries(extra.ask_if).filter(([key])=>key!==name);
+      if(replacement!==undefined&&!Object.hasOwn(extra.ask_if,replacement))gates.push([replacement,extra.ask_if[name]]);
+      if(gates.length)extra.ask_if=Object.fromEntries(gates);else delete extra.ask_if;
+    }
+  }
+}
 function renderGateOptions(card) {
   const host=$('.q-gate-options',card), supported=statusCache?.features?.conditional_questions;
   if(!supported){host.innerHTML=`<p class="muted">${t('This Engine does not support conditional questions.')}</p>`;return;}
   const candidates=[...document.querySelectorAll('.question')].filter(other=>other!==card&&['choice','noul','score'].includes($('.q-type',other).value));
   host.innerHTML=candidates.map(other=>{
-    const [name,q]=parseQuestionCard(other), deps=Array.isArray(card._extra.depends_on)?card._extra.depends_on:[], rawGates=card._extra.ask_if, gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{}, selected=Object.hasOwn(gates,name)?gates[name]:[];
+    const name=$('.q-name',other).value, [,q]=parseQuestionCard(other), deps=Array.isArray(card._extra.depends_on)?card._extra.depends_on:[], rawGates=card._extra.ask_if, gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{}, selected=Object.hasOwn(gates,name)?gates[name]:[];
     const criteria=q.criteria??q.levels??[], answers=q.type==='noul'?['true','false']:q.type==='score'&&Array.isArray(criteria)?criteria.map((_,i)=>String(i)):Array.isArray(criteria)?criteria.map(String):Object.keys(criteria);
     const options=answers.map(value=>{const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${Array.isArray(selected)&&selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;}).join(' ');
     return `<fieldset><legend>${esc(name)}</legend><label><input type="checkbox" data-dependency="${esc(name)}" ${deps.includes(name)?'checked':''}> ${t('Depends on this question')}</label>${options?`<div>${t('Ask if answer is')}: ${options}</div>`:''}</fieldset>`;
@@ -772,6 +787,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
   const card=document.createElement('div'); card.className='question'; const fieldId=`question-card-${++questionFieldId}`;
   const type=QUESTION_TYPES.includes(q.type)?q.type:'choice';
+  let gateName=name;
   card._extra=extraOf(q,type); card._type=type;
   card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div><div class="q-shared"></div>`;
   $('.q-type',card).value=type;
@@ -786,7 +802,12 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   card.addEventListener('change',e=>{
     if(!e.target.matches('.q-type')&&!['choice','noul','score'].includes(card._type))card._hideCoverage=true;
-    if(e.target.matches('[data-dependency]')){
+    if(e.target.matches('.q-name')){
+      const next=e.target.value;
+      if(next.trim()&&![...document.querySelectorAll('.q-name')].some(input=>input!==e.target&&input.value===next)){
+        updateGateReferences(gateName,next);gateName=next;refreshOpenGates();
+      }
+    } else if(e.target.matches('[data-dependency]')){
       const name=e.target.dataset.dependency, deps=new Set(Array.isArray(card._extra.depends_on)?card._extra.depends_on:[]);e.target.checked?deps.add(name):deps.delete(name);
       if(deps.size)card._extra.depends_on=[...deps];else delete card._extra.depends_on;
     } else if(e.target.matches('[data-gate-question]')){
@@ -813,7 +834,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   card.addEventListener('click',e=>{
     const b=e.target.closest('button'); if(!b)return;
     if(b.closest('.choice-editor'))refreshOpenGates(card);
-    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();refreshOpenGates(card);syncRequest();}
+    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();updateGateReferences(gateName);refreshOpenGates();syncRequest();}
     else if(b.dataset.costMode){setCostMode(card,b.dataset.costMode);syncRequest();}
     else if(b.matches('.add-action')){card._costRows=readCostRows(card);card._costRows.push({action:'',costs:{}});renderCostMatrix(card,true);syncRequest();}
     else if(b.matches('.remove-action')){card._costRows=readCostRows(card);card._costRows.splice(Number(b.dataset.row),1);renderCostMatrix(card,true);syncRequest();}

@@ -13,7 +13,7 @@ function updateMediaEvidence() {
 function detachElementQuestion(name) {
   if(!name)return;
   const card=[...document.querySelectorAll('.question')].find(c=>$('.q-name',c).value===name);
-  card?.remove();
+  if(card){card.remove();updateGateReferences(name);refreshOpenGates();}
   if($('#editJsonToggle').checked){
     try {const request=JSON.parse($('#requestJson').value);if(request.questions)delete request.questions[name];$('#requestJson').value=JSON.stringify(request,null,2);} catch {}
   }
