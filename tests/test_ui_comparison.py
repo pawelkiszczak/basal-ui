@@ -672,10 +672,14 @@ def test_comparison_batch_snapshot_is_removed_on_rejected_start_and_failure(app_
 
 
 def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path, monkeypatch):
+    from basal_ui import batch
+
     client, fleet = app_client
     _, model = attach(client, child)
     source = tmp_path / "input.jsonl"
     source.write_text(json.dumps({"state": "validated", "question": "Pick", "options": ["a", "b"]}) + "\n")
+    output = tmp_path / "output.jsonl"
+    body = {"id": model["id"], "input": str(source), "output": str(output), "concurrency": 1}
     child.gate.clear()
     original, snapshots = fleet.start_model_job, []
 
@@ -685,16 +689,24 @@ def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path
 
     monkeypatch.setattr(fleet, "start_model_job", capture)
     try:
-        assert client.post("/api/batch", json={"id": model["id"], "input": str(source)}).status_code == 202
+        assert client.post("/api/batch", json=body).status_code == 202
         wait_for(lambda: bool(child.seen), 30)
         assert client.delete("/api/batch").status_code == 200
-        child.gate.set()
         job = wait_for(
             lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
         )
         assert job["phase"] == "cancelled" and not snapshots[0].exists()
     finally:
         child.gate.set()
+
+    if batch.capabilities()["restart"]:
+        assert client.post("/api/batch", json=body).status_code == 409
+        assert client.post("/api/batch", json={**body, "choice": "resume"}).status_code == 202
+        job = wait_for(
+            lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
+        )
+        assert job["phase"] == "done" and len(output.read_text().splitlines()) == 1
+        assert not snapshots[1].exists()
 
 
 def test_comparison_projects_metadata_and_success_without_losing_answer(app_client, child):

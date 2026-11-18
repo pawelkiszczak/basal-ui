@@ -16,6 +16,7 @@ import ipaddress
 import json
 import math
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -173,7 +174,7 @@ def create_app(
         if (
             not isinstance(fitted, dict)
             or not fitted.get("model")
-            or calibration_mismatch(cal, str(local), local, adapter=adapter)
+            or calibration_mismatch(cal, str(local), local, **({"adapter": adapter} if adapter else {}))
             or cal.get("prompt", 1) != metadata.get("prompt")
         ):
             raise ValueError("calibration was not fitted for this attached model and prompt format")
@@ -181,6 +182,8 @@ def create_app(
     def prepare(variant, media, options):
         """(assessment, the non-default load options) of a load; ValueError says why this machine cannot load it so:
         an unavailable mode, invalid options, or a variant the default mode cannot serve."""
+        if variant.family == "attached" and not engine.feature("attach"):
+            raise ValueError("attached models need engine 2.5")
         if variant.family == "attached" and not engine.feature("attach"):
             raise ValueError("attached models need engine 2.5")
         current = hw()
@@ -306,6 +309,25 @@ def create_app(
                 params = {"message": message}
             return JSONResponse(
                 {"detail": message, "code": code, "params": params},
+                status_code=exc.status_code,
+                headers=exc.headers,
+            )
+        if request.url.path.startswith("/api/attach"):
+            message = str(exc.detail)
+            if "already exists" in message:
+                code = "attach_exists"
+            elif "unload the attached model" in message:
+                code = "attach_busy"
+            elif "engine 2.5" in message:
+                code = "attach_unavailable"
+            elif "base must be" in message:
+                code = "attach_base"
+            elif "format must be" in message:
+                code = "attach_format"
+            else:
+                code = "attach_error"
+            return JSONResponse(
+                {"detail": message, "code": code, "params": {"message": message}},
                 status_code=exc.status_code,
                 headers=exc.headers,
             )
@@ -455,7 +477,7 @@ def create_app(
                 context["quant"],
                 orders,
                 layout=context["layout"] or model_layout(local),
-                adapter=adapter,
+                **({"adapter": adapter} if adapter else {}),
             )
             result = calibration.summary(path)
             table = calibration.certified_table(cal)
@@ -481,7 +503,7 @@ def create_app(
             return bool(
                 warning
                 or result.get("warning")
-                or calibration_mismatch(cal, str(local), local, adapter=adapter)
+                or calibration_mismatch(cal, str(local), local, **({"adapter": adapter} if adapter else {}))
                 or not isinstance(result.get("fitted_on"), dict)
                 or not result["fitted_on"].get("model")
                 or not applicable
@@ -504,7 +526,6 @@ def create_app(
                 if row["id"] in attached:
                     variant = variants.get(row["id"])
                     row["uncalibrated"] = not variant or attached_uncalibrated(variant, cache_dir, current_hw)
-        status = fleet.status()
         with fleet.lock:
             servers = [
                 {**{k: v for k, v in server.items() if k in ("id", "name", "url", "consent", "state")}}
@@ -648,6 +669,179 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return get_memory()
+
+    @app.get("/api/attach")
+    def get_attach_options():
+        available = engine.feature("attach")
+        return {"available": available, "bases": list(catalog.ATTACHABLE) if available else []}
+
+    @app.post("/api/attach", status_code=202)
+    def post_attach(body: dict = Body(...)):
+        if not engine.feature("attach"):
+            raise HTTPException(400, "attached models need engine 2.5")
+        base, revision, fmt = body.get("base"), body.get("revision"), body.get("format", 1)
+        if not isinstance(base, str) or base not in catalog.ATTACHABLE:
+            raise HTTPException(400, f"base must be one of {', '.join(catalog.ATTACHABLE)}")
+        if revision is not None and revision != catalog.ATTACH_REVISION:
+            raise HTTPException(400, "unsupported base revision")
+        revision = catalog.ATTACH_REVISION
+        if type(fmt) is not int or fmt not in (1, 2):
+            raise HTTPException(400, "format must be 1 or 2")
+        slug = base.lower().replace("/", "-")
+        model_id = f"attached/{slug}"
+        if any(record.get("id") == model_id for record in settings_mod.attached_models()):
+            raise HTTPException(409, f"attached model {model_id!r} already exists")
+        out_dir = settings_mod.models_dir() / "attached" / slug
+        if out_dir.exists():
+            raise HTTPException(409, f"attached model directory already exists: {out_dir}")
+        source = catalog.Variant(
+            base, base, "attached-base", "unknown", "bf16", "bf16", None, None, True, cache_revision=revision
+        )
+
+        def attach_job(job):
+            from .jobs import run_tool
+
+            fleet.download(source)
+            while fleet.downloads.alive(base):
+                progress = fleet.downloads.status().get(base, {})
+                if progress.get("error"):
+                    raise RuntimeError(f"download failed: {progress['error']}")
+                time.sleep(0.1)
+            progress = fleet.downloads.status().get(base, {})
+            if progress.get("error"):
+                raise RuntimeError(f"download failed: {progress['error']}")
+            snapshot = catalog.is_downloaded(source, settings_mod.models_dir(), revision=revision)
+            if snapshot is None or snapshot.name != revision:
+                raise RuntimeError(f"downloaded base {base!r} is incomplete or has the wrong revision")
+            job.check()
+            owned = False
+            try:
+                out_dir.parent.mkdir(parents=True, exist_ok=True)
+                if out_dir.parent.is_symlink():
+                    raise RuntimeError("attached model root is a symlink")
+                out_dir.mkdir()
+                owned = True
+                run_tool(job, "attach", [snapshot, "--out", out_dir, "--format", str(fmt)])
+                job.check()
+                record_revision = snapshot.name
+                probe = catalog.Variant(
+                    model_id,
+                    base,
+                    "attached",
+                    "unknown",
+                    "bf16",
+                    "bf16",
+                    None,
+                    None,
+                    True,
+                    local_dir=str(out_dir),
+                    cache_revision=record_revision,
+                    attached_format=fmt,
+                )
+                if catalog.is_downloaded(probe, settings_mod.models_dir()) is None:
+                    raise RuntimeError("attached model output is incomplete")
+                record = {
+                    "id": model_id,
+                    "base": base,
+                    "revision": record_revision,
+                    "out_dir": str(out_dir),
+                    "format": fmt,
+                    "created": int(time.time()),
+                }
+                settings_mod.add_attached(record)
+                return record
+            except BaseException:
+                if owned:
+                    shutil.rmtree(out_dir)
+                raise
+
+        try:
+            with fleet.lock:
+                if (
+                    any(r.get("id") == model_id for r in settings_mod.attached_models())
+                    or out_dir.exists()
+                    or out_dir.is_symlink()
+                ):
+                    raise RuntimeError("attached model already exists")
+                return fleet.jobs.start("attach", model_id, f"Attach {base}", attach_job)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/api/attach")
+    def cancel_attach():
+        return fleet.jobs.cancel("attach")
+
+    @app.delete("/api/attach/{model_id:path}")
+    def delete_attached(model_id: str):
+        if not engine.feature("attach"):
+            raise HTTPException(400, "attached models need engine 2.5")
+        with fleet.lock:
+            record = next((r for r in settings_mod.attached_models() if r.get("id") == model_id), None)
+            if record is None:
+                raise HTTPException(404, f"unknown attached model {model_id!r}")
+            base = record.get("base")
+            if base not in catalog.ATTACHABLE or model_id != "attached/" + base.lower().replace("/", "-"):
+                raise HTTPException(409, "invalid attached model record")
+            attached_root = settings_mod.models_dir() / "attached"
+            out_dir = attached_root / model_id.split("/", 1)[1]
+            if record.get("out_dir") != str(out_dir):
+                raise HTTPException(409, "invalid attached model directory")
+            unsafe = attached_root.is_symlink() or out_dir.is_symlink()
+            with fleet.jobs.lock:
+                working = any(j.running and j.model == model_id for j in fleet.jobs.jobs.values())
+            if (
+                working
+                or model_id in fleet.runners
+                or model_id in fleet.draining
+                or any(r.model == model_id for r in [*fleet.retiring, *fleet.temporary.values()])
+            ):
+                raise HTTPException(409, "unload the attached model and stop its jobs first")
+            retained = unsafe
+            freed = 0
+            staged = None
+            stage_dir = None
+            if not unsafe and out_dir.exists():
+                try:
+                    metadata_path = out_dir / "basal.json"
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    identity = metadata.get("attached", {})
+                    owned = (
+                        not metadata_path.is_symlink()
+                        and identity.get("base") == base
+                        and identity.get("revision") == record.get("revision")
+                    )
+                except (OSError, ValueError, AttributeError):
+                    owned = False
+                if owned:
+                    freed = sum(p.stat().st_size for p in out_dir.rglob("*") if not p.is_symlink() and p.is_file())
+                    stage_dir = Path(tempfile.mkdtemp(prefix=".removing-", dir=attached_root))
+                    staged = stage_dir / out_dir.name
+                    try:
+                        out_dir.rename(staged)
+                    except BaseException:
+                        stage_dir.rmdir()
+                        raise
+                else:
+                    retained = True
+            try:
+                settings_mod.remove_attached(model_id)
+            except BaseException:
+                if staged is not None:
+                    staged.rename(out_dir)
+                    stage_dir.rmdir()
+                raise
+            if staged is not None:
+                try:
+                    shutil.rmtree(stage_dir)
+                except OSError:
+                    return {
+                        "deleted": model_id,
+                        "freed_bytes": 0,
+                        "retained_directory": True,
+                        "retained_path": str(stage_dir),
+                        "cleanup_error": True,
+                    }
+        return {"deleted": model_id, "freed_bytes": freed, "retained_directory": retained}
 
     @app.post("/api/restart", status_code=202)
     def restart_model(body: dict = Body(...)):
@@ -908,6 +1102,7 @@ def create_app(
         revisions = (
             {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
         )
+
         return {
             "source": source,
             "recommendation_backends": installed,
@@ -1127,7 +1322,7 @@ def create_app(
         installed = ui_version()
         engine_status = engine.status()
         engine_latest, engine_error = updates.latest(updates.ENGINE_REPO) if enabled else (None, None)
-        variants, source = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, source = all_variants()
         # only the hub catalog is the whole catalog: the cache fallback would seed (or report) a partial list
         new_models = settings_mod.update_seen_ids(v.id for v in variants) if source == "hub" else []
         return {
@@ -1153,7 +1348,7 @@ def create_app(
 
     @app.post("/api/updates/seen")
     def mark_updates_seen():
-        variants, source = catalog_fn(cache_dir=settings_mod.models_dir())
+        variants, source = all_variants()
         if source == "hub":
             settings_mod.mark_models_seen(v.id for v in variants)
         return get_updates()
@@ -1239,7 +1434,7 @@ def create_app(
     def delete_model(body: dict = Body(...)):
         variant = find_variant(body.get("id"))
         if variant.family == "attached":
-            raise HTTPException(400, "attached model weights are shared and cannot be deleted here")
+            raise HTTPException(400, "remove attached models from Library")
         try:
             freed = fleet.while_not_busy(variant.repo, lambda: catalog.delete(variant, settings_mod.models_dir()))
         except RuntimeError as exc:
@@ -1250,7 +1445,7 @@ def create_app(
     def download(body: dict = Body(...)):
         variant = find_variant(body.get("id"))
         if variant.family == "attached":
-            raise HTTPException(400, "attached model files are missing")
+            raise HTTPException(400, "attach the base model again")
         if not fleet.download(variant):
             raise HTTPException(409, "already on disk")
         return full_status()
