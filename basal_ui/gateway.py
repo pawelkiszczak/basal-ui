@@ -2,7 +2,9 @@
 gateway checks API keys and CORS, serves MCP, answers OpenAI Decisions requests, then forwards to that model's
 private basal-serve and counts the decision in the statistics and the history."""
 
+import asyncio
 import json
+import re
 import socket
 import threading
 import time
@@ -18,9 +20,61 @@ SNAPSHOT_KEYS = ("host", "port", "require_key", "cors_origins", "mcp")
 MAX_BODY_BYTES = 256 * 1024**2  # a request with 8 media items of 20 MiB, base64-encoded, fits
 
 
+def _label(value):
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _child_metrics(text, model, metadata):
+    lines = []
+    for line in text.splitlines():
+        if line.startswith(("# HELP ", "# TYPE ")):
+            parts = line.split(None, 3)
+            if len(parts) < 3 or (parts[1], parts[2]) in metadata:
+                continue
+            metadata.add((parts[1], parts[2]))
+            lines.append(line)
+        elif line and not line.startswith("#"):
+            match = re.fullmatch(r'([a-zA-Z_:][a-zA-Z0-9_:]*)(\{(?:[^"}]|"(?:\\.|[^"\\])*")*\})?(\s+.+)', line)
+            if not match:
+                continue
+            name, labels, value = match.groups()
+            labels = labels[1:-1].strip() if labels else ""
+            labels = ",".join(
+                item.strip()
+                for item in re.split(r',(?=(?:[^"\\]*(?:\\.|"(?:\\.|[^"\\])*"))*[^"\\]*$)', labels)
+                if item.strip() and not re.match(r"\s*model\s*=", item)
+            )
+            lines.append(f'{name}{{{labels + "," if labels else ""}model="{_label(model)}"}}{value}')
+    return lines
+
+
+def _group_metrics(lines):
+    types = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) == 4 and parts[:2] == ["#", "TYPE"]:
+            types[parts[2]] = parts[3]
+    families = {}
+    for line in lines:
+        if line.startswith(("# HELP ", "# TYPE ")):
+            name = line.split(None, 3)[2]
+            families.setdefault(name, ([], []))[0].append(line)
+        else:
+            name = re.split(r"[\s{]", line, maxsplit=1)[0]
+            family = name
+            for suffix in ("_bucket", "_sum", "_count"):
+                kind = types.get(name[: -len(suffix)]) if name.endswith(suffix) else None
+                if name not in types and (kind == "histogram" or (kind == "summary" and suffix != "_bucket")):
+                    family = name[: -len(suffix)]
+                    break
+            families.setdefault(family, ([], []))[1].append(line)
+    return [line for headers, samples in families.values() for line in (*headers, *samples)]
+
+
 def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0.1"):
     """The gateway's ASGI app. keys: basal_ui.auth.ApiKeys or None (no key required)."""
     from starlette.applications import Starlette
+    from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
@@ -97,6 +151,55 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
         return JSONResponse(stats.snapshot())
 
+    async def metrics_route(request):
+        record = request.scope.get("basal.api_key")
+        if record is not None and not record.get("admin", False):
+            return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
+        counters = ("requests", "questions", "errors", "input_tokens")
+        lines = [f"# TYPE basal_ui_{key}_total counter" for key in counters]
+        lines.extend(("# TYPE basal_ui_latency_seconds gauge", "# TYPE basal_ui_latency_seconds_avg gauge"))
+        snapshot = await run_in_threadpool(stats.snapshot)
+        for model, entry in snapshot["models"].items():
+            label = f'model="{_label(model)}"'
+            for key in counters:
+                lines.append(f"basal_ui_{key}_total{{{label}}} {entry[key]}")
+            for quantile, key in (("0.5", "p50_ms"), ("0.95", "p95_ms")):
+                if entry[key] is not None:
+                    lines.append(f'basal_ui_latency_seconds{{{label},quantile="{quantile}"}} {entry[key] / 1000}')
+            if entry["avg_latency_ms"] is not None:
+                lines.append(f"basal_ui_latency_seconds_avg{{{label}}} {entry['avg_latency_ms'] / 1000}")
+        lines.extend(f"# TYPE basal_ui_traffic_{key}_total gauge" for key in ("requests", "errors"))
+        traffic = await run_in_threadpool(stats.traffic_snapshot, 15)
+        for entry in traffic["endpoints"]:
+            labels = f'endpoint="{_label(entry["endpoint"])}",method="{_label(entry["method"])}"'
+            for key in ("requests", "errors"):
+                lines.append(f"basal_ui_traffic_{key}_total{{{labels}}} {entry[key]}")
+        loaded, children = await run_in_threadpool(fleet.metrics_snapshot)
+        lines.extend(("# TYPE basal_ui_models_loaded gauge", f"basal_ui_models_loaded {loaded}"))
+        metadata = {("TYPE", f"basal_ui_{key}_total") for key in counters}
+        metadata.update(("TYPE", f"basal_ui_traffic_{key}_total") for key in ("requests", "errors"))
+
+        async def scrape(model, runner, generation, url):
+            try:
+                response = await asyncio.wait_for(client["http"].get(url + "/metrics", timeout=2), timeout=2)
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith(
+                    "text/"
+                ):
+                    return None
+                if await run_in_threadpool(fleet.metrics_current, model, runner, generation, url):
+                    return model, response.text
+            except (httpx.HTTPError, asyncio.TimeoutError):
+                pass
+            return None
+
+        for result in await asyncio.gather(*(scrape(*child) for child in children)):
+            if result:
+                lines.extend(_child_metrics(result[1], result[0], metadata))
+        return Response(
+            "\n".join(_group_metrics(lines)) + "\n",
+            headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
+        )
+
     mcp_routes, mcp_run = [], None
     if mcp:
         from types import SimpleNamespace
@@ -135,6 +238,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             Route("/v1/models", models),
             Route("/health", health),
             Route("/v1/stats", stats_route),
+            Route("/metrics", metrics_route),
             *mcp_routes,
         ],
         lifespan=lifespan,
