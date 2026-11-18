@@ -4,7 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>basal</title>
-<script>const initialHash=location.hash;if(initialHash)history.replaceState(null,'',location.pathname+location.search);</script>
+<script>
+// Native fragment navigation can start Tab inside a view before the SPA starts.
+{
+  const initialFocus=new AbortController(), options={capture:true,signal:initialFocus.signal};
+  for(const type of ['pointerdown','focusin'])document.addEventListener(type,()=>initialFocus.abort(),options);
+  document.addEventListener('keydown',event=>{
+    initialFocus.abort();
+    const link=document.querySelector('.skip-link');
+    if(event.key==='Tab'&&!event.shiftKey&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&link&&document.activeElement===document.body&&document.getElementById(location.hash.slice(1))){
+      event.preventDefault();link.focus();
+    }
+  },options);
+}
+</script>
 <link rel="stylesheet" href="/static/vendor/basecoat-1.1.0.min.css">
 <link rel="stylesheet" href="/static/app.css">
 <link rel="stylesheet" href="/static/dashboard.css">

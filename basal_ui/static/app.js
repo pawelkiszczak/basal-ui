@@ -2137,8 +2137,7 @@ $('#saveMemory').onclick=async()=>{
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };
-showView(initialHash||location.hash);
-if(initialHash)window.addEventListener('load',()=>{if(!location.hash){history.replaceState(null,'',initialHash);shownHash=location.hash;}},{once:true});
+showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();
  (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();})();

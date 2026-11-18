@@ -1813,7 +1813,7 @@ def test_keyboard_view_navigation_and_model_tabs(browser, ui, language, skip, da
         sync_api.expect(tab).to_have_attribute("aria-selected", "true")
         sync_api.expect(tab).to_have_attribute("tabindex", "0")
         sync_api.expect(page.locator('#models [role="tab"][aria-selected="false"]')).to_have_attribute("tabindex", "-1")
-    page.wait_for_timeout(5500)
+    page.evaluate("() => new Promise(resolve => document.addEventListener('app:status', resolve, {once: true}))")
     sync_api.expect(page.locator("#suggestedTab")).to_be_focused()
     page.keyboard.press("Alt+1")
     sync_api.expect(page.locator("#pageTitle")).to_be_focused()
@@ -1824,4 +1824,41 @@ def test_keyboard_view_navigation_and_model_tabs(browser, ui, language, skip, da
     page.keyboard.press("Tab")
     sync_api.expect(link).to_be_focused()
     sync_api.expect(page).to_have_title(f"{models} | basal")
+    context.close()
+
+
+@pytest.mark.parametrize("fragment", ["", "#dashboard", "#manager/calibration"])
+def test_initial_keyboard_focus_preserves_requested_url(browser, ui, fragment):
+    context = browser.new_context()
+    page = context.new_page()
+    page.add_init_script("""(() => {
+      window.historyWrites = [];
+      for (const method of ['pushState', 'replaceState']) {
+        const original = history[method];
+        history[method] = function(...args) { window.historyWrites.push(args[2]); return original.apply(this, args); };
+      }
+    })()""")
+    seen = []
+
+    def check_url(route):
+        seen.append(page.evaluate("location.hash"))
+        route.continue_()
+
+    page.route("**/static/app.js", check_url)
+    page.goto(ui.url + "/" + fragment)
+    assert seen == [fragment]
+    if fragment:
+        assert page.evaluate("location.hash") == fragment
+        assert page.evaluate("window.historyWrites") == []
+    page.keyboard.press("Tab")
+    sync_api.expect(page.locator(".skip-link")).to_be_focused()
+    context.close()
+
+
+def test_failed_script_preserves_deep_link(browser, ui):
+    context = browser.new_context()
+    page = context.new_page()
+    page.route("**/static/app.js", lambda route: route.abort())
+    page.goto(ui.url + "/#manager/calibration")
+    assert page.evaluate("location.hash") == "#manager/calibration"
     context.close()
