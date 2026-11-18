@@ -39,10 +39,10 @@
   --accent: #3987e5;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
+body { margin: 0; background: var(--page); color: var(--ink); font: .875rem/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-header .chip { margin-left: 4px; }
+header .chip { margin-left: 4px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 header .spacer { flex: 1; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; white-space: nowrap; }
 button, select, input, textarea { font: inherit; color: inherit; }
@@ -68,10 +68,10 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 .hint { color: var(--muted); font-size: 12px; }
 .actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
 .hist { list-style: none; margin: 0; padding: 0; }
-.hist li { padding: 8px; border-radius: 8px; cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
+.hist li { padding: 8px; border-radius: 8px; cursor: pointer; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; }
 .hist li:hover { background: var(--surface-2); }
-.hist .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hist .a { color: var(--ink-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist .q, .hist .a { overflow-wrap: anywhere; min-width: 0; }
+.hist .a { color: var(--ink-2); font-size: 12px; }
 .empty { color: var(--muted); text-align: center; padding: 60px 20px; }
 .empty h2 { color: var(--ink); font-weight: 600; font-size: 18px; }
 .result { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 20px; overflow: hidden; }
@@ -122,28 +122,28 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .chart svg { display: block; width: 100%; overflow: visible; }
 .chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart .dl { fill: var(--ink-2); font-size: 12px; }
-.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 12px; min-width: 160px; display: none; z-index: 3; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 12px; min-width: 160px; max-width: calc(100vw - 16px); overflow-wrap: anywhere; display: none; z-index: 6; }
 .tip .t { color: var(--muted); margin-bottom: 4px; }
 .tip .r { display: grid; grid-template-columns: 14px auto 1fr; gap: 6px; align-items: center; }
 .tip .r b { font-variant-numeric: tabular-nums; }
-.tip .r span:last-child { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.tip .r span:last-child { color: var(--ink-2); min-width: 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 12px; color: var(--ink-2); }
-.legend span { display: inline-flex; align-items: center; gap: 6px; max-width: 320px; }
-.legend span i { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
+.legend span i { font-style: normal; overflow-wrap: anywhere; min-width: 0; }
 .orders { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 @media (max-width: 760px) { .orders { grid-template-columns: 1fr; } }
 .orders h4 { margin: 0 0 8px; font-size: 12px; color: var(--ink-2); font-weight: 600; display: flex; gap: 6px; align-items: center; }
 .hbars { display: grid; grid-template-columns: auto minmax(0, 1.4fr) minmax(56px, 1fr) 48px; gap: 6px 8px; align-items: center; font-size: 12px; }
 .hbars .letter { font: 700 12px ui-monospace, Menlo, monospace; color: var(--ink-2); }
-.hbars .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.hbars .txt { overflow-wrap: anywhere; min-width: 0; color: var(--ink); }
 .hbars .track { height: 12px; position: relative; }
 .hbars .track div { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; min-width: 1px; }
 .hbars .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .hbars .win .txt, .hbars .win.val { font-weight: 600; }
 .toptok { margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 .toptok code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
-.cmp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(120px, 2fr) 60px; gap: 4px 10px; align-items: center; font-size: 12px; }
-.cmp .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) 60px; gap: 4px 10px; align-items: center; font-size: 12px; }
+.cmp .txt { overflow-wrap: anywhere; min-width: 0; }
 .cmp .pair { display: grid; gap: 2px; }
 .cmp .pair div { height: 8px; border-radius: 0 4px 4px 0; min-width: 1px; }
 .cmp .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
@@ -161,8 +161,8 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .loading { display: flex; gap: 10px; align-items: center; color: var(--ink-2); padding: 12px 4px; }
 .spin { width: 16px; height: 16px; border: 2px solid var(--grid); border-top-color: var(--accent); border-radius: 50%; animation: sp .8s linear infinite; }
 @keyframes sp { to { transform: rotate(360deg); } }
-.scale { display: flex; gap: 2px; margin-top: 12px; }
-.scale div { flex: 1; text-align: center; font-size: 11px; color: var(--ink-2); padding: 6px 4px; background: var(--surface-2); border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scale { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 12px; }
+.scale div { flex: 1 1 8em; min-width: 0; text-align: center; font-size: 11px; color: var(--ink-2); padding: 6px 4px; background: var(--surface-2); border-radius: 4px; overflow-wrap: anywhere; }
 .scale div.on { outline: 2px solid var(--ink); outline-offset: -2px; color: var(--ink); font-weight: 600; }
 </style>
 </head>
@@ -254,7 +254,7 @@ function showTip(ev, title, rows) {
   let x = ev.pageX + pad, y = ev.pageY + pad;
   if (x + w > window.scrollX + innerWidth - 8) x = ev.pageX - w - pad;
   if (y + hh > window.scrollY + innerHeight - 8) y = ev.pageY - hh - pad;
-  tip.style.left = x + "px"; tip.style.top = y + "px";
+  tip.style.left = Math.max(window.scrollX + 8, x) + "px"; tip.style.top = Math.max(window.scrollY + 8, y) + "px";
 }
 const hideTip = () => { tip.style.display = "none"; };
 
