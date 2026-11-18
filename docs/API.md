@@ -84,6 +84,16 @@ default and is inferred by the Engine from each state's language; explicit `pl` 
 preset selected, JSONL lines with neither `questions` nor `question` are expanded with the Engine's preset questions
 into a private temporary input for basal-run. The original input is unchanged.
 Unknown presets or unsupported language values return HTTP 400.
+
+### Batch resume
+
+`GET /api/batch/capabilities` reports boolean `restart` and `stop_after` probes for the installed `basal-run`.
+`POST /api/batch` accepts `choice` (`resume` or `restart`) and a non-negative integer `stop_after` (default 16;
+0 writes individual errors). With resume support, a `.part` or `.part.json` at the output returns 409 with
+`code: batch_choice` unless a choice is supplied. An orphan sidecar cannot be resumed; Restart explicitly replaces
+it. Resume is checked by the Engine against input, request options and server identity. A nonzero exit retaining a
+`.part` reports `phase: stopped_resumable`, `done`, `total` and the Engine's error in the Batch job in
+`GET /api/status`; its `result` retains the original Batch request for an explicitly confirmed Restart. Otherwise failure remains `error`. Older Engines retain their previous Batch behavior.
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:

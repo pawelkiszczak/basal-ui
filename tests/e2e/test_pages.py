@@ -2106,3 +2106,39 @@ def test_fetch_draft_generation_and_replay_do_not_submit(page):
       source_url:'https://example.com/saved'})""")
     sync_api.expect(page.locator("#openFetchDialog")).to_be_visible()
     assert page.evaluate("window.pendingFetch.length") == 3
+
+
+def test_batch_refused_resume_offers_confirmed_restart_with_original_output(page, ui, text_model, tmp_path):
+    if not ui.get("/api/batch/capabilities")["restart"]:
+        pytest.skip("installed Engine does not support Batch resume")
+    source = tmp_path / "requests.jsonl"
+    source.write_text(
+        '{"state":"A customer asks for help.","question":"Choose a reply", "options":["Help", "Ignore"]}\n'
+    )
+    out = tmp_path / "original.jsonl"
+    part = tmp_path / "original.jsonl.part"
+    part.write_text('{"id":0,"prediction":0}\n')
+    (tmp_path / "original.jsonl.part.json").write_text("{}")
+    view(page, "batch")
+    page.select_option("#batchModel", text_model["id"])
+    page.fill("#batchInput", str(source))
+    page.fill("#batchOutput", str(out))
+    page.click("#runBatch")
+    sync_api.expect(page.locator("#batchChoiceDialog")).to_be_visible()
+    page.locator('#batchChoiceDialog button[value="resume"]').click()
+    sync_api.expect(page.locator("#restartStoppedBatch")).to_be_visible(timeout=WAIT)
+    assert part.read_text() == '{"id":0,"prediction":0}\n'
+    other = tmp_path / "other.jsonl"
+    page.fill("#batchOutput", str(other))
+    page.locator("#restartStoppedBatch").focus()
+    page.evaluate("async () => { await refreshStatus(); await refreshStatus(); }")
+    sync_api.expect(page.locator("#restartStoppedBatch")).to_be_focused()
+    page.click("#restartStoppedBatch")
+    sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
+    sync_api.expect(page.locator("#confirmDescription")).to_contain_text(str(out))
+    page.click("#confirmCancel")
+    assert part.read_text() == '{"id":0,"prediction":0}\n'
+    page.click("#restartStoppedBatch")
+    page.click("#confirmAccept")
+    sync_api.expect(page.locator("#batchSummary")).to_contain_text("1 item", timeout=WAIT)
+    assert out.exists() and not other.exists()

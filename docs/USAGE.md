@@ -290,6 +290,16 @@ Batch materializes preset-only rows in a private temporary input before running 
 summarization expects full requests for named preset answers. The original file remains unchanged. Engine 2.8 resume
 and checkpoint integration is tracked in #70 and is not qualified here.
 
+When the installed `basal-run` supports resume, an unfinished output (`.part` or `.part.json`) requires an explicit
+**Resume** or **Restart** choice. Restart discards the partial answers. Resume requires the same input, request
+options and server identity; concurrency may change. If the Engine refuses the record, its reason is shown and
+Restart is offered directly on the stopped job, with the original output path and explicit confirmation. A stopped
+run with a partial output shows the retained line count and reason. **Stop after** sets the number of consecutive
+unanswered lines before stopping (default 16; 0 writes per-line errors instead). Batch requires regular checkpoint
+files and refuses symbolic links and files with multiple hard links.
+Unsupported controls are disabled on older Engines. External changes to these files while a job starts are not
+coordinated by basal-ui.
+
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
 and a bounded non-empty-row count; it does not validate every request in the file. It reads at most 64 MiB/100,000

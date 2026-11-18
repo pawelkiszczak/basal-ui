@@ -1,5 +1,8 @@
 # Unreleased
 
+- On Engines with Batch resume support, choose Resume or Restart for unfinished output, set the unanswered-line
+  stop threshold, and see retained progress and the Engine's reason when a run stops. [USAGE](USAGE.md#batch)
+
 - Import preset packs from public URLs in Settings.
 
 - Add Fine-tune to Model manager and the declared Engine add-ons, with private labelled snapshots, cancellable training, held-out reports, base-associated adapter selection and guarded output deletion. The Engine range is unchanged. Interrupted output cleanup remains registered and can be retried.

@@ -21,7 +21,7 @@ async function api(path, options={}) {
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`);
+    const error=new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`); error.code=data?.code; throw error;
   }
   return data;
 }
@@ -2173,7 +2173,7 @@ function answerBest(a) {
   if(typeof a.noul==='number')return a.noul>=0.5?'true':'false';
   return a.type||null;
 }
-let batchRowsLoaded=0, batchRunning=false, batchResult=null;
+let batchRowsLoaded=0, batchRunning=false, batchResult=null, batchProgressMarkup=null;
 let batchPresetAvailable=false;
 async function loadBatchPresets() {
   const select=$('#batchPreset'), lang=$('#batchLang'), reason=$('#batchPresetReason');
@@ -2191,6 +2191,15 @@ async function loadBatchPresets() {
 loadBatchPresets();
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
+api('/api/batch/capabilities').then(c=>{const input=$('#batchStopAfter'); input.disabled=!c.stop_after; $('#batchStopHelp').textContent=c.stop_after?t('Stop after consecutive unanswered lines; 0 records per-line errors.'):t('Requires an Engine with Batch stop support');}).catch(()=>{});
+function chooseBatch() {
+  return new Promise(resolve=>{
+    const dialog=$('#batchChoiceDialog');
+    const finish=value=>{dialog.removeEventListener('click',clicked);dialog.removeEventListener('close',closed);if(dialog.open)dialog.close();resolve(value);};
+    const clicked=e=>{if(e.target.value)finish(e.target.value);}, closed=()=>finish('cancel');
+    dialog.addEventListener('click',clicked);dialog.addEventListener('close',closed);dialog.showModal();
+  });
+}
 function renderBatchState(job, ready) {
   const select=$('#batchModel'), current=select.value, ids=ready.map(m=>m.id);
   if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
@@ -2200,7 +2209,14 @@ function renderBatchState(job, ready) {
   ee.hidden=!levels.length;
   const running=Boolean(job?.running);
   $('#runBatch').disabled=running||!ids.length; $('#cancelBatch').hidden=!running;
-  $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  const progressMarkup=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='stopped_resumable'?`<div class="error-box">${t('Stopped, resumable.')} ${job.done} / ${job.total}<br>${esc(job.error)}${job.result?`<br><button type="button" class="btn destructive" id="restartStoppedBatch">${t('Restart')}</button>`:''}</div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  if(progressMarkup!==batchProgressMarkup){$('#batchProgress').innerHTML=progressMarkup;batchProgressMarkup=progressMarkup;}
+  if(job?.phase==='stopped_resumable'&&job.result)$('#restartStoppedBatch').onclick=()=>act(async()=>{
+    const body={...job.result,choice:'restart'};
+    if(!await confirmDialog({title:t('Restart Batch'),description:t('Discard partial answers for {output} and restart this Batch?',{output:body.output}),confirmLabel:t('Restart'),destructive:true}))return;
+    await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+    toast(t('Batch started')); await refreshStatus();
+  });
   if(!running&&job?.phase==='done'&&(batchRunning||!batchResult))showBatchResult(job.result);
   batchRunning=running;
 }
@@ -2223,7 +2239,13 @@ $('#runBatch').onclick=()=>act(async()=>{
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
   if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
-  await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+  if(!$('#batchStopAfter').disabled){if(!$('#batchStopAfter').reportValidity())return; body.stop_after=Number($('#batchStopAfter').value);}
+  try { await api('/api/batch',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e) {
+    if(e.code!=='batch_choice')throw e;
+    body.choice=await chooseBatch(); if(body.choice==='cancel')return;
+    await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+  }
   $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
   toast(t('Batch started')); await refreshStatus();
 });

@@ -63,6 +63,7 @@ PHASE_TEMPLATES = {
     "phase_done_warnings": "done_with_warnings",
     "phase_cancelled": "cancelled",
     "phase_error": "error",
+    "phase_stopped_resumable": "stopped_resumable",
 }
 
 
@@ -180,6 +181,14 @@ def run_tool(job, module, argv, out_path=None, on_json=None, env=None):
     return last_json
 
 
+class Resumable(Exception):
+    """A Batch stopped with partial output available."""
+
+    def __init__(self, message, request):
+        super().__init__(message)
+        self.request = request
+
+
 class Cancelled(Exception):
     """A job's target stops early: Job.cancel was set."""
 
@@ -266,6 +275,9 @@ class Jobs:
                     result=result,
                 )
                 self.event("info", f"{kind} finished: {label}")
+            except Resumable as exc:
+                job.finish("stopped_resumable", result=exc.request, error=str(exc))
+                self.event("error", f"{kind} stopped with partial output: {label}: {exc}")
             except Cancelled:
                 job.finish("cancelled")
                 self.event("info", f"{kind} cancelled: {label}")
