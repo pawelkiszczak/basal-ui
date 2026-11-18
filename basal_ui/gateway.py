@@ -13,6 +13,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import httpx
 
 from .engine import feature
+from .fleet import upstream_error
 
 SYSTEMONE = ("/v1/systemone", "/v1/basal")
 DECISIONS = ("/v1/decisions", "/decisions")
@@ -75,6 +76,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
     """The gateway's ASGI app. keys: basal_ui.auth.ApiKeys or None (no key required)."""
     from starlette.applications import Starlette
     from starlette.concurrency import run_in_threadpool
+    from starlette.requests import ClientDisconnect
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
@@ -105,10 +107,15 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         if media_type != "application/json":
             return error(path, 415, "Content-Type must be application/json", "UNSUPPORTED_MEDIA_TYPE")
         raw = bytearray()
-        async for chunk in request.stream():
-            raw += chunk
-            if len(raw) > MAX_BODY_BYTES:
-                return error(path, 413, f"request body exceeds {MAX_BODY_BYTES // 1024**2} MiB", "REQUEST_TOO_LARGE")
+        try:
+            async for chunk in request.stream():
+                raw += chunk
+                if len(raw) > MAX_BODY_BYTES:
+                    return error(
+                        path, 413, f"request body exceeds {MAX_BODY_BYTES // 1024**2} MiB", "REQUEST_TOO_LARGE"
+                    )
+        except ClientDisconnect:
+            return Response(status_code=499)
         try:
             body = json.loads(raw)
         except ValueError:
@@ -126,12 +133,26 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         if path in SYSTEMONE:  # the child's own API has no model field; Decisions translation drops it itself
             body = {k: v for k, v in body.items() if k != "model"}
         upstream = "/v1/systemone" if path in SYSTEMONE else "/v1/decisions"
+        decision = asyncio.create_task(
+            fleet.adecide(model, body, path=upstream, source="api", client=client["http"], endpoint=path)
+        )
+        disconnected = asyncio.create_task(request.receive())
         try:
-            r = await fleet.adecide(model, body, path=upstream, source="api", client=client["http"], endpoint=path)
+            done, _ = await asyncio.wait((decision, disconnected), return_when=asyncio.FIRST_COMPLETED)
+            if disconnected in done and disconnected.result()["type"] == "http.disconnect" and not decision.done():
+                decision.cancel("client disconnected")
+                await asyncio.gather(decision, return_exceptions=True)
+                return Response(status_code=499)
+            r = await decision
         except (KeyError, RuntimeError) as exc:  # unloaded or restarted since the check above
             return error(path, 409, f"model '{model}' is not ready: {exc}", "MODEL_NOT_READY")
         except httpx.HTTPError as exc:
-            return error(path, 502, f"basal-serve: {exc}", "UPSTREAM_ERROR")
+            return error(path, *upstream_error(exc))
+        finally:
+            disconnected.cancel()
+            if not decision.done():
+                decision.cancel()
+            await asyncio.gather(disconnected, decision, return_exceptions=True)
         return Response(
             r.content,
             status_code=r.status_code,
@@ -226,7 +247,13 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
             model = body.pop("model", None) or (loaded[0] if loaded else None)
             if model not in loaded:
                 raise ValueError(f"model '{model}' is not loaded; loaded models: {loaded_text(loaded)}")
-            r = await fleet.adecide(model, body, source="mcp", client=client["http"], endpoint="/mcp", method="CALL")
+            try:
+                r = await fleet.adecide(
+                    model, body, source="mcp", client=client["http"], endpoint="/mcp", method="CALL"
+                )
+            except httpx.HTTPError as exc:
+                status, message, code = upstream_error(exc)
+                raise ValueError(f"basal server {status} {code}: {message}") from exc
             if r.status_code != 200:
                 try:
                     message = r.json()["error"]

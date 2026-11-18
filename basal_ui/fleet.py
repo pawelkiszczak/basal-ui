@@ -18,7 +18,7 @@ import httpx
 
 from . import catalog, hardware, settings
 from . import options as load_options
-from .compat import child_request
+from .compat import DECISIONS, child_request, openai_error_body
 from .history import make_record
 from .jobs import Jobs, LogBuffer, terminate
 
@@ -28,6 +28,20 @@ RSS_INTERVAL_S = 2  # `ps` runs at most this often for the resident memory of th
 JOB_SHUTDOWN_S = 30  # shutdown waits this long for cancelled jobs before unloading the models
 READ_TIMEOUT_S = 600
 ENGINE_TIMEOUT_MARGIN_S = 30
+
+
+def upstream_error(exc):
+    if isinstance(exc, httpx.ReadTimeout):
+        limit = getattr(exc, "basal_read_timeout", READ_TIMEOUT_S)
+        message = "basal-serve did not respond"
+        if limit is not None:
+            message += f" within {limit:g} seconds"
+        return 504, message, "UPSTREAM_TIMEOUT"
+    return 502, f"basal-serve: {exc}", "UPSTREAM_ERROR"
+
+
+def upstream_error_body(path, status, message, code):
+    return openai_error_body(status, message, code) if path in DECISIONS else {"error": message, "code": code}
 
 
 def _lan_ip():
@@ -535,18 +549,18 @@ class Runner:
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        if timeout is not None:
+        if timeout is None:
+            timeout = httpx.Timeout(120, read=self.read_timeout())
+        else:
             timeout = httpx.Timeout(timeout)
             deadline = self.options.get("request_timeout")
             if deadline and timeout.read is not None:
                 timeout.read = max(timeout.read, deadline + ENGINE_TIMEOUT_MARGIN_S)
-        response = reply(
-            await client.post(
-                self._url("/v1/systemone"),
-                json=child_body,
-                timeout=timeout if timeout is not None else httpx.Timeout(120, read=self.read_timeout()),
-            )
-        )
+        try:
+            response = reply(await client.post(self._url("/v1/systemone"), json=child_body, timeout=timeout))
+        except httpx.ReadTimeout as exc:
+            exc.basal_read_timeout = timeout.read
+            raise
         response.extensions["basal.inference"] = True
         return response
 
@@ -1417,22 +1431,25 @@ class Fleet:
             try:
                 response = runner.decide(strip_mcp_metadata(body), path)
             except httpx.HTTPError as exc:
-                message = "Comparison server request failed" if server is not None else f"basal-serve: {exc}"
+                error = httpx.RequestError("Comparison server request failed") if server is not None else exc
+                if isinstance(error, httpx.ReadTimeout):
+                    error.basal_read_timeout = runner.read_timeout()
+                status, message, code = upstream_error(error)
                 self._record(
                     model_id,
                     body,
                     path,
                     source,
-                    502,
-                    {"error": message},
+                    status,
+                    upstream_error_body(path, status, message, code),
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
                     server=server,
                     source_url=source_url,
                 )
-                if server is not None:
-                    raise httpx.RequestError(message) from exc
+                if error is not exc:
+                    raise error from exc
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
             self._record(
@@ -1457,26 +1474,47 @@ class Fleet:
         with self.lease(model_id) as runner, self.answering(model_id, source, runner):
             server = runner.server["name"] if isinstance(runner, ComparisonRunner) else None
             t0 = time.perf_counter()
+            timeout = client.timeout if source == "benchmark" else None
             try:
-                kwargs = {"timeout": client.timeout} if source == "benchmark" else {}
+                kwargs = {"timeout": timeout} if timeout is not None else {}
                 response = await runner.adecide(client, strip_mcp_metadata(body), path, **kwargs)
             except httpx.HTTPError as exc:
-                message = "Comparison server request failed" if server is not None else f"basal-serve: {exc}"
+                error = httpx.RequestError("Comparison server request failed") if server is not None else exc
+                if isinstance(error, httpx.ReadTimeout):
+                    error.basal_read_timeout = getattr(error, "basal_read_timeout", runner.read_timeout())
+                status, message, code = upstream_error(error)
                 await asyncio.to_thread(
                     self._record,
                     model_id,
                     body,
                     path,
                     source,
-                    502,
-                    {"error": message},
+                    status,
+                    upstream_error_body(path, status, message, code),
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
                     server=server,
                 )
-                if server is not None:
-                    raise httpx.RequestError(message) from exc
+                if error is not exc:
+                    raise error from exc
+                raise
+            except asyncio.CancelledError as exc:
+                if not exc.args or exc.args[0] != "client disconnected":
+                    raise
+                await asyncio.to_thread(
+                    self._record,
+                    model_id,
+                    body,
+                    path,
+                    source,
+                    499,
+                    {"error": "client disconnected", "code": "CLIENT_DISCONNECTED"},
+                    (time.perf_counter() - t0) * 1000,
+                    endpoint,
+                    method,
+                    server=server,
+                )
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
             await asyncio.to_thread(

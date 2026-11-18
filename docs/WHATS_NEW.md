@@ -34,6 +34,10 @@
 - Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
   per-model log remains available in Logs.
 - Load options keeps the latest selected model and action when earlier responses arrive late.
+- Use logical layout properties throughout the app and Inspect to prepare for right-to-left layouts.
+- Extend the Decision forwarding read timeout to 600 seconds, report gateway read timeouts as 504
+  `UPSTREAM_TIMEOUT`, and cancel forwarding on client disconnect. Engine computation may continue after disconnect;
+  see [API.md](API.md#several-models-behind-basal-ui).
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
 - basal-ui supports Engine `>=2.4.1,<2.9` and pins **2.8.0**; CI tests 2.4.1, 2.5.0, 2.5.1, 2.6.0 and 2.8.0.

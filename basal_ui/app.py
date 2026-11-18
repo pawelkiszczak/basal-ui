@@ -1540,7 +1540,13 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         except httpx.HTTPError as exc:
-            raise HTTPException(502, f"basal-serve: {exc}") from exc
+            from .fleet import READ_TIMEOUT_S, upstream_error
+
+            status, message, code = upstream_error(exc)
+            body = {"detail": message, "code": code}
+            if code == "UPSTREAM_TIMEOUT":
+                body["params"] = {"seconds": getattr(exc, "basal_read_timeout", READ_TIMEOUT_S)}
+            return JSONResponse(body, status_code=status)
         return Response(
             r.content,
             status_code=r.status_code,
