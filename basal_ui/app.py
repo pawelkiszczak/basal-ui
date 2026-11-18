@@ -1012,17 +1012,20 @@ def create_app(
         """(local dir, assessment, merged load options, the modes a comparison may run) of a downloaded variant."""
         from . import bench
 
-        local_dir = downloaded(variant)
         current = hw()
         assessment = catalog.assess(variant, current)
         selected = settings_mod.load_options(variant.id)
+        active = None
+        local_dir = None
         with fleet.lock:
             runner = fleet.runners.get(variant.id)
-            active = (
-                {key: runner.options.get(key) for key in ("adapter", "mlx_forward")}
-                if (runner is not None and runner.status()["state"] == "ready")
-                else None
-            )
+            if runner is not None and runner.status()["state"] == "ready":
+                with runner.lock:
+                    if runner.state == "ready" and runner.loaded_path:
+                        local_dir = Path(runner.loaded_path)
+                        active = {key: runner.options.get(key) for key in ("adapter", "mlx_forward")}
+        if local_dir is None:
+            local_dir = downloaded(variant)
         if active is not None:
             selected = {key: value for key, value in selected.items() if key not in active}
         options = load_options.validate(selected, assessment.mode)

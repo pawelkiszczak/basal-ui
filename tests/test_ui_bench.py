@@ -301,8 +301,14 @@ def test_determinism_result_preserves_engine_shape(tmp_path, monkeypatch, load_e
     assert stats.snapshot()["benchmarks"]["mini"][0]["determinism"] == result
 
 
-def test_comparison_uses_active_options_before_saved(tmp_path, monkeypatch):
-    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+@pytest.mark.parametrize("saved_downloaded", [False, True])
+def test_comparison_uses_active_options_before_saved(tmp_path, monkeypatch, saved_downloaded):
+    active_path, saved_path = tmp_path / "active", tmp_path / "saved"
+    monkeypatch.setattr(
+        catalog,
+        "is_downloaded",
+        lambda variant, cache_dir, revision=None: saved_path if revision == "saved" and saved_downloaded else None,
+    )
     monkeypatch.setattr(bench, "bench_flags", lambda: {"--adapter", "--mlx-forward"})
     calls = []
 
@@ -313,19 +319,23 @@ def test_comparison_uses_active_options_before_saved(tmp_path, monkeypatch):
     monkeypatch.setattr(bench, "run_tool", run)
     app, fleet = make_app(tmp_path, monkeypatch, variants=[BF16])
     runner = Runner()
-    runner.state, runner.model, runner.options = "ready", "bf16", {"mlx_forward": "basal", "adapter": "/active"}
+    runner.state, runner.model, runner.loaded_path = "ready", "bf16", str(active_path)
+    runner.options = {"revision": "active", "mlx_forward": "basal", "adapter": "/active"}
     fleet.runners["bf16"] = runner
-    settings.set_load_options("bf16", {"ollama_model": "saved-model", "mlx_packed": True})
+    settings.set_load_options("bf16", {"revision": "saved", "ollama_model": "saved-model", "mlx_packed": True})
     with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/modes", params={"id": "bf16"}).status_code == 200
         body = {"id": "bf16", "kind": "modes", "modes": ["eager"], "n": 10, "lat_n": 5}
         assert client.post("/api/benchmark", json=body).status_code == 202
         assert finished(client)["phase"] == "done"
         assert calls[0][calls[0].index("--mlx-forward") + 1] == "basal"
         assert calls[0][calls[0].index("--adapter") + 1] == "/active"
         runner.state = "idle"
+        saved_downloaded = True
         assert client.post("/api/benchmark", json=body).status_code == 202
         assert finished(client)["phase"] == "done"
         assert "--mlx-forward" not in calls[1] and "--adapter" not in calls[1]
+        assert [argv[argv.index("--model") + 1] for argv in calls] == [str(active_path), str(saved_path)]
         assert all("--mlx-packed" in argv and argv[argv.index("--ollama-model") + 1] == "saved-model" for argv in calls)
 
 
