@@ -363,6 +363,42 @@ def test_audio_without_eviction_appends_in_place(tmp_path):
     assert history.detail(new["id"], True)["replay_request"] == body
 
 
+def test_short_audio_append_preserves_history(tmp_path, monkeypatch):
+    import contextlib
+    import os
+    from unittest.mock import Mock
+
+    path = tmp_path / "h.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    snapshot = path.read_bytes()
+    new = make_record("m", "api", body, 200, {}, 1)
+    original = os.fdopen
+
+    @contextlib.contextmanager
+    def short_write(*args, **kwargs):
+        with original(*args, **kwargs) as stream:
+            broken = Mock(wraps=stream)
+            broken.write.side_effect = lambda data: stream.write(data[:20])
+            yield broken
+
+    def fdopen(fd, mode="r", *args, **kwargs):
+        opener = short_write if mode == "a+b" else original
+        return opener(fd, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fdopen", fdopen)
+        with pytest.raises(OSError, match="History append was incomplete"):
+            history.append(new, body=body, keep_audio=True)
+    assert path.read_bytes() == snapshot
+    assert history.detail(old["id"], True)["replay_request"] == body
+    assert "_audio" not in new
+    history.append(new, body=body, keep_audio=True)
+    assert history.detail(new["id"], True)["replay_request"] == body
+
+
 def test_audio_write_failure_keeps_rows_and_does_not_claim_new_clip(tmp_path, monkeypatch):
     from basal_ui import settings
 

@@ -281,12 +281,18 @@ class History:
         line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a+b") as stream:
-            if stream.seek(0, os.SEEK_END):
+        with os.fdopen(fd, "a+b", buffering=0) as stream:
+            end = stream.seek(0, os.SEEK_END)
+            if end:
                 stream.seek(-1, os.SEEK_END)
                 if stream.read(1) != b"\n":
                     line = b"\n" + line
-            stream.write(line)
+            try:
+                if stream.write(line) != len(line):
+                    raise OSError("History append was incomplete")
+            except OSError:
+                stream.truncate(end)
+                raise
         self.lines += 1
 
     def detail(self, record_id, replay=False):
