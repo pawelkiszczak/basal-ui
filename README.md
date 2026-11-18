@@ -3,8 +3,7 @@
 **A local browser app for [basal](https://github.com/rkinas/basal) decision models: pick a model your machine can
 run, load it, ask typed questions with calibrated confidence, and serve it to your own apps.**
 
-[![CI](https://github.com/pawelkiszczak/basal-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/pawelkiszczak/basal-ui/actions/workflows/ci.yml)
-[![Nightly](https://github.com/pawelkiszczak/basal-ui/actions/workflows/nightly.yml/badge.svg)](https://github.com/pawelkiszczak/basal-ui/actions/workflows/nightly.yml)
+[![Release CI](https://github.com/pawelkiszczak/basal-ui/actions/workflows/release-ci.yml/badge.svg?branch=stage)](https://github.com/pawelkiszczak/basal-ui/actions/workflows/release-ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/basal-ui)](https://pypi.org/project/basal-ui/)
 [![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)](https://pypi.org/project/basal-ui/)
 [![Engine](https://img.shields.io/badge/engine-basal%20%3E%3D2.4.1%2C%3C2.5-6b5b95)](https://github.com/rkinas/basal)
