@@ -45,7 +45,7 @@
       const text = data.code ? (messages[data.code] || t('Path check failed.')) : t('First non-empty row looks like a supported batch request.');
       let preview = data.first?.preview || '';
       try { preview = JSON.stringify(JSON.parse(preview),null,2); } catch {}
-      target.innerHTML = `<p>${esc(text)}</p>${data.schema_error?`<p>${esc(data.schema_error)}</p>`:''}<p class="mono">${esc(data.path)}</p>${data.lines!=null?`<div class="chips"><span class="chip">${esc(tp(data.lines,'{n} non-empty row','{n} non-empty rows'))}${data.lines_capped?' '+esc(t('(count capped)')):''}</span>${data.first?`<span class="chip">${esc(t(data.first.format==='simple'?'Simple item':'System One request'))}</span><span class="chip">${esc(tp(data.first.questions,'{n} question','{n} questions'))}</span>`:''}</div>`:''}${preview?`<h4>${esc(t('First-row sample'))}</h4><pre>${esc(preview)}</pre>`:''}`;
+      target.innerHTML = `<p>${esc(text)}</p>${data.schema_error?`<p>${esc(t(data.schema_error))}</p>`:''}<p class="mono">${esc(data.path)}</p>${data.lines!=null?`<div class="chips"><span class="chip">${esc(tp(data.lines,'{n} non-empty row','{n} non-empty rows'))}${data.lines_capped?' '+esc(t('(count capped)')):''}</span>${data.first?`<span class="chip">${esc(t(data.first.format==='simple'?'Simple item':'System One request'))}</span><span class="chip">${esc(tp(data.first.questions,'{n} question','{n} questions'))}</span>`:''}</div>`:''}${preview?`<h4>${esc(t('First-row sample'))}</h4><pre>${esc(preview)}</pre>`:''}`;
     };
     const fields = [['jsonl', view.querySelector('#batchInput')], ['output', view.querySelector('#batchOutput')]];
     const check = async (kind, input) => {
@@ -57,12 +57,17 @@
       }
       setMessage(kind,t('Checking path…'));
       try {
-        const data = await api('/api/paths/check',{method:'POST',body:JSON.stringify({path,kind})});
+        const data = await api('/api/paths/check',{method:'POST',body:JSON.stringify({path,kind,...(kind==='jsonl'&&$('#batchPreset').value?{preset:$('#batchPreset').value}:{})})});
         if(id===sequence.get(kind)&&input.value.trim()===path)show(kind,data);
       } catch(error) {
         if(id===sequence.get(kind)&&input.value.trim()===path)setMessage(kind,error.message,'path-warning');
       }
     };
+    ['#batchPreset','#batchLang'].forEach(selector=>$(selector).addEventListener('change',()=>{
+      const input=view.querySelector('#batchInput');
+      sequence.set('jsonl',sequence.get('jsonl')+1);
+      if(input.value.trim())check('jsonl',input);
+    }));
     fields.forEach(([kind,input])=>input.addEventListener('input',()=>{
       sequence.set(kind,sequence.get(kind)+1);
       setMessage(kind,t('Edit a path, then check again.'));
