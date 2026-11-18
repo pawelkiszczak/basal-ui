@@ -1347,9 +1347,10 @@ class Fleet:
                 record = make_record(model_id, source, request, status, data, latency_ms)
                 if server is not None:
                     record["server"] = server
-                self.history.append(record)
+                self.history.append(record, body=request, keep_audio=self.settings_mod.keep_history_audio)
         except OSError as exc:
-            self.event("error", f"decision not recorded: {exc}")
+            message = f"[Errno {exc.errno}] {os.strerror(exc.errno)}" if exc.errno else "storage failed"
+            self.event("error", f"decision not recorded: {message}")
 
     @staticmethod
     def _json(response):
@@ -1468,70 +1469,75 @@ class Fleet:
             )
             return response
 
+    async def _arecord(self, *args, **kwargs):
+        task = asyncio.create_task(asyncio.to_thread(self._record, *args, **kwargs))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
     async def adecide(
         self, model_id, body, path="/v1/systemone", source="api", client=None, endpoint=None, method="POST"
     ):
-        with self.lease(model_id) as runner, self.answering(model_id, source, runner):
-            server = runner.server["name"] if isinstance(runner, ComparisonRunner) else None
-            t0 = time.perf_counter()
-            timeout = client.timeout if source == "benchmark" else None
-            try:
+        try:
+            with self.lease(model_id) as runner, self.answering(model_id, source, runner):
+                server = runner.server["name"] if isinstance(runner, ComparisonRunner) else None
+                t0 = time.perf_counter()
+                timeout = client.timeout if source == "benchmark" else None
                 kwargs = {"timeout": timeout} if timeout is not None else {}
                 response = await runner.adecide(client, strip_mcp_metadata(body), path, **kwargs)
-            except httpx.HTTPError as exc:
-                error = httpx.RequestError("Comparison server request failed") if server is not None else exc
-                if isinstance(error, httpx.ReadTimeout):
-                    error.basal_read_timeout = getattr(error, "basal_read_timeout", runner.read_timeout())
-                status, message, code = upstream_error(error)
-                await asyncio.to_thread(
-                    self._record,
-                    model_id,
-                    body,
-                    path,
-                    source,
-                    status,
-                    upstream_error_body(path, status, message, code),
-                    (time.perf_counter() - t0) * 1000,
-                    endpoint,
-                    method,
-                    server=server,
-                )
-                if error is not exc:
-                    raise error from exc
-                raise
-            except asyncio.CancelledError as exc:
-                if not exc.args or exc.args[0] != "client disconnected":
-                    raise
-                await asyncio.to_thread(
-                    self._record,
-                    model_id,
-                    body,
-                    path,
-                    source,
-                    499,
-                    {"error": "client disconnected", "code": "CLIENT_DISCONNECTED"},
-                    (time.perf_counter() - t0) * 1000,
-                    endpoint,
-                    method,
-                    server=server,
-                )
-                raise
-            inferred = bool(response.extensions.get("basal.inference"))
-            await asyncio.to_thread(
-                self._record,
+        except httpx.HTTPError as exc:
+            error = httpx.RequestError("Comparison server request failed") if server is not None else exc
+            if isinstance(error, httpx.ReadTimeout):
+                error.basal_read_timeout = getattr(error, "basal_read_timeout", runner.read_timeout())
+            status, message, code = upstream_error(error)
+            await self._arecord(
                 model_id,
                 body,
                 path,
                 source,
-                response.status_code,
-                self._json(response),
+                status,
+                upstream_error_body(path, status, message, code),
                 (time.perf_counter() - t0) * 1000,
-                endpoint if inferred else None,
+                endpoint,
                 method,
-                inferred,
-                server,
+                server=server,
             )
-            return response
+            if error is not exc:
+                raise error from exc
+            raise
+        except asyncio.CancelledError as exc:
+            if not exc.args or exc.args[0] != "client disconnected":
+                raise
+            await self._arecord(
+                model_id,
+                body,
+                path,
+                source,
+                499,
+                {"error": "client disconnected", "code": "CLIENT_DISCONNECTED"},
+                (time.perf_counter() - t0) * 1000,
+                endpoint,
+                method,
+                server=server,
+            )
+            raise
+        inferred = bool(response.extensions.get("basal.inference"))
+        await self._arecord(
+            model_id,
+            body,
+            path,
+            source,
+            response.status_code,
+            self._json(response),
+            (time.perf_counter() - t0) * 1000,
+            endpoint if inferred else None,
+            method,
+            inferred,
+            server=server,
+        )
+        return response
 
     def shutdown(self):
         """Cancel the jobs, end their private children (a job reading from one fails through job.check()), wait up

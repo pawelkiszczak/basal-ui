@@ -150,7 +150,7 @@ def test_forwarding_counts_and_records_api_decisions(fleet):
 
 
 def test_a_history_write_error_does_not_fail_the_api_answer(fleet, monkeypatch):
-    def full_disk(record):
+    def full_disk(record, **_kwargs):
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(fleet.history, "append", full_disk)
@@ -918,3 +918,91 @@ def test_disconnect_while_success_is_recorded_does_not_record_499(fleet, monkeyp
     finally:
         release.set()
         gateway.stop()
+
+
+def test_async_gateway_retains_audio_only_when_enabled(fleet):
+    body = {"model": "b/two", "state": {"data": "ordinary"}, "questions": {}, "audio": ["data:audio/wav;base64,QUJD"]}
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        assert client.post("/v1/systemone", json=body).status_code == 200
+        settings.set_keep_history_audio(True)
+        assert client.post("/v1/systemone", json=body).status_code == 200
+        settings.set_keep_history_audio(False)
+        assert client.post("/v1/systemone", json=body).status_code == 200
+    rows = fleet.history.list(order="asc")
+    assert fleet.history.detail(rows[0]["id"], True)["replay_request"] is None
+    expected = {k: v for k, v in body.items() if k != "audio"}
+    expected["media"] = [{"type": "audio", "data": "QUJD"}]
+    assert fleet.history.detail(rows[1]["id"], True)["replay_request"] == expected
+    assert fleet.history.detail(rows[2]["id"], True)["replay_request"] is None
+    assert "QUJD" not in str(fleet.history.detail(rows[1]["id"]))
+
+
+@pytest.mark.parametrize("audio_storage", [False, True])
+def test_invalid_history_utf8_does_not_fail_async_gateway_decision(audio_storage, fleet):
+    if audio_storage:
+        history_path = fleet.history.path
+        history_path.with_name(history_path.name + ".audio").mkdir(mode=0o700)
+    fleet.history.path.write_bytes(b"\xff")
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        reply = client.post("/v1/systemone", json={"model": "b/two", "state": "s", "questions": {}})
+    assert reply.status_code == 200
+    if audio_storage:
+        assert fleet.history.path.read_bytes() == b"\xff"
+        assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    else:
+        assert fleet.history.path.read_bytes().splitlines()[0] == b"\xff"
+        assert len(fleet.history.list()) == 1
+        assert "decision not recorded" not in (fleet.logs.get("basal-ui").text() if "basal-ui" in fleet.logs else "")
+
+
+def test_gateway_audio_alias_replay_is_canonical_and_preserves_falsey_state(tmp_path, monkeypatch):
+    fleet = Fleet(
+        models_dir_fn=lambda: tmp_path,
+        platform_fn=lambda: "cpu",
+        settings_mod=settings,
+        hardware_fn=lambda: HW,
+        history=History(tmp_path / "history.jsonl"),
+    )
+    runner = Runner()
+    runner.state, runner.model, runner.base_url = "ready", "a/one", "http://child"
+    fleet.runners["a/one"] = runner
+    sent = []
+
+    def child(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"answers": {}, "usage": {}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        gateway_module.httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(child), **kw)
+    )
+    settings.set_keep_history_audio(True)
+    body = {
+        "model": "a/one",
+        "state": "",
+        "questions": {"q": {"type": "noul"}},
+        "audio": ["data:audio/wav;base64,QUJD"],
+    }
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        assert client.post("/v1/systemone", json=body).status_code == 200
+    detail = fleet.history.detail(fleet.history.list()[0]["id"], True)
+    assert detail["replay_request"] == {
+        "model": "a/one",
+        "state": "",
+        "questions": body["questions"],
+        "media": [{"type": "audio", "data": "QUJD"}],
+    }
+    assert sent[0]["media"] == [{"type": "audio", "data": "QUJD"}]
+    assert "QUJD" not in str(detail["request"])
+
+
+def test_audio_policy_read_failure_keeps_successful_gateway_decision(fleet, monkeypatch):
+    settings.set_keep_history_audio(True)
+    monkeypatch.setattr(
+        settings, "_audio_policy_data", lambda: (_ for _ in ()).throw(settings.HistoryAudioPolicyError())
+    )
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        reply = client.post("/v1/systemone", json={"model": "b/two", "state": "s", "questions": {}})
+    assert reply.status_code == 200
+    assert fleet.history.list() == []
+    assert "decision not recorded" in fleet.logs["basal-ui"].text()
