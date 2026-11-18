@@ -251,8 +251,25 @@ def long_state(tokens):
 
 
 def context_of(entry):
-    """The context policy a child reports in GET /v1/models; the test is skipped on an engine that reports none
-    (basal 2.4.1; 2.5.0 reports it with the certified thresholds)."""
-    if "context" not in (entry or {}):
-        pytest.skip("the engine's GET /v1/models reports no context policy")
+    """The context policy, including an unknown limit when the child does not report one."""
     return entry["context"]
+
+
+def verified_context(model):
+    """Compare reported metadata with the actual child when the child supplies it."""
+    response = httpx.get(model["base_url"] + "/v1/models", timeout=10)
+    response.raise_for_status()
+    child = response.json()["models"][0]
+    entry = model["entry"]
+    for key in ("context", "certified"):
+        if key in child:
+            assert entry[key] == child[key], f"UI changed the child's {key}"
+    print(f"{model['id']}: child context={child.get('context')}, UI context={entry.get('context')}")
+    return context_of(entry)
+
+
+def known_context_limit(model):
+    limit = verified_context(model)["limit"]
+    if limit is None:
+        pytest.skip("the model's context limit is not reported")
+    return limit
