@@ -9,7 +9,7 @@
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ee;
   --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
-  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --control-border: #676e68;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
   --neutral-mark: #c3c2b7;
   --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
@@ -21,7 +21,7 @@
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
     --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --neutral-mark: #5b5a55; --good-text: #0ca30c;
     --w-state: rgba(25,158,112,0.22); --w-question: rgba(201,133,0,0.26); --w-option: rgba(144,133,233,0.18); --w-prefill: rgba(213,81,129,0.28);
@@ -32,7 +32,7 @@
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
   --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
   --neutral-mark: #5b5a55; --good-text: #0ca30c;
   --w-state: rgba(25,158,112,0.22); --w-question: rgba(201,133,0,0.26); --w-option: rgba(144,133,233,0.18); --w-prefill: rgba(213,81,129,0.28);
@@ -53,7 +53,7 @@ button.primary:hover { filter: brightness(1.08); }
 button.primary:disabled { opacity: .55; cursor: progress; }
 button.ghost { border-color: transparent; background: transparent; color: var(--ink-2); padding: 4px 8px; }
 button.ghost:hover { background: var(--surface-2); }
-select, input, textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; width: 100%; }
+select, input, textarea { background: var(--surface); border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 8px; width: 100%; }
 textarea { resize: vertical; min-height: 90px; }
 label.f { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 4px; }
 main { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); gap: 20px; padding: 20px; align-items: start; }
