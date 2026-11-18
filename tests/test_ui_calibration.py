@@ -510,6 +510,46 @@ def test_calibration_new_options_are_gated_validated_and_passed_to_engine(tmp_pa
         assert calls[-1][calls[-1].index("--keep-shipped") + 1] == "noul"
 
 
+def test_keep_options_expands_comparison_path_like_calibration_start(tmp_path, monkeypatch, config):
+    import os.path
+
+    source = tmp_path / "labelled.jsonl"
+    source.write_text('{"state":"s","question":"q?","options":["a","b"],"gold":0}\n')
+    compared = tmp_path / "compared.json"
+    compared.write_text(json.dumps(FITTED))
+    real_expanduser = os.path.expanduser
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else real_expanduser(p))
+    monkeypatch.setattr(engine, "calibrate_flags", lambda: {"--keep-shipped"})
+    seen, calls = [], []
+
+    def eligible(*args):
+        seen.append(args[3])
+        return {"choice": str(compared)} if args[3] == str(compared) else {}
+
+    monkeypatch.setattr(calibration, "keep_options", eligible)
+    monkeypatch.setattr(calibrate, "main", lambda argv: (calls.append(argv), print("report")))
+    _, app = make_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        available = client.get("/api/calibrations/keep-options", params={"id": "mini", "compare": "~/compared.json"})
+        assert available.json()["types"] == {"choice": str(compared)}
+        response = client.post(
+            "/api/calibrate",
+            json={
+                "id": "mini",
+                "input": str(source),
+                "advanced": {
+                    "compare": "~/compared.json",
+                    "keep_shipped": ["choice"],
+                    "report_only": True,
+                },
+            },
+        )
+        assert response.status_code == 202
+        assert wait_job(client)["phase"] == "done"
+    assert seen == [str(compared), str(compared)]
+    assert calls[0][calls[0].index("--calibration") + 1] == str(compared)
+
+
 def test_calibration_report_returns_new_fields_only_when_present(tmp_path, config):
     _, app = make_app(tmp_path)
     directory = settings.calibrations_dir("mini")

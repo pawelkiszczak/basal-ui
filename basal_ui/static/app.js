@@ -1648,13 +1648,13 @@ function renderCalibrationReport(details){
   const root=$('#reportDetails');root.innerHTML='';if(!details)return;
   const fitted=details.fitted_on||{}, items=[];
   for(const [key,label] of [['revision','Revision'],['model_files','Model files digest'],['model_content','Model content digest']])if(fitted[key]!=null)items.push(`<dt>${t(label)}</dt><dd>${esc(fitted[key])}</dd>`);
-  if(fitted.kept_shipped?.length)items.push(`<dt>${t('Kept from')}</dt><dd>${esc(fitted.kept_shipped.join(', '))}: ${esc(fitted.kept_shipped_from?.file||'—')}</dd>`);
+  if(Array.isArray(fitted.kept_shipped)&&fitted.kept_shipped.length)items.push(`<dt>${t('Kept from')}</dt><dd>${esc(fitted.kept_shipped.join(', '))}: ${esc(fitted.kept_shipped_from?.file||'—')}</dd>`);
   const rows=[];
-  for(const [target,group] of Object.entries(details.thresholds||{}))for(const [type,e] of Object.entries(group.per_type||{})){
-    if(['icc','design_effect','refuted','kept'].some(k=>e[k]!=null))rows.push(`<tr><td>${esc(target)}</td><td>${esc(type)}</td><td>${esc(e.icc??'—')}</td><td>${esc(e.design_effect??'—')}</td><td>${e.refuted!=null?`${esc(e.refuted)}: ${esc(e.reason||'')}`:''}${e.kept?` ${t('Kept from')} ${esc(fitted.kept_shipped_from?.file||'—')}`:''}</td></tr>`);
+  for(const [target,group] of Object.entries(details.thresholds||{}))for(const [type,e] of Object.entries(group?.per_type||{})){
+    if(e&&['icc','design_effect','refuted','kept'].some(k=>e[k]!=null))rows.push(`<tr><td>${esc(target)}</td><td>${esc(type)}</td><td>${esc(e.icc??'—')}</td><td>${esc(e.design_effect??'—')}</td><td>${e.refuted!=null?`${esc(e.refuted)}: ${esc(e.reason||'')}`:''}${e.kept?` ${t('Kept from')} ${esc(fitted.kept_shipped_from?.file||'—')}`:''}</td></tr>`);
   }
   const conformal=[];
-  for(const [level,group] of Object.entries(details.conformal?.levels||{}))for(const [type,e] of Object.entries(group.per_type||{}))conformal.push(`<tr><td>${esc(level)}</td><td>${esc(type)}</td><td>${esc(e.cert_coverage??'—')}</td><td>${esc(e.cert_mean_size??'—')}</td><td>${esc(e.reason||'')}</td></tr>`);
+  for(const [level,group] of Object.entries(details.conformal?.levels||{}))for(const [type,e] of Object.entries(group?.per_type||{}))if(e)conformal.push(`<tr><td>${esc(level)}</td><td>${esc(type)}</td><td>${esc(e.cert_coverage??'—')}</td><td>${esc(e.cert_mean_size??'—')}</td><td>${esc(e.reason||'')}</td></tr>`);
   root.innerHTML=`${items.length?`<dl>${items.join('')}</dl>`:''}${rows.length?`<div class="table-wrap"><table><thead><tr><th>${t('Max error')}</th><th>${t('Type')}</th><th>ICC</th><th>${t('Design effect')}</th><th>${t('Refuted or kept')}</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:''}${conformal.length?`<h4>${t('Conformal results')}</h4><div class="table-wrap"><table><thead><tr><th>${t('Coverage level')}</th><th>${t('Type')}</th><th>${t('CERT coverage')}</th><th>${t('Mean set size')}</th><th>${t('Reason')}</th></tr></thead><tbody>${conformal.join('')}</tbody></table></div>`:''}`;
 }
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)

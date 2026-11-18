@@ -78,6 +78,16 @@ def view(page, name):
     assert not page.locator(".nav-tools").evaluate("(el) => el.open")
 
 
+def test_calibration_report_ignores_missing_optional_entries(page):
+    page.evaluate("""() => renderCalibrationReport({
+      fitted_on: {kept_shipped: null},
+      thresholds: {'0.01': null, '0.05': {per_type: {choice: null, noul: {icc: 0.2}}}},
+      conformal: {levels: {'0.7': null, '0.8': {per_type: {choice: null, noul: {}}}}}
+    })""")
+    text = page.locator("#reportDetails").text_content()
+    assert "0.2" in text and "0.8" in text and "noul" in text
+
+
 def open_request_settings(page):
     disclosure = page.locator("details.request-settings")
     if not disclosure.evaluate("(el) => el.open"):

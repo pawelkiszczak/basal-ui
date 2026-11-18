@@ -1319,6 +1319,8 @@ def create_app(
         if "--keep-shipped" not in engine.calibrate_flags():
             return {"types": {}}
         try:
+            if compare not in ("shipped", "none"):
+                compare = str(Path(compare).expanduser())
             assessment, options = prepare(variant, False, selected_options)
             return {"types": calibration.keep_options(local_dir, assessment.mode or "eager", options, compare)}
         except (OSError, ValueError):
