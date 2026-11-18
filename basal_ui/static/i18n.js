@@ -4,6 +4,8 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Some conditions refer to unavailable questions or answers.": "Niektóre warunki odwołują się do niedostępnych pytań lub odpowiedzi.",
+  "Remove unavailable conditions": "Usuń niedostępne warunki",
   "Coverage": "Pokrycie",
   "Conditional question": "Pytanie warunkowe",
   "This Engine does not support answer sets and abstention.": "Ten silnik nie obsługuje zbiorów odpowiedzi i wstrzymania odpowiedzi.",

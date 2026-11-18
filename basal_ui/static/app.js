@@ -775,13 +775,35 @@ function updateGateReferences(name, replacement) {
 function renderGateOptions(card) {
   const host=$('.q-gate-options',card), supported=statusCache?.features?.conditional_questions;
   if(!supported){host.innerHTML=`<p class="muted">${t('This Engine does not support conditional questions.')}</p>`;return;}
+  const extra=card._extra, deps=Array.isArray(extra.depends_on)?extra.depends_on:[], rawGates=extra.ask_if;
+  const gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{};
+  const stale=new Map(Object.entries(gates).filter(([,values])=>Array.isArray(values)&&values.length));
   const candidates=[...document.querySelectorAll('.question')].filter(other=>other!==card&&['choice','noul','score'].includes($('.q-type',other).value));
-  host.innerHTML=candidates.map(other=>{
-    const name=$('.q-name',other).value, [,q]=parseQuestionCard(other), deps=Array.isArray(card._extra.depends_on)?card._extra.depends_on:[], rawGates=card._extra.ask_if, gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{}, selected=Object.hasOwn(gates,name)?gates[name]:[];
+  const fields=candidates.map(other=>{
+    const [name,q]=parseQuestionCard(other), selected=stale.get(name)||[], recognized=new Set();
     const criteria=q.criteria??q.levels??[], answers=q.type==='noul'?['true','false']:q.type==='score'&&Array.isArray(criteria)?criteria.map((_,i)=>String(i)):Array.isArray(criteria)?criteria.map(String):Object.keys(criteria);
-    const options=answers.map(value=>{const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${Array.isArray(selected)&&selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;}).join(' ');
+    const options=answers.map(value=>{
+      const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];
+      aliases.forEach(alias=>recognized.add(alias));
+      return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;
+    }).join(' ');
+    const missing=selected.filter(value=>!recognized.has(value));
+    if(missing.length)stale.set(name,missing);else stale.delete(name);
     return `<fieldset><legend>${esc(name)}</legend><label><input type="checkbox" data-dependency="${esc(name)}" ${deps.includes(name)?'checked':''}> ${t('Depends on this question')}</label>${options?`<div>${t('Ask if answer is')}: ${options}</div>`:''}</fieldset>`;
-  }).join('')||`<p class="muted">${t('Add another question to create a condition.')}</p>`;
+  }).join('');
+  host.innerHTML=fields||`<p class="muted">${t('Add another question to create a condition.')}</p>`;
+  if(!stale.size)return;
+  const warning=document.createElement('p');
+  warning.className='reason';
+  warning.textContent=t('Some conditions refer to unavailable questions or answers.')+' '+[...stale].map(([name,values])=>name+': '+values.map(value=>typeof value==='string'?value:JSON.stringify(value)).join(', ')).join(' · ');
+  const remove=document.createElement('button');
+  remove.type='button'; remove.textContent=t('Remove unavailable conditions');
+  remove.onclick=()=>{
+    const repaired=Object.entries(gates).map(([name,values])=>[name,stale.has(name)?values.filter(value=>!stale.get(name).includes(value)):values]).filter(([,values])=>!Array.isArray(values)||values.length);
+    if(repaired.length)extra.ask_if=Object.fromEntries(repaired);else delete extra.ask_if;
+    renderGateOptions(card);$('.q-gates summary',card).focus();syncRequest();
+  };
+  host.append(warning,remove);
 }
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}

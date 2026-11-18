@@ -1842,5 +1842,18 @@ def test_conditional_questions_follow_renamed_and_removed_sources(browser, ui):
         remaining = page.evaluate("buildRequest().questions.next")
         assert remaining["depends_on"] == ["independent"]
         assert remaining["ask_if"] == {"independent": ["true"]}
+        page.evaluate("""() => setRequest({state: 'synthetic', questions: {
+            gate: {type: 'choice', instructions: 'Gate?', criteria: {yes: 'Yes', no: 'No'}},
+            independent: {type: 'noul', instructions: 'Independent?'},
+            next: {type: 'noul', instructions: 'Next?', ask_if: {gate: ['yes'], independent: ['true']}}
+        }})""")
+        dependent.locator(".q-gates summary").click()
+        source.locator(".q-type").select_option("verify")
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {"gate": ["yes"], "independent": ["true"]}
+        clear = dependent.get_by_role("button", name="Remove unavailable conditions")
+        sync_api.expect(clear).to_be_visible()
+        clear.click()
+        sync_api.expect(dependent.locator(".q-gates summary")).to_be_focused()
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {"independent": ["true"]}
     finally:
         context.close()
