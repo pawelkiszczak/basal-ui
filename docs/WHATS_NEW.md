@@ -3,6 +3,7 @@
 - Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
   per-model log remains available in Logs.
 
+- Load options keeps the latest selected model and action when earlier responses arrive late.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)
@@ -23,6 +24,8 @@
   takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
 
+- Separate Calibration file warnings and errors so each message is readable.
+
 - Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
 - Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
   evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.
@@ -30,6 +33,8 @@
 - Correct the Backend Inference test persistence regression to distinguish user data from read-lock sidecars.
   Read-only Stats polling must not count private Decisions or change settings, history or persisted statistics.
   Runtime behavior is unchanged.
+
+- Run the CI matrix after merges to `stage` and `main`.
 
 # 0.1.0
 
