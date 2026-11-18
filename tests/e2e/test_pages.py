@@ -1,6 +1,7 @@
 """The pages of basal-ui in Chromium (Playwright, basal[e2e]): every view renders without a script error, the
 Playground builds, sends and renders every question type, the load options dialog, Batch, History, Logs and Inspect."""
 
+import base64
 import json
 import os
 import re
@@ -1441,7 +1442,7 @@ def test_the_calibration_view_imports_a_file_fitted_elsewhere(page, ui, text_mod
     sync_api.expect(page.locator("#calibrationImportPath")).to_have_value("")  # done: the field is cleared
     sync_api.expect(page.locator("#calibrationFiles .chip", has_text="imported")).to_have_count(before + 1)
     row = page.locator("#calibrationFiles tbody tr", has=page.locator(".chip", has_text="imported")).first
-    sync_api.expect(row.locator("td").nth(3)).to_contain_text("5%")  # the shipped file's certified thresholds
+    sync_api.expect(row.locator("td").nth(4)).to_contain_text("5%")  # the shipped file's certified thresholds
     page.fill("#calibrationImportPath", str(tmp_path / "none.json"))
     page.click("#importCalibration")
     sync_api.expect(page.locator(".toast.error").last).to_contain_text("cannot read")
@@ -2844,10 +2845,12 @@ def test_rank_builder_pastes_candidates_and_preserves_groups(page, ui):
     assert page.evaluate("() => buildRequest().questions.q.candidates") == q["candidates"]
 
 
-def test_rank_media_engine_error_reaches_only_rank_cards(page, text_model):
+def test_rank_media_engine_error_reaches_only_rank_cards(page, audio_model):
     if not feature("rank"):
         pytest.skip("Engine lacks rank questions")
     view(page, "playground")
+    page.select_option("#playgroundModel", audio_model["id"])
+    audio = Path(__file__).resolve().parents[2] / "basal_ui/examples/media/appointment_en.wav"
     request = {
         "state": "text",
         "questions": {
@@ -2855,12 +2858,11 @@ def test_rank_media_engine_error_reaches_only_rank_cards(page, text_model):
             "second": {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["b"]},
             "other": {"type": "choice", "instructions": "Choose", "criteria": {"a": "A", "b": "B"}},
         },
-        "media": [{"type": "image", "data": "aGVsbG8="}],
+        "media": [{"type": "audio", "data": base64.b64encode(audio.read_bytes()).decode()}],
     }
     page.evaluate("r => setRequest(r)", request)
-    # The text model has no media capability; bypass only the UI capability check to exercise the Engine's refusal.
     with page.expect_response(lambda response: response.url.endswith("/api/decide")) as result:
-        page.evaluate("() => { loadedMedia=['image']; $('#sendButton').click(); }")
+        page.click("#sendButton")
     response = result.value
     assert response.status == 422 and response.json()["error"] == "rank questions do not take media"
     sync_api.expect(page.locator("#decideError")).to_contain_text("rank questions do not take media")

@@ -9,8 +9,8 @@ let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fet
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let rankAvailable=false;
-function httpFailure(status,message) {
-  const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
+function httpFailure(status,message,code) {
+  const hint={422:t('Invalid request: revise the input.'),503:code==='OVERLOADED'?t('Model is busy. Wait and retry.'):t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
 }
 async function api(path, options={}) {
@@ -21,11 +21,11 @@ async function api(path, options={}) {
     const nested=data?.detail&&typeof data.detail==='object'&&!Array.isArray(data.detail)?data.detail:null;
     const detail = typeof data?.detail === 'string' ? data.detail : typeof nested?.detail === 'string' ? nested.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
-    const code=data?.code||nested?.code;
+    const code=data?.code||nested?.code||data?.error?.code;
     const upstream=raw.match(/^Comparison server returned HTTP (\d+)$/);
     const message=code==='UNSUPPORTED_FOR_COMPARISON'?comparisonFailure(raw):code==='CONSENT_REQUIRED'?t('Consent is required to send requests to {host}',{host:raw.split(' ').at(-1)}):upstream?t('Comparison server returned HTTP {status}',{status:upstream[1]}):code?ts(t(raw),code,data.params):t(raw);
     const id=response.headers.get('x-request-id');
-    const error=new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`); error.code=data?.code; error.status=response.status; error.detail=raw; throw error;
+    const error=new Error(`${httpFailure(response.status,message,code)}${id?` [request ${id}]`:''}`); error.code=data?.code; error.status=response.status; error.detail=raw; throw error;
   }
   return data;
 }
@@ -1569,7 +1569,7 @@ function engineName(name) {
 function showQuestionErrors(detail, request) {
   const rankError=detail==='rank questions do not take media'||/^\d+ rank candidates in this request, more than the \d+ this server takes per request \(basal-serve --rank-max-candidates\)$/.test(detail)||detail==='a rank request is longer than the context (--context-overflow truncate would cut its list); lower chunk';
   document.querySelectorAll('.question').forEach(card=>{
-    const name=$('.q-name',card).value.trim()||'question', quoted=engineName(name);
+    const name=$('.q-name',card).value, quoted=engineName(name);
     const named=detail.startsWith("question "+quoted+":")||(detail.includes("cycle among")&&detail.includes(quoted));
     if(named||(rankError&&request.questions?.[name]?.type==='rank')){const box=$('.q-error',card);box.textContent=detail;box.hidden=false;}
   });
@@ -2466,13 +2466,14 @@ function collectOptions() {
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));
 }
 async function openLoadOptions(id, media=false, action='load', initialMode=null) {
-  const sequence=++optionsSequence;
+  const sequence=++optionsSequence, dialog=$('#loadOptions'), replacing=dialog.open;
+  const current=()=>sequence===optionsSequence && (!replacing||dialog.open);
   let data;
   try{data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);}
-  catch(e){if(sequence===optionsSequence)throw e;return;}
-  if(sequence!==optionsSequence)return;
-  await loadPresets(()=>sequence===optionsSequence);
-  if(sequence!==optionsSequence)return;
+  catch(e){if(current())throw e;return;}
+  if(!current())return;
+  await loadPresets(current);
+  if(!current())return;
   const loaded=(statusCache?.models||[]).find(m=>m.id===id), restart=action==='restart', save=action==='save';
   const trigger=document.activeElement?.closest('.options-model');
   optionsState={id,media,restart,save,data,initialMode,trigger};
@@ -2486,11 +2487,10 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   renderLoadPresets();
   $('#loadPresetSelect').value='';
   $('#deleteLoadPreset').disabled=true;
-  $('#loadOptions').showModal();
+  dialog.showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
 document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
-$('#loadOptions').addEventListener('close',()=>{optionsSequence++;});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{

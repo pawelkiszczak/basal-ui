@@ -23,7 +23,11 @@ HISTORY = [
 
 
 def appearance(locator):
-    return locator.evaluate("e => [getComputedStyle(e).backgroundColor, getComputedStyle(e).filter]")
+    return locator.evaluate("""async e => {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const style = getComputedStyle(e);
+        return [style.backgroundColor, style.filter];
+    }""")
 
 
 def check_pointer(page, control, touch, path):
@@ -48,7 +52,10 @@ def test_mounted_hover_and_touch(ui, tmp_path):
         try:
             for touch in (False, True):
                 context = browser.new_context(
-                    has_touch=touch, is_mobile=touch, viewport={"width": 390 if touch else 1440, "height": 1000}
+                    has_touch=touch,
+                    is_mobile=touch,
+                    reduced_motion="reduce",
+                    viewport={"width": 390 if touch else 1440, "height": 1000},
                 )
                 page = context.new_page()
                 assert page.evaluate("matchMedia('(hover: hover)').matches") is not touch

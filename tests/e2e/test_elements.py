@@ -369,9 +369,13 @@ def test_marked_request_payload_overlay_presets_and_evidence(page):
 
 
 def load_checkout_example(page):
-    index = page.evaluate("() => examples.findIndex(e => e.id === 'media-01-checkout-elements')")
-    assert index >= 0
-    page.select_option("#examples", str(index))
+    index = page.wait_for_function(
+        """() => {
+            const index = examples.findIndex(e => e.id === 'media-01-checkout-elements');
+            return index >= 0 && String(index);
+        }"""
+    ).json_value()
+    page.select_option("#examples", index)
     page.wait_for_function("() => selectedMedia[0]?.file.name === 'checkout.png'")
 
 
