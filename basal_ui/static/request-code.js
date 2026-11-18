@@ -8,13 +8,15 @@ window.RequestCode = (() => {
     const json = $('#editJsonToggle').checked;
     const body = json ? JSON.parse($('#requestJson').value) : buildRequest();
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error(t('The request must be a JSON object.'));
+    delete body.source_url;
     if (!json) {
       const invalid = [...document.querySelectorAll('.question')].filter(card => card._error);
       if (invalid.length) throw new Error(invalid.map(card => `${$('.q-name',card).value}: ${card._error}`).join('\n'));
     }
     const model = $('#playgroundModel').value || body.model;
     if (!model) throw new Error(t('Choose a model before generating API examples.'));
-    return {...body, model};
+    const limitError = toolBudgetError(body, model); if (limitError) throw new Error(limitError);
+    return {...stripMcpMetadata(body), model};
   }
   function python(value, pad = '') {
     if (value == null) return 'None';
