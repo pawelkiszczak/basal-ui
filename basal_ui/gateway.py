@@ -127,7 +127,10 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         except httpx.HTTPError as exc:
             return error(path, 502, f"basal-serve: {exc}", "UPSTREAM_ERROR")
         return Response(
-            r.content, status_code=r.status_code, media_type=r.headers.get("content-type", "application/json")
+            r.content,
+            status_code=r.status_code,
+            media_type=r.headers.get("content-type", "application/json"),
+            headers={"Retry-After": r.headers["Retry-After"]} if "Retry-After" in r.headers else {},
         )
 
     async def models(_):

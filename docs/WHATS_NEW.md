@@ -41,6 +41,7 @@
 - With engine 2.5.0 the API server's MCP `decide` / `decide_many` tools take a `model` argument and `list_models`
   names the loaded models; the Playground's MCP example then targets the selected model instead of refusing it.
   Without `model` the first loaded model answers, as on 2.4.1. [API.md](API.md#mcp-routing)
+- Load options expose the installed Engine's server limits. Dashboard shows stalled calls and lane counts; the gateway preserves typed limit refusals and Retry-After.
 - With engine 2.5.0 basal-omni-pico can be loaded with `--mode mlx` on Apple Silicon (bf16 weights); `mlx-q8`,
   quantised MLX weights and the state or prefix cache are refused with the engine's reasons before loading. The
   default mode stays eager.

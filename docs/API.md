@@ -11,6 +11,11 @@ isolation from other users of the same machine — any local account can reach a
 only on a host whose users you trust. Backend URLs and interpreters set in a model's load options (`ollama_url`,
 `llamacpp_url`, `think_url`, `think_python`) are contacted or run with basal-ui's own privileges.
 
+
+## Model server limits and health
+
+The model options endpoint reports availability of each server limit in `limits_available`. The status response reports stalled health and `engine_call_s` when supplied by the Engine, plus its `long` running and queued counts. Total running and queued include the long lane. Engine refusals preserve their status and code on System One and Decisions routes, including aliases; `Retry-After` is forwarded when present. The forwarding read timeout is at least the Active request timeout plus 30 seconds.
+
 ## Local app management API
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.

@@ -31,6 +31,26 @@ MANAGER_TABS = ("library", "usage", "benchmarks", "calibration")
 WAIT = 120_000  # ms: a decision of a large model, a model start
 
 
+def test_stalled_lanes_and_overload_explanation(page, text_model):
+    page.evaluate(
+        """id => updateDashboard({status:{models:[{id, state:'ready', health:{reachable:true,
+      status:'stalled', engine_call_s:42, running:3, queued:2, long:{running:1, queued:1}}}]}})""",
+        text_model["id"],
+    )
+    model = page.locator("#trafficModels .traffic-model")
+    sync_api.expect(model).to_contain_text("stalled")
+    assert not model.locator(".status-dot").evaluate("node => node.classList.contains('ready')")
+    sync_api.expect(page.locator("#trafficActivityCounts")).to_contain_text("Ready models: 0")
+    sync_api.expect(model).to_contain_text("Engine call age: 42 s")
+    sync_api.expect(model).to_contain_text("Main: 2 running · 1 queued; long: 1 running · 1 queued")
+    view(page, "playground")
+    page.select_option("#playgroundModel", text_model["id"])
+    page.evaluate("request => setRequest(request)", CHOICE)
+    page.route("**/api/decide", lambda route: route.fulfill(status=503, json={"error": "busy", "code": "OVERLOADED"}))
+    page.click("#sendButton")
+    sync_api.expect(page.locator("#decideError")).to_contain_text("Model is busy. Wait and retry.")
+
+
 @pytest.fixture(scope="module")
 def browser():
     with sync_api.sync_playwright() as p:

@@ -26,6 +26,8 @@ START_TIMEOUT_S = 1800  # --mode fast compiles for 4-17 minutes on the first sta
 MODEL_LOGS_KEPT = 10  # log buffers of unloaded models kept for the Logs view
 RSS_INTERVAL_S = 2  # `ps` runs at most this often for the resident memory of the children
 JOB_SHUTDOWN_S = 30  # shutdown waits this long for cancelled jobs before unloading the models
+READ_TIMEOUT_S = 600
+ENGINE_TIMEOUT_MARGIN_S = 30
 
 
 def _lan_ip():
@@ -179,14 +181,26 @@ class Runner:
         health = {"reachable": False, "running": None, "queued": None}
         try:
             response = httpx.get(url + "/health", timeout=0.5)
-            response.raise_for_status()
             data = response.json()
-            health["reachable"] = isinstance(data, dict) and data.get("status") == "ok"
+            status = data.get("status") if isinstance(data, dict) else None
+            health["reachable"] = (response.status_code == 200 and status == "ok") or (
+                response.status_code == 503 and status == "stalled"
+            )
             if health["reachable"]:
+                if status == "stalled":
+                    health["status"] = status
+                    age = data.get("engine_call_s")
+                    if isinstance(age, (int, float)) and not isinstance(age, bool) and age >= 0:
+                        health["engine_call_s"] = age
                 for key in ("running", "queued"):
                     value = data.get(key)
                     if type(value) is int and value >= 0:
                         health[key] = value
+                lane = data.get("long")
+                if isinstance(lane, dict):
+                    counts = {key: lane.get(key) for key in ("running", "queued")}
+                    if all(type(value) is int and value >= 0 for value in counts.values()):
+                        health["long"] = counts
         except (httpx.HTTPError, ValueError):
             pass
         finally:
@@ -480,20 +494,39 @@ class Runner:
                 raise RuntimeError(f"model {self.model} is not ready ({self.state})")
             return self.base_url + path
 
+    def read_timeout(self):
+        deadline = self.options.get("request_timeout")
+        return max(READ_TIMEOUT_S, deadline + ENGINE_TIMEOUT_MARGIN_S) if deadline else READ_TIMEOUT_S
+
     def decide(self, body, path="/v1/systemone"):
         """basal-serve's answer to a System One or OpenAI Decisions request (path), in the path's shape."""
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(httpx.post(self._url("/v1/systemone"), json=child_body, timeout=120))
+        response = reply(
+            httpx.post(
+                self._url("/v1/systemone"), json=child_body, timeout=httpx.Timeout(120, read=self.read_timeout())
+            )
+        )
         response.extensions["basal.inference"] = True
         return response
 
-    async def adecide(self, client, body, path="/v1/systemone"):
+    async def adecide(self, client, body, path="/v1/systemone", timeout=None):
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(await client.post(self._url("/v1/systemone"), json=child_body))
+        if timeout is not None:
+            timeout = httpx.Timeout(timeout)
+            deadline = self.options.get("request_timeout")
+            if deadline and timeout.read is not None:
+                timeout.read = max(timeout.read, deadline + ENGINE_TIMEOUT_MARGIN_S)
+        response = reply(
+            await client.post(
+                self._url("/v1/systemone"),
+                json=child_body,
+                timeout=timeout if timeout is not None else httpx.Timeout(120, read=self.read_timeout()),
+            )
+        )
         response.extensions["basal.inference"] = True
         return response
 
@@ -1086,7 +1119,8 @@ class Fleet:
         with self.lease(model_id) as runner, self.answering(model_id, source, runner):
             t0 = time.perf_counter()
             try:
-                response = await runner.adecide(client, body, path)
+                kwargs = {"timeout": client.timeout} if source == "benchmark" else {}
+                response = await runner.adecide(client, body, path, **kwargs)
             except httpx.HTTPError as exc:
                 await asyncio.to_thread(
                     self._record,
