@@ -1,5 +1,7 @@
 # Unreleased
 
+- Inspect has more readable muted text, respects reduced motion and marks the selected tab in forced colors.
+
 - Keep Hardware metrics, Stats and Benchmark numbers, and Benchmark and Batch progress steady with tabular numerals;
   align numeric table columns with their headings.
 

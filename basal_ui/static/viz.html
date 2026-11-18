@@ -8,7 +8,7 @@
 :root {
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ee;
-  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #66645f;
   --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --control-border: #676e68;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
   --neutral-mark: #c3c2b7;
@@ -20,7 +20,7 @@
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
-    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #a3a19b;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --neutral-mark: #5b5a55; --good-text: #0ca30c;
@@ -31,7 +31,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
-  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #a3a19b;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
   --neutral-mark: #5b5a55; --good-text: #0ca30c;
@@ -162,6 +162,13 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .loading { display: flex; gap: 10px; align-items: center; color: var(--ink-2); padding: 12px 4px; }
 .spin { width: 16px; height: 16px; border: 2px solid var(--grid); border-top-color: var(--accent); border-radius: 50%; animation: sp .8s linear infinite; }
 @keyframes sp { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .prompt .cursor { animation: none; }
+  .spin { display: none; }
+}
+@media (forced-colors: active) {
+  .tabs button.on { border: 2px solid ButtonText; }
+}
 .scale { display: flex; gap: 2px; margin-top: 12px; }
 .scale div { flex: 1; text-align: center; font-size: 11px; color: var(--ink-2); padding: 6px 4px; background: var(--surface-2); border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scale div.on { outline: 2px solid var(--ink); outline-offset: -2px; color: var(--ink); font-weight: 600; }
