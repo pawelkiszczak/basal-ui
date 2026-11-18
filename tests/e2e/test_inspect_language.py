@@ -76,6 +76,9 @@ def test_inspect_language(ui, language, embedded):
             frame = page
         playwright.expect(frame.locator("#qs input").first).to_be_visible()
         assert frame.locator("html").get_attribute("lang") == language
+        question_type = frame.get_by_label("Typ pytania" if language == "pl" else "Question type")
+        playwright.expect(question_type).to_have_value("choice")
+        playwright.expect(frame.get_by_label("Klucze opcji" if language == "pl" else "Option keys")).to_be_visible()
         playwright.expect(frame.locator("#out")).to_contain_text(
             "Wybierz przykład" if language == "pl" else "Pick an example"
         )
@@ -92,6 +95,12 @@ def test_inspect_language(ui, language, embedded):
             playwright.expect(frame.locator("#modelchip")).to_contain_text("2 warstwy")
             playwright.expect(frame.locator("#out")).to_contain_text("3 tokeny")
             playwright.expect(frame.locator("#out")).to_contain_text("przebieg Engine")
+        history = frame.locator("#hist").get_by_role("button")
+        playwright.expect(history).to_have_count(1)
+        history.focus()
+        history.press("Enter")
+        playwright.expect(frame.locator("#hist").get_by_role("button")).to_have_count(2)
+        playwright.expect(frame.locator("#hist").get_by_role("button").first).to_be_focused()
         context.unroute("**/viz/api/explain")
         calls = []
 
