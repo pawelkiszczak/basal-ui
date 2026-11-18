@@ -643,3 +643,71 @@ def test_preset_fallback_preserves_unsupported_media_fields(page):
     assert restored["media"][0]["vendor_attachment"] == {"source": "scanner"}
     assert page.evaluate("() => selectedMedia[0].elements.question") == "element"
     assert page.evaluate("() => selectedMedia[0].file.name") == "screen-marked.png"
+
+
+def test_dialog_accessible_names(page, text_model):
+    cdp = page.context.new_cdp_session(page)
+
+    def name(selector, expected):
+        sync_api.expect(page.locator(selector)).to_be_visible()
+        root = cdp.send("DOM.getDocument")["root"]["nodeId"]
+        node = cdp.send("DOM.querySelector", {"nodeId": root, "selector": selector})["nodeId"]
+        nodes = cdp.send("Accessibility.getPartialAXTree", {"nodeId": node, "fetchRelatives": False})["nodes"]
+        assert nodes[0]["role"]["value"] == "dialog"
+        assert nodes[0]["name"]["value"] == expected
+
+    def close(selector):
+        page.locator(selector).evaluate("dialog => dialog.close()")
+
+    page.locator(".mark-elements").first.click()
+    name(".elements-dialog", "Mark elements")
+    page.locator(".elements-cancel").click()
+    page.locator(".media-preview").first.click()
+    name("#mediaLightbox", "Image preview")
+    close("#mediaLightbox")
+    page.keyboard.press("?")
+    name("#shortcutsDialog", "Keyboard shortcuts")
+    close("#shortcutsDialog")
+    page.locator("#openModelLoader").click()
+    name("#modelLoaderDialog", "Load downloaded model")
+    close("#modelLoaderDialog")
+    for target, expected in [("request", "Save request preset"), ("load", "Save load preset")]:
+        page.evaluate("target => promptPresetName(target)", target)
+        name("#presetNameDialog", expected)
+        close("#presetNameDialog")
+    for title in ["Delete model from disk?", "Clear history?"]:
+        page.evaluate("title => { void confirmDialog({title, description: 'test'}); }", title)
+        name("#confirmDialog", title)
+        page.locator("#confirmCancel").click()
+        page.wait_for_timeout(100)  # let the native close event settle before reopening
+    page.evaluate("id => openModelCard(id)", text_model["id"])
+    sync_api.expect(page.locator("#modelCardTitle")).not_to_be_empty()
+    name("#modelCardDialog", page.locator("#modelCardTitle").inner_text())
+    close("#modelCardDialog")
+    page.evaluate("id => openLoadOptions(id, false, 'save')", text_model["id"])
+    name("#loadOptions", "Load options")
+    close("#loadOptions")
+    page.evaluate("() => renderCalibrationState({started: 'test', result: {report_only: true, report: 'test'}})")
+    name("#reportDialog", "Calibration report")
+    close("#reportDialog")
+    page.evaluate("() => loadBackends()")
+    page.wait_for_function("() => backendInventory?.backends.some(b => b.models.some(m => m.downloaded))")
+    backend = page.evaluate("() => backendInventory.backends.find(b => b.models.some(m => m.downloaded))")
+    page.evaluate("id => openBackendTest(id)", backend["id"])
+    name("#backendTestDialog", f"Test {backend['name']}")
+    close("#backendTestDialog")
+
+    page.evaluate("() => localStorage.setItem('basal-ui.lang', 'pl')")
+    page.reload()
+    page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache && modelData.length > 0")
+    page.evaluate("() => promptPresetName('request')")
+    name("#presetNameDialog", "Zapisz preset żądania")
+    close("#presetNameDialog")
+    page.locator("#pageTitle").click()
+    page.keyboard.press("?")
+    name("#shortcutsDialog", "Skróty klawiszowe")
+    close("#shortcutsDialog")
+    page.evaluate("() => { loadedMedia=['image']; $('#mediaInput').disabled=false; $('#mediaField').hidden=false; }")
+    page.set_input_files("#mediaInput", [{"name": "screen.png", "mimeType": "image/png", "buffer": png()}])
+    page.locator(".mark-elements").first.click()
+    name(".elements-dialog", "Oznacz elementy")

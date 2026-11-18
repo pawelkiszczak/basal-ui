@@ -24,7 +24,7 @@ flowchart LR
 - **Gateway:** `gateway.py` is a separate Starlette ASGI service for external API traffic. It handles API-key checks, model routing, health/stats, and optional MCP. `compat.py` translates between System One and OpenAI Decisions request/response shapes and their typed errors.
 - **Lifespan:** startup auto-loads the remembered model and starts the gateway. Shutdown drains the gateway, stops inspection and the fleet off the app event loop, flushes stats, and removes temporary key state. Keep the loop running while inspection callbacks and model jobs finish.
 - **Concurrency:** most code is synchronous and threaded, using explicit locks and generation checks. Async appears only at ASGI/forwarding boundaries. Slow sync route handlers run in FastAPI's threadpool. Background work goes through `jobs.py` (threads, progress, cancellation, in-memory `LogBuffer`).
-- **Engine add-ons:** `addons.py` installs only declared `media`/`gguf` dependencies through `uv` in the current venv, never the Engine itself. Fleet maintenance reserves package mutation atomically with job starts (`Fleet.lock` before `Jobs.lock`); keep that lock order. Preserve installed-version constraints, fresh-process verification, cancellation and explicit restart guidance.
+- **Engine add-ons:** `addons.py` installs only declared `media`/`gguf`/`finetune` dependencies through `uv` in the current venv, never the Engine itself. Fleet maintenance reserves package mutation atomically with job starts (`Fleet.lock` before `Jobs.lock`); keep that lock order. Preserve installed-version constraints, fresh-process verification, cancellation and explicit restart guidance.
 - **Engine gate:** `basal_ui/engine.py` holds `TESTED_RELEASES`, `SUPPORTED_RANGE`, and `PINNED_RELEASE`, and CI derives its matrix from them. Guard Engine capabilities outside that range with feature probes, not version forks. `BASAL_UI_ENGINE_UNCHECKED=1` bypasses the gate.
 
 ## Key Directories
@@ -82,8 +82,8 @@ After `make engine`, running `make install` restores the pinned Engine.
 - `basal_ui/static/dashboard.js`: pure Dashboard renderer; `app.js` owns status/traffic fetching and the existing poll cycle. Keep one polling owner.
 - `basal_ui/static/backends.js`: Backend checks and add-on UI; consume `app:status` for add-on progress rather than creating another status timer. Shared downloaded-model loading and recommendation Backend selection live in `app.js`.
 - `pyproject.toml`: deps, extras (`mcp`, `e2e`), `dev` group, pytest/ruff/uv config (CPU-only torch index on Linux).
-- `.github/workflows/ci.yml`: the merge gate, on pushes to and pull requests into `dev`, `stage` and `main` (either direction); its `ci-ok` job aggregates the matrix and is the required status check. `nightly.yml` checks upstream `main` and is non-gating. `publish.yml` releases `v*` tags (cut on `main`) to PyPI and GitHub Releases. Actions are pinned by commit SHA (Node 24 releases); Dependabot bumps them.
-- Branches: `dev` (integration; feature PRs target it) → `stage` (release candidate; e2e gate) → `main` (released). Fixes made on `stage` go back with `stage` → `dev`. Branch protection requires a PR with `ci-ok` green on all three, up to date on `stage`/`main`, enforced for admins on `stage`/`main` (`CONTRIBUTING.md`, "Branches and CI"). `CONTRIBUTORS.md` lists contributors.
+- `.github/workflows/release-ci.yml`: Engine/OS/Python matrix after merges to `stage` and `main`. Read its `ci-ok` result before promoting or tagging. See `CONTRIBUTING.md` for release and publishing steps. Pin Actions by commit SHA. Dependabot updates the pins.
+- Branches: feature PRs target `dev`. Promote via `dev` → `stage` → `main`. Return release-candidate fixes via `stage` → `dev`.
 
 ## Runtime/Tooling Preferences
 

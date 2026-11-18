@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anyio
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -33,9 +34,11 @@ from fastapi.staticfiles import StaticFiles
 from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
+from .fetch import FetchError, FetchManager
 from .fleet import Fleet
 from .gateway import Gateway
 from .history import History, replay_fields
+from .mcp_import import shortlist
 from .stats import Stats
 
 STATIC = Path(__file__).parent / "static"
@@ -109,6 +112,10 @@ def create_app(
     stats=None,
     history=None,
     addons=None,
+    fetch_manager=None,
+    finetune=None,
+    preset_fetch_manager=None,
+    mcp_importer=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -122,6 +129,12 @@ def create_app(
     )
     gateway = gateway or Gateway(fleet, settings_mod, stats)
     addon_manager = addons or AddonManager(fleet, hardware_fn)
+    fetch_manager = fetch_manager or FetchManager()
+    from .finetune import FineTune
+
+    finetune_manager = finetune or FineTune(fleet, settings_mod, hardware_fn, addon_manager)
+    preset_fetch_manager = preset_fetch_manager or FetchManager(presets=True)
+    mcp_importer = mcp_importer or FetchManager("basal_ui.mcp_import")
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -130,7 +143,7 @@ def create_app(
     def hw():
         return hardware_fn()
 
-    def check_attached_calibration(variant, path):
+    def check_attached_calibration(variant, path, options):
         if variant.family != "attached":
             return
         if not engine.feature("attach"):
@@ -147,10 +160,20 @@ def create_app(
         cal = calibration.load(path)
         fitted = cal.get("fitted_on")
         metadata = json.loads((local / "basal.json").read_text(encoding="utf-8"))
+        adapter = None
+        if options.get("adapter"):
+            from types import SimpleNamespace
+
+            from basal.adapter import identity
+
+            try:
+                adapter = SimpleNamespace(identity=identity(options["adapter"]))
+            except SystemExit as exc:
+                raise ValueError(str(exc)) from exc
         if (
             not isinstance(fitted, dict)
             or not fitted.get("model")
-            or calibration_mismatch(cal, str(local), local)
+            or calibration_mismatch(cal, str(local), local, **({"adapter": adapter} if adapter else {}))
             or cal.get("prompt", 1) != metadata.get("prompt")
         ):
             raise ValueError("calibration was not fitted for this attached model and prompt format")
@@ -160,10 +183,14 @@ def create_app(
         an unavailable mode, invalid options, or a variant the default mode cannot serve."""
         if variant.family == "attached" and not engine.feature("attach"):
             raise ValueError("attached models need engine 2.5")
-        check_attached_calibration(variant, settings_mod.calibration_selection().get(variant.id))
+        if variant.family == "attached" and not engine.feature("attach"):
+            raise ValueError("attached models need engine 2.5")
         current = hw()
         assessment = catalog.assess(variant, current)
         merged = load_options.validate(options, assessment.mode)
+        local = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=merged.get("revision"))
+        finetune_manager.check_adapter(variant.id, local, merged.get("adapter"))
+        check_attached_calibration(variant, settings_mod.calibration_selection().get(variant.id), merged)
         if variant.family == "attached" and merged.get("revision") not in (None, variant.cache_revision):
             raise ValueError("attached model revision cannot be changed")
         if media:
@@ -220,7 +247,12 @@ def create_app(
             auto_load_thread.start()
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
+        fleet.start_idle_timer()
         yield
+        await mcp_importer.close()
+        await preset_fetch_manager.close()
+        await fetch_manager.close()
+        await asyncio.to_thread(fleet.stop_idle_timer)
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:
@@ -238,9 +270,39 @@ def create_app(
 
     app = host_middleware(FastAPI(title="basal-ui", lifespan=lifespan), allowed_hosts)
     app.state.addons = addon_manager
+    app.state.finetune = finetune_manager
 
     @app.exception_handler(HTTPException)
     async def http_error(request, exc):
+        if request.url.path.startswith("/api/finetune"):
+            message = str(exc.detail)
+            parameter = message.split(" ", 1)[0]
+            if parameter in {"epochs", "lr", "rank", "alpha", "holdout", "max_len", "max_steps", "grad_checkpointing"}:
+                code, params = "finetune_parameter", {"parameter": parameter, "message": message}
+            elif message.startswith("out_name"):
+                code, params = "finetune_name", {"message": message}
+            elif message.startswith(("input ", "cannot read labelled", "line ", "need training decisions")):
+                code, params = "finetune_input", {"message": message}
+            elif "active adapter" in message:
+                code, params = "finetune_active_adapter", {"message": message}
+            elif "active jobs" in message or "shutting down" in message or "maintenance" in message:
+                code, params = "finetune_jobs_busy", {"message": message}
+            elif "already exists" in message or "already holds memory" in message:
+                code, params = "finetune_duplicate", {"message": message}
+            elif "unknown fine-tune output" in message or "output is missing" in message:
+                code, params = "finetune_missing", {"message": message}
+            elif message.startswith(("unknown model", "download ", "fine-tuning requires")):
+                code, params = "finetune_model", {"message": message}
+            elif any(word in message for word in ("ownership", "symlink", "directory changed", "output root")):
+                code, params = "finetune_ownership", {"message": message}
+            else:
+                code = "finetune_busy" if exc.status_code == 409 else "finetune_error"
+                params = {"message": message}
+            return JSONResponse(
+                {"detail": message, "code": code, "params": params},
+                status_code=exc.status_code,
+                headers=exc.headers,
+            )
         if request.url.path.startswith("/api/attach"):
             message = str(exc.detail)
             if "already exists" in message:
@@ -264,6 +326,20 @@ def create_app(
 
         return await http_exception_handler(request, exc)
 
+    @app.post("/api/mcp/tools")
+    def import_mcp_tools(request: Request, body: dict = Body(...)):
+        try:
+            return anyio.from_thread.run(mcp_importer.run, body, request)
+        except FetchError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": str(exc), "code": exc.code})
+
+    @app.post("/api/tools/shortlist")
+    def shortlist_tools(body: dict = Body(...)):
+        try:
+            return {"tools": shortlist(body.get("tools"), body.get("query"), body.get("k", 40))}
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc), "code": "mcp_invalid_request"})
+
     @app.middleware("http")
     async def protect_engine_installation(request: Request, call_next):
         paths = (
@@ -274,6 +350,8 @@ def create_app(
             "/api/decide",
             "/api/benchmark",
             "/api/calibrate",
+            "/api/finetune",
+            "/api/finetune/delete",
             "/api/batch",
             "/api/inspect",
             "/api/models/delete",
@@ -361,7 +439,7 @@ def create_app(
             return True
         try:
             from basal.prompt import model_layout
-            from basal.server import MODES, load_calibration
+            from basal.server import MODES, calibration_mismatch, load_calibration
 
             assessment = catalog.assess(variant, current_hw)
             _, context = resolve_shipped_calibration(variant, local, assessment)
@@ -373,6 +451,15 @@ def create_app(
             entry = runner.models_entry
             if not isinstance(entry, dict) or entry.get("calibration_warning") or not entry.get("certified"):
                 return True
+            adapter = None
+            if context.get("adapter"):
+                from types import SimpleNamespace
+
+                identity = entry.get("adapter")
+                if not isinstance(identity, str) or not identity:
+                    return True
+                adapter_path = Path(context["adapter"])
+                adapter = SimpleNamespace(identity=identity, path=adapter_path, name=adapter_path.name)
             orders = (entry or {}).get("orders") or options.get("orders") or 2
             cal, _, warning = load_calibration(
                 local,
@@ -381,8 +468,9 @@ def create_app(
                 context["quant"],
                 orders,
                 layout=context["layout"] or model_layout(local),
+                **({"adapter": adapter} if adapter else {}),
             )
-            result = calibration.summary(path, local)
+            result = calibration.summary(path)
             table = calibration.certified_table(cal)
             served = entry["certified"]
             values = [
@@ -406,6 +494,7 @@ def create_app(
             return bool(
                 warning
                 or result.get("warning")
+                or calibration_mismatch(cal, str(local), local, **({"adapter": adapter} if adapter else {}))
                 or not isinstance(result.get("fitted_on"), dict)
                 or not result["fitted_on"].get("model")
                 or not applicable
@@ -507,7 +596,9 @@ def create_app(
     @app.put("/api/memory")
     def put_memory(body: dict = Body(...)):
         try:
-            settings_mod.update_memory(body)
+            with fleet.lock:
+                settings_mod.update_memory(body)
+                fleet.refresh_idle_settings()
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return get_memory()
@@ -988,12 +1079,14 @@ def create_app(
             ],
         }
 
+    def preset_snapshot(data):
+        return {"load": data.get("load", {}), "request": data.get("request", {})}
+
     @app.get("/api/presets")
     def get_presets():
-        return {"load": settings_mod.presets().get("load", {}), "request": settings_mod.presets().get("request", {})}
+        return preset_snapshot(settings_mod.presets())
 
-    @app.put("/api/presets")
-    def put_preset(body: dict = Body(...)):
+    def update_preset(body):
         kind, name, value = body.get("kind"), body.get("name"), body.get("value")
         try:
             if kind == "load" and value is not None:
@@ -1009,7 +1102,51 @@ def create_app(
             settings_mod.set_preset(kind, name, value)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/presets")
+    def put_preset(body: dict = Body(...)):
+        update_preset(body)
         return get_presets()
+
+    @app.post("/api/presets/import-url")
+    def import_presets_url(request: Request, body: dict = Body(...)):
+        try:
+            result = anyio.from_thread.run(preset_fetch_manager.run, body.get("url"), request)
+        except FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
+        pack = result["state"]
+        if (
+            not isinstance(pack, dict)
+            or not any(k in pack for k in ("load", "request"))
+            or any(k in pack and not isinstance(pack[k], dict) for k in ("load", "request"))
+        ):
+            return JSONResponse({"detail": "Invalid presets pack.", "code": "presets_invalid_pack"}, status_code=400)
+        count = 0
+        try:
+            for kind in ("load", "request"):
+                for name, value in pack.get(kind, {}).items():
+                    update_preset({"kind": kind, "name": name, "value": value})
+                    count += 1
+            return {
+                "presets": preset_snapshot(settings_mod.presets(strict=True, require_file=count > 0)),
+                "count": count,
+            }
+        except HTTPException as exc:
+            return JSONResponse(
+                {
+                    "detail": f"Import stopped; earlier presets may have been saved: {exc.detail}",
+                    "code": "presets_partial_import",
+                },
+                status_code=400,
+            )
+        except OSError:
+            return JSONResponse(
+                {
+                    "detail": "Import stopped; earlier presets may have been saved. Check storage and retry.",
+                    "code": "presets_partial_import",
+                },
+                status_code=500,
+            )
 
     @app.get("/api/models/card")
     def get_model_card(id: str):
@@ -1058,8 +1195,12 @@ def create_app(
             from . import calibration
 
             try:
-                path, _ = resolve_shipped_calibration(variant, local_dir, assessment)
+                path, context = resolve_shipped_calibration(variant, local_dir, assessment)
                 shipped_calibration = calibration.summary(path) if path.is_file() else None
+                if shipped_calibration is not None:
+                    shipped_calibration = adapter_calibration_summary(
+                        shipped_calibration, path, local_dir, context, variant.id, True
+                    )
             except (OSError, ValueError, KeyError) as exc:
                 shipped_calibration = {"error": str(exc)}
         return {
@@ -1154,7 +1295,12 @@ def create_app(
         try:
             merged = load_options.validate(saved, assessment.mode)
         except ValueError:  # options saved by another basal-ui version
-            merged = dict(load_options.DEFAULTS)
+            try:
+                merged = load_options.validate({**saved, "adapter": None}, assessment.mode)
+            except ValueError:
+                merged = dict(load_options.DEFAULTS)
+            if isinstance(saved.get("adapter"), str):
+                merged["adapter"] = saved["adapter"]
         family_ok = variant.family == "basal-2.0" and variant.tier == "4.5B"
         packed_reason = load_options.mlx_packed_unavailable(variant, current)
         packed_code, packed_params = load_options.option_message_fields(packed_reason)
@@ -1162,6 +1308,8 @@ def create_app(
         think_code, think_params = load_options.option_message_fields(think_reason)
         adapter_reason = load_options.adapter_unavailable()
         adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
+        local = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=served_revision(variant))
+        base = str(local.resolve()) if local else None
         return {
             "modes": load_options.available_modes(variant, current, assessment),
             "options": merged,
@@ -1171,9 +1319,18 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
+            "limits_available": {
+                key: bool(load_options.serve_option("--" + key.replace("_", "-")))
+                for key in load_options.LIMIT_DEFAULTS
+            },
             "adapter_reason": adapter_reason,
             "adapter_reason_code": adapter_code,
             "adapter_reason_params": adapter_params,
+            "adapters": [
+                item["adapter"]
+                for item in finetune_manager.results(variant.id)
+                if item["ready"] and item.get("base") == base
+            ],
             "think": {
                 "model": family_ok,
                 "vllm": "vllm" in current.engines,
@@ -1191,9 +1348,19 @@ def create_app(
             default_mode = catalog.assess(variant, current).mode
             merged = load_options.validate(body.get("options"), default_mode)
             load_options.check_combination(variant, current, merged, default_mode)
+            local = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=merged.get("revision"))
+            finetune_manager.check_adapter(variant.id, local, merged.get("adapter"))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        settings_mod.set_load_options(variant.id, load_options.non_default(merged))
+        saved = load_options.non_default(merged)
+        previous = settings_mod.load_options(variant.id)
+        if (
+            load_options.adapter_unavailable()
+            and "adapter" not in (body.get("options") or {})
+            and previous.get("adapter")
+        ):
+            saved["adapter"] = previous["adapter"]
+        settings_mod.set_load_options(variant.id, saved)
         return get_model_options(variant.id)
 
     @app.post("/api/models/delete")
@@ -1253,6 +1420,38 @@ def create_app(
     def status():
         return full_status()
 
+    @app.get("/api/question-sets")
+    def question_sets():
+        if not engine.feature("presets"):
+            raise HTTPException(503, "Question sets are unavailable in this Engine.")
+        from basal import presets
+
+        return [
+            {
+                "name": name,
+                "languages": list(presets.PRESETS[name]),
+                "question_count": len(presets.questions(name, lang="en")),
+            }
+            for name in presets.names()
+        ]
+
+    @app.post("/api/question-sets/{name}")
+    def question_set(name: str, body: dict = Body(...)):
+        if not engine.feature("presets"):
+            raise HTTPException(503, "Question sets are unavailable in this Engine.")
+        from basal import presets
+
+        if name not in presets.names():
+            raise HTTPException(404, "Unknown question set.")
+        lang, state, max_error = body.get("lang", "auto"), body.get("state", ""), body.get("max_error")
+        if lang not in ("auto", "pl", "en") or not isinstance(state, str):
+            raise HTTPException(400, "lang must be auto, pl or en and state must be a string.")
+        if max_error is not None and (
+            isinstance(max_error, bool) or not isinstance(max_error, (int, float)) or not 0 < max_error < 1
+        ):
+            raise HTTPException(400, "max_error must be a number between 0 and 1 (exclusive).")
+        return presets.questions(name, lang=None if lang == "auto" else lang, state=state, max_error=max_error)
+
     @app.get("/api/examples")
     def get_examples():
         return examples()
@@ -1261,10 +1460,13 @@ def create_app(
     def decide(body: dict = Body(...)):  # sync: runs in the threadpool, a slow decision does not block the UI
         body = dict(body)
         model_id = body.pop("model", None)
+        source_url = body.pop("source_url", None)
+        if source_url is not None and not isinstance(source_url, str):
+            raise HTTPException(400, "source_url must be a string")
         if not isinstance(model_id, str) or not model_id:
             raise HTTPException(400, f"model is required; loaded: {fleet.loaded_ids()}")
         try:
-            r = fleet.decide(model_id, body, source="playground")
+            r = fleet.decide(model_id, body, source="playground", source_url=source_url)
         except KeyError as exc:
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
@@ -1300,15 +1502,16 @@ def create_app(
 
     @app.post("/api/benchmark", status_code=202)
     def post_benchmark(body: dict = Body(...)):
-        """kind benchmark (the preset), loadtest, determinism (a loaded model) or modes (a downloaded model, loaded
-        in basal-ui's process mode by mode); one measurement at a time."""
-        from . import bench
+        """Run one model benchmark; Engine-tool checks also accept downloaded, unloaded models."""
+        from . import bench, engine
 
         model_id, kind = body.get("id"), body.get("kind", "benchmark")
-        if kind not in ("benchmark", "loadtest", "determinism", "modes"):
-            raise HTTPException(400, "kind must be benchmark, loadtest, determinism or modes")
+        if kind not in ("benchmark", "loadtest", "determinism", "modes", "identity", "order_check"):
+            raise HTTPException(400, "kind must be benchmark, loadtest, determinism, modes, identity or order_check")
         if kind == "modes":
             return start_modes(model_id, body)
+        if kind in ("identity", "order_check"):
+            return start_engine_check(model_id, kind, body, bench, engine)
         try:
             label, paths = bench.resolve_set(body.get("set", "bundled"))
         except ValueError as exc:
@@ -1334,6 +1537,93 @@ def create_app(
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    def start_engine_check(model_id, kind, body, bench, engine):
+        variant = find_variant(model_id)
+        local_dir = downloaded(variant)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        if kind == "order_check" and not engine.feature("order_check"):
+            raise HTTPException(400, "order check needs Engine 2.5")
+        if kind == "identity":
+            dtype = body.get("dtype")
+            if dtype not in ("fp32", "bf16"):
+                raise HTTPException(400, "dtype must be fp32 or bf16")
+            fast = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+            )
+            if options.get("quant") == "nvfp4" or variant.port == "NVFP4":
+                raise HTTPException(400, "Identity gate does not support NVFP4 on this Engine")
+            if not fast or not fast["available"]:
+                raise HTTPException(
+                    400, f"identity gate requires fast mode: {fast['reason'] if fast else 'unavailable'}"
+                )
+            job_fn, args = bench.identity_job, (dtype.replace("fp32", "float32").replace("bf16", "bfloat16"), options)
+            reservation = bench.comparison_memory(
+                ["eager-fp32"] if dtype == "fp32" else ["fast"], assessment.est_memory_bytes
+            )
+        else:
+            from basal.server import default_mode
+
+            default = default_mode(str(local_dir))
+            supported = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == default), None
+            )
+            if not supported or not supported["available"]:
+                raise HTTPException(400, "Order check cannot run the Engine default mode on this model and hardware")
+            job_fn, args, reservation = bench.order_check_job, (), 2 * (assessment.est_memory_bytes or 0)
+        try:
+            with fleet.lock:
+                fleet.reserve(kind, reservation)
+                try:
+                    return fleet.jobs.start(
+                        "benchmark", variant.id, f"{kind}: {variant.id}", job_fn, fleet, variant, local_dir, *args
+                    )
+                except Exception:
+                    fleet.release(kind)
+                    raise
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/benchmark/availability")
+    def benchmark_availability(id: str):
+        from . import engine
+
+        variant = find_variant(id)
+        current = hw()
+        assessment = catalog.assess(variant, current)
+        fast = next(
+            (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == "fast"), None
+        )
+        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        nvfp4 = options.get("quant") == "nvfp4" or variant.port == "NVFP4"
+        order_reason = None
+        if not engine.feature("order_check"):
+            order_reason = "needs Engine 2.5"
+        else:
+            from basal.server import default_mode
+
+            local_dir = downloaded(variant)
+            default = default_mode(str(local_dir))
+            mode = next(
+                (m for m in load_options.available_modes(variant, current, assessment) if m["mode"] == default), None
+            )
+            if not mode or not mode["available"]:
+                order_reason = "Order check cannot run the Engine default mode on this model and hardware"
+        return {
+            "identity": {
+                "available": bool(fast and fast["available"] and not nvfp4),
+                "reason": "Identity gate does not support NVFP4 on this Engine"
+                if nvfp4
+                else fast["reason"]
+                if fast
+                else "fast unavailable",
+                "reason_code": fast.get("reason_code") if fast and not nvfp4 else None,
+                "reason_params": fast.get("reason_params") if fast and not nvfp4 else None,
+            },
+            "order_check": {"available": order_reason is None, "reason": order_reason},
+        }
 
     def modes_context(variant):
         """(local dir, assessment, merged load options, the modes a comparison may run) of a downloaded variant."""
@@ -1439,6 +1729,37 @@ def create_app(
         }
         return path, context
 
+    def adapter_calibration_summary(summary, path, local_dir, context, model_id, shipped=False):
+        adapter = context.get("adapter")
+        if not adapter:
+            return summary
+        reason = None
+        if shipped and Path(path).parent.resolve() != Path(adapter).expanduser().resolve():
+            reason = "The base calibration does not certify adapter weights"
+        else:
+            from types import SimpleNamespace
+
+            from basal.server import calibration_mismatch
+
+            with fleet.lock:
+                runner = fleet.runners.get(model_id)
+            entry = runner.models_entry if runner and context.get("active") else None
+            identity = entry.get("adapter") if isinstance(entry, dict) else None
+            if not isinstance(identity, str) or not identity:
+                reason = "Adapter calibration identity is not verified until the model is loaded"
+            else:
+                data = json.loads(Path(path).read_text(encoding="utf-8"))
+                fitted = data.get("fitted_on") if isinstance(data, dict) else None
+                if not isinstance(fitted, dict) or not fitted.get("model"):
+                    reason = "Calibration does not identify its model and adapter"
+                else:
+                    reason = calibration_mismatch(
+                        data, str(local_dir), Path(local_dir), adapter=SimpleNamespace(identity=identity)
+                    )
+        if reason:
+            return {**summary, "warning": reason, "thresholds": {}, "task_thresholds": {}, "gates": {}}
+        return {**summary, "warning": None}
+
     def downloaded(variant):
         if variant.family == "attached" and not engine.feature("attach"):
             raise HTTPException(400, "attached models need engine 2.5")
@@ -1447,12 +1768,59 @@ def create_app(
             raise HTTPException(400, f"download {variant.id} first")
         return Path(local_dir)
 
+    def calibration_fit_settings(variant):
+        with fleet.lock:
+            runner = fleet.runners.get(variant.id)
+            if runner is not None:
+                with runner.lock:
+                    if runner.state == "ready" and (runner.process is None or runner.process.poll() is None):
+                        options = dict(runner.options)
+                        options["mode"] = runner.mode
+                        return options, Path(runner.loaded_path) if runner.loaded_path else downloaded(variant)
+        return settings_mod.load_options(variant.id), downloaded(variant)
+
+    @app.get("/api/finetune")
+    def get_finetune(id: str | None = None):
+        available, code, reason = finetune_manager.availability()
+        return {
+            "available": available,
+            "reason": reason,
+            "reason_code": code,
+            "reason_params": {},
+            "models": sorted({r["id"] for r in settings_mod.finetune_results() if isinstance(r.get("id"), str)}),
+            "results": finetune_manager.results(id) if id else [],
+        }
+
+    @app.post("/api/finetune", status_code=202)
+    def post_finetune(body: dict = Body(...)):
+        variant = find_variant(body.get("id"))
+        local_dir = downloaded(variant)
+        try:
+            return finetune_manager.start(variant, local_dir, body)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/api/finetune")
+    def cancel_finetune():
+        return fleet.jobs.cancel("finetune")
+
+    @app.post("/api/finetune/delete")
+    def delete_finetune(body: dict = Body(...)):
+        try:
+            return finetune_manager.delete(body.get("id"), body.get("name"))
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/api/calibrate", status_code=202)
     def post_calibrate(body: dict = Body(...)):
         from . import calibration
 
         variant = find_variant(body.get("id"))
-        local_dir = downloaded(variant)
+        selected_options, local_dir = calibration_fit_settings(variant)
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(400, "input must be the path of a labelled JSONL file (docs/CALIBRATION.md)")
@@ -1476,9 +1844,22 @@ def create_app(
             "compare",
             "save_rows",
             "report_only",
+            "conformal",
+            "keep_shipped",
         }
         if set(advanced) - allowed:
             raise HTTPException(400, f"unknown advanced calibration option: {min(set(advanced) - allowed)}")
+        for key, flag in (("conformal", "--conformal"), ("keep_shipped", "--keep-shipped")):
+            value = advanced.get(key, [])
+            if not isinstance(value, list):
+                raise HTTPException(400, f"{key} must be a list")
+            if value and flag not in engine.calibrate_flags():
+                raise HTTPException(400, f"the installed Engine does not support {flag}")
+        if not all(type(x) in (int, float) and 0 < x < 1 for x in advanced.get("conformal", [])):
+            raise HTTPException(400, "conformal levels must be numbers between 0 and 1")
+        keep = advanced.get("keep_shipped", [])
+        if any(not isinstance(x, str) or x not in ("choice", "noul", "score") for x in keep):
+            raise HTTPException(400, "keep_shipped types must be choice, noul or score")
         for key in ("strict", "save_rows", "report_only"):
             if key in advanced and not isinstance(advanced[key], bool):
                 raise HTTPException(400, f"{key} must be a boolean")
@@ -1503,7 +1884,10 @@ def create_app(
             raise HTTPException(400, "compare must be shipped, none, or a calibration path")
         for key, value, names in (("reference", reference, ("basal-1.5",)), ("compare", compare, ("shipped", "none"))):
             if value and value not in names:
-                path = Path(value).expanduser()
+                try:
+                    path = Path(value).expanduser()
+                except RuntimeError:
+                    raise HTTPException(400, f"{key}: {value} is not a readable file") from None
                 if not path.is_file():
                     raise HTTPException(400, f"{key}: {value} is not a readable file")
                 advanced[key] = str(path)
@@ -1528,9 +1912,21 @@ def create_app(
             assessment, options = catalog.assess(variant, hw()), {}
         else:
             try:
-                assessment, options = prepare(variant, False, settings_mod.load_options(variant.id))
+                assessment, options = prepare(variant, False, selected_options)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+        if keep:
+            available = calibration.keep_options(
+                local_dir,
+                assessment.mode or "eager",
+                options,
+                advanced.get("compare", "shipped"),
+                source if from_rows else None,
+            )
+            if any(t not in available for t in keep):
+                raise HTTPException(400, "keep_shipped requires compatible compared thresholds for each type")
+            if not from_rows and advanced.get("compare", "shipped") == "shipped":
+                advanced["keep_source"] = available[keep[0]]
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
         label = f"{variant.id} on {source.name}" + (" (engine in process: task questions)" if in_process else "")
         reserve = in_process and not from_rows
@@ -1588,16 +1984,58 @@ def create_app(
                 path, context = resolve_shipped_calibration(variant, local_dir, assessment)
                 shipped = {"file": str(path), "context": context}
                 try:
-                    shipped.update(calibration.summary(path))
+                    shipped.update(
+                        adapter_calibration_summary(
+                            calibration.summary(path), path, local_dir, context, variant.id, True
+                        )
+                    )
                 except (OSError, ValueError) as exc:
                     shipped["error"] = str(exc)
             except (OSError, ValueError, KeyError) as exc:
                 shipped = {"error": str(exc)}
+        files = calibration.listing(variant.id, settings_mod, local_dir)
+        if local_dir and shipped and shipped.get("context", {}).get("adapter"):
+            for index, item in enumerate(files):
+                try:
+                    files[index] = adapter_calibration_summary(
+                        item, item["file"], local_dir, shipped["context"], variant.id
+                    )
+                except (OSError, ValueError, TypeError):
+                    files[index] = {
+                        **item,
+                        "warning": "Adapter calibration could not be verified",
+                        "thresholds": {},
+                        "task_thresholds": {},
+                        "gates": {},
+                    }
         return {
             "selected": settings_mod.calibration_selection().get(variant.id),
-            "files": calibration.listing(variant.id, settings_mod, local_dir),
+            "files": files,
             "shipped": shipped,
+            "options": {
+                "conformal": "--conformal" in engine.calibrate_flags(),
+                "keep_shipped": "--keep-shipped" in engine.calibrate_flags(),
+            },
         }
+
+    @app.get("/api/calibrations/keep-options")
+    def calibration_keep_options(id: str, compare: str = "shipped"):
+        from . import calibration
+
+        variant = find_variant(id)
+        selected_options, local_dir = calibration_fit_settings(variant)
+        if "--keep-shipped" not in engine.calibrate_flags():
+            return {"types": {}}
+        if compare not in ("shipped", "none"):
+            try:
+                compare = str(Path(compare).expanduser())
+            except RuntimeError:
+                return {"types": {}}
+        try:
+            assessment, options = prepare(variant, False, selected_options)
+            return {"types": calibration.keep_options(local_dir, assessment.mode or "eager", options, compare)}
+        except (OSError, ValueError):
+            return {"types": {}}
 
     @app.post("/api/calibrations/import")
     def import_calibration(body: dict = Body(...)):
@@ -1630,7 +2068,7 @@ def create_app(
         if path is not None and path not in {f["file"] for f in calibration.listing(variant.id, settings_mod)}:
             raise HTTPException(400, f"{path!r} is not one of the calibrations of {variant.id} in basal-ui")
         try:
-            check_attached_calibration(variant, path)
+            check_attached_calibration(variant, path, settings_mod.load_options(variant.id))
         except (ValueError, OSError) as exc:
             raise HTTPException(400, str(exc)) from exc
         settings_mod.select_calibration(variant.id, path)
@@ -1645,7 +2083,37 @@ def create_app(
         if file not in {f["file"] for f in calibration.listing(variant.id, settings_mod)}:
             raise HTTPException(404, f"{file!r} is not one of the calibrations of {variant.id} in basal-ui")
         try:
-            return {"report": Path(file).with_suffix(".report.txt").read_text(encoding="utf-8")}
+            report = Path(file).with_suffix(".report.txt").read_text(encoding="utf-8")
+            try:
+                cal = calibration.load(file)
+            except ValueError:
+                return {"report": report}
+            fitted = cal.get("fitted_on")
+            fitted = fitted if isinstance(fitted, dict) else {}
+            thresholds = cal.get("thresholds")
+            thresholds = thresholds if isinstance(thresholds, dict) else {}
+            details = {
+                "fitted_on": {
+                    k: fitted[k]
+                    for k in ("revision", "model_files", "model_content", "kept_shipped", "kept_shipped_from")
+                    if k in fitted
+                },
+                "conformal": cal.get("conformal"),
+                "thresholds": thresholds,
+            }
+            has_details = (
+                details["fitted_on"]
+                or details["conformal"]
+                or any(
+                    any(
+                        isinstance(entry, dict) and any(k in entry for k in ("icc", "design_effect", "refuted", "kept"))
+                        for entry in (target.get("per_type") or {}).values()
+                    )
+                    for target in (details["thresholds"] or {}).values()
+                    if isinstance(target, dict) and isinstance(target.get("per_type", {}), dict)
+                )
+            )
+            return {"report": report, **({"details": details} if has_details else {})}
         except OSError as exc:
             raise HTTPException(404, f"no report for {file}") from exc
 
@@ -1705,16 +2173,98 @@ def create_app(
         """Return bounded, read-only facts about a path used by Batch."""
         from . import paths
 
+        preset = body.get("preset")
+        if preset not in (None, ""):
+            from . import engine
+
+            if not isinstance(preset, str):
+                return JSONResponse({"detail": "preset must be a string", "code": "batch_preset_type"}, status_code=400)
+            if not engine.feature("presets"):
+                return JSONResponse(
+                    {"detail": "Batch presets need Engine 2.5", "code": "batch_presets_unavailable"}, status_code=400
+                )
+            from basal.presets import names
+
+            if preset not in names():
+                return JSONResponse(
+                    {
+                        "detail": f"unknown preset {preset!r}",
+                        "code": "batch_preset_unknown",
+                        "params": {"preset": str(preset)},
+                    },
+                    status_code=400,
+                )
+        else:
+            preset = None
         try:
-            return paths.check(body.get("path"), body.get("kind"))
+            return paths.check(body.get("path"), body.get("kind"), preset)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/fetch")
+    def fetch_url(request: Request, body: dict = Body(...)):
+        try:
+            return anyio.from_thread.run(fetch_manager.run, body.get("url"), request)
+        except FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
+
+    @app.get("/api/batch/presets")
+    def get_batch_presets():
+        from . import engine
+
+        available = engine.feature("presets")
+        if not available:
+            return {
+                "available": False,
+                "presets": [],
+                "langs": [],
+                "reason": "Batch presets need Engine 2.5",
+                "reason_code": "batch_presets_unavailable",
+                "version": engine.status()["version"],
+            }
+        from basal.presets import names
+
+        return {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+
+    @app.get("/api/batch/capabilities")
+    def batch_capabilities():
+        from . import batch
+
+        return batch.capabilities()
 
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
         from . import batch
 
         model_id = body.get("id")
+        preset = body.get("preset")
+        lang = body.get("lang", "auto")
+        if preset is not None:
+            from . import engine
+
+            if not engine.feature("presets"):
+                return JSONResponse(
+                    {"detail": "Batch presets need Engine 2.5", "code": "batch_presets_unavailable"}, status_code=400
+                )
+            from basal.presets import names
+
+            if not isinstance(preset, str) or preset not in names():
+                return JSONResponse(
+                    {
+                        "detail": f"unknown preset {preset!r}",
+                        "code": "batch_preset_unknown",
+                        "params": {"preset": str(preset)},
+                    },
+                    status_code=400,
+                )
+        if not isinstance(lang, str) or lang not in ("auto", "pl", "en"):
+            return JSONResponse(
+                {"detail": "lang must be one of auto, pl, en", "code": "batch_language_invalid"}, status_code=400
+            )
+        if lang != "auto" and preset is None:
+            return JSONResponse(
+                {"detail": "lang requires a preset", "code": "batch_language_requires_preset"}, status_code=400
+            )
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(
@@ -1730,11 +2280,21 @@ def create_app(
                 item = json.loads(line)
             except ValueError:
                 item = None
-            if not isinstance(item, dict) or not ("questions" in item or "options" in item):
+            is_state_only = preset and isinstance(item, dict) and "questions" not in item and "question" not in item
+            if not isinstance(item, dict) or not ("questions" in item or "options" in item or is_state_only):
                 raise HTTPException(
                     400,
                     f"{source.name}: line {n} is neither a simple item (state, question, "
                     "options) nor a /v1/systemone request",
+                )
+            if is_state_only and not isinstance(item.get("state"), str):
+                return JSONResponse(
+                    {
+                        "detail": f"{source.name}: line {n} state must be a string",
+                        "code": "batch_state_invalid",
+                        "params": {"file": source.name, "line": n},
+                    },
+                    status_code=400,
                 )
         if not lines:
             raise HTTPException(400, f"{source} has no lines")
@@ -1743,6 +2303,28 @@ def create_app(
             raise HTTPException(400, "output must not be the input file")
         if not out.parent.is_dir() or not os.access(out.parent, os.W_OK):
             raise HTTPException(400, f"cannot write to {out.parent}")
+        caps = batch.capabilities()
+        if caps["restart"]:
+            try:
+                batch.validate_paths(source, out)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        choice = body.get("choice")
+        if choice is not None and (choice not in ("resume", "restart") or not caps["restart"]):
+            raise HTTPException(400, "choice requires Batch resume support and must be resume or restart")
+        stop_after = body.get("stop_after", 16)
+        if isinstance(stop_after, bool) or not isinstance(stop_after, int) or stop_after < 0:
+            raise HTTPException(400, "stop_after must be a non-negative integer")
+        if stop_after != 16 and not caps["stop_after"]:
+            raise HTTPException(400, "stop_after is unavailable in this Engine")
+        if caps["restart"] and choice and not batch.unfinished(out):
+            raise HTTPException(409, "Unfinished Batch no longer exists; start again without a choice")
+        if caps["restart"] and batch.unfinished(out) and choice is None:
+            return JSONResponse(
+                {"detail": "Unfinished Batch found; choose Resume or Restart.", "code": "batch_choice"}, status_code=409
+            )
+        if caps["restart"] and choice == "resume" and not Path(str(out) + ".part").exists():
+            raise HTTPException(409, "No partial output to resume; choose Restart to replace the unfinished record")
         concurrency = body.get("concurrency", 16)
         if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 256:
             raise HTTPException(400, "concurrency must be an integer between 1 and 256")
@@ -1773,6 +2355,11 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
+                preset,
+                lang,
+                choice,
+                stop_after,
+                caps["restart"],
             )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc

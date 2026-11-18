@@ -4,10 +4,48 @@ to the shipped one), cancelling, and the inputs refused."""
 
 import json
 import time
+from pathlib import Path
+
+import pytest
 
 from tests.e2e.support import EXAMPLES
 
 LABELLED = str(EXAMPLES / "questions.jsonl")  # simple basal-run items with gold: basal-calibrate takes them
+
+
+def test_conformal_and_kept_thresholds_on_real_model(ui, text_model, tmp_path):
+    model_id = text_model["id"]
+    options = ui.get("/api/calibrations", params={"id": model_id})["options"]
+    if not options["conformal"] or not options["keep_shipped"]:
+        pytest.skip("the installed Engine does not declare both calibration options")
+    available = ui.get("/api/calibrations/keep-options", params={"id": model_id})["types"]
+    if not available:
+        pytest.skip("the model and its execution mode have no compatible thresholds to keep")
+    kept = "noul" if "noul" in available else next(iter(available))
+    labelled = tmp_path / "synthetic.jsonl"
+    labelled.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "state": f"Synthetic example {i}: the sky is blue.",
+                    "question": "What color is the sky?",
+                    "options": ["blue", "green"],
+                    "gold": 0,
+                }
+            )
+            + "\n"
+            for i in range(24)
+        )
+    )
+    result = ui.run_job(
+        "/api/calibrate",
+        {"id": model_id, "input": str(labelled), "advanced": {"conformal": [0.8], "keep_shipped": [kept]}},
+        "calibrate",
+    )["result"]
+    fitted = json.loads(Path(result["file"]).read_text())
+    assert fitted["fitted_on"]["kept_shipped"] == [kept]
+    assert fitted["fitted_on"]["kept_shipped_from"]["file"] == Path(available[kept]).name
+    assert "0.8" in fitted["conformal"]["levels"]
 
 
 def task_input(path, n=40):

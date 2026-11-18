@@ -66,7 +66,8 @@ def child_request(path, body):
         def decisions_reply(response):
             if response.status_code != 200:
                 status, message, code = _child_error(response)
-                return httpx.Response(status, json=openai_error_body(status, message, code))
+                headers = {"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else {}
+                return httpx.Response(status, json=openai_error_body(status, message, code), headers=headers)
             return httpx.Response(200, json=decision_response(response.json(), spec, values))
 
         return internal, decisions_reply
@@ -81,7 +82,8 @@ def child_request(path, body):
         if response.status_code == 200:
             return response
         status, message, code = _child_error(response)
-        return httpx.Response(status, json=systemone_error_body(status, message, code))
+        headers = {"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else {}
+        return httpx.Response(status, json=systemone_error_body(status, message, code), headers=headers)
 
     return internal, systemone_reply
 

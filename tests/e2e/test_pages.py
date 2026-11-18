@@ -2,6 +2,7 @@
 Playground builds, sends and renders every question type, the load options dialog, Batch, History, Logs and Inspect."""
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -29,6 +30,26 @@ VIEWS = {
 }
 MANAGER_TABS = ("library", "usage", "benchmarks", "calibration")
 WAIT = 120_000  # ms: a decision of a large model, a model start
+
+
+def test_stalled_lanes_and_overload_explanation(page, text_model):
+    page.evaluate(
+        """id => updateDashboard({status:{models:[{id, state:'ready', health:{reachable:true,
+      status:'stalled', engine_call_s:42, running:3, queued:2, long:{running:1, queued:1}}}]}})""",
+        text_model["id"],
+    )
+    model = page.locator("#trafficModels .traffic-model")
+    sync_api.expect(model).to_contain_text("stalled")
+    assert not model.locator(".status-dot").evaluate("node => node.classList.contains('ready')")
+    sync_api.expect(page.locator("#trafficActivityCounts")).to_contain_text("Ready models: 0")
+    sync_api.expect(model).to_contain_text("Engine call age: 42 s")
+    sync_api.expect(model).to_contain_text("Main: 2 running · 1 queued; long: 1 running · 1 queued")
+    view(page, "playground")
+    page.select_option("#playgroundModel", text_model["id"])
+    page.evaluate("request => setRequest(request)", CHOICE)
+    page.route("**/api/decide", lambda route: route.fulfill(status=503, json={"error": "busy", "code": "OVERLOADED"}))
+    page.click("#sendButton")
+    sync_api.expect(page.locator("#decideError")).to_contain_text("Model is busy. Wait and retry.")
 
 
 @pytest.fixture(scope="module")
@@ -78,6 +99,16 @@ def view(page, name):
     assert not page.locator(".nav-tools").evaluate("(el) => el.open")
 
 
+def test_calibration_report_ignores_missing_optional_entries(page):
+    page.evaluate("""() => renderCalibrationReport({
+      fitted_on: {kept_shipped: null},
+      thresholds: {'0.01': null, '0.05': {per_type: {choice: null, noul: {icc: 0.2}}}},
+      conformal: {levels: {'0.7': null, '0.8': {per_type: {choice: null, noul: {}}}}}
+    })""")
+    text = page.locator("#reportDetails").text_content()
+    assert "0.2" in text and "0.8" in text and "noul" in text
+
+
 def open_request_settings(page):
     disclosure = page.locator("details.request-settings")
     if not disclosure.evaluate("(el) => el.open"):
@@ -107,6 +138,103 @@ def isolated_ui(tmp_path):
     yield app
     left = app.stop()
     assert not left, f"basal-serve children left running after Dashboard E2E: {left}"
+
+
+def test_calibration_file_messages_are_separate_and_escaped(browser, tmp_path):
+    # Snapshot of the calibration response; rendering does not require a model or fitting.
+    messages = [
+        "Warning: " + "The calibration data needs further review before use. " * 3,
+        "Error: " + "The saved report could not be checked for this model. " * 3,
+        "First warning: " + "Some labels were omitted from the fit. " * 4,
+        "Second warning: <img src=x onerror=alert(1)> " + "Review each result carefully. " * 4,
+    ]
+    data = {
+        "selected": "/synthetic.json",
+        "shipped": {"file": "/shipped.json", "context": {"mode": "eager", "layout": "canonical"}},
+        "files": [
+            {
+                "file": "/synthetic.json",
+                "when": 1700000000,
+                "imported": True,
+                "warning": messages[0],
+                "error": messages[1],
+                "warnings": messages[2:],
+                "has_report": True,
+                "rows": "/synthetic.jsonl",
+            }
+        ],
+    }
+    app = UI(tmp_path)
+    app.settings.write_text(json.dumps({"check_updates": False, "auto_load": False}))
+    app.start()
+    context = browser.new_context(viewport={"width": 1000, "height": 900}, service_workers="block")
+    context.route_web_socket("**/*", lambda ws: ws.close())
+    context.route(
+        "**/*", lambda route: route.continue_() if route.request.url.startswith(app.url + "/") else route.abort()
+    )
+    try:
+        page = context.new_page()
+        page.goto(app.url + "/")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_function("() => statusCache !== null")
+        page.evaluate(
+            """data => {
+          document.querySelector('#calibrationModel').innerHTML = '<option value="synthetic">synthetic</option>';
+          document.querySelector('[data-page=manager]').hidden = false;
+          document.querySelector('#manager-calibration').hidden = false;
+          renderCalibrationFiles('synthetic', data);
+        }""",
+            data,
+        )
+        row = page.locator("#calibrationFiles tbody tr").last
+        reasons = row.locator(".reason")
+        assert reasons.all_text_contents() == messages
+        assert row.locator("img").count() == 0
+        assert row.locator("input[type=radio]").is_checked()
+        assert row.locator("[data-report]").count() == row.locator("[data-refit]").count() == 1
+        boxes = [row.locator("label").bounding_box()] + [reasons.nth(i).bounding_box() for i in range(4)]
+        assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(boxes, boxes[1:], strict=False))
+    finally:
+        context.close()
+        assert not app.stop()
+
+
+@pytest.mark.parametrize("width", [390, 1099, 1100, 1440, 1920])
+def test_polish_navigation_hit_targets_and_keyboard(browser, isolated_ui, width):
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    page = context.new_page()
+    try:
+        page.goto(isolated_ui.url)
+        page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
+        page.reload()
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache")
+        settings = page.locator("#openSettings")
+        tools = page.locator(".nav-tools > summary")
+        settings.click(timeout=5000)
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        tools.click(timeout=5000)
+        assert page.locator(".nav-tools").evaluate("(el) => el.open")
+        tools.press("Enter")
+        assert not page.locator(".nav-tools").evaluate("(el) => el.open")
+        tools.focus()
+        tools.press("Tab")
+        assert settings.evaluate("(el) => document.activeElement === el")
+        assert settings.evaluate(
+            "(el) => getComputedStyle(el).outlineStyle !== 'none' || getComputedStyle(el).boxShadow !== 'none'"
+        )
+        settings.press("Enter")
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert page.evaluate("""() => {
+            const el = document.createElement('h3');
+            document.querySelector('.model-card-body').append(el);
+            const style = getComputedStyle(el);
+            const ratio = parseFloat(style.lineHeight) / parseFloat(style.fontSize);
+            el.remove();
+            return ratio >= 1.2 && ratio <= 1.3;
+        }""")
+    finally:
+        context.close()
 
 
 def test_dashboard_default_records_real_decisions_and_resets_model_traffic(browser, isolated_ui, text_model):
@@ -803,6 +931,74 @@ def test_string_state_is_preserved_until_the_state_field_is_edited(page):
     page.evaluate("state => setRequest({state, questions: {}})", literal)
     page.fill("#stateInput", '{"edited": true}')
     assert page.evaluate("() => buildRequest().state") == {"edited": True}
+
+
+def test_question_set_insertion_preserves_request_and_sends(page, text_model):
+    if not feature("presets"):
+        pytest.skip("the Engine has no question sets")
+    view(page, "playground")
+    page.select_option("#playgroundModel", text_model["id"])
+    request = {
+        "state": "This is a billing complaint.",
+        "questions": {"urgency": {"type": "noul", "instructions": "Is it urgent?"}},
+        "facts": "auto",
+        "lang": "en",
+    }
+    page.evaluate("r => setRequest(r)", request)
+    page.locator("#questionSets summary").click()
+    page.select_option("#questionSet", "triage")
+    page.select_option("#questionSetLang", "en")
+    page.fill("#questionSetError", "0.05")
+    page.click("#insertQuestionSet")
+    page.wait_for_function("() => document.querySelectorAll('.q-name').length === 4")
+    for name in ("urgency_2", "category", "needs_human"):
+        card = page.locator(".question").filter(has=page.locator(f'.q-name[value="{name}"]'))
+        card.locator(".q-instructions-input").fill(f"Edited {name}?")
+    built = page.evaluate("() => buildRequest()")
+    for name in ("urgency_2", "category", "needs_human"):
+        assert built["questions"][name]["max_error"] == 0.05
+    assert built["state"] == request["state"] and built["facts"] == "auto" and built["lang"] == "en"
+    assert built["questions"]["urgency"] == request["questions"]["urgency"]
+    assert built["questions"]["urgency_2"]["max_error"] == 0.05
+    open_request_settings(page)
+    page.check("#editJsonToggle")
+    page.click("#insertQuestionSet")
+    page.wait_for_function(
+        "() => Object.keys(JSON.parse(document.querySelector('#requestJson').value).questions).length === 7"
+    )
+    merged = json.loads(page.input_value("#requestJson"))
+    assert merged["state"] == built["state"] and merged["facts"] == "auto" and merged["lang"] == "en"
+    assert all(merged["questions"][key] == value for key, value in built["questions"].items())
+    assert merged["questions"]["urgency_3"]["max_error"] == 0.05
+    page.uncheck("#editJsonToggle")
+    if os.environ.get("BASAL_E2E_QUESTION_SETS_SCREENSHOT"):
+        page.locator("details.request-settings summary").click()
+        if page.locator("#quickActionsRail").is_visible():
+            page.locator("#toggleQuickActions").click()
+        page.screenshot(path=os.environ["BASAL_E2E_QUESTION_SETS_SCREENSHOT"])
+    with page.expect_response(lambda response: response.url.endswith("/api/decide"), timeout=WAIT) as decision:
+        page.click("#sendButton")
+    response = decision.value
+    assert response.status == 200
+    sent = response.request.post_data_json
+    for name in ("urgency_2", "category", "needs_human"):
+        assert sent["questions"][name]["max_error"] == 0.05
+        assert sent["questions"][name]["instructions"] == f"Edited {name}?"
+        assert isinstance(response.json()["answers"][name]["abstain"], bool)
+    page.wait_for_selector("#results article.answer")
+    sync_api.expect(page.locator("#decideError")).to_be_hidden()
+    sync_api.expect(page.locator("#results article.answer")).to_have_count(7)
+
+
+def test_question_set_controls_show_translated_unsupported_reason(page):
+    page.route("**/api/question-sets", lambda route: route.fulfill(status=503, json={"detail": "unavailable"}))
+    page.evaluate("() => localStorage.setItem('basal-ui.lang', 'pl')")
+    page.reload()
+    view(page, "playground")
+    page.locator("#questionSets summary").click()
+    sync_api.expect(page.locator("#questionSetHint")).to_have_text("Zestawy pytań są niedostępne w tym silniku.")
+    for control in ("#questionSet", "#questionSetLang", "#questionSetError", "#insertQuestionSet"):
+        sync_api.expect(page.locator(control)).to_be_disabled()
 
 
 def test_edit_json_rebuilds_the_builder_and_keeps_invalid_json_open(page):
@@ -1775,6 +1971,286 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+@pytest.mark.parametrize(
+    ("language", "skip", "dashboard", "models"),
+    [("en", "Skip to main content", "Dashboard", "Models"), ("pl", "Przejdź do treści głównej", "Pulpit", "Modele")],
+)
+def test_keyboard_view_navigation_and_model_tabs(browser, ui, language, skip, dashboard, models):
+    context = browser.new_context()
+    page = context.new_page()
+    page.add_init_script(f"localStorage.setItem('basal-ui.lang', '{language}')")
+    page.goto(ui.url + "/#dashboard")
+    sync_api.expect(page).to_have_title(f"{dashboard} | basal")
+    page.keyboard.press("Tab")
+    link = page.get_by_role("link", name=skip)
+    sync_api.expect(link).to_be_focused()
+    page.keyboard.press("Enter")
+    sync_api.expect(page.locator("main")).to_be_focused()
+    page.keyboard.press("Alt+2")
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    for _ in range(12):
+        if page.locator('#models [role="tab"][aria-selected="true"]').evaluate("el => el === document.activeElement"):
+            break
+        page.keyboard.press("Tab")
+    selected = page.locator('#models [role="tab"][aria-selected="true"]')
+    sync_api.expect(selected).to_be_focused()
+    for key, target in [
+        ("End", "allModelsTab"),
+        ("ArrowLeft", "suggestedTab"),
+        ("ArrowRight", "allModelsTab"),
+        ("Home", "suggestedTab"),
+    ]:
+        page.keyboard.press(key)
+        tab = page.locator(f"#{target}")
+        sync_api.expect(tab).to_be_focused()
+        sync_api.expect(tab).to_have_attribute("aria-selected", "true")
+        sync_api.expect(tab).to_have_attribute("tabindex", "0")
+        sync_api.expect(page.locator('#models [role="tab"][aria-selected="false"]')).to_have_attribute("tabindex", "-1")
+    page.evaluate("() => new Promise(resolve => document.addEventListener('app:status', resolve, {once: true}))")
+    sync_api.expect(page.locator("#suggestedTab")).to_be_focused()
+    page.keyboard.press("Alt+1")
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    page.go_back()
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    page.reload()
+    page.keyboard.press("Tab")
+    sync_api.expect(link).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    context.close()
+
+
+@pytest.mark.parametrize("fragment", ["", "#dashboard", "#manager/calibration"])
+def test_initial_keyboard_focus_preserves_requested_url(browser, ui, fragment):
+    context = browser.new_context()
+    page = context.new_page()
+    page.add_init_script("""(() => {
+      window.historyWrites = [];
+      for (const method of ['pushState', 'replaceState']) {
+        const original = history[method];
+        history[method] = function(...args) { window.historyWrites.push(args[2]); return original.apply(this, args); };
+      }
+    })()""")
+    seen = []
+
+    def check_url(route):
+        seen.append(page.evaluate("location.hash"))
+        route.continue_()
+
+    page.route("**/static/app.js", check_url)
+    page.goto(ui.url + "/" + fragment)
+    assert seen == [fragment]
+    if fragment:
+        assert page.evaluate("location.hash") == fragment
+        assert page.evaluate("window.historyWrites") == []
+    page.keyboard.press("Tab")
+    sync_api.expect(page.locator(".skip-link")).to_be_focused()
+    context.close()
+
+
+def test_failed_script_preserves_deep_link(browser, ui):
+    context = browser.new_context()
+    page = context.new_page()
+    page.route("**/static/app.js", lambda route: route.abort())
+    page.goto(ui.url + "/#manager/calibration")
+    assert page.evaluate("location.hash") == "#manager/calibration"
+    context.close()
+
+
+def test_fetch_draft_generation_and_replay_do_not_submit(page):
+    view(page, "playground")
+    page.evaluate("""() => {
+      const original = window.fetch; window.pendingFetch = []; window.decisionCount = 0;
+      window.fetch = (url, options) => {
+        if (url === '/api/decide') { window.decisionCount++; return original(url, options); }
+        if (url !== '/api/fetch') return original(url, options);
+        return new Promise(resolve => window.pendingFetch.push(resolve));
+      };
+      window.completeFetch = (index, state, url) => window.pendingFetch[index](new Response(JSON.stringify({
+        url, final_url:url, content_type:'application/json', bytes:4, truncated:false, state
+      }), {status:200, headers:{'Content-Type':'application/json'}}));
+    }""")
+    page.click("#openFetchDialog")
+    page.fill("#fetchUrl", "https://example.com/first")
+    page.click("#fetchSubmit")
+    page.keyboard.press("Control+Enter")
+    page.click("#fetchCancel")
+    page.click("#openFetchDialog")
+    page.fill("#fetchUrl", "https://example.com/second")
+    page.click("#fetchSubmit")
+    page.evaluate("() => completeFetch(0, 'old', 'https://example.com/first')")
+    sync_api.expect(page.locator("#fetchSubmit")).to_be_disabled()
+    page.evaluate("() => completeFetch(1, {source_url:'inside',value:null}, 'https://example.com/second')")
+    sync_api.expect(page.locator("#fetchDialog")).not_to_be_visible()
+    assert page.evaluate("buildRequest().state") == {"source_url": "inside", "value": None}
+    assert page.evaluate("buildRequest().source_url") == "https://example.com/second"
+    assert page.evaluate("window.decisionCount") == 0
+    page.click("#openFetchDialog")
+    page.fill("#fetchUrl", "https://example.com/third")
+    page.click("#fetchSubmit")
+    page.evaluate("""() => { const input = $('#stateInput'); input.value = 'new draft';
+      input.dispatchEvent(new Event('input', {bubbles:true})); }""")
+    page.evaluate("() => completeFetch(2, 'stale', 'https://example.com/third')")
+    assert page.input_value("#stateInput") == "new draft"
+    assert page.evaluate("buildRequest().source_url") == "https://example.com/second"
+    page.click("#fetchCancel")
+    page.evaluate("""() => replayRequest({model:$('#playgroundModel').value, replay_request:{
+      state:null, questions:{q:{type:'choice',criteria:['a','b']}}, source_url:'https://example.com/recorded'}})""")
+    sync_api.expect(page.locator("#openFetchDialog")).to_be_hidden()
+    assert page.evaluate("buildRequest().state") is None
+    assert "https://example.com/recorded" in page.locator("#fetchProvenance").inner_text()
+    page.evaluate("""() => setRequest({state:'ordinary',questions:{q:{type:'choice',criteria:['a','b']}},
+      source_url:'https://example.com/saved'})""")
+    sync_api.expect(page.locator("#openFetchDialog")).to_be_visible()
+    assert page.evaluate("window.pendingFetch.length") == 3
+
+
+def test_batch_refused_resume_offers_confirmed_restart_with_original_output(page, ui, text_model, tmp_path):
+    if not ui.get("/api/batch/capabilities")["restart"]:
+        pytest.skip("installed Engine does not support Batch resume")
+    source = tmp_path / "requests.jsonl"
+    source.write_text(
+        '{"state":"A customer asks for help.","question":"Choose a reply", "options":["Help", "Ignore"]}\n'
+    )
+    out = tmp_path / "original.jsonl"
+    part = tmp_path / "original.jsonl.part"
+    part.write_text('{"id":0,"prediction":0}\n')
+    (tmp_path / "original.jsonl.part.json").write_text("{}")
+    view(page, "batch")
+    page.select_option("#batchModel", text_model["id"])
+    page.fill("#batchInput", str(source))
+    page.fill("#batchOutput", str(out))
+    page.click("#runBatch")
+    sync_api.expect(page.locator("#batchChoiceDialog")).to_be_visible()
+    page.locator('#batchChoiceDialog button[value="resume"]').click()
+    sync_api.expect(page.locator("#restartStoppedBatch")).to_be_visible(timeout=WAIT)
+    assert part.read_text() == '{"id":0,"prediction":0}\n'
+    other = tmp_path / "other.jsonl"
+    page.fill("#batchOutput", str(other))
+    page.locator("#restartStoppedBatch").focus()
+    page.evaluate("async () => { await refreshStatus(); await refreshStatus(); }")
+    sync_api.expect(page.locator("#restartStoppedBatch")).to_be_focused()
+    page.click("#restartStoppedBatch")
+    sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
+    sync_api.expect(page.locator("#confirmDescription")).to_contain_text(str(out))
+    page.click("#confirmCancel")
+    assert part.read_text() == '{"id":0,"prediction":0}\n'
+    page.click("#restartStoppedBatch")
+    page.click("#confirmAccept")
+    sync_api.expect(page.locator("#batchSummary")).to_contain_text("1 item", timeout=WAIT)
+    assert out.exists() and not other.exists()
+
+
+def test_mcp_picker_merge_refresh_and_token_is_not_saved(page):
+    view(page, "playground")
+    original = {"type": "function", "function": {"name": "local", "description": "Local", "parameters": {}}}
+    page.evaluate(
+        "tool => setRequest({state: 'x', questions: {q: {type: 'tool', instructions: 'weather', tools: [tool]}}})",
+        original,
+    )
+    catalogue = [
+        {"name": "weather", "description": "Forecast", "inputSchema": {"type": "object"}},
+        {"name": "clock", "description": "Time", "inputSchema": {"type": "object"}},
+    ]
+    bodies = []
+
+    def imported(route):
+        bodies.append(route.request.post_data_json)
+        route.fulfill(json={"tools": catalogue})
+
+    page.route("**/api/mcp/tools", imported)
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-url").fill("http://localhost:9000/mcp")
+    page.locator("#mcp-token").fill("test-secret")
+    page.locator("#mcp-import").click()
+    sync_api.expect(page.locator(".mcp-item")).to_have_count(2)
+    page.locator(".mcp-item").nth(1).locator("input").uncheck()
+    page.locator("#mcp-apply").click()
+    question = page.evaluate("() => buildRequest().questions.q")
+    assert question["tools"] == [original, catalogue[0]]
+    assert question["_mcp_source"]["selected"] == ["weather"]
+    assert bodies[0]["token"] == "test-secret"
+    assert "test-secret" not in json.dumps(question)
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-import").click()
+    sync_api.expect(page.locator(".mcp-item")).to_have_count(2)
+    assert page.locator(".mcp-item").nth(0).locator("input").is_checked()
+    assert not page.locator(".mcp-item").nth(1).locator("input").is_checked()
+    assert "token" not in bodies[1]
+    page.locator("#mcp-close").click()
+
+
+def test_mcp_picker_ignores_late_result_after_close(page):
+    view(page, "playground")
+    page.evaluate("() => setRequest({state:'x', questions:{q:{type:'tool',tools:[{name:'local',inputSchema:{}}]}}})")
+    page.evaluate("""() => {
+      window.originalFetch = window.fetch;
+      window.fetch = (url, options) => String(url) === '/api/mcp/tools'
+        ? new Promise(resolve => { window.finishMcp = () => resolve(new Response(JSON.stringify({tools:[{name:'late',inputSchema:{}}]}), {status:200})); })
+        : window.originalFetch(url, options);
+    }""")
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-url").fill("http://localhost:9000/mcp")
+    page.locator("#mcp-token").fill("temporary-secret")
+    page.locator("#mcp-import").click()
+    page.wait_for_function("() => !!window.finishMcp")
+    page.locator("#mcp-close").click()
+    page.evaluate(
+        "() => { setRequest({state:'new', questions:{other:{type:'tool',tools:[{name:'current',inputSchema:{}}]}}}); window.finishMcp(); }"
+    )
+    page.locator(".mcp-open").click()
+    assert page.locator(".mcp-item").count() == 0
+    assert page.locator("#mcp-token").input_value() == ""
+    assert page.evaluate("() => buildRequest().questions.other.tools[0].name") == "current"
+    assert "temporary-secret" not in page.evaluate("() => JSON.stringify({...localStorage, ...sessionStorage})")
+    page.locator("#mcp-close").click()
+    page.evaluate("() => { window.fetch = window.originalFetch; }")
+
+
+def test_mcp_language_draft_keeps_offline_tools_without_token(page):
+    view(page, "playground")
+    request = {
+        "state": {"_mcp_source": "business"},
+        "questions": {
+            "q": {
+                "type": "tool",
+                "tools": [{"name": "weather", "inputSchema": {"_mcp_source": "schema"}}],
+                "_mcp_source": {"url": "http://localhost:9000/mcp", "selected": ["weather"]},
+            }
+        },
+    }
+    page.evaluate("request => setRequest(request)", request)
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-token").fill("draft-secret")
+    draft = page.evaluate(
+        "() => { preparePlaygroundLanguageSwitch(); return sessionStorage.getItem('basal-ui.language-draft'); }"
+    )
+    assert "draft-secret" not in draft
+    page.locator("#mcp-close").click()
+    page.evaluate("() => restorePlaygroundLanguageDraft()")
+    assert page.evaluate("() => buildRequest()") == request
+
+
+def test_mcp_picker_shortlists_existing_tools_offline(page):
+    view(page, "playground")
+    tools = [{"name": f"tool{i}", "description": "ordinary", "inputSchema": {}} for i in range(12)]
+    tools[8] = {"type": "function", "function": {"name": "weather", "description": "forecast", "parameters": {}}}
+    source = {"url": "http://localhost:9000/mcp", "selected": ["weather", "tool0"]}
+    page.evaluate(
+        "([tools, source]) => setRequest({state:'x',questions:{q:{type:'tool',instructions:'forecast',tools,_mcp_source:source}}})",
+        [tools, source],
+    )
+    page.locator(".mcp-open").click()
+    page.locator("#mcp-k").fill("2")
+    page.locator("#mcp-shortlist").click()
+    sync_api.expect(page.locator(".mcp-item")).to_have_count(2)
+    page.locator("#mcp-apply").click()
+    question = page.evaluate("() => buildRequest().questions.q")
+    assert question["tools"] == [tools[8], tools[0]]
+    assert question["_mcp_source"] == source
 
 
 def test_library_totals_and_setup_for_not_downloaded_model(browser, isolated_ui):

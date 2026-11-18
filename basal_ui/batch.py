@@ -3,6 +3,13 @@ loaded model's private basal-serve; the answers go to a JSONL file, one line per
 to the child: they are not counted in the statistics or the history (as benchmarks)."""
 
 import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+from functools import lru_cache
+from itertools import combinations
 from pathlib import Path
 
 from .jobs import run_tool
@@ -13,11 +20,114 @@ def default_output(input_path) -> Path:
     return path.with_name(f"{path.stem}.answers.jsonl")
 
 
-def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, early_exit=None) -> dict:
+@lru_cache(maxsize=1)
+def capabilities():
+    try:
+        help_text = subprocess.run(
+            [sys.executable, "-m", "basal.run", "--help"], capture_output=True, text=True, timeout=30, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        help_text = ""
+    return {"restart": "--restart" in help_text, "stop_after": "--stop-after" in help_text}
+
+
+def unfinished(output_path):
+    part = Path(str(output_path) + ".part")
+    return part.exists() or Path(str(part) + ".json").exists()
+
+
+def validate_paths(source, output):
+    part = Path(str(output) + ".part")
+    artifacts = (part, Path(str(part) + ".json"), Path(str(part) + ".json.tmp"))
+    for artifact in artifacts:
+        try:
+            info = artifact.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or info.st_nlink > 1:
+            raise ValueError("Batch checkpoint files must not be symbolic links or hard links")
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Batch checkpoint files must be regular files")
+    for left, right in combinations((source, output, *artifacts), 2):
+        try:
+            same = os.path.samefile(left, right)
+        except OSError:
+            same = False
+        if same or Path(left).resolve() == Path(right).resolve():
+            raise ValueError("input, output and Batch checkpoint files must be distinct")
+
+
+def run_batch(
+    job,
+    fleet,
+    model_id,
+    input_path,
+    output_path,
+    concurrency=16,
+    early_exit=None,
+    preset=None,
+    lang="auto",
+    choice=None,
+    stop_after=16,
+    restart_supported=False,
+) -> dict:
     """The batch job: basal-run in its own process (it writes the output file at the end); a cancel stops it."""
     runner = fleet.ready(model_id)
-    total = sum(1 for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip())
+    if restart_supported:
+        validate_paths(input_path, output_path)
+    if restart_supported and choice and not unfinished(output_path):
+        raise RuntimeError("Unfinished Batch no longer exists; start again without a choice.")
+    if restart_supported and unfinished(output_path) and choice not in ("resume", "restart"):
+        raise RuntimeError("Unfinished Batch found; choose Resume or Restart before starting.")
+    if restart_supported and choice == "resume" and not Path(str(output_path) + ".part").exists():
+        raise RuntimeError("No partial output to resume; choose Restart to replace the unfinished record.")
+
+    class Number(str):
+        pass
+
+    def parse(line):
+        try:
+            return json.loads(line, parse_int=Number, parse_float=Number, parse_constant=Number)
+        except json.JSONDecodeError:
+            return None
+
+    def metadata(item):
+        questions = item.get("questions") if isinstance(item, dict) else None
+        return (
+            [question for question in questions.values() if isinstance(question, dict) and "_mcp_source" in question]
+            if isinstance(questions, dict)
+            else []
+        )
+
+    def write_value(target, value):
+        stack = [(False, value)]
+        while stack:
+            raw, item = stack.pop()
+            if raw or isinstance(item, Number):
+                target.write(item)
+            elif isinstance(item, (list, dict)):
+                entries = list(item.items()) if isinstance(item, dict) else list(enumerate(item))
+                target.write("{" if isinstance(item, dict) else "[")
+                stack.append((True, "}" if isinstance(item, dict) else "]"))
+                for index in range(len(entries) - 1, -1, -1):
+                    key, child = entries[index]
+                    if index < len(entries) - 1:
+                        stack.append((True, ","))
+                    stack.append((False, child))
+                    if isinstance(item, dict):
+                        stack.append((True, json.dumps(key) + ":"))
+            else:
+                target.write(json.dumps(item))
+
+    total, changed = 0, False
+    with Path(input_path).open(encoding="utf-8", newline="") as source:
+        for line in source:
+            job.check()
+            total += bool(line.strip())
+            if not changed:
+                changed = bool(metadata(parse(line)))
     job.progress("running", 0, total)
+    job.check()
     args = [
         "--input",
         str(input_path),
@@ -30,7 +140,74 @@ def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, ear
     ]
     if early_exit:
         args += ["--early-exit", str(early_exit)]
-    summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
+    if choice == "restart":
+        args.append("--restart")
+    if stop_after != 16:
+        args += ["--stop-after", str(stop_after)]
+    if preset:
+        args += ["--preset", preset]
+    if lang in ("pl", "en"):
+        args += ["--lang", lang]
+    try:
+        if not changed and not preset:
+            summary = run_tool(job, "run", args)
+        else:
+            if preset:
+                from basal.presets import questions as build_questions
+
+            with tempfile.TemporaryDirectory(prefix="basal-ui-batch-") as directory:
+                clean_input = Path(directory) / "input.jsonl"
+                with (
+                    Path(input_path).open(encoding="utf-8", newline="") as source,
+                    clean_input.open("w", encoding="utf-8", newline="") as target,
+                ):
+                    for line in source:
+                        job.check()
+                        if preset and not line.strip():
+                            continue
+                        item = parse(line)
+                        stored_metadata = metadata(item)
+                        expand = (
+                            preset and isinstance(item, dict) and "questions" not in item and "question" not in item
+                        )
+                        if expand:
+                            state = json.loads(line)["state"]
+                            item["questions"] = build_questions(preset, None if lang == "auto" else lang, state)
+                        if stored_metadata or expand:
+                            for question in stored_metadata:
+                                del question["_mcp_source"]
+                            write_value(target, item)
+                            if line.endswith("\r\n"):
+                                target.write("\r\n")
+                            elif line.endswith(("\r", "\n")):
+                                target.write(line[-1])
+                        else:
+                            target.write(line)
+                args[1] = str(clean_input)
+                job.check()
+                summary = run_tool(job, "run", args)
+
+    except RuntimeError as exc:
+        part = Path(str(output_path) + ".part")
+        if restart_supported and part.exists():
+            from .jobs import Resumable
+
+            with part.open("rb") as checkpoint:
+                done = sum(1 for line in checkpoint if line.endswith(b"\n") and line.strip())
+            job.progress("stopped_resumable", done, total)
+            raise Resumable(
+                str(exc),
+                {
+                    "id": model_id,
+                    "input": str(input_path),
+                    "output": str(output_path),
+                    "concurrency": concurrency,
+                    "early_exit": early_exit,
+                    "stop_after": stop_after,
+                    **({"preset": preset, "lang": lang} if preset else {}),
+                },
+            ) from exc
+        raise
     if summary is None:
         raise RuntimeError("basal-run printed no summary")
     job.progress("running", total, total)
