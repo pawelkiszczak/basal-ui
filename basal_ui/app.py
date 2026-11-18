@@ -658,7 +658,7 @@ def create_app(
             "decision_servers": servers,
             "serving": gateway.status(),
             "inspect": inspector.state(),
-            "features": {name: engine.feature(name) for name in ("answer_sets", "conditional_questions")},
+            "features": {name: engine.feature(name) for name in ("answer_sets", "conditional_questions", "rank")},
         }
 
     @app.get("/api/decision-servers")

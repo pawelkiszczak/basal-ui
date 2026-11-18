@@ -200,6 +200,8 @@ Comparison requests reject basal-only fields and question types, too many option
 
 ![A basal Decision and a Comparison Decision side by side](images/external-comparison.png)
 
+Experimental rank questions accept candidates one per line, optionally as `key: text`. Groups and priors are JSON objects keyed by candidate key. Instructions must contain `{candidate}`. The result lists the Engine ranking in its returned order, including scores and optional choice and yes values. Rank is unavailable when the installed Engine lacks the feature. [Rank editor screenshot](images/playground-rank.png) and [ranking result](images/playground-rank-result.png).
+
 ## Playground comparison, API examples and calibration evidence
 
 **Compare loaded models** runs the current request against two different ready models. Both receive the same

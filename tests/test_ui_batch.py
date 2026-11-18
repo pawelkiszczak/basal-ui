@@ -781,3 +781,28 @@ def test_deep_batch_reaches_fake_child_via_native_cli(client, child, tmp_path):
     for _ in range(600):
         leaf = leaf["child"]
     assert leaf["_mcp_source"] == "business" and source.read_text() == original
+
+
+def test_rank_passes_through_and_records_history_and_stats(client, child):
+    question = {
+        "type": "rank",
+        "instructions": "Does {candidate} match?",
+        "candidates": [{"key": "a", "text": "first", "group": "g"}, {"key": "b", "text": "second"}],
+        "prior": {"a": 1.5},
+        "top": 2,
+    }
+    answer = {"type": "rank", "ranking": [{"key": "a", "score": 1.2}], "top": "a", "candidates": 2, "requests": 2}
+    child.reply = {"answers": {"q": answer}}
+    body = {"state": "test", "questions": {"q": question}}
+    response = client.post("/api/decide", json={"model": "mini", **body})
+    assert response.json()["answers"]["q"] == answer
+    assert child.seen[-1] == ("/v1/systemone", body)
+    record = client.get("/api/history").json()["items"][0]
+    assert record["answers"]["q"] == {"type": "rank", "best": "a", "confidence": None}
+    stored = client.get(f"/api/history/{record['id']}").json()
+    assert stored["replay_request"]["questions"]["q"] == question
+    assert stored["response"]["answers"]["q"] == answer
+    assert client.get("/api/stats").json()["models"]["mini"]["by_type"]["rank"] == {
+        "questions": 1,
+        "avg_best_prob": None,
+    }
