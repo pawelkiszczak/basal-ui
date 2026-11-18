@@ -212,7 +212,8 @@ disconnects during persistence; 499 identifies cancellation while forwarding is 
 
 `GET /v1/stats` returns basal-ui's statistics: `{"models": {id: {"requests", "questions", "errors", "input_tokens",
 "avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
-"avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
+"avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. Determinism results preserve the Engine’s optional
+`determinism.load_errors` count. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
 
 ### Prometheus metrics
@@ -637,3 +638,7 @@ A failed entry can leave earlier entries saved. Request preset root `model` is r
 `POST /api/mcp/tools` accepts `{ "url": "http://localhost:PORT/mcp", "token": "..." }` (token optional) and returns `{ "tools": [...] }`. It initializes a streamable HTTP MCP session and follows up to 20 pages within a 10-second operation and 4 MiB response budget. Explicit loopback servers are allowed; other hosts must resolve exclusively to public unicast addresses, and bearer tokens for remote hosts require HTTPS. The token is operation-only; failures include an English `detail` and a `code`.
 `POST /api/tools/shortlist` accepts `{ "tools": [...], "query": "...", "k": 40 }` and returns ranked original definitions in `tools`. Ranking uses local BM25 and does not call a model or an MCP tool.
 Load options use the installed Engine parser's `long_lane` choices and default. `soam` accepts `auto`, `on`, or `off`; `auto` sends no flag. Legacy `long_lane: true` stays on and `false` inherits the installed Engine's default. If a load preset uses `long_lane: auto` on an Engine without that choice, it uses the installed Engine's default. Legacy boolean `soam` values migrate to `auto` or `off`. A model status may include `calibration_origin_warning` and `calibration_origin_warning_code` when the Engine reports a calibration fitted on other model files.
+
+### Load option availability
+
+`GET /api/models/options?id=...` includes Native `kind` and `compiled` on mode rows, and returns `unavailable`, a map of option keys to reasons when the installed Engine lacks support. Saved values remain visible; submitting an unavailable non-default value is refused. `PUT /api/models/options` saves validated non-default values. Existing load presets and their import/export carry these option values.
