@@ -531,7 +531,13 @@ def create_app(
                 {**{k: v for k, v in server.items() if k in ("id", "name", "url", "consent", "state")}}
                 for server in fleet.decision_servers.values()
             ]
-        return {**status, "decision_servers": servers, "serving": gateway.status(), "inspect": inspector.state()}
+        return {
+            **status,
+            "decision_servers": servers,
+            "serving": gateway.status(),
+            "inspect": inspector.state(),
+            "features": {name: engine.feature(name) for name in ("answer_sets", "conditional_questions")},
+        }
 
     @app.get("/api/decision-servers")
     def get_decision_servers():

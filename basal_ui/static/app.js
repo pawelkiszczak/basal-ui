@@ -24,7 +24,7 @@ async function api(path, options={}) {
     const upstream=raw.match(/^Comparison server returned HTTP (\d+)$/);
     const message=code==='UNSUPPORTED_FOR_COMPARISON'?comparisonFailure(raw):code==='CONSENT_REQUIRED'?t('Consent is required to send requests to {host}',{host:raw.split(' ').at(-1)}):upstream?t('Comparison server returned HTTP {status}',{status:upstream[1]}):code?ts(t(raw),code,data.params):t(raw);
     const id=response.headers.get('x-request-id');
-    const error=new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`); error.code=data?.code; throw error;
+    const error=new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`); error.code=data?.code; error.status=response.status; error.detail=raw; throw error;
   }
   return data;
 }
@@ -494,7 +494,8 @@ loadQuestionSets();
 // Question builder: one card per question, a type-specific fieldset; fields the builder does not own stay on the card
 // (card._extra) and are merged back, so Edit JSON → builder → JSON keeps them.
 const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract'];
-const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['act','tool','classify','verify','extract'];
+const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['choice','noul','score','act','tool','classify','verify','extract'];
+const SHARED_QUESTION_FIELDS=['coverage','ask_if','depends_on'];
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
 let presetData={load:{},request:{}},presetTarget='load',presetGeneration=0;
@@ -681,7 +682,9 @@ function updateCardVisibility(card) {
   const multiTool=type==='tool'&&on('multi');
   show('.evidence-only',EVIDENCE_TYPES.includes(type)&&!multiTool);
   show('.max-error-only',MAX_ERROR_TYPES.includes(type)&&!multiTool);
-  const custom=$('[data-f="max_error_custom"]',card); if(custom)custom.hidden=$('[data-f="max_error"]',card).value!=='custom';
+  const maxError=$('[data-f="max_error"]',card), plain=['choice','noul','score'].includes(type);
+  if(maxError){maxError.disabled=plain&&!statusCache?.features?.answer_sets;maxError.title=maxError.disabled?t('This Engine does not support answer sets and abstention.'):'';}
+  const custom=$('[data-f="max_error_custom"]',card); if(custom){custom.hidden=$('[data-f="max_error"]',card).value!=='custom';custom.disabled=plain&&!statusCache?.features?.answer_sets;}
   const objective=$('[data-f="objective"]',card); show('.set-threshold',!objective||objective.value==='threshold');
   show('.multi-only',on('multi_label')); show('.single-only',type==='classify'&&!on('multi_label'));
   show('.multi-tool-only',multiTool);
@@ -692,7 +695,7 @@ function updateCardVisibility(card) {
 }
 // every value the user can change on a card (the cost matrix too): equal to the rendered one = nothing was edited
 function cardSnapshot(card) {
-  return JSON.stringify([...card.querySelectorAll('input,select,textarea')].filter(x=>!x.matches('.q-name'))
+  return JSON.stringify([...card.querySelectorAll('input,select,textarea')].filter(x=>!x.matches('.q-name')&&!x.closest('.q-shared'))
     .map(x=>x.type==='checkbox'||x.type==='radio'?x.checked:x.value).concat([card._costMode??null]));
 }
 // the request a card was made from, to give it back exactly where the user did not edit it: the builder's own text
@@ -719,7 +722,9 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
   const orig=card._orig&&card._orig.type===type?card._orig:null, box=$('.q-error',card);
   if(orig&&cardSnapshot(card)===orig.snapshot){  // nothing edited: the request as it came
     card._error=null; if(box){box.textContent='';box.hidden=true;}
-    return [name,structuredClone(orig.q)];
+    const unchanged=structuredClone(orig.q);
+    SHARED_QUESTION_FIELDS.forEach(k=>{if(Object.hasOwn(card._extra,k))unchanged[k]=structuredClone(card._extra[k]);else delete unchanged[k];});
+    return [name,unchanged];
   }
   const el=f=>$(`[data-f="${f}"]`,card), str=f=>(el(f)?.value??'').trim(), num=f=>str(f)===''?undefined:Number(str(f)), on=f=>Boolean(el(f)?.checked);
   const q={type}, errors=ChoiceEditor.errors(card), editor=ChoiceEditor.read(card), set=(k,v)=>{if(v!==undefined&&v!==''&&!(Array.isArray(v)&&!v.length))q[k]=v;};
@@ -904,6 +909,7 @@ function buildRequest() {
     if(invalid)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
     names.add(name);
     const [,q]=parseQuestionCard(card);
+    if(card._hideCoverage)delete q.coverage;
     const rowErrors=ChoiceEditor.errors(card);
     if(rowErrors.length)throw new Error(`${name}: ${rowErrors.join(' ')}`);
     if(!invalid)questions[name]=q;
@@ -932,25 +938,109 @@ function syncRequest(force=false, keys=['media','detail']) {
   }
   renderStateEstimate();
 }
+function renderSharedFields(card) {
+  const host=$('.q-shared',card), type=$('.q-type',card).value, features=statusCache?.features||{};
+  if(!host)return;
+  const coverage=['choice','noul','score'].includes(type)
+    ?qField('Coverage',`<input class="input" type="number" data-shared-coverage min="0" max="1" step="0.01" value="${esc(card._extra.coverage??'')}" ${features.answer_sets?'':'disabled'}>`):'';
+  host.innerHTML=`${coverage}${coverage&&!features.answer_sets?`<small class="muted">${t('This Engine does not support answer sets and abstention.')}</small>`:''}<details class="q-gates"><summary>${t('Conditional question')}</summary><div class="q-gate-options"></div></details>`;
+  const details=$('.q-gates',host);
+  details.addEventListener('toggle',()=>{if(details.open)renderGateOptions(card);});
+}
+function refreshOpenGates(except) {
+  document.querySelectorAll('.question').forEach(card=>{if(card!==except&&$('.q-gates',card)?.open)renderGateOptions(card);});
+}
+function updateGateReferences(name, replacement) {
+  if(name===replacement||[...document.querySelectorAll('.q-name')].some(input=>input.value===name))return;
+  for(const card of document.querySelectorAll('.question')){
+    const extra=card._extra;
+    if(Array.isArray(extra.depends_on)&&extra.depends_on.includes(name)){
+      const deps=[...new Set(extra.depends_on.map(key=>key===name?replacement:key).filter(key=>key!==undefined))];
+      if(deps.length)extra.depends_on=deps;else delete extra.depends_on;
+    }
+    if(extra.ask_if&&Object.hasOwn(extra.ask_if,name)){
+      const gates=Object.entries(extra.ask_if).filter(([key])=>key!==name);
+      if(replacement!==undefined&&!Object.hasOwn(extra.ask_if,replacement))gates.push([replacement,extra.ask_if[name]]);
+      if(gates.length)extra.ask_if=Object.fromEntries(gates);else delete extra.ask_if;
+    }
+  }
+}
+function renderGateOptions(card) {
+  const host=$('.q-gate-options',card), supported=statusCache?.features?.conditional_questions;
+  if(!supported){host.innerHTML=`<p class="muted">${t('This Engine does not support conditional questions.')}</p>`;return;}
+  const extra=card._extra, deps=Array.isArray(extra.depends_on)?extra.depends_on:[], rawGates=extra.ask_if;
+  const gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{};
+  const unlisted=new Map(Object.entries(gates).filter(([,values])=>Array.isArray(values)&&values.length));
+  const candidates=[...document.querySelectorAll('.question')].filter(other=>other!==card&&['choice','noul','score'].includes($('.q-type',other).value));
+  const fields=candidates.map(other=>{
+    const [name,q]=parseQuestionCard(other), selected=unlisted.get(name)||[], recognized=new Set();
+    const criteria=q.criteria??q.levels??[], answers=q.type==='noul'?['true','false']:q.type==='score'&&Array.isArray(criteria)?criteria.map((_,i)=>String(i)):Array.isArray(criteria)?criteria.map(String):Object.keys(criteria);
+    const options=answers.map(value=>{
+      const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];
+      aliases.forEach(alias=>recognized.add(alias));
+      return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;
+    }).join(' ');
+    const missing=selected.filter(value=>!recognized.has(value));
+    if(missing.length)unlisted.set(name,missing);else unlisted.delete(name);
+    return `<fieldset><legend>${esc(name)}</legend><label><input type="checkbox" data-dependency="${esc(name)}" ${deps.includes(name)?'checked':''}> ${t('Depends on this question')}</label>${options?`<div>${t('Ask if answer is')}: ${options}</div>`:''}</fieldset>`;
+  }).join('');
+  host.innerHTML=fields||`<p class="muted">${t('Add another question to create a condition.')}</p>`;
+  if(!unlisted.size)return;
+  const other=document.createElement('fieldset'), legend=document.createElement('legend');
+  legend.textContent=t('Other condition answers');other.append(legend);
+  for(const [name,values] of unlisted)for(const value of values){
+    const remove=document.createElement('button');
+    remove.type='button';
+    remove.textContent=t('Remove condition on {question}: {answer}',{question:name,answer:typeof value==='string'?value:JSON.stringify(value)});
+    remove.onclick=()=>{
+      const remaining={...extra.ask_if}, answers=remaining[name];
+      if(!Array.isArray(answers))return;
+      const kept=answers.filter(answer=>answer!==value);
+      if(kept.length)remaining[name]=kept;else delete remaining[name];
+      if(Object.keys(remaining).length)extra.ask_if=remaining;else delete extra.ask_if;
+      renderGateOptions(card);$('.q-gates summary',card).focus();syncRequest();
+    };
+    other.append(remove);
+  }
+  host.append(other);
+}
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
   const card=document.createElement('div'); card.className='question'; const fieldId=`question-card-${++questionFieldId}`;
   const type=QUESTION_TYPES.includes(q.type)?q.type:'choice';
+  let gateName=name;
   card._extra=extraOf(q,type); card._type=type;
-  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div>`;
+  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div><div class="q-shared"></div>`;
   $('.q-type',card).value=type;
-  renderTypeFields(card,type,q); rememberOriginal(card,type,q);
+  renderTypeFields(card,type,q); renderSharedFields(card); rememberOriginal(card,type,q);
   card.addEventListener('input',e=>{
+    if(!['choice','noul','score'].includes(card._type))card._hideCoverage=true;
+    if(e.target.matches('[data-shared-coverage]')){const value=e.target.value;if(value==='')delete card._extra.coverage;else card._extra.coverage=Number(value);}
+    if(e.target.closest('.q-shared'))return syncRequest();
+    if(e.target.matches('.q-name,[data-f="criteria"],.choice-editor input'))refreshOpenGates(card);
     if(e.target.matches('[data-f="criteria"]')&&$('.q-type',card).value==='act')renderCostMatrix(card);
     syncRequest();
   });
   card.addEventListener('change',e=>{
-    if(e.target.matches('.q-type')){
+    if(!e.target.matches('.q-type')&&!['choice','noul','score'].includes(card._type))card._hideCoverage=true;
+    if(e.target.matches('.q-name')){
+      const next=e.target.value;
+      if(next.trim()&&![...document.querySelectorAll('.q-name')].some(input=>input!==e.target&&input.value===next)){
+        updateGateReferences(gateName,next);gateName=next;refreshOpenGates();
+      }
+    } else if(e.target.matches('[data-dependency]')){
+      const name=e.target.dataset.dependency, deps=new Set(Array.isArray(card._extra.depends_on)?card._extra.depends_on:[]);e.target.checked?deps.add(name):deps.delete(name);
+      if(deps.size)card._extra.depends_on=[...deps];else delete card._extra.depends_on;
+    } else if(e.target.matches('[data-gate-question]')){
+      const name=e.target.dataset.gateQuestion, value=e.target.dataset.gateAnswer, aliases=JSON.parse(e.target.dataset.gateAliases), rawGates=card._extra.ask_if, gates=Object.assign(Object.create(null),rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{}), values=Object.hasOwn(gates,name)&&Array.isArray(gates[name])?gates[name].filter(v=>!aliases.includes(v)):[];
+      if(e.target.checked)values.push(value);if(values.length)gates[name]=values;else delete gates[name];
+      if(Object.keys(gates).length)card._extra.ask_if=gates;else delete card._extra.ask_if;
+    } else if(e.target.matches('.q-type')){
       if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
       if(next!=='tool'){delete card._extra._mcp_source;delete current._mcp_source;if(card._orig?.q)delete card._orig.q._mcp_source;}
-      card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
-      renderTypeFields(card,next,{...current,type:next});
+      card._type=next; card._hideCoverage=!['choice','noul','score'].includes(next); card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
+      renderTypeFields(card,next,{...current,type:next}); renderSharedFields(card); refreshOpenGates(card);
     } else {
       if(e.target.matches('[data-f="yesno"]')){
         if(ChoiceEditor.errors(card).length){setChecked(e.target,!e.target.checked);syncRequest();return;}
@@ -965,7 +1055,8 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   card.addEventListener('click',e=>{
     const b=e.target.closest('button'); if(!b)return;
-    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();syncRequest();}
+    if(b.closest('.choice-editor'))refreshOpenGates(card);
+    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();updateGateReferences(gateName);refreshOpenGates();syncRequest();}
     else if(b.dataset.costMode){setCostMode(card,b.dataset.costMode);syncRequest();}
     else if(b.matches('.add-action')){card._costRows=readCostRows(card);card._costRows.push({action:'',costs:{}});renderCostMatrix(card,true);syncRequest();}
     else if(b.matches('.remove-action')){card._costRows=readCostRows(card);card._costRows.splice(Number(b.dataset.row),1);renderCostMatrix(card,true);syncRequest();}
@@ -1146,6 +1237,9 @@ function automatedChips(automated,entry,answer) {
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
+  if(Array.isArray(answer.answer_set))parts.push(`<span class="chip">${t('Answer set')}: ${esc(answer.answer_set.join(', '))}</span>`);
+  if(typeof answer.abstain==='boolean')parts.push(`<span class="chip">${t('Abstain')}: ${answer.abstain?t('yes'):t('no')}</span>`);
+  if(answer.coverage_note)parts.push(`<span class="reason">${esc(answer.coverage_note)}</span>`);
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
   for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
   parts.push(automatedChips(answer.automated,entry,answer));
@@ -1281,7 +1375,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
-    html+=DecisionTools.answerPanel(name,answer,q,entry);
+    html+=(data?.usage?.skipped||[]).includes(name)?`<article class="answer"><h3>${esc(name)}</h3><span class="badge fit-tight">${t('Skipped')}</span></article>`:DecisionTools.answerPanel(name,answer,q,entry);
   }
   const spans=typeof request.state==='string'?sourceSpans(answers,request):[];
   const u=data?.usage, mediaUsage=u?.media;
@@ -1299,6 +1393,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp
 function showDecideError(message) { $('#decideError').textContent=message; $('#decideError').hidden=false; }
 async function sendDecision() {
   $('#decideError').hidden=true; $('#results').innerHTML='';
+  document.querySelectorAll('.q-error').forEach(box=>{box.hidden=true;box.textContent='';});
   let request;const jsonMode=$('#editJsonToggle').checked;
   try { request=jsonMode?JSON.parse($('#requestJson').value):buildRequest(); }
   catch(e) { showDecideError(jsonMode?t('Invalid JSON: {message}',{message:e.message}):e.message);if(!jsonMode)$('.q-name:invalid')?.reportValidity();return; }
@@ -1318,7 +1413,14 @@ async function sendDecision() {
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   const evidenceStamp=modelEvidenceStamp(request.model);
   try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
-  catch(e) { showDecideError(e.message); toast(e.message,'error'); }
+  catch(e) {
+    if(e.status===422&&!jsonMode){
+      const detail=String(e.detail||''), cycle=detail.includes('cycle among');
+      document.querySelectorAll('.question').forEach(card=>{const name=$('.q-name',card).value, quoted=JSON.stringify(name), single="'"+name.replaceAll("'","\\'")+"'";
+        if((cycle&&(detail.includes(single)||detail.includes(quoted)))||detail.startsWith('question '+single+':')||detail.startsWith('question '+quoted+':')){const box=$('.q-error',card);box.textContent=detail;box.hidden=false;} });
+    }
+    showDecideError(e.message); toast(e.message,'error');
+  }
   finally { $('#sendButton').disabled=false; }
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
@@ -1557,7 +1659,8 @@ function renderManagerSummary() {
 }
 let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
-  statusAvailable=true; statusCache=s;
+  const oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
+  if(oldFeatures!==JSON.stringify(s.features))document.querySelectorAll('.question').forEach(card=>{renderSharedFields(card);updateCardVisibility(card);});
   invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
   const attachJob=s.jobs?.attach;
   if(attachJob){
