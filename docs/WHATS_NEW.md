@@ -1,5 +1,7 @@
 # Unreleased
 
+- Inspect history supports keyboard activation, and question editor controls have accessible labels.
+
 - Route app component colors and Mark elements annotations through semantic tokens; side navigation now follows the current theme.
 
 - Form controls have more visible borders in light and dark themes, including the Inspect view.
