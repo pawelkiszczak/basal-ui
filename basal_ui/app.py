@@ -36,6 +36,7 @@ from .fetch import FetchError, FetchManager
 from .fleet import Fleet
 from .gateway import Gateway
 from .history import History, replay_fields
+from .mcp_import import shortlist
 from .stats import Stats
 
 STATIC = Path(__file__).parent / "static"
@@ -112,6 +113,7 @@ def create_app(
     fetch_manager=None,
     finetune=None,
     preset_fetch_manager=None,
+    mcp_importer=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -130,6 +132,7 @@ def create_app(
 
     finetune_manager = finetune or FineTune(fleet, settings_mod, hardware_fn, addon_manager)
     preset_fetch_manager = preset_fetch_manager or FetchManager(presets=True)
+    mcp_importer = mcp_importer or FetchManager("basal_ui.mcp_import")
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -242,6 +245,7 @@ def create_app(
         await asyncio.to_thread(gateway.start)
         fleet.start_idle_timer()
         yield
+        await mcp_importer.close()
         await preset_fetch_manager.close()
         await fetch_manager.close()
         await asyncio.to_thread(fleet.stop_idle_timer)
@@ -298,6 +302,20 @@ def create_app(
         from fastapi.exception_handlers import http_exception_handler
 
         return await http_exception_handler(request, exc)
+
+    @app.post("/api/mcp/tools")
+    def import_mcp_tools(request: Request, body: dict = Body(...)):
+        try:
+            return anyio.from_thread.run(mcp_importer.run, body, request)
+        except FetchError as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": str(exc), "code": exc.code})
+
+    @app.post("/api/tools/shortlist")
+    def shortlist_tools(body: dict = Body(...)):
+        try:
+            return {"tools": shortlist(body.get("tools"), body.get("query"), body.get("k", 40))}
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc), "code": "mcp_invalid_request"})
 
     @app.middleware("http")
     async def protect_engine_installation(request: Request, call_next):

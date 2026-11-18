@@ -69,7 +69,7 @@ def public_address(address):
     )
 
 
-def checked_url(url):
+def checked_url(url, *, allow_loopback=False):
     if not isinstance(url, str) or not url or re.search(r"[\x00-\x20\x7f]", url):
         _refuse("Enter an absolute HTTP or HTTPS URL without whitespace or control characters.")
     try:
@@ -101,9 +101,20 @@ def checked_url(url):
     addresses = [
         (family, sockaddr) for family, kind, _, _, sockaddr in answers if family in (socket.AF_INET, socket.AF_INET6)
     ]
-    if not addresses or any(not public_address(sockaddr[0]) for _, sockaddr in addresses):
+    local = allow_loopback and (host.lower() == "localhost" or _explicit_loopback(host))
+    if not addresses or any(
+        not (ipaddress.ip_address(sockaddr[0]).is_loopback if local else public_address(sockaddr[0]))
+        for _, sockaddr in addresses
+    ):
         _refuse("The URL resolves to a non-public address.")
     return parsed, host, port, addresses
+
+
+def _explicit_loopback(host):
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class _Connection(http.client.HTTPConnection):
@@ -278,8 +289,12 @@ def fetch(url, *, presets=False):
 class FetchManager:
     """Own subprocesses until their request finishes, disconnects, times out, or the app stops."""
 
-    def __init__(self, *, presets=False):
-        self.presets = presets
+    def __init__(self, worker_module="basal_ui.fetch", *, presets=False):
+        if presets:
+            worker_module = "basal_ui.preset_fetch"
+        if worker_module not in {"basal_ui.fetch", "basal_ui.mcp_import", "basal_ui.preset_fetch"}:
+            raise ValueError("Unknown network worker")
+        self.worker_module = worker_module
         self.tasks = set()
         self.stopping = False
 
@@ -298,7 +313,7 @@ class FetchManager:
                     asyncio.create_subprocess_exec(
                         sys.executable,
                         "-m",
-                        "basal_ui.preset_fetch" if self.presets else "basal_ui.fetch",
+                        self.worker_module,
                         stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,

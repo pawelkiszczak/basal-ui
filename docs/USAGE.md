@@ -599,3 +599,7 @@ the other request fields. The control explains when the Engine does not provide 
 ![Playground question-set insertion](images/question-sets.png)
 
 Settings URL import at 320 px, using a controlled test response: [English](images/presets-url-en-320.png) · [Polish](images/presets-url-pl-320.png).
+
+Tool questions can import and refresh a streamable HTTP MCP catalogue, select tools, and shortlist the current merged question locally by its instructions, including offline saved definitions. Saved requests and presets retain the selected definitions and source selection for offline use; bearer tokens are never saved. The picker reports the Active model's remaining option slots when its prompt format is known, including other enabled options.
+
+![MCP tool picker with a synthetic catalogue and a simulated ready model](images/mcp-tools.png)

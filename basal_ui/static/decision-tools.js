@@ -138,6 +138,7 @@
     } catch (error) { setError(error.message); return; }
     const [first, second] = [...document.querySelectorAll('#decisionCompare .dt-model')].map(select => select.value), models = [first, second].map(modelById);
     if (!models[0] || !models[1] || first === second) { setError(t('Choose two different ready models.')); return; }
+    const limitError = toolBudgetError(base, first) || toolBudgetError(base, second); if (limitError) { setError(limitError); return; }
     const mediaTypes = [...new Set(requestMedia(base).map(media => media?.type).filter(type => type === 'image' || type === 'audio'))];
     const unsupported = models.map(model => ({id: model.id, types: mediaTypes.filter(type => !(model.media || []).includes(type))})).filter(item => item.types.length);
     if (unsupported.length) {
@@ -147,7 +148,7 @@
     const evidenceQuestions = requestMedia(base).length ? Object.entries(base.questions || {}).filter(([, q]) => q?.evidence).map(([name]) => name) : [];
     if (evidenceQuestions.length) { setError(t('Evidence spans are read from state text and cannot be used with media: {questions}.', {questions: evidenceQuestions.join(', ')})); return; }
     let snapshot;
-    try { snapshot = structuredClone(base); } catch (error) { setError(error.message); return; }
+    try { snapshot = stripMcpMetadata(base); } catch (error) { setError(error.message); return; }
     delete snapshot.model;
     const mediaSnapshot = requestMedia(snapshot).map(media => {
       const item = selectedMedia.find(current => current.data === media?.data);

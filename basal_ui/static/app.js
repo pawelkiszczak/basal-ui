@@ -66,8 +66,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((lo
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
-  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&$('#fetchDialog').open){e.preventDefault();}
-  else if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden){e.preventDefault();$('#sendButton').click();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('#sendButton').click();}
   else if(!typing&&e.key==='?'&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();$('#shortcutsDialog').showModal();}
   else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
@@ -571,6 +570,7 @@ function renderTypeFields(card, type, q) {
   else if(type==='tool'){
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
+      +`<button type="button" class="mcp-open">${t('Import or refresh MCP tools')}</button>`
       +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
@@ -888,6 +888,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
     if(e.target.matches('.q-type')){
       if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
+      if(next!=='tool'){delete card._extra._mcp_source;delete current._mcp_source;if(card._orig?.q)delete card._orig.q._mcp_source;}
       card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
       renderTypeFields(card,next,{...current,type:next});
     } else {
@@ -1240,6 +1241,7 @@ async function sendDecision() {
     const invalid=[...document.querySelectorAll('.question')].filter(card=>card._error);
     if(invalid.length){showDecideError(invalid.map(card=>`${$('.q-name',card).value||t('question')}: ${card._error}`).join('\n'));return;}
   }
+  const limitError=toolBudgetError(request, selectedModel); if(limitError){showDecideError(limitError);return;}
   request.model=selectedModel;
   const unsupported=[...new Set((Array.isArray(request.media)?request.media:[]).map(m=>m?.type))].filter(k=>['image','audio'].includes(k)&&!loadedMedia.includes(k));
   if(unsupported.length){showDecideError(t('{model} does not take {media}. Remove the media, or load a basal-omni model with "Load with media" and select it.',{model:shortName(selectedModel||t('This model')),media:mediaTitle(unsupported)}));return;}
@@ -2297,7 +2299,7 @@ function inspectHandoff(request) {
   if(request.media)return {blocked:t('basal-viz reads text only; remove the media to inspect this request')};
   if(st.model!==request.model&&!(sv&&iv&&sv.family===iv.family&&sv.tier===iv.tier))
     return {blocked:t('the inspector runs {inspector}, this decision came from {model}: start the inspector with the bf16 weights of {weights}',{inspector:st.model,model:request.model,weights:sv?`${sv.family} ${sv.tier}`:request.model})};
-  const body=structuredClone(request), notes=[];
+  const body=stripMcpMetadata(request), notes=[];
   for(const key of ['model','think','think_text','early_exit','source_url'])delete body[key];
   const tasks=Object.entries(body.questions||{}).filter(([,q])=>TASK_TYPES.includes(q?.type)).map(([n])=>n);
   tasks.forEach(n=>delete body.questions[n]);

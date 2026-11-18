@@ -1,5 +1,7 @@
 # Unreleased
 
+
+- Import and refresh MCP tool catalogues in tool questions, with local BM25 shortlisting.
 - On Engines with Batch resume support, choose Resume or Restart for unfinished output, set the unanswered-line
   stop threshold, and see retained progress and the Engine's reason when a run stops. [USAGE](USAGE.md#batch)
 

@@ -582,3 +582,9 @@ Auto delegates language guessing to the Engine. An unknown name returns 404, inv
 Only public HTTP(S) addresses and `application/json` responses up to 1 MiB are accepted; redirects are checked too.
 Entries use the same validation, replacement and deletion rules as `PUT /api/presets`, in load then request order.
 A failed entry can leave earlier entries saved. Request preset root `model` is removed.
+
+### MCP tool import and shortlist
+
+`POST /api/mcp/tools` accepts `{ "url": "http://localhost:PORT/mcp", "token": "..." }` (token optional) and returns `{ "tools": [...] }`. It initializes a streamable HTTP MCP session and follows up to 20 pages within a 10-second operation and 4 MiB response budget. Explicit loopback servers are allowed; other hosts must resolve exclusively to public unicast addresses, and bearer tokens for remote hosts require HTTPS. The token is operation-only; failures include an English `detail` and a `code`.
+
+`POST /api/tools/shortlist` accepts `{ "tools": [...], "query": "...", "k": 40 }` and returns ranked original definitions in `tools`. Ranking uses local BM25 and does not call a model or an MCP tool.

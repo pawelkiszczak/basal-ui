@@ -81,12 +81,53 @@ def run_batch(
         raise RuntimeError("Unfinished Batch found; choose Resume or Restart before starting.")
     if restart_supported and choice == "resume" and not Path(str(output_path) + ".part").exists():
         raise RuntimeError("No partial output to resume; choose Restart to replace the unfinished record.")
-    total = 0
-    with Path(input_path).open(encoding="utf-8") as source:
+
+    class Number(str):
+        pass
+
+    def parse(line):
+        try:
+            return json.loads(line, parse_int=Number, parse_float=Number, parse_constant=Number)
+        except json.JSONDecodeError:
+            return None
+
+    def metadata(item):
+        questions = item.get("questions") if isinstance(item, dict) else None
+        return (
+            [question for question in questions.values() if isinstance(question, dict) and "_mcp_source" in question]
+            if isinstance(questions, dict)
+            else []
+        )
+
+    def write_value(target, value):
+        stack = [(False, value)]
+        while stack:
+            raw, item = stack.pop()
+            if raw or isinstance(item, Number):
+                target.write(item)
+            elif isinstance(item, (list, dict)):
+                entries = list(item.items()) if isinstance(item, dict) else list(enumerate(item))
+                target.write("{" if isinstance(item, dict) else "[")
+                stack.append((True, "}" if isinstance(item, dict) else "]"))
+                for index in range(len(entries) - 1, -1, -1):
+                    key, child = entries[index]
+                    if index < len(entries) - 1:
+                        stack.append((True, ","))
+                    stack.append((False, child))
+                    if isinstance(item, dict):
+                        stack.append((True, json.dumps(key) + ":"))
+            else:
+                target.write(json.dumps(item))
+
+    total, changed = 0, False
+    with Path(input_path).open(encoding="utf-8", newline="") as source:
         for line in source:
             job.check()
             total += bool(line.strip())
+            if not changed:
+                changed = bool(metadata(parse(line)))
     job.progress("running", 0, total)
+    job.check()
     args = [
         "--input",
         str(input_path),
@@ -103,31 +144,49 @@ def run_batch(
         args.append("--restart")
     if stop_after != 16:
         args += ["--stop-after", str(stop_after)]
+    if preset:
+        args += ["--preset", preset]
+    if lang in ("pl", "en"):
+        args += ["--lang", lang]
     try:
-        if preset:
-            args += ["--preset", preset]
-        if lang in ("pl", "en"):
-            args += ["--lang", lang]
-        if preset:
-            from basal.presets import questions
+        if not changed and not preset:
+            summary = run_tool(job, "run", args)
+        else:
+            if preset:
+                from basal.presets import questions as build_questions
 
             with tempfile.TemporaryDirectory(prefix="basal-ui-batch-") as directory:
-                temporary = Path(directory) / "input.jsonl"
-                with Path(input_path).open(encoding="utf-8") as source, temporary.open("w", encoding="utf-8") as target:
+                clean_input = Path(directory) / "input.jsonl"
+                with (
+                    Path(input_path).open(encoding="utf-8", newline="") as source,
+                    clean_input.open("w", encoding="utf-8", newline="") as target,
+                ):
                     for line in source:
                         job.check()
-                        if not line.strip():
+                        if preset and not line.strip():
                             continue
-                        item = json.loads(line)
-                        if "questions" not in item and "question" not in item:
-                            item["questions"] = questions(preset, None if lang == "auto" else lang, item["state"])
-                        target.write(json.dumps(item, ensure_ascii=False) + "\n")
-                args[1] = str(temporary)
+                        item = parse(line)
+                        stored_metadata = metadata(item)
+                        expand = (
+                            preset and isinstance(item, dict) and "questions" not in item and "question" not in item
+                        )
+                        if expand:
+                            state = json.loads(line)["state"]
+                            item["questions"] = build_questions(preset, None if lang == "auto" else lang, state)
+                        if stored_metadata or expand:
+                            for question in stored_metadata:
+                                del question["_mcp_source"]
+                            write_value(target, item)
+                            if line.endswith("\r\n"):
+                                target.write("\r\n")
+                            elif line.endswith(("\r", "\n")):
+                                target.write(line[-1])
+                        else:
+                            target.write(line)
+                args[1] = str(clean_input)
                 job.check()
                 summary = run_tool(job, "run", args)
-        else:
-            job.check()
-            summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
+
     except RuntimeError as exc:
         part = Path(str(output_path) + ".part")
         if restart_supported and part.exists():

@@ -60,6 +60,19 @@ def rss_by_pgid() -> dict[int, int]:
     return totals
 
 
+def strip_mcp_metadata(body):
+    """Remove UI question provenance without changing the recorded request."""
+    if not isinstance(body, dict) or not isinstance(body.get("questions"), dict):
+        return body
+    questions = body["questions"]
+    changed = {
+        name: {key: value for key, value in question.items() if key != "_mcp_source"}
+        for name, question in questions.items()
+        if isinstance(question, dict) and "_mcp_source" in question
+    }
+    return {**body, "questions": {**questions, **changed}} if changed else body
+
+
 class Downloads:
     """Model downloads by repository, shared by the runners and the Download button. A download outlives the load that
     started it (an unload leaves it finishing into the cache); a failed one stays reported for ERROR_KEEP_S."""
@@ -1142,7 +1155,7 @@ class Fleet:
         with self.lease(model_id) as runner, self.answering(model_id, source, runner):
             t0 = time.perf_counter()
             try:
-                response = runner.decide(body, path)
+                response = runner.decide(strip_mcp_metadata(body), path)
             except httpx.HTTPError as exc:
                 self._record(
                     model_id,
@@ -1180,7 +1193,7 @@ class Fleet:
             t0 = time.perf_counter()
             try:
                 kwargs = {"timeout": client.timeout} if source == "benchmark" else {}
-                response = await runner.adecide(client, body, path, **kwargs)
+                response = await runner.adecide(client, strip_mcp_metadata(body), path, **kwargs)
             except httpx.HTTPError as exc:
                 await asyncio.to_thread(
                     self._record,
