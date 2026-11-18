@@ -190,22 +190,19 @@ def test_rank_error_routing_and_status_refresh_preserve_other_controls(page, ui)
     request = {
         "state": "s",
         "questions": {
-            'it\'s "quoted"': {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["a"]},
+            '  it\'s "quoted"  ': {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["a"]},
+            'it\'s "quoted"': {"type": "choice", "instructions": "Choose", "criteria": {"a": "A", "b": "B"}},
             "second": {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["b"]},
             "other": {"type": "choice", "instructions": "Choose", "criteria": {"a": "A", "b": "B"}},
         },
     }
     page.evaluate("r => setRequest(r)", request)
     cards = page.locator(".question")
-    cards.first.locator(".q-name").evaluate(
-        "(input, name) => { input.value = name; input.dispatchEvent(new Event('input', {bubbles:true})); }",
-        '  it\'s "quoted"  ',
-    )
-    assert list(page.evaluate("() => Object.keys(buildRequest().questions)")) == list(request["questions"])
+    assert page.evaluate("() => buildRequest()") == request
     page.evaluate(
         "() => { const x=$('.question:last-child .q-instructions-input'); x.disabled=true; renderStatus(statusCache); }"
     )
-    assert cards.nth(2).locator(".q-instructions-input").is_disabled()
+    assert cards.nth(3).locator(".q-instructions-input").is_disabled()
     page.evaluate("() => { const x=$('.question [data-f=candidates]'); x.disabled=true; renderStatus(statusCache); }")
     assert cards.first.locator('[data-f="candidates"]').is_disabled()
     page.evaluate(
@@ -214,24 +211,22 @@ def test_rank_error_routing_and_status_refresh_preserve_other_controls(page, ui)
     assert cards.first.locator('[data-f="candidates"]').is_disabled()
     assert not cards.first.locator('[data-f="top"]').evaluate("element => element.disabled")
     cases = [
-        ("rank questions do not take media", [True, True, False]),
+        ("rank questions do not take media", [True, False, True, False]),
         (
             "10001 rank candidates in this request, more than the 10000 this server takes per request (basal-serve --rank-max-candidates)",
-            [True, True, False],
+            [True, False, True, False],
         ),
         (
             "a rank request is longer than the context (--context-overflow truncate would cut its list); lower chunk",
-            [True, True, False],
+            [True, False, True, False],
         ),
-        ("question 'it\\'s \"quoted\"': bad candidate", [True, False, False]),
-        ("unrelated request error", [False, False, False]),
+        (f"question {list(request['questions'])[0]!r}: bad candidate", [True, False, False, False]),
+        (f"question {list(request['questions'])[1]!r}: bad candidate", [False, True, False, False]),
+        ("unrelated request error", [False, False, False, False]),
     ]
     for message, expected in cases:
         page.evaluate(
             "([msg,r]) => { document.querySelectorAll('.q-error').forEach(x=>{x.hidden=true;x.textContent='';}); showQuestionErrors(msg,r); }",
             [message, request],
         )
-        assert [cards.nth(i).locator(".q-error").is_visible() for i in range(3)] == expected
-    cards.nth(1).locator(".q-name").evaluate("(input, name) => { input.value = name; }", 'it\'s "quoted"')
-    page.evaluate("() => { try { buildRequest(); } catch {} }")
-    assert cards.nth(1).locator(".q-name").get_attribute("aria-invalid") == "true"
+        assert [cards.nth(i).locator(".q-error").is_visible() for i in range(4)] == expected
