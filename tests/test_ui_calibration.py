@@ -511,14 +511,12 @@ def test_calibration_new_options_are_gated_validated_and_passed_to_engine(tmp_pa
 
 
 def test_keep_options_expands_comparison_path_like_calibration_start(tmp_path, monkeypatch, config):
-    import os.path
-
     source = tmp_path / "labelled.jsonl"
     source.write_text('{"state":"s","question":"q?","options":["a","b"],"gold":0}\n')
     compared = tmp_path / "compared.json"
     compared.write_text(json.dumps(FITTED))
-    real_expanduser = os.path.expanduser
-    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else real_expanduser(p))
+    real_expanduser = Path.expanduser
+    monkeypatch.setattr(Path, "expanduser", lambda p: compared if str(p) == "~/compared.json" else real_expanduser(p))
     monkeypatch.setattr(engine, "calibrate_flags", lambda: {"--keep-shipped"})
     seen, calls = [], []
 
@@ -551,12 +549,16 @@ def test_keep_options_expands_comparison_path_like_calibration_start(tmp_path, m
 
 
 def test_unknown_comparison_user_is_refused_without_starting_a_job(tmp_path, monkeypatch, config):
-    import os.path
-
     source = tmp_path / "labelled.jsonl"
     source.write_text("{}\n")
-    real_expanduser = os.path.expanduser
-    monkeypatch.setattr(os.path, "expanduser", lambda p: p if p == "~missing-calibration-user" else real_expanduser(p))
+    real_expanduser = Path.expanduser
+
+    def expanduser(path):
+        if str(path) == "~missing-calibration-user/compared.json":
+            raise RuntimeError("Could not determine home directory")
+        return real_expanduser(path)
+
+    monkeypatch.setattr(Path, "expanduser", expanduser)
     monkeypatch.setattr(engine, "calibrate_flags", lambda: {"--keep-shipped"})
     monkeypatch.setattr(calibrate, "main", lambda argv: pytest.fail("calibration should not start"))
     _, app = make_app(tmp_path)
