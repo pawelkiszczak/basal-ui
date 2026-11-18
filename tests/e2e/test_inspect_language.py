@@ -88,6 +88,10 @@ def test_inspect_language(ui, language, embedded):
         )
         playwright.expect(frame.locator("#out")).to_contain_text("Synthetic question?")
         playwright.expect(frame.locator("#out")).to_contain_text("Alpha")
+        if language == "pl":
+            playwright.expect(frame.locator("#modelchip")).to_contain_text("2 warstwy")
+            playwright.expect(frame.locator("#out")).to_contain_text("3 tokeny")
+            playwright.expect(frame.locator("#out")).to_contain_text("przebieg Engine")
         context.unroute("**/viz/api/explain")
         calls = []
 

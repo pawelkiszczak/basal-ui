@@ -5,9 +5,7 @@
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
   "Invalid question JSON.": "Niepoprawny JSON pytania.",
-  "{n} layers · prompt format {format}": "{n} warstw · format promptu {format}",
-  "{title}: {n} tokens": "{title}: {n} tokenów",
-  "{n} tokens": "{n} tokenów",
+  "{layers} · prompt format {format}": "{layers} · format promptu {format}",
   "shared prefix · {n}": "wspólny prefiks · {n}",
   "order 1 · {n}": "kolejność 1 · {n}",
   "order 2 · {n}": "kolejność 2 · {n}",
@@ -47,7 +45,7 @@ const PL = {
   "{passes} with every layer recorded: {ms} ms": "{passes} z zapisem każdej warstwy: {ms} ms",
   "served vs recorded readout, max difference: {value}": "odczyt serwera a zapisany, maksymalna różnica: {value}",
   "basal-serve answer vs this page: max difference {value}": "odpowiedź basal-serve a ta strona: maksymalna różnica {value}",
-  "{n} tokens · option order {order}": "{n} tokenów · kolejność opcji {order}",
+  "{tokens} · option order {order}": "{tokens} · kolejność opcji {order}",
   "The final answer takes the lead at layer {layer} of {total} and keeps it to the end.": "Końcowa odpowiedź obejmuje prowadzenie w warstwie {layer} z {total} i zachowuje je do końca.",
   "confidence {confidence}; thresholds {t5} and {t1}": "pewność {confidence}; progi {t5} i {t1}",
   "{value} (pure guess among {count})": "{value} (losowy wybór spośród {count})",
@@ -1326,6 +1324,8 @@ const PL = {
   "— on disk": "— na dysku"
 };  // 'English text': 'tekst po polsku'
 const PL_PLURAL = {
+  "{n} layer": ["{n} warstwa", "{n} warstwy", "{n} warstw"],
+  "{n} token": ["{n} token", "{n} tokeny", "{n} tokenów"],
   "{n} non-empty row": ["{n} niepusty wiersz", "{n} niepuste wiersze", "{n} niepustych wierszy"],
   "{n} question": ["{n} pytanie", "{n} pytania", "{n} pytań"],
   "{n} request": ["{n} żądanie", "{n} żądania", "{n} żądań"],

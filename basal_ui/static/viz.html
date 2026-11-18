@@ -345,7 +345,7 @@ function renderHistory() {
   const items = store.get("basal-viz-history", []);
   $("#hist").replaceChildren(...(items.length ? items.map(it => h("li", { onclick: () => { loadRequest(it.req); decide(it.gold); } },
     h("span", { class: "q" }, it.q), h("span", { class: "chip" }, pct(it.conf, 1)),
-    h("span", { class: "a" }, "→ " + it.a), h("span", { class: "a" }, new Date(it.t).toLocaleTimeString()))) :
+    h("span", { class: "a" }, "→ " + it.a), h("span", { class: "a" }, new Date(it.t).toLocaleTimeString(LANG)))) :
     [h("li", { style: { cursor: "default" } }, h("span", { class: "hint" }, tr("Decisions you make appear here.")))]));
 }
 function pushHistory(req, res, gold) {
@@ -455,7 +455,7 @@ function renderQuestion(q, goldKey) {
     decisionView(q, v)));
   const t = q.timing_ms;
   wrap.append(h("div", { class: "step foot" },
-    h("span", {}, tr("{mode} forward as served: {ms} ms", {mode: INFO?.mode ?? "engine", ms: Math.round(t.packed)})),
+    h("span", {}, tr("{mode} forward as served: {ms} ms", {mode: INFO?.mode ?? "Engine", ms: Math.round(t.packed)})),
     h("span", {}, tr("{passes} with every layer recorded: {ms} ms", {passes: two ? tr("two separate forwards") : tr("a forward"), ms: Math.round(t.separate_with_lens)})),
     h("span", {}, tr("served vs recorded readout, max difference: {value}", {value: q.packed_max_diff.toExponential(1)})),
     q.served_max_diff != null ? h("span", {}, tr("basal-serve answer vs this page: max difference {value}", {value: q.served_max_diff.toExponential(1)})) : null));
@@ -469,7 +469,7 @@ function promptView(q) {
     tabs.querySelectorAll("button").forEach((b, k) => b.classList.toggle("on", k === i));
     const o = q.orders[i];
     pre.replaceChildren(...o.segments.map(s => h("span", { class: s.kind }, s.text)), h("span", { class: "cursor", title: tr("the model's next token") }));
-    count.textContent = tr("{n} tokens · option order {order}", {n: o.n_tokens, order: o.perm.map(j => o.letters[o.perm.indexOf(j)] + "=" + (j + 1)).join(" ")});
+    count.textContent = tr("{tokens} · option order {order}", {tokens: tp(o.n_tokens, "{n} token", "{n} tokens"), order: o.perm.map(j => o.letters[o.perm.indexOf(j)] + "=" + (j + 1)).join(" ")});
   };
   const tabs = h("div", { class: "tabs" }, ...q.orders.map((_, i) => h("button", { onclick: () => show(i) },
     h("span", { class: "lk", style: { background: ORDER_COLORS[i], marginRight: "6px", verticalAlign: "middle" } }), q.orders.length < 2 ? tr("Option order (as given)") : i ? tr("Order 2 (reversed)") : tr("Order 1 (original)"))));
@@ -483,8 +483,8 @@ function promptView(q) {
 
 function packView(q) {
   const p = q.packing, total = p.prefix + p.tails.reduce((a, b) => a + b, 0), max = p.separate;
-  const seg = (n, c, title) => h("div", { style: { flex: `${n} 0 0`, background: c }, title: tr("{title}: {n} tokens", {title, n}),
-    onpointermove: e => showTip(e, title, [{ color: c, value: tr("{n} tokens", {n}), label: "" }]), onpointerleave: hideTip });
+  const seg = (n, c, title) => h("div", { style: { flex: `${n} 0 0`, background: c }, title: `${title}: ${tp(n, "{n} token", "{n} tokens")}`,
+    onpointermove: e => showTip(e, title, [{ color: c, value: tp(n, "{n} token", "{n} tokens"), label: "" }]), onpointerleave: hideTip });
   const pre = "var(--neutral-mark)";
   const sepBar = h("div", { class: "bar" }, seg(p.prefix, pre, tr("Shared prefix (order 1)")), seg(p.tails[0], ORDER_COLORS[0], tr("Order 1 options")), h("div", { class: "gap" }),
     seg(p.prefix, pre, tr("Shared prefix again (order 2)")), seg(p.tails[1] || 0, ORDER_COLORS[1], tr("Order 2 options")));
@@ -492,8 +492,8 @@ function packView(q) {
     seg(p.tails[1] || 0, ORDER_COLORS[1], tr("Order 2 options")), h("div", { style: { flex: `${max - total} 0 0` } }));
   const saved = 1 - total / max;
   const left = h("div", {},
-    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, tr("Two separate prompts")), h("span", {}, tr("{n} tokens", {n: max}))), sepBar),
-    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, tr("Packed into one row (what the server runs)")), h("span", {}, tr("{n} tokens", {n: total}))), packBar),
+    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, tr("Two separate prompts")), h("span", {}, tp(max, "{n} token", "{n} tokens"))), sepBar),
+    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, tr("Packed into one row (what the server runs)")), h("span", {}, tp(total, "{n} token", "{n} tokens"))), packBar),
     h("div", {}, h("span", { class: "bignum" }, pct(saved, 0)), h("span", { class: "hint" }, tr(" fewer tokens than two separate prompts: the second order costs only its options"))),
     h("div", { class: "keyrow" }, h("span", {}, h("span", { class: "sw", style: { background: pre } }), tr("shared prefix · {n}", {n: p.prefix})),
       h("span", {}, h("span", { class: "sw", style: { background: ORDER_COLORS[0] } }), tr("order 1 · {n}", {n: p.tails[0]})),
@@ -664,7 +664,7 @@ function explainPosted(req) {
     const ri = await fetch("api/info");
     INFO = await ri.json();
     if (!ri.ok) throw new Error(INFO.error || ri.statusText);
-    $("#modelchip").textContent = `${INFO.model} · ${INFO.device} · ${INFO.dtype} · ` + tr("{n} layers · prompt format {format}", {n: INFO.layers, format: INFO.prompt_format}) + " · " + tp(INFO.orders, "{n} option order", "{n} option orders");
+    $("#modelchip").textContent = `${INFO.model} · ${INFO.device} · ${INFO.dtype} · ` + tr("{layers} · prompt format {format}", {layers: tp(INFO.layers, "{n} layer", "{n} layers"), format: INFO.prompt_format}) + " · " + tp(INFO.orders, "{n} option order", "{n} option orders");
     EXAMPLES = (await (await fetch("api/examples")).json()).filter(e => !e.request.media);  // the lens reads text only
     const sel = $("#ex"), groups = {};
     EXAMPLES.forEach((e, i) => {
