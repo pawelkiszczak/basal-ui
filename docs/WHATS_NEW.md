@@ -1,5 +1,7 @@
 # Unreleased
 
+- Use consistent bordered card surfaces and restore side-navigation state transitions, respecting reduced motion.
+
 - Hover effects appear only on hover-capable pointers, so touch taps do not leave controls looking hovered.
 
 - Inspect wraps its header and long labels on narrow screens and respects the browser's default text size.

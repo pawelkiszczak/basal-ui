@@ -46,7 +46,7 @@
 .settings-categories>button{text-align:left;padding:13px 16px;background:transparent;border-color:transparent;font-size:13px}
 .settings-categories>button[aria-selected=true]{background:var(--accent-light);color:var(--accent);border-color:var(--line)}
 .settings-panels{min-width:0}
-.settings-panels>.card{padding:28px;margin:0;box-shadow:none;border-radius:14px}
+.settings-panels>.card{padding:28px;margin:0}
 .settings-panels h2{font-size:22px;margin:0 0 24px}
 .settings-panels h3{font-size:15px;margin:28px 0 14px}
 .settings-panels .theme-controls{max-width:360px}

@@ -88,6 +88,10 @@ the [E2E environment setup](docs/E2E.md); the target does not install dependenci
 the Engine. Both cached models must fit together. It also needs Chromium
 (`uv run --no-sync playwright install chromium`) and `ffmpeg` on `PATH`.
 
+## Card surfaces
+
+Cards in the page use a border to define their surface; reserve the shared shadow for floating overlays.
+
 ## Engine proposals
 
 basal-ui depends only on upstream engine releases, so every engine change it needs goes upstream, one at a time; the
