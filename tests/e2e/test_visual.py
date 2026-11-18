@@ -48,9 +48,12 @@ def navigate(page, name):
 def test_quick_actions_order_and_keyboard_boundary(page, width):
     page.set_viewport_size({"width": width, "height": 844})
     if page.locator("#quickActionsRail").is_hidden():
-        page.locator("#toggleQuickActions").click()
+        page.locator("#toggleQuickActions").focus()
+        page.keyboard.press("Enter")
         assert page.evaluate("document.activeElement.id") == "quickActionSearch"
-    navigate(page, "settings")
+    page.locator("#openSettings").focus()
+    page.keyboard.press("Enter")
+    sync_api.expect(page.locator("#settings")).to_be_visible()
     main, rail = page.evaluate("""() => [document.querySelector('main'), document.querySelector('#quickActionsRail')]
       .map(el => { const r = el.getBoundingClientRect(); return {x:r.x, y:r.y, width:r.width, height:r.height}; })""")
     if width <= 1099:
