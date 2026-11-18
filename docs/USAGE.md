@@ -29,7 +29,7 @@ still work.
 filter; arrows navigate matching actions, Enter runs one and Escape closes the rail. It opens the downloaded-model
 loader, Playground, current-request API examples, Settings, Batch or Model manager; opening a view does not run
 inference. The header toggle closes it when more workspace is wanted. On smaller screens it is an inline panel
-above the view rather than an overlay covering its controls.
+after the view, matching keyboard navigation order. [Mobile example](images/quick-actions-mobile.png).
 
 **Dashboard** shows recorded Decision throughput, latency, errors, endpoint traffic and loaded-model activity.
 [Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
@@ -133,6 +133,15 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   them), or the raw JSON request (which carries `"model"`). **Request settings** contains `facts`, `lang`, Edit JSON,
   and supported Thinking / early-exit controls, keeping the model and example selectors visible in the toolbar. Question names must be
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
+  **Fetch URL** loads one public HTTP(S) page on the app server into editable State without sending a Decision.
+  HTML becomes readable text, JSON stays structured, and plain text stays text. The note shows the original and final
+  URL, type, byte count and truncation; review the result before sending. Fetch is anonymous and bounded to 4 MiB,
+  10 seconds, three redirects and 200,000 text characters; larger JSON or numbers that cannot survive the browser
+  round trip are refused rather than silently changed.
+  The State token estimate divides UTF-8 bytes by four and omits questions, options, media and prompt overhead; it
+  is not a fit guarantee. Active context limit and policy come from the loaded model, and actual Decision usage wins.
+  Cancel stops the fetch. The final URL is saved with the request in History; Replay restores the recorded State and
+  shows its source without fetching again. Load another example or saved request to leave Replay.
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
   and must be attached again.
   Choice, multi and non-boolean act options use inline key/description rows with add, remove, move-up/down and
@@ -317,6 +326,8 @@ keep free; unload a model or raise the budget. The Manager Library bar shows eac
 estimates and the memory available now. On Apple Silicon, MLX and MPS allocations live in unified memory and may show
 only partly as resident memory; the estimate is what the budget check uses.
 
+Optionally set **Unload idle models after minutes** in **Settings → Memory & storage** (empty means off; 1–9,007,199,254,740,991 whole minutes). A ready model is unloaded after that long without a Decision only when its server reports no running or queued work. Changing the timeout starts a fresh countdown for models already loaded. Batch and other model jobs keep their models loaded while they run. Idle-unloaded models remain remembered for auto-load at the next start; requests return the existing model-not-loaded error until then. The Library, Dashboard and model log show the reason.
+
 ## Statistics and benchmarks
 
 ### Dashboard
@@ -390,6 +401,13 @@ file are checked before the run starts), `--report-only` (the run uses the same 
 file is written) and `--save-rows`, which keeps the uncalibrated probabilities next to the file; such a file gets
 **Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check).
 
+When the installed Engine supports them, **Advanced** accepts comma-separated conformal coverage levels between 0
+and 1 and lets you keep compared thresholds and temperatures per question type. Only types with compatible compared
+thresholds are enabled; changing the comparison rechecks them. A fit uses Active load settings for a loaded model,
+otherwise Saved load settings. Reports show available identity digests, kept sources, refuted thresholds, ICC and
+design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
+[Advanced calibration controls](images/calibration-advanced.png).
+
 ## History and logs
 
 **History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:
@@ -419,7 +437,7 @@ and receive its retained lines from the start.
 One port serves every loaded model. The API server runs inside basal-ui and forwards each request to the private
 `basal-serve` of the model it names, so every request body must carry `"model"`: `400 MODEL_REQUIRED` without it,
 `404 MODEL_NOT_FOUND` for a model that is not loaded (both list the loaded models). `GET /v1/models` lists the ready
-models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /v1/stats` returns
+models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /metrics` exposes [Prometheus metrics](API.md#prometheus-metrics), and `GET /v1/stats` returns
 the statistics above (admin key only when keys are required — that is, basal-ui's own key). Details:
 [API.md](API.md#several-models-behind-basal-ui).
 
@@ -439,7 +457,7 @@ key** is enabled; use a key before selecting **Local network**. Keys are generat
 SHA-256 hashes in the settings file and keys file, and their plaintext is shown only once when created. Copy it then;
 it cannot be retrieved later. Revoking a key rewrites the live keys file and takes effect without a restart. Each
 `basal-serve` child listens on loopback only and takes no key: only basal-ui, which starts it and knows its private
-port, reaches it. basal-ui's own internal admin key (the only key `/v1/stats` accepts) is not exposed in the UI.
+port, reaches it. basal-ui's internal admin key is not exposed in the UI. To use `/v1/stats` or `/metrics` with authentication, set `BASAL_UI_ADMIN_KEY` before startup as described in the [Prometheus setup](API.md#prometheus-metrics).
 
 **Restart server** restarts only the API server (instant; the models stay loaded) and applies the saved host, port,
 key, CORS and MCP settings; until then the status line shows **Restart to apply**. **Max context length** and
@@ -535,6 +553,9 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+## Server limits
+
+Load options include request concurrency, request timeout, body size, branch count, prompt size and stall detection limits when the installed Engine declares them. Empty request timeout and stall detection fields leave them unset. The Dashboard shows a stalled Engine call's age and main and long lane counts when the Engine reports them. A stalled call may still be running; unloading the model is a separate operation.
 
 ### Playground question sets
 

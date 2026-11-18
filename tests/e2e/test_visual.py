@@ -44,6 +44,33 @@ def navigate(page, name):
     assert not page.locator(".nav-tools").evaluate("(el) => el.open")
 
 
+@pytest.mark.parametrize("width", [390, 768, 1099, 1100, 1440])
+def test_quick_actions_order_and_keyboard_boundary(page, width):
+    page.set_viewport_size({"width": width, "height": 844})
+    if page.locator("#quickActionsRail").is_hidden():
+        page.locator("#toggleQuickActions").focus()
+        page.keyboard.press("Enter")
+        assert page.evaluate("document.activeElement.id") == "quickActionSearch"
+    page.locator("#openSettings").focus()
+    page.keyboard.press("Enter")
+    sync_api.expect(page.locator("#settings")).to_be_visible()
+    main, rail = page.evaluate("""() => [document.querySelector('main'), document.querySelector('#quickActionsRail')]
+      .map(el => { const r = el.getBoundingClientRect(); return {x:r.x, y:r.y, width:r.width, height:r.height}; })""")
+    if width <= 1099:
+        assert rail["y"] >= main["y"] + main["height"]
+    else:
+        assert rail["x"] >= main["x"] + main["width"]
+    page.locator("#saveMemory").focus()
+    page.keyboard.press("Tab")
+    assert page.evaluate("document.activeElement.id") == "closeQuickActions"
+    page.keyboard.press("Shift+Tab")
+    assert page.evaluate("document.activeElement.id") == "saveMemory"
+    page.locator("#quickActionSearch").focus()
+    page.keyboard.press("Escape")
+    assert page.locator("#quickActionsRail").is_hidden()
+    assert page.evaluate("document.activeElement.id") == "toggleQuickActions"
+
+
 def test_all_views_fit_responsive_widths_and_question_controls_stay_named(page, tmp_path):
     views = (
         "dashboard",
@@ -123,3 +150,51 @@ def test_all_views_fit_responsive_widths_and_question_controls_stay_named(page, 
         appearance.locator("summary").click()
     choice.click()
     page.screenshot(path=str(tmp_path / "basal-390-playground.png"), full_page=True, animations="disabled")
+
+
+def test_form_control_borders_across_themes(page):
+    page.evaluate("""() => setRequest({state:'Example', questions:{choice:{type:'choice',
+      instructions:'Example', criteria:{one:'First', two:'Second'}}}})""")
+    page.evaluate("() => openLoadOptions(statusCache.models[0].id)")
+    audit = """() => {
+      const selector = 'input:not([type]),input[type=text],input[type=number],input[type=search],input[type=url],select,textarea';
+      const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
+      const rgb = color => { ctx.clearRect(0,0,1,1); ctx.fillStyle=color; ctx.fillRect(0,0,1,1);
+        return [...ctx.getImageData(0,0,1,1).data].slice(0,3); };
+      const lum = color => rgb(color).map(x => x/255).map(x => x <= .04045 ? x/12.92 : ((x+.055)/1.055)**2.4)
+        .reduce((a,x,i) => a+x*[.2126,.7152,.0722][i],0);
+      const contrast = (a,b) => { const x=lum(a), y=lum(b); return (Math.max(x,y)+.05)/(Math.min(x,y)+.05); };
+      return [...document.querySelectorAll(selector)].map(e => {
+        const s=getComputedStyle(e); let parent=e.parentElement;
+        while(parent && getComputedStyle(parent).backgroundColor==='rgba(0, 0, 0, 0)') parent=parent.parentElement;
+        return {name:e.id || e.className, border:s.borderTopColor, style:s.borderTopStyle,
+          width:parseFloat(s.borderTopWidth), opacity:s.opacity,
+          fill:contrast(s.borderTopColor,s.backgroundColor),
+          surrounding:contrast(s.borderTopColor,getComputedStyle(parent).backgroundColor)};
+      }).filter(x => ['none','hidden'].includes(x.style) || x.width <= 0 || x.opacity !== '1' || x.fill < 3 || x.surrounding < 3);
+    }"""
+    page.locator("#stateInput").evaluate("e => e.style.borderWidth = '0'")
+    assert any(item["name"] == "stateInput" for item in page.evaluate(audit))
+    page.locator("#stateInput").evaluate("e => e.style.removeProperty('border-width')")
+    for theme in ("light", "dark"):
+        for skin in ("green", "orange"):
+            page.evaluate(
+                "([theme,skin]) => {applyTheme(theme); document.documentElement.dataset.skin=skin}", [theme, skin]
+            )
+            assert not page.evaluate(audit), (theme, skin, page.evaluate(audit))
+            invalid = page.locator(".choice-editor input").first
+            invalid.evaluate("e => e.setAttribute('aria-invalid', 'true')")
+            assert not page.evaluate(audit), (theme, skin, page.evaluate(audit))
+            invalid.evaluate("e => e.removeAttribute('aria-invalid')")
+            page.evaluate("() => document.querySelector('#loadOptions').close()")
+            navigate(page, "api")
+            page.locator("#servePort").focus()
+            assert not page.evaluate(audit), (theme, skin, page.evaluate(audit))
+            page.locator("#servePort").blur()
+            page.evaluate("() => document.querySelector('#loadOptions').showModal()")
+    page.evaluate("() => document.querySelector('#loadOptions').close()")
+    page.goto(page.url.split("/#")[0].rstrip("/") + "/viz/")
+    page.locator("#addq").click()
+    for theme in ("light", "dark"):
+        page.evaluate("theme => document.documentElement.dataset.theme=theme", theme)
+        assert not page.evaluate(audit), (theme, page.evaluate(audit))

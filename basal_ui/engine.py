@@ -1,5 +1,6 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import functools
 import importlib.metadata
 import importlib.util
 import inspect
@@ -93,14 +94,41 @@ FEATURES = {
     "viz_gemma4": lambda: hasattr(importlib.import_module("basal.viz"), "is_gemma4"),
     # MCP tools with a `model` argument and list_models (rkinas/basal#66, 2.5.0: basal.mcp_server.http(models=))
     "mcp_models": lambda: _parameter("basal.mcp_server", "http", "models"),
-    "presets": lambda: _spec("basal.presets") is not None,
     # --mode mlx serves Qwen3.5 (basal-omni-pico) from bf16 weights (2.5.0: MLXBackend(compute=), --mlx-compute)
     "mlx_recurrent": lambda: _parameter("basal.engine", "MLXBackend.__init__", "compute"),
     # --mode int8: block-scaled int8 in the CUDA graph engine (2.5.0: basal/server.py MODES, basal/int8block.py)
     "int8": lambda: "int8" in importlib.import_module("basal.server").MODES,
     # basal-viz --mode mlx / mlx-q8 reads the MLX engine's layers (2.5.0: basal/viz.py mlx_lens)
     "viz_mlx": lambda: hasattr(importlib.import_module("basal.viz"), "mlx_lens"),
+    "router": lambda: _spec("basal.router") is not None,
+    "attach": lambda: _spec("basal.attach") is not None,
+    "finetune": lambda: _spec("basal.finetune") is not None,
+    "presets": lambda: _spec("basal.presets") is not None,
+    "order_check": lambda: _spec("basal.ordercheck") is not None,
 }
+
+
+def _flags(module):
+    """Long options declared by an Engine console script's parser."""
+    parser = importlib.import_module(module).parser()
+    return frozenset(s for action in parser._actions for s in action.option_strings if s.startswith("--")) - {"--help"}
+
+
+@functools.cache
+def serve_flags():
+    """Long options declared by basal-serve."""
+    return _flags("basal.server")
+
+
+@functools.cache
+def calibrate_flags():
+    """Long options declared by basal-calibrate."""
+    return _flags("basal.calibrate")
+
+
+def serve_modes():
+    """Execution modes declared by basal-serve."""
+    return frozenset(importlib.import_module("basal.server").MODES)
 
 
 def feature(name):
@@ -111,3 +139,10 @@ def feature(name):
 def supported(version):
     """Whether an Engine release (e.g. the latest on GitHub) is in this basal-ui's supported range."""
     return _in_range(version)
+
+
+@functools.cache
+def serve_option(flag):
+    """Choices and default declared for a basal-serve flag, or None."""
+    parser = importlib.import_module("basal.server").parser()
+    return next(((tuple(a.choices or ()), a.default) for a in parser._actions if flag in a.option_strings), None)

@@ -58,7 +58,7 @@
   let sequence = 0, ready = [], readySignature = '', running = false;
   const modelById = id => ready.find(model => model.id === id);
   const requestMedia = request => Array.isArray(request.media) ? request.media : [];
-  const displayRequest = request => JSON.stringify(request, function (key, value) {
+  const displayRequest = request => JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key]) => key !== 'source_url')), function (key, value) {
     return key === 'data' && (this?.type === 'image' || this?.type === 'audio') && typeof value === 'string'
       ? `[${this.type} data omitted from display; ${value.length} characters]` : value;
   }, 2);
