@@ -335,3 +335,65 @@ def test_malformed_gates_open_without_rewriting_untouched_fields(page):
     target.locator('[data-dependency="source"]').check()
     assert page.evaluate("() => buildRequest().questions.target.depends_on") == ["source"]
     assert page.evaluate("() => buildRequest().questions.target.ask_if") == []
+
+
+def test_rank_feature_gate_matches_installed_engine(page, ui):
+    supported = ui.get("/api/status")["features"]["rank"]
+    test_pages.view(page, "playground")
+    option = page.locator('.q-type option[value="rank"]').first
+    assert option.evaluate("element => element.disabled") is not supported
+    if not supported:
+        page.evaluate(
+            "() => setRequest({state:'s',questions:{q:{type:'rank',instructions:'Does {candidate} match?',candidates:['a']}}})"
+        )
+        assert page.locator(".rank-unavailable").is_visible()
+        assert page.locator('[data-f="candidates"]').is_disabled()
+
+
+def test_rank_error_routing_and_status_refresh_preserve_other_controls(page, ui):
+    if not ui.get("/api/status")["features"]["rank"]:
+        pytest.skip("Engine lacks rank questions")
+    test_pages.view(page, "playground")
+    request = {
+        "state": "s",
+        "questions": {
+            '  it\'s "quoted"  ': {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["a"]},
+            'it\'s "quoted"': {"type": "choice", "instructions": "Choose", "criteria": {"a": "A", "b": "B"}},
+            "second": {"type": "rank", "instructions": "Does {candidate} match?", "candidates": ["b"]},
+            "other": {"type": "choice", "instructions": "Choose", "criteria": {"a": "A", "b": "B"}},
+        },
+    }
+    page.evaluate("r => setRequest(r)", request)
+    cards = page.locator(".question")
+    assert page.evaluate("() => buildRequest()") == request
+    page.evaluate(
+        "() => { const x=$('.question:last-child .q-instructions-input'); x.disabled=true; renderStatus(statusCache); }"
+    )
+    assert cards.nth(3).locator(".q-instructions-input").is_disabled()
+    page.evaluate("() => { const x=$('.question [data-f=candidates]'); x.disabled=true; renderStatus(statusCache); }")
+    assert cards.first.locator('[data-f="candidates"]').is_disabled()
+    page.evaluate(
+        "() => { renderStatus({...statusCache,features:{...statusCache.features,rank:false}}); renderStatus({...statusCache,features:{...statusCache.features,rank:true}}); }"
+    )
+    assert cards.first.locator('[data-f="candidates"]').is_disabled()
+    assert not cards.first.locator('[data-f="top"]').evaluate("element => element.disabled")
+    cases = [
+        ("rank questions do not take media", [True, False, True, False]),
+        (
+            "10001 rank candidates in this request, more than the 10000 this server takes per request (basal-serve --rank-max-candidates)",
+            [True, False, True, False],
+        ),
+        (
+            "a rank request is longer than the context (--context-overflow truncate would cut its list); lower chunk",
+            [True, False, True, False],
+        ),
+        (f"question {list(request['questions'])[0]!r}: bad candidate", [True, False, False, False]),
+        (f"question {list(request['questions'])[1]!r}: bad candidate", [False, True, False, False]),
+        ("unrelated request error", [False, False, False, False]),
+    ]
+    for message, expected in cases:
+        page.evaluate(
+            "([msg,r]) => { document.querySelectorAll('.q-error').forEach(x=>{x.hidden=true;x.textContent='';}); showQuestionErrors(msg,r); }",
+            [message, request],
+        )
+        assert [cards.nth(i).locator(".q-error").is_visible() for i in range(4)] == expected

@@ -639,3 +639,5 @@ Load options use the installed Engine parser's `long_lane` choices and default. 
 ### Load option availability
 
 `GET /api/models/options?id=...` includes Native `kind` and `compiled` on mode rows, and returns `unavailable`, a map of option keys to reasons when the installed Engine lacks support. Saved values remain visible; submitting an unavailable non-default value is refused. `PUT /api/models/options` saves validated non-default values. Existing load presets and their import/export carry these option values.
+
+The `/api/status` response includes `features.rank`, a capability probe for experimental rank questions. `POST /api/decide` forwards rank questions to the Engine; its validation errors and results are returned unchanged.
