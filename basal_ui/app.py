@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import base64
 import dataclasses
+import io
 import ipaddress
 import json
 import os
@@ -135,52 +136,49 @@ def create_app(
                 raise RuntimeError(str(exc)) from exc
             if output.resolve() == source.resolve():
                 raise RuntimeError("output must not be the input file")
-            with paths._open(source) as stream:
-                before = os.fstat(stream.fileno())
-                data = stream.read()
-                after = os.fstat(stream.fileno())
-            if [before.st_size, before.st_mtime_ns] != signature or (before.st_size, before.st_mtime_ns) != (
-                after.st_size,
-                after.st_mtime_ns,
-            ):
-                raise RuntimeError("input changed while preparing the Batch")
             fd, name = tempfile.mkstemp(prefix=".basal-ui-schedule-", suffix=".jsonl", dir=output.parent)
             snapshot = Path(name)
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(data)
-            facts = paths.check(str(snapshot), "jsonl")
-            if not facts["ok"] and facts["code"] not in ("line_too_long", "scan_limit", "not_text"):
-                line = next((n for n, value in enumerate(data.splitlines(), 1) if value.strip()), 1)
-                raise RuntimeError(f"{source.name}: line {line}: {facts.get('schema_error') or facts['code']}")
-            try:
-                text = data.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                number = data[: exc.start].count(b"\n") + 1
-                raise RuntimeError(f"{source.name}: line {number}: invalid UTF-8") from exc
-            first = True
-            for number, line in enumerate(text.splitlines(), 1):
-                if not line.strip():
-                    continue
-                try:
-                    item = json.loads(line)
-                except (ValueError, RecursionError):
-                    item = None
-                if not isinstance(item, dict) or not ("questions" in item or "options" in item):
-                    raise RuntimeError(f"{source.name}: line {number} is not a Batch request")
-                if (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison":
-                    error = batch.validate_comparison_item(item, runner)
-                    if error:
-                        raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
-                if first:
+            with (
+                os.fdopen(fd, "wb") as target,
+                paths._open(source) as raw,
+                io.TextIOWrapper(raw, encoding="utf-8", errors="surrogateescape", newline="") as stream,
+            ):
+                before = os.fstat(raw.fileno())
+                if [before.st_size, before.st_mtime_ns] != signature:
+                    raise RuntimeError("input changed while preparing the Batch")
+                first = True
+                for number, line in enumerate(stream, 1):
+                    if schedule_stop.is_set():
+                        return None
                     try:
-                        _, reason = paths._row_shape(item)
-                    except RecursionError as exc:
-                        raise RuntimeError(
-                            f"{source.name}: line {number}: request nesting exceeds the parser limit"
-                        ) from exc
-                    if reason:
-                        raise RuntimeError(f"{source.name}: line {number}: {reason}")
-                    first = False
+                        target.write(line.encode("utf-8"))
+                    except UnicodeEncodeError as exc:
+                        raise RuntimeError(f"{source.name}: line {number}: invalid UTF-8") from exc
+                    if not line.strip():
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except (ValueError, RecursionError):
+                        item = None
+                    if not isinstance(item, dict) or not ("questions" in item or "options" in item):
+                        raise RuntimeError(f"{source.name}: line {number} is not a Batch request")
+                    if (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison":
+                        error = batch.validate_comparison_item(item, runner)
+                        if error:
+                            raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
+                    if first:
+                        try:
+                            _, reason = paths._row_shape(item)
+                        except RecursionError as exc:
+                            raise RuntimeError(
+                                f"{source.name}: line {number}: request nesting exceeds the parser limit"
+                            ) from exc
+                        if reason:
+                            raise RuntimeError(f"{source.name}: line {number}: {reason}")
+                        first = False
+                after = os.fstat(raw.fileno())
+                if [after.st_size, after.st_mtime_ns] != signature:
+                    raise RuntimeError("input changed while preparing the Batch")
             if first:
                 raise RuntimeError(f"{source.name}: no requests")
 
@@ -206,6 +204,8 @@ def create_app(
                 return fleet.jobs.get("batch")
 
             with fleet.lock:
+                if schedule_stop.is_set():
+                    return None
                 job = settings_mod.reserve_schedule(spec, reserve)
             if job is None:
                 return None

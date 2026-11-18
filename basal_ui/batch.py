@@ -215,7 +215,11 @@ def run_batch(
     try:
         runner = runner or fleet.ready(model_id)
         path = snapshot_path or input_path
-        total = sum(1 for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip())
+        total = 0
+        with Path(path).open(encoding="utf-8") as stream:
+            for line in stream:
+                job.check()
+                total += bool(line.strip())
         job.progress("running", 0, total)
         proxy = (
             comparison_proxy(

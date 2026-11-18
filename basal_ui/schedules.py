@@ -85,6 +85,7 @@ class Schedules:
     def __init__(self, settings_mod, fleet, start_batch):
         self.settings, self.fleet, self.start_batch = settings_mod, fleet, start_batch
         self.lock = threading.RLock()
+        self.run_lock = threading.Lock()
         self.active = None
         self.pending = {}
         self.settings.recover_schedule_publications()
@@ -252,7 +253,7 @@ class Schedules:
     def run_due(self, now=None, schedule_id=None, force=False):
         now = time.time() if now is None else now
         timestamp = self._time(now).timestamp()
-        with self.lock:
+        with self.run_lock, self.lock:
             self.settings.recover_schedule_publications()
             running = self._finish_active()
             outcome = "no_new_files"
@@ -449,16 +450,27 @@ class Schedules:
                         outcome = "skipped"
                         continue
                     try:
-                        job = self.start_batch(spec, path, output, signature, runner, row)
+                        # Keep other scans serialized while schedule edits remain available during snapshot I/O.
+                        self.lock.release()
+                        try:
+                            job = self.start_batch(spec, path, output, signature, runner, row)
+                        finally:
+                            self.lock.acquire()
                         if job is None:
                             self.pending.pop(sid, None)
                             break
                     except KeyError:
+                        if spec not in self.list():
+                            self.pending.pop(sid, None)
+                            break
                         self._record(spec, {**row, "skipped": "model not loaded"})
                         queue.pop(0)
                         outcome = "skipped"
                         continue
                     except RuntimeError as exc:
+                        if spec not in self.list():
+                            self.pending.pop(sid, None)
+                            break
                         if "already running" in str(exc):
                             return {"status": "queued"}
                         if "model changed during job preparation" in str(exc):

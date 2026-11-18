@@ -550,6 +550,44 @@ def test_scheduled_batch_uses_validated_snapshot(client, child, tmp_path, monkey
     assert (outputs / "a.answers.jsonl").exists()
 
 
+def test_pause_during_snapshot_prevents_job_start(client, child, tmp_path, monkeypatch):
+    import contextlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from basal_ui import paths
+
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    source = inputs / "a.jsonl"
+    source.write_text(item())
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    scheduler = client.app.state.schedules
+    opened, resume = threading.Event(), threading.Event()
+    original = paths._open
+
+    @contextlib.contextmanager
+    def delayed(path):
+        if path == source:
+            opened.set()
+            assert resume.wait(10)
+        with original(path) as stream:
+            yield stream
+
+    monkeypatch.setattr(paths, "_open", delayed)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        scan = pool.submit(scheduler.run_due, 1000)
+        try:
+            assert opened.wait(5)
+            paused = pool.submit(scheduler.update, "nightly", {"paused": True})
+            assert paused.result(timeout=5)["paused"]
+        finally:
+            resume.set()
+        assert scan.result(timeout=5)["status"] == "no_new_files"
+    assert child.seen == [] and list(outputs.iterdir()) == []
+
+
 def test_invalid_utf8_reports_physical_line(client, tmp_path):
     inputs, outputs = tmp_path / "i", tmp_path / "o"
     inputs.mkdir()
