@@ -64,10 +64,10 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.choice-editor input[aria-invalid="true"] { border-color: var(--error, #b42318); }
+.choice-editor input[aria-invalid="true"] { border-color: var(--error); }
 .choice-editor-errors:not(:empty) {
   margin-top: .5rem;
-  color: var(--error, #b42318);
+  color: var(--error);
 }
 @media (max-width: 38rem) {
   .choice-editor-row { grid-template-columns: minmax(0, 1fr) auto auto auto; }

@@ -11,7 +11,7 @@ compatible with those modes, even when their backend dependencies are installed.
 
 ## Setup
 
-Backend setup guidance offers copyable commands and official documentation; it does not run those commands. The separate **Engine add-ons** controls below can install the Engine's declared `media` and `gguf` dependencies. Commands for MLX, llama.cpp and TPU target the displayed Python interpreter; use the platform installer for PyTorch/ROCm. vLLM and SGLang need separate environments: install the engine and basal-ui in that environment, then launch basal-ui there. Restart after installing dependencies; Refresh alone does not replace already imported packages in the main app.
+Backend setup guidance offers copyable commands and official documentation; it does not run those commands. The separate **Engine add-ons** controls below can install the Engine's declared `media`, `gguf` and `finetune` dependencies. Commands for MLX, llama.cpp and TPU target the displayed Python interpreter; use the platform installer for PyTorch/ROCm. vLLM and SGLang need separate environments: install the engine and basal-ui in that environment, then launch basal-ui there. Restart after installing dependencies; Refresh alone does not replace already imported packages in the main app.
 
 Basal integration limits may be narrower than upstream engine support. For example, this integration uses MLX on Apple Silicon and vLLM/SGLang on NVIDIA Linux. Commands follow this repository's installation constraints; consult [INSTALL.md](https://github.com/rkinas/basal/blob/main/docs/INSTALL.md) and the relevant upstream documentation before changing an environment:
 
@@ -25,7 +25,7 @@ Basal integration limits may be narrower than upstream engine support. For examp
 
 ## Installing Engine add-ons
 
-**Engine add-ons** on this page offers **media** (image/audio) and **gguf** (in-process llama.cpp), when declared by
+**Engine add-ons** on this page offers **media** (image/audio), **gguf** (in-process llama.cpp) and **finetune** (LoRA training), when declared by
 the installed Engine. It shows the exact Python environment, Engine version/source identity and install command.
 It requires `uv` and an isolated virtual environment; it does not install into the system Python.
 
