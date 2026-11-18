@@ -2,6 +2,7 @@
 Playground builds, sends and renders every question type, the load options dialog, Batch, History, Logs and Inspect."""
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -1775,3 +1776,47 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_question_set_insertion_preserves_request_and_sends(page, text_model):
+    if not feature("presets"):
+        pytest.skip("the Engine has no question sets")
+    view(page, "playground")
+    page.select_option("#playgroundModel", text_model["id"])
+    request = {
+        "state": "This is a billing complaint.",
+        "questions": {"urgency": {"type": "noul", "instructions": "Is it urgent?"}},
+        "facts": "auto",
+        "lang": "en",
+    }
+    page.evaluate("r => setRequest(r)", request)
+    page.locator("#questionSets summary").click()
+    page.select_option("#questionSet", "triage")
+    page.select_option("#questionSetLang", "en")
+    page.fill("#questionSetError", "0.05")
+    page.click("#insertQuestionSet")
+    page.wait_for_function("() => document.querySelectorAll('.q-name').length === 4")
+    built = page.evaluate("() => buildRequest()")
+    assert built["state"] == request["state"] and built["facts"] == "auto" and built["lang"] == "en"
+    assert built["questions"]["urgency"] == request["questions"]["urgency"]
+    assert built["questions"]["urgency_2"]["max_error"] == 0.05
+    open_request_settings(page)
+    page.check("#editJsonToggle")
+    page.click("#insertQuestionSet")
+    page.wait_for_function(
+        "() => Object.keys(JSON.parse(document.querySelector('#requestJson').value).questions).length === 7"
+    )
+    merged = json.loads(page.input_value("#requestJson"))
+    assert merged["state"] == built["state"] and merged["facts"] == "auto" and merged["lang"] == "en"
+    assert all(merged["questions"][key] == value for key, value in built["questions"].items())
+    assert merged["questions"]["urgency_3"]["max_error"] == 0.05
+    page.uncheck("#editJsonToggle")
+    if os.environ.get("BASAL_E2E_QUESTION_SETS_SCREENSHOT"):
+        page.locator("details.request-settings summary").click()
+        if page.locator("#quickActionsRail").is_visible():
+            page.locator("#toggleQuickActions").click()
+        page.screenshot(path=os.environ["BASAL_E2E_QUESTION_SETS_SCREENSHOT"])
+    page.click("#sendButton")
+    page.wait_for_selector("#results article.answer")
+    sync_api.expect(page.locator("#decideError")).to_be_hidden()
+    sync_api.expect(page.locator("#results article.answer")).to_have_count(7)

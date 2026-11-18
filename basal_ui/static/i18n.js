@@ -4,6 +4,18 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Request changed while loading questions. Try again.": "Żądanie zmieniło się podczas ładowania pytań. Spróbuj ponownie.",
+  "Auto": "Automatycznie",
+  "English": "Angielski",
+  "Polish": "Polski",
+  "Insert question set": "Wstaw zestaw pytań",
+  "Question set": "Zestaw pytań",
+  "Max error (optional)": "Maksymalny błąd (opcjonalnie)",
+  "Insert questions": "Wstaw pytania",
+  "Loading question sets…": "Ładowanie zestawów pytań…",
+  "No question sets are available.": "Brak dostępnych zestawów pytań.",
+  "Question sets are unavailable in this Engine.": "Zestawy pytań są niedostępne w tym silniku.",
+  "Request must contain a questions object.": "Żądanie musi zawierać obiekt pytań.",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",

@@ -1178,3 +1178,51 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_question_sets_use_installed_engine_and_validate_inputs(tmp_path):
+    presets = pytest.importorskip("basal.presets")
+
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        listing = client.get("/api/question-sets")
+        assert listing.status_code == 200
+        assert listing.json() == [
+            {
+                "name": name,
+                "languages": list(presets.PRESETS[name]),
+                "question_count": len(presets.questions(name, "en")),
+            }
+            for name in presets.names()
+        ]
+        for name in presets.names():
+            for lang, state in [
+                ("pl", "example"),
+                ("en", "example"),
+                ("auto", "To jest zgłoszenie i sprawa"),
+                ("auto", "A billing issue"),
+            ]:
+                payload = {"lang": lang, "state": state, "max_error": 0.05}
+                response = client.post(f"/api/question-sets/{name}", json=payload)
+                assert response.status_code == 200
+                assert response.json() == presets.questions(name, None if lang == "auto" else lang, state, 0.05)
+        assert client.post("/api/question-sets/missing", json={}).status_code == 404
+        for payload in (
+            {"lang": "xx"},
+            {"state": []},
+            {"max_error": True},
+            {"max_error": 0},
+            {"max_error": 1},
+            {"max_error": "0.05"},
+        ):
+            assert client.post("/api/question-sets/triage", json=payload).status_code == 400
+
+
+def test_question_sets_refuse_when_engine_lacks_capability(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/question-sets").status_code == 503
+        assert client.post("/api/question-sets/triage", json={}).status_code == 503

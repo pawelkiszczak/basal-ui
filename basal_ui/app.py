@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -925,6 +925,38 @@ def create_app(
     @app.get("/api/status")
     def status():
         return full_status()
+
+    @app.get("/api/question-sets")
+    def question_sets():
+        if not engine.feature("presets"):
+            raise HTTPException(503, "Question sets are unavailable in this Engine.")
+        from basal import presets
+
+        return [
+            {
+                "name": name,
+                "languages": list(presets.PRESETS[name]),
+                "question_count": len(presets.questions(name, lang="en")),
+            }
+            for name in presets.names()
+        ]
+
+    @app.post("/api/question-sets/{name}")
+    def question_set(name: str, body: dict = Body(...)):
+        if not engine.feature("presets"):
+            raise HTTPException(503, "Question sets are unavailable in this Engine.")
+        from basal import presets
+
+        if name not in presets.names():
+            raise HTTPException(404, "Unknown question set.")
+        lang, state, max_error = body.get("lang", "auto"), body.get("state", ""), body.get("max_error")
+        if lang not in ("auto", "pl", "en") or not isinstance(state, str):
+            raise HTTPException(400, "lang must be auto, pl or en and state must be a string.")
+        if max_error is not None and (
+            isinstance(max_error, bool) or not isinstance(max_error, (int, float)) or not 0 < max_error < 1
+        ):
+            raise HTTPException(400, "max_error must be a number between 0 and 1 (exclusive).")
+        return presets.questions(name, lang=None if lang == "auto" else lang, state=state, max_error=max_error)
 
     @app.get("/api/examples")
     def get_examples():
