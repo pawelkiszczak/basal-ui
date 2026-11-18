@@ -4,6 +4,7 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Invalid question JSON.": "Niepoprawny JSON pytania.",
   "{n} layers · prompt format {format}": "{n} warstw · format promptu {format}",
   "{title}: {n} tokens": "{title}: {n} tokenów",
   "{n} tokens": "{n} tokenów",

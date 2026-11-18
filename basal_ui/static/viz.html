@@ -360,10 +360,17 @@ $("#clearh").onclick = () => { store.set("basal-viz-history", []); renderHistory
 let currentGold = null, postedRequest = null;
 async function decide(gold, requestOverride) {
   currentGold = gold === undefined ? currentGold : gold;
-  const req = requestOverride||readRequest();
+  const out = $("#out");
+  let req;
+  try { req = requestOverride || readRequest(); }
+  catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    out.querySelector(".err")?.remove();
+    out.prepend(h("div", { class: "err" }, tr("Error: ") + tr("Invalid question JSON.")));
+    return;
+  }
   if (!Object.keys(req.questions).length) return;
   const btn = $("#go"); btn.disabled = true;
-  const out = $("#out");
   [...out.querySelectorAll(".result")].forEach(r => r.classList.add("stale"));
   out.querySelector(".err")?.remove(); out.querySelector(".empty")?.remove();
   const ld = h("div", { class: "loading" }, h("div", { class: "spin" }), tr("Running the model — a forward pass per option order, with every layer recorded…"));

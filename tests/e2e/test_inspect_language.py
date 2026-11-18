@@ -68,7 +68,7 @@ def test_inspect_language(ui, language, embedded):
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(ui.url + ("/" if embedded else "/viz/"), wait_until="networkidle")
         if embedded:
-            page.evaluate("""() => { const frame = document.querySelector('#vizFrame');
+            page.evaluate("""() => { renderInspectState = () => {}; const frame = document.querySelector('#vizFrame');
                 frame.hidden = false; frame.src = '/viz/'; frame.style.width = '1400px';
                 frame.style.height = '850px'; document.body.append(frame); }""")
             frame = page.frame_locator("#vizFrame")
@@ -89,13 +89,33 @@ def test_inspect_language(ui, language, embedded):
         playwright.expect(frame.locator("#out")).to_contain_text("Synthetic question?")
         playwright.expect(frame.locator("#out")).to_contain_text("Alpha")
         context.unroute("**/viz/api/explain")
-        context.route(
-            "**/viz/api/explain", lambda route: route.fulfill(status=500, json={"error": "Server diagnostic"})
-        )
+        calls = []
+
+        def server_error(route):
+            calls.append(route.request.post_data)
+            route.fulfill(status=500, json={"error": "Server diagnostic"})
+
+        context.route("**/viz/api/explain", server_error)
         frame.locator("#go").click()
         playwright.expect(frame.locator(".err")).to_have_text(
             ("Błąd: " if language == "pl" else "Error: ") + "Server diagnostic"
         )
+        frame.locator("body").evaluate(
+            "() => loadRequest({state: 'synthetic', questions: {raw: {type: 'custom', value: 42}}})"
+        )
+        raw = frame.get_by_label("JSON pytania" if language == "pl" else "Question JSON", exact=True)
+        raw.fill("{")
+        frame.locator("#go").click()
+        playwright.expect(frame.locator(".err")).to_have_text(
+            "Błąd: Niepoprawny JSON pytania." if language == "pl" else "Error: Invalid question JSON."
+        )
+        assert len(calls) == 1
+        raw.fill('{"type":"custom","value":42}')
+        frame.locator("#go").click()
+        playwright.expect(frame.locator(".err")).to_have_text(
+            ("Błąd: " if language == "pl" else "Error: ") + "Server diagnostic"
+        )
+        assert len(calls) == 2
         assert not errors
         context.close()
         browser.close()
