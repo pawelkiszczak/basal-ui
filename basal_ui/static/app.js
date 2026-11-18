@@ -394,7 +394,7 @@ const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['a
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
 let presetData={load:{},request:{}},presetTarget='load';
-async function loadPresets() {try{presetData=await api('/api/presets');renderRequestPresets();renderLoadPresets();}catch{}}
+async function loadPresets(current=()=>true) {try{const data=await api('/api/presets');if(!current())return;presetData=data;renderRequestPresets();renderLoadPresets();}catch{}}
 function renderRequestPresets() {
   const select=$('#examples'), current=select.value;
   const saved=Object.keys(presetData.request||{});
@@ -1703,7 +1703,7 @@ $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
 $('#deleteLoadPreset').onclick=()=>act(async()=>{const n=$('#loadPresetSelect').value;if(n)await deletePreset('load',n);});
 $('#loadPresetSelect').onchange=()=>$('#deleteLoadPreset').disabled=!$('#loadPresetSelect').value;
-let optionsState=null;
+let optionsState=null, optionsSequence=0;
 const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
@@ -1770,7 +1770,13 @@ function collectOptions() {
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));
 }
 async function openLoadOptions(id, media=false, action='load', initialMode=null) {
-  const data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);
+  const sequence=++optionsSequence;
+  let data;
+  try{data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);}
+  catch(e){if(sequence===optionsSequence)throw e;return;}
+  if(sequence!==optionsSequence)return;
+  await loadPresets(()=>sequence===optionsSequence);
+  if(sequence!==optionsSequence)return;
   const loaded=(statusCache?.models||[]).find(m=>m.id===id), restart=action==='restart', save=action==='save';
   optionsState={id,media,restart,save,data,initialMode};
   $('#optionsModel').textContent=`${id}${media?` · ${t('with media')}`:''}${restart?` · ${t('restarts the running model')}`:save?` · ${t('kept for the next load')}`:''}`;
@@ -1780,13 +1786,14 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   setChecked($('#optionsRemember'),initialMode?false:data.saved);
   renderOptionsForm(restart&&loaded?{...data.defaults,...loaded.options}:{...data.options,...(initialMode?{mode:initialMode}:{})});
   $('#optionsError').hidden=true;
-  await loadPresets();renderLoadPresets();
+  renderLoadPresets();
   $('#loadPresetSelect').value='';
   $('#deleteLoadPreset').disabled=true;
   $('#loadOptions').showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
 document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
+$('#loadOptions').addEventListener('close',()=>{optionsSequence++;});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
