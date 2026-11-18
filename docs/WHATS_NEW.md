@@ -1,5 +1,7 @@
 # Unreleased
 
+- Insert Engine question sets into the Playground as editable cards, with language and optional abstention target.
+
 - Fetch a public HTTP(S) page into editable Playground State, with bounded anonymous loading, provenance in History,
   and Replay that restores the recorded State without re-fetching. [Usage](USAGE.md)
 

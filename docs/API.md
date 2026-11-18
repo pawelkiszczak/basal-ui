@@ -511,7 +511,6 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
-
 ## Custom calibration
 
 `POST /api/calibrate` starts a calibration job for `id` and a local labelled `input`; `targets` is a list of
@@ -526,3 +525,11 @@ returns a `types` object mapping eligible question types to their compared file,
 path for `compare`. The start request rechecks eligibility. `GET /api/calibrations/report?id=...&file=...` returns
 its original `report` text and, when present, `details` with fitted identity, conformal results and per-type threshold
 metadata. Old reports without those fields retain the original response shape.
+
+### Playground question sets
+
+`GET /api/question-sets` lists Engine set names, available languages and question counts.
+`POST /api/question-sets/{name}` accepts JSON with `lang` (`auto`, `pl` or `en`, default `auto`), string `state`
+(default empty), and optional numeric `max_error` strictly between 0 and 1. It returns the Engine's questions unchanged;
+Auto delegates language guessing to the Engine. An unknown name returns 404, invalid inputs 400, and both routes return
+503 when the Engine lacks question sets.

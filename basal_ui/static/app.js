@@ -405,6 +405,32 @@ async function loadExamples() {
     renderRequestPresets();
   } catch { examples=[];renderRequestPresets(); }
 }
+// Engine question sets are added to the current request, including in Edit JSON mode.
+$('#examples').insertAdjacentHTML('afterend', `<details id="questionSets"><summary>${t('Insert question set')}</summary><div class="controls"><label>${t('Question set')} <select id="questionSet" disabled></select></label><label>${t('Language')} <select id="questionSetLang" disabled><option value="auto">${t('Auto')}</option><option value="pl">${t('Polish')}</option><option value="en">${t('English')}</option></select></label><label>${t('Max error (optional)')} <input id="questionSetError" type="number" disabled min="0" max="1" step="any"></label><button type="button" id="insertQuestionSet" disabled>${t('Insert questions')}</button></div><p id="questionSetHint" class="muted" role="status">${t('Loading question sets…')}</p></details>`);
+async function loadQuestionSets() {
+  try {
+    const sets=await api('/api/question-sets');
+    $('#questionSet').innerHTML=sets.map(set=>`<option value="${esc(set.name)}">${esc(set.name)} (${set.question_count})</option>`).join('');
+    for(const selector of ['#questionSet','#questionSetLang','#questionSetError','#insertQuestionSet'])$(selector).disabled=!sets.length;
+    $('#questionSetHint').textContent=sets.length?'':t('No question sets are available.');
+  } catch { $('#questionSetHint').textContent=t('Question sets are unavailable in this Engine.'); }
+}
+$('#insertQuestionSet').onclick=()=>act(async()=>{
+  const jsonMode=$('#editJsonToggle').checked;
+  const request=jsonMode?JSON.parse($('#requestJson').value):buildRequest();
+  if(!request||typeof request!=='object'||Array.isArray(request)||!request.questions||typeof request.questions!=='object'||Array.isArray(request.questions))throw new Error(t('Request must contain a questions object.'));
+  const field=$('#questionSetError');if(!field.checkValidity()){field.reportValidity();return;}
+  const state=typeof request.state==='string'?request.state:JSON.stringify(request.state??'');
+  const questions=await api(`/api/question-sets/${encodeURIComponent($('#questionSet').value)}`,{method:'POST',body:JSON.stringify({lang:$('#questionSetLang').value,state,max_error:field.value===''?null:Number(field.value)})});
+  if(jsonMode!==$('#editJsonToggle').checked||JSON.stringify(request)!==JSON.stringify(jsonMode?JSON.parse($('#requestJson').value):buildRequest()))throw new Error(t('Request changed while loading questions. Try again.'));
+  const names=new Set(Object.keys(request.questions));
+  for(const [base,q] of Object.entries(questions)){
+    let name=base;for(let i=2;names.has(name);i++)name=`${base}_${i}`;names.add(name);
+    if(jsonMode)request.questions[name]=q;else addQuestion(name,q);
+  }
+  if(jsonMode){$('#requestJson').value=JSON.stringify(request,null,2);window.RequestCode.invalidate();}else syncRequest();
+});
+loadQuestionSets();
 // Question builder: one card per question, a type-specific fieldset; fields the builder does not own stay on the card
 // (card._extra) and are merged back, so Edit JSON → builder → JSON keeps them.
 const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract'];
@@ -696,7 +722,7 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
 }
 function extraOf(q, type) {
   const owned=new Set(['type','instructions','evidence',...OWNED[type]]);
-  if(!Array.isArray(q.max_error))owned.add('max_error');  // a list of targets (tasks) is kept as given
+  if(MAX_ERROR_TYPES.includes(type)&&!Array.isArray(q.max_error))owned.add('max_error');  // uneditable targets stay as given
   return Object.fromEntries(Object.entries(q||{}).filter(([k])=>!owned.has(k)));
 }
 function mediaRequestFields() {

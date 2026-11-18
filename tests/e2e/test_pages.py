@@ -2,6 +2,7 @@
 Playground builds, sends and renders every question type, the load options dialog, Batch, History, Logs and Inspect."""
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -930,6 +931,74 @@ def test_string_state_is_preserved_until_the_state_field_is_edited(page):
     page.evaluate("state => setRequest({state, questions: {}})", literal)
     page.fill("#stateInput", '{"edited": true}')
     assert page.evaluate("() => buildRequest().state") == {"edited": True}
+
+
+def test_question_set_insertion_preserves_request_and_sends(page, text_model):
+    if not feature("presets"):
+        pytest.skip("the Engine has no question sets")
+    view(page, "playground")
+    page.select_option("#playgroundModel", text_model["id"])
+    request = {
+        "state": "This is a billing complaint.",
+        "questions": {"urgency": {"type": "noul", "instructions": "Is it urgent?"}},
+        "facts": "auto",
+        "lang": "en",
+    }
+    page.evaluate("r => setRequest(r)", request)
+    page.locator("#questionSets summary").click()
+    page.select_option("#questionSet", "triage")
+    page.select_option("#questionSetLang", "en")
+    page.fill("#questionSetError", "0.05")
+    page.click("#insertQuestionSet")
+    page.wait_for_function("() => document.querySelectorAll('.q-name').length === 4")
+    for name in ("urgency_2", "category", "needs_human"):
+        card = page.locator(".question").filter(has=page.locator(f'.q-name[value="{name}"]'))
+        card.locator(".q-instructions-input").fill(f"Edited {name}?")
+    built = page.evaluate("() => buildRequest()")
+    for name in ("urgency_2", "category", "needs_human"):
+        assert built["questions"][name]["max_error"] == 0.05
+    assert built["state"] == request["state"] and built["facts"] == "auto" and built["lang"] == "en"
+    assert built["questions"]["urgency"] == request["questions"]["urgency"]
+    assert built["questions"]["urgency_2"]["max_error"] == 0.05
+    open_request_settings(page)
+    page.check("#editJsonToggle")
+    page.click("#insertQuestionSet")
+    page.wait_for_function(
+        "() => Object.keys(JSON.parse(document.querySelector('#requestJson').value).questions).length === 7"
+    )
+    merged = json.loads(page.input_value("#requestJson"))
+    assert merged["state"] == built["state"] and merged["facts"] == "auto" and merged["lang"] == "en"
+    assert all(merged["questions"][key] == value for key, value in built["questions"].items())
+    assert merged["questions"]["urgency_3"]["max_error"] == 0.05
+    page.uncheck("#editJsonToggle")
+    if os.environ.get("BASAL_E2E_QUESTION_SETS_SCREENSHOT"):
+        page.locator("details.request-settings summary").click()
+        if page.locator("#quickActionsRail").is_visible():
+            page.locator("#toggleQuickActions").click()
+        page.screenshot(path=os.environ["BASAL_E2E_QUESTION_SETS_SCREENSHOT"])
+    with page.expect_response(lambda response: response.url.endswith("/api/decide"), timeout=WAIT) as decision:
+        page.click("#sendButton")
+    response = decision.value
+    assert response.status == 200
+    sent = response.request.post_data_json
+    for name in ("urgency_2", "category", "needs_human"):
+        assert sent["questions"][name]["max_error"] == 0.05
+        assert sent["questions"][name]["instructions"] == f"Edited {name}?"
+        assert isinstance(response.json()["answers"][name]["abstain"], bool)
+    page.wait_for_selector("#results article.answer")
+    sync_api.expect(page.locator("#decideError")).to_be_hidden()
+    sync_api.expect(page.locator("#results article.answer")).to_have_count(7)
+
+
+def test_question_set_controls_show_translated_unsupported_reason(page):
+    page.route("**/api/question-sets", lambda route: route.fulfill(status=503, json={"detail": "unavailable"}))
+    page.evaluate("() => localStorage.setItem('basal-ui.lang', 'pl')")
+    page.reload()
+    view(page, "playground")
+    page.locator("#questionSets summary").click()
+    sync_api.expect(page.locator("#questionSetHint")).to_have_text("Zestawy pytań są niedostępne w tym silniku.")
+    for control in ("#questionSet", "#questionSetLang", "#questionSetError", "#insertQuestionSet"):
+        sync_api.expect(page.locator(control)).to_be_disabled()
 
 
 def test_edit_json_rebuilds_the_builder_and_keeps_invalid_json_open(page):
