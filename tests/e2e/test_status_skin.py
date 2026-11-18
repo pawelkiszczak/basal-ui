@@ -34,6 +34,7 @@ def test_status_skin(ui, tmp_path, skin, theme):
         page.route("**/api/status", synthetic_status)
         page.goto(ui.url)
         page.wait_for_function("() => statusCache && modelData.length && typeof renderStatus === 'function'")
+        page.add_style_tag(content=".status-dot { transition: none !important; animation: none !important; }")
         page.evaluate(
             """([skin, theme]) => {
               StudioShell.applySkin(skin); applyTheme(theme);
@@ -85,5 +86,9 @@ def test_status_skin(ui, tmp_path, skin, theme):
         page.evaluate("""() => {const s=structuredClone(statusCache); s.models=[{id:'synthetic/model',state:'error'}];
           s.jobs={}; window.syntheticRender(s); clearTimeout(pollTimer)}""")
         sync_api.expect(page.locator("#footerState")).to_have_text("error")
+        assert "error" in page.locator("#footerDot").get_attribute("class")
+        page.evaluate("""() => {const s=structuredClone(statusCache);
+          s.models.push({id:'synthetic/loading',state:'starting'}); window.syntheticRender(s); clearTimeout(pollTimer)}""")
+        sync_api.expect(page.locator("#footerState")).to_have_text("error · loading…")
         assert "error" in page.locator("#footerDot").get_attribute("class")
         browser.close()

@@ -22,7 +22,6 @@
 .app-shell>.sidebar{grid-column:1/-1;grid-row:1}
 .main-content{grid-column:1;grid-row:2;min-width:0;container-type:inline-size}
 
-:root{--amber:#995d2e}
 :root[data-skin=orange]{--green:#a54727;--green-light:#f8e9df}
 :root[data-theme=dark][data-skin=orange]{--green:#efb08b;--green-light:#402b22}
 

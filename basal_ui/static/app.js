@@ -1312,8 +1312,9 @@ function renderStatus(s) {
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
-  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):models.some(m=>m.state==='error')?t('error'):t('idle');
-  $('#footerDot').className=`status-dot${ready.length?' ready':models.some(m=>m.state==='error')?' error':''}${live?' active':''}`;
+  const failed=models.some(m=>m.state==='error');
+  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:failed?`${t('error')}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
+  $('#footerDot').className=`status-dot${ready.length?' ready':failed?' error':''}${live?' active':''}`;
   $('#footerModel').textContent=models.map(m=>shortName(m.id)).join(', ')||t('No model loaded');
   $('#footerModel').title=models.map(m=>m.id).join(', ')||t('No model loaded');
   $('#footerUrl').textContent=s.serving?.url||''; $('#footerUrl').hidden=!s.serving?.url;
