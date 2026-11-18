@@ -23,6 +23,7 @@ MAX_BODY_BYTES = 256 * 1024**2  # a request with 8 media items of 20 MiB, base64
 def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0.1"):
     """The gateway's ASGI app. keys: basal_ui.auth.ApiKeys or None (no key required)."""
     from starlette.applications import Starlette
+    from starlette.requests import ClientDisconnect
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
@@ -47,10 +48,15 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         if media_type != "application/json":
             return error(path, 415, "Content-Type must be application/json", "UNSUPPORTED_MEDIA_TYPE")
         raw = bytearray()
-        async for chunk in request.stream():
-            raw += chunk
-            if len(raw) > MAX_BODY_BYTES:
-                return error(path, 413, f"request body exceeds {MAX_BODY_BYTES // 1024**2} MiB", "REQUEST_TOO_LARGE")
+        try:
+            async for chunk in request.stream():
+                raw += chunk
+                if len(raw) > MAX_BODY_BYTES:
+                    return error(
+                        path, 413, f"request body exceeds {MAX_BODY_BYTES // 1024**2} MiB", "REQUEST_TOO_LARGE"
+                    )
+        except ClientDisconnect:
+            return Response(status_code=499)
         try:
             body = json.loads(raw)
         except ValueError:

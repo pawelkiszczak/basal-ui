@@ -491,13 +491,15 @@ class Runner:
         response.extensions["basal.inference"] = True
         return response
 
-    async def adecide(self, client, body, path="/v1/systemone"):
+    async def adecide(self, client, body, path="/v1/systemone", timeout=None):
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
         response = reply(
             await client.post(
-                self._url("/v1/systemone"), json=child_body, timeout=httpx.Timeout(120, read=self.read_timeout())
+                self._url("/v1/systemone"),
+                json=child_body,
+                timeout=timeout if timeout is not None else httpx.Timeout(120, read=self.read_timeout()),
             )
         )
         response.extensions["basal.inference"] = True
@@ -941,7 +943,8 @@ class Fleet:
         with self.lease(model_id) as runner, self.answering(model_id, source):
             t0 = time.perf_counter()
             try:
-                response = await runner.adecide(client, body, path)
+                kwargs = {"timeout": client.timeout} if source == "benchmark" else {}
+                response = await runner.adecide(client, body, path, **kwargs)
             except httpx.HTTPError as exc:
                 exc.basal_read_timeout = runner.read_timeout()
                 status, message, code = upstream_error(exc)
