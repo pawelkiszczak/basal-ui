@@ -30,7 +30,7 @@
 .quick-actions-rail>input{min-width:0;width:100%;padding:9px;font-size:12px;border-radius:8px}
 .quick-action-list{display:grid;gap:6px;margin-top:16px}
 .quick-action-list>button{display:grid;gap:5px;text-align:left;padding:12px 10px;min-width:0;border-color:transparent;background:transparent}
-.quick-action-list>button:hover{background:var(--paper);border-color:var(--line)}
+@media (hover: hover){.quick-action-list>button:hover{background:var(--paper);border-color:var(--line)}}
 .quick-action-list strong{font-size:12px;font-weight:650;overflow-wrap:anywhere}
 .quick-action-list small,.quick-actions-hint{font-size:11px;line-height:1.65;color:var(--muted);overflow-wrap:anywhere}
 .quick-actions-hint{margin:24px 0 0}
