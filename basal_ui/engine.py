@@ -1,5 +1,6 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import functools
 import importlib.metadata
 import importlib.util
 import inspect
@@ -110,3 +111,10 @@ def feature(name):
 def supported(version):
     """Whether an Engine release (e.g. the latest on GitHub) is in this basal-ui's supported range."""
     return _in_range(version)
+
+
+@functools.cache
+def serve_option(flag):
+    """Choices and default declared for a basal-serve flag, or None."""
+    parser = importlib.import_module("basal.server").parser()
+    return next(((tuple(a.choices or ()), a.default) for a in parser._actions if flag in a.option_strings), None)

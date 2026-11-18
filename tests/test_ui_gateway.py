@@ -18,6 +18,33 @@ from basal_ui.stats import Stats
 HW = Hardware("cpu", "cpu", 1024**4, None, None, frozenset())
 
 
+@pytest.mark.parametrize("status,code", [(503, "OVERLOADED"), (504, "TIMEOUT"), (413, "PAYLOAD_TOO_LARGE")])
+@pytest.mark.parametrize("path", ["/v1/systemone", "/v1/basal", "/v1/decisions", "/decisions"])
+def test_child_refusal_preserves_code_and_retry_after(tmp_path, child, status, code, path):
+    child.status, child.reply, child.headers = status, {"error": "refused", "code": code}, {"Retry-After": "7"}
+    fleet = Fleet(
+        models_dir_fn=lambda: tmp_path,
+        platform_fn=lambda: "cpu",
+        settings_mod=settings,
+        hardware_fn=lambda: HW,
+        stats=Stats(tmp_path / "stats.json"),
+        history=History(tmp_path / "history.jsonl"),
+    )
+    runner = Runner()
+    runner.state, runner.model, runner.base_url = "ready", "a/one", child.url
+    fleet.runners[runner.model] = runner
+    body = (
+        {"model": "a/one", "input": "s", "questions": [{"type": "predicate", "instructions": "valid?"}]}
+        if "decisions" in path
+        else {"model": "a/one", "state": "s", "questions": {"q": {"type": "noul"}}}
+    )
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        reply = client.post(path, json=body)
+    assert reply.status_code == status
+    assert reply.headers["Retry-After"] == "7"
+    assert (reply.json()["error"]["code"] if "decisions" in path else reply.json()["code"]) == code
+
+
 @pytest.fixture(autouse=True)
 def config(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))

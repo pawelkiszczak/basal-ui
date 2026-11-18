@@ -41,6 +41,48 @@ def probe(monkeypatch, **flags):
     monkeypatch.setattr(options, "feature", lambda name: flags[name] if name in flags else real(name))
 
 
+def test_limits_probe_validation_and_flags(monkeypatch):
+    values = {
+        "max_requests": 7,
+        "request_timeout": 60,
+        "max_body_mb": 2.5,
+        "max_branches": 5,
+        "max_prompt_mb": 4.5,
+        "stall_s": 10,
+    }
+    monkeypatch.setattr(options, "serve_option", lambda flag: None)
+    for key, value in values.items():
+        with pytest.raises(ValueError, match="not available"):
+            options.validate({key: value})
+    monkeypatch.setattr(options, "serve_option", lambda flag: ((), None))
+    for key, value in values.items():
+        with pytest.raises(ValueError):
+            options.validate({key: 0})
+        assert options.args({key: value}) == ["--" + key.replace("_", "-"), str(value)]
+    assert options.validate({"request_timeout": None, "stall_s": None})["stall_s"] is None
+
+
+def test_installed_engine_limit_parser_defaults_and_round_trip():
+    from basal.server import parser
+
+    parsed = parser().parse_args([])
+    values = {
+        "max_requests": 7,
+        "request_timeout": 60,
+        "max_body_mb": 2.5,
+        "max_branches": 5,
+        "max_prompt_mb": 4.5,
+        "stall_s": 10,
+    }
+    for key, value in values.items():
+        flag = "--" + key.replace("_", "-")
+        metadata = engine.serve_option(flag)
+        if metadata is None:
+            continue
+        assert options.DEFAULTS[key] == getattr(parsed, key)
+        assert getattr(parser().parse_args(options.args({key: value})), key) == value
+
+
 PICO = Variant("pico", "Remek/basal-omni-pico", "basal-omni", "pico", "bf16", "bf16", None, 100, True, recurrent=True)
 APPLE = Hardware("apple", "Apple M4 Max", 64 * 1024**3, None, None, frozenset({"mps", "mlx"}))
 

@@ -848,6 +848,10 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
+            "limits_available": {
+                key: bool(load_options.serve_option("--" + key.replace("_", "-")))
+                for key in load_options.LIMIT_DEFAULTS
+            },
             "adapter_reason": adapter_reason,
             "adapter_reason_code": adapter_code,
             "adapter_reason_params": adapter_params,

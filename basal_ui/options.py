@@ -4,6 +4,7 @@ eager forward, calibration strictness, thinking, early exit). DEFAULTS are basal
 emits only the options that differ from them. Incompatible combinations are not re-checked here: the child refuses
 them with basal-serve's own message, shown on the model's row and in its log."""
 
+import math
 import re
 from types import SimpleNamespace
 
@@ -13,12 +14,24 @@ from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
 from .catalog import _cuda_graph, _quantized_hardware_reason
-from .engine import feature
+from .engine import feature, serve_option
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
 # gdn_graph.refused; 2.5.0 lifted the 2.4 refusals of the caches, compact rows and --lean), MLX from 2.5.0 ("mlx_recurrent")
 
+LIMIT_DEFAULTS = {
+    "max_requests": 1024,
+    "request_timeout": None,
+    "max_body_mb": 256.0,
+    "max_branches": 4096,
+    "max_prompt_mb": 512,
+    "stall_s": None,
+}
 DEFAULTS = {
+    **{
+        key: (option[1] if (option := serve_option("--" + key.replace("_", "-"))) else default)
+        for key, default in LIMIT_DEFAULTS.items()
+    },
     "mode": None,
     "quant": None,
     "revision": None,
@@ -113,6 +126,7 @@ BOOLS = (
 )
 # key: (minimum, maximum, integer, minimum excluded)
 NUMBERS = {
+    **{key: (0, None, key in ("max_requests", "max_branches"), True) for key in LIMIT_DEFAULTS},
     "auto_tau": (0, 1, False, False),
     "max_batch": (1, None, True, False),
     "wait_ms": (0, None, False, False),
@@ -168,7 +182,12 @@ MODE_ORDER = (
 
 def _number(key, value):
     lo, hi, integer, open_lo = NUMBERS[key]
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or (integer and int(value) != value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or (integer and int(value) != value)
+    ):
         raise ValueError(f"load option {key} must be {'an integer' if integer else 'a number'}")
     if (value <= lo if open_lo else value < lo) or (hi is not None and value > hi):
         raise ValueError(
@@ -199,7 +218,10 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
             if not isinstance(value, bool):
                 raise ValueError(f"load option {key} must be true or false")
         elif key in NUMBERS:
-            value = _number(key, value)
+            if value is not None or key not in ("request_timeout", "stall_s"):
+                value = _number(key, value)
+            if key in LIMIT_DEFAULTS and value != DEFAULTS[key] and not serve_option("--" + key.replace("_", "-")):
+                raise ValueError(f"load option {key} is not available in the installed Engine")
         elif key == "revision":
             value = (value.strip() or None) if isinstance(value, str) else value
             if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9A-Za-z._/-]{1,64}", value)):

@@ -535,3 +535,7 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+
+## Server limits
+
+Load options include request concurrency, request timeout, body size, branch count, prompt size and stall detection limits when the installed Engine declares them. Empty request timeout and stall detection fields leave them unset. The Dashboard shows a stalled Engine call's age and main and long lane counts when the Engine reports them. A stalled call may still be running; unloading the model is a separate operation.

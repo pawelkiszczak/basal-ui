@@ -5,7 +5,9 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
 let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
-function httpFailure(status,message) {
+function httpFailure(status,message,code) {
+  const refusal=code==='OVERLOADED'?t('Model is busy. Wait and retry.'):code==='TIMEOUT'?t('Request timed out. Try a smaller request or increase the timeout.'):code==='PAYLOAD_TOO_LARGE'?t('Request is too large. Reduce its size and retry.'):null;
+  if(refusal)return `HTTP ${status}. ${refusal}`;
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
 }
@@ -18,7 +20,7 @@ async function api(path, options={}) {
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    throw new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`);
   }
   return data;
 }
@@ -1631,12 +1633,19 @@ const OPTION_SECTIONS=[
   ['Batching',['max_batch','wait_ms','batch_window_ms','soam']],
   ['Caching',['state_cache_gb','prefix_cache']],
   ['Scheduling',['scheduler','long_lane','long_tokens','long_share','long_slice_ms']],
+  ['Server limits',['max_requests','request_timeout','max_body_mb','max_branches','max_prompt_mb','stall_s']],
   ['Context',['layout','context_overflow','truncate_head','max_len']],
   ['Kernels (CUDA graph engine)',['gemma_attn','merge','lean','tree','batches','readout_layer','template_prefix','fp8_accum']],
   ['Calibration',['strict_calibration']],
   ['Experimental',['think','think_tokens','think_python','think_url','think_calibration','think_model','think_adapter','think_memory','think_max_len','think_log','early_exit']],
 ];
 const OPTION_FIELDS={
+  max_requests:{label:'Maximum requests',kind:'num',attrs:'min="1" step="1"'},
+  request_timeout:{label:'Request timeout (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_body_mb:{label:'Maximum body (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_branches:{label:'Maximum branches',kind:'num',attrs:'min="1" step="1"'},
+  max_prompt_mb:{label:'Maximum prompt (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  stall_s:{label:'Stall detection (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
   mlx_packed:{label:'MLX packed (opt-in)',kind:'bool',modes:['mlx','mlx-q8']},
   quant:{label:'Quantisation',kind:'select',values:[[null,'as the mode'],['fp8','fp8'],['nvfp4','nvfp4'],['q8','q8 (mlx)']],modes:[...GRAPH_MODES,'mlx','mlx-q8']},
   attn:{label:'Attention kernel',kind:'select',values:['auto','fa2','fa3','fa4','cudnn'],modes:GRAPH_MODES},
@@ -1729,6 +1738,7 @@ function renderOptionsForm(values) {
   $('#optionsForm').querySelectorAll('input[type=range]').forEach(r=>r.oninput=()=>{$(`#${r.id}-out`).textContent=`${r.value}%`;});
   $('#optionsForm').onchange=()=>updateOptionVisibility();
   updateOptionVisibility();
+  Object.entries(d.limits_available||{}).forEach(([key,available])=>{const el=$(`#opt-${key}`);el.disabled=!available;if(!available){el.title=t('This option is not available in the installed Engine.');el.insertAdjacentHTML('afterend',`<small>${t('This option is not available in the installed Engine.')}</small>`);}});
 }
 const optionModes=()=>optionsState.media?optionsState.data.media_modes:optionsState.data.modes;
 function selectedOptionMode() { return $('#optionsForm input[name=optMode]:checked')?.value||optionModes().find(m=>m.default)?.mode; }
