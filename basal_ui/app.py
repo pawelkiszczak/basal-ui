@@ -535,7 +535,13 @@ def create_app(
                 {**{k: v for k, v in server.items() if k in ("id", "name", "url", "consent", "state")}}
                 for server in fleet.decision_servers.values()
             ]
-        return {**status, "decision_servers": servers, "serving": gateway.status(), "inspect": inspector.state()}
+        return {
+            **status,
+            "decision_servers": servers,
+            "serving": gateway.status(),
+            "inspect": inspector.state(),
+            "features": {name: engine.feature(name) for name in ("answer_sets", "conditional_questions")},
+        }
 
     @app.get("/api/decision-servers")
     def get_decision_servers():
@@ -1443,7 +1449,7 @@ def create_app(
         saved = load_options.non_default(merged)
         previous = settings_mod.load_options(variant.id)
         if (
-            load_options.adapter_unavailable()
+            load_options.unavailable_options().get("adapter")
             and "adapter" not in (body.get("options") or {})
             and previous.get("adapter")
         ):

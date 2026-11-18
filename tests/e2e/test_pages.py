@@ -2709,3 +2709,95 @@ def test_calibration_origin_warning_appears_on_model_row(page):
       calibration_origin_warning_code: 'calibration_origin'
     }])""")
     sync_api.expect(page.locator("#loadedModels .model-row .reason")).to_have_text("basal: warning: copied calibration")
+
+
+def test_answer_sets_and_conditional_replay_in_browser(page, ui, text_model):
+    if not feature("answer_sets") or not feature("conditional_questions"):
+        pytest.skip("Engine does not support answer sets and conditional questions")
+    request = {
+        "state": "A blocked card",
+        "questions": {
+            "first": {"type": "noul", "instructions": "Is this about a card?", "coverage": 0.9, "max_error": 0.001},
+            "second": {
+                "type": "noul",
+                "instructions": "Is this urgent?",
+                "ask_if": {"first": ["false"]},
+                "depends_on": ["first"],
+            },
+        },
+    }
+    view(page, "playground")
+    page.evaluate("request => setRequest(request)", request)
+    assert page.evaluate("() => buildRequest()") == request
+    assert page.locator("[data-shared-coverage]").first.input_value() == "0.9"
+    page.locator(".question").nth(1).locator(".q-gates summary").click()
+    assert page.locator('[data-gate-question="first"][data-gate-answer="false"]').is_checked()
+    with page.expect_response(lambda response: "/api/decide" in response.url, timeout=WAIT) as sent:
+        page.click("#sendButton")
+    assert sent.value.status == 200
+    sync_api.expect(page.locator("#results")).to_contain_text("Answer set")
+    sync_api.expect(page.locator("#results")).to_contain_text("Abstain")
+    record = ui.get("/api/history", params={"model": text_model["id"], "source": "playground"})["items"][0]
+    saved = ui.get(f"/api/history/{record['id']}")
+    assert saved["replay_request"]["questions"] == request["questions"]
+    page.evaluate("r => replayRequest(r)", saved)
+    assert page.evaluate("() => buildRequest().questions") == request["questions"]
+
+
+def test_conditional_questions_follow_renamed_and_removed_sources(browser, ui):
+    status = ui.get("/api/status")
+    status["features"]["conditional_questions"] = True
+    status["models"] = [{"id": "synthetic", "state": "ready", "media": [], "entry": {}}]
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.goto(f"{ui.url}/#playground")
+        page.wait_for_function("statusCache?.features?.conditional_questions")
+        page.evaluate("""() => setRequest({state: 'synthetic', questions: {
+            first: {type: 'noul', instructions: 'First?'},
+            independent: {type: 'noul', instructions: 'Independent?'},
+            next: {type: 'noul', instructions: 'Next?', depends_on: ['first', 'independent'],
+                   ask_if: {first: ['false'], independent: ['true']}}
+        }})""")
+        source, dependent = page.locator(".question").first, page.locator(".question").last
+        dependent.locator(".q-gates summary").click()
+        source.locator(".q-name").fill("renamed")
+        source.locator(".q-name").press("Tab")
+        sync_api.expect(dependent.locator('[data-dependency="renamed"]')).to_be_checked()
+        sync_api.expect(dependent.locator('[data-gate-question="renamed"][data-gate-answer="false"]')).to_be_checked()
+        assert page.evaluate("buildRequest().questions.next") == {
+            "type": "noul",
+            "instructions": "Next?",
+            "depends_on": ["renamed", "independent"],
+            "ask_if": {"renamed": ["false"], "independent": ["true"]},
+        }
+        source.locator(".remove-question").click()
+        remaining = page.evaluate("buildRequest().questions.next")
+        assert remaining["depends_on"] == ["independent"]
+        assert remaining["ask_if"] == {"independent": ["true"]}
+        page.evaluate("""() => setRequest({state: 'synthetic', questions: {
+            gate: {type: 'choice', instructions: 'Gate?', criteria: {yes: 'Yes', no: 'No'}},
+            independent: {type: 'noul', instructions: 'Independent?'},
+            level: {type: 'score', instructions: 'Level?', option_keys: 'hide', criteria: {low: 'Low', high: 'High'}},
+            next: {type: 'noul', instructions: 'Next?', ask_if: {gate: ['yes'], level: ['Low'], untouched: []}}
+        }})""")
+        dependent.locator(".q-gates summary").click()
+        source.locator(".q-type").select_option("verify")
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {
+            "gate": ["yes"],
+            "level": ["Low"],
+            "untouched": [],
+        }
+        clear = dependent.get_by_role("button", name="Remove condition on gate: yes")
+        sync_api.expect(clear).to_be_visible()
+        dependent.locator('[data-gate-question="independent"][data-gate-answer="true"]').check()
+        clear.click()
+        sync_api.expect(dependent.locator(".q-gates summary")).to_be_focused()
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {
+            "level": ["Low"],
+            "untouched": [],
+            "independent": ["true"],
+        }
+    finally:
+        context.close()

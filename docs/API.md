@@ -23,6 +23,11 @@ The model options endpoint reports availability of each server limit in `limits_
 
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
 
+`GET /api/status` includes `features.answer_sets` and `features.conditional_questions`, probed from the installed
+Engine. Native Playground Decisions forward question fields unchanged to the child for validation. History preserves
+`usage.skipped` in the response and exposes `truncated` as the Engine object when present (otherwise `false`). Native
+Replay preserves question fields; media redaction can prevent Replay. OpenAI Decisions translation is unchanged.
+
 `GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
 `{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
 selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting

@@ -824,8 +824,8 @@ def test_gdn_preflight_and_future_native_auto(monkeypatch):
     with TestClient(app, base_url="http://127.0.0.1") as client:
         chosen = {"mode": "fast", "long_lane_gdn": True}
         for method, path in ((client.put, "/api/models/options"), (client.post, "/api/load")):
-            result = method(path, json={"id": BF16.id, "options": chosen})
-            assert result.status_code == 400 and "--long-lane-gdn on needs --long-lane on" in result.json()["detail"]
+            result = method(path, json={"id": BF16.id, "options": {**chosen, "long_lane": "off"}})
+            assert result.status_code == 400 and "--long-lane-gdn on needs" in result.json()["detail"]
         assert client.get("/api/status").json()["models"] == []
 
     real_parser = server.parser

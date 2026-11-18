@@ -70,7 +70,7 @@
 
   function renderResults(data, request, entry, mediaSnapshot) {
     const answers = data?.answers || data || {};
-    const answerHtml = Object.entries(answers).map(([name, answer]) => `<div class="dt-result"><p class="dt-used">${t('Request')}: <code>${esc(name)}</code> · ${t('Model')}: <code>${esc(request.model)}</code></p>${answerPanel(name, answer, request.questions?.[name] || {}, entry)}</div>`).join('');
+    const answerHtml = Object.entries(answers).map(([name, answer]) => `<div class="dt-result"><p class="dt-used">${t('Request')}: <code>${esc(name)}</code> · ${t('Model')}: <code>${esc(request.model)}</code></p>${(data?.usage?.skipped||[]).includes(name) ? `<article class="answer"><h3>${esc(name)}</h3><span class="badge fit-tight">${t('Skipped')}</span></article>` : answerPanel(name, answer, request.questions?.[name] || {}, entry)}</div>`).join('');
     const spans = typeof request.state === 'string' ? sourceSpans(answers, request) : [];
     const u = data?.usage, mediaUsage = u?.media ? ` · ${t('Media')}: ${esc(u.media.images ?? 0)} ${t('images')}, ${esc(u.media.audio ?? 0)} ${t('audio')}, ${esc(u.media.media_tokens ?? 0)} ${t('tokens')}` : '';
     const thinkUsage = u?.think_questions != null ? ` · ${t('Thought on')}: ${esc(u.think_questions)} · ${t('Output tokens')}: ${esc(u.output_tokens ?? 0)}` : '';
