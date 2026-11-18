@@ -1799,6 +1799,9 @@ def test_batch_refused_resume_offers_confirmed_restart_with_original_output(page
     assert part.read_text() == '{"id":0,"prediction":0}\n'
     other = tmp_path / "other.jsonl"
     page.fill("#batchOutput", str(other))
+    page.locator("#restartStoppedBatch").focus()
+    page.evaluate("async () => { await refreshStatus(); await refreshStatus(); }")
+    sync_api.expect(page.locator("#restartStoppedBatch")).to_be_focused()
     page.click("#restartStoppedBatch")
     sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
     sync_api.expect(page.locator("#confirmDescription")).to_contain_text(str(out))

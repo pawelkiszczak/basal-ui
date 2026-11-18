@@ -1936,7 +1936,7 @@ function answerBest(a) {
   if(typeof a.noul==='number')return a.noul>=0.5?'true':'false';
   return a.type||null;
 }
-let batchRowsLoaded=0, batchRunning=false, batchResult=null;
+let batchRowsLoaded=0, batchRunning=false, batchResult=null, batchProgressMarkup=null;
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
 api('/api/batch/capabilities').then(c=>{const input=$('#batchStopAfter'); input.disabled=!c.stop_after; $('#batchStopHelp').textContent=c.stop_after?t('Stop after consecutive unanswered lines; 0 records per-line errors.'):t('Requires an Engine with Batch stop support');}).catch(()=>{});
@@ -1957,7 +1957,8 @@ function renderBatchState(job, ready) {
   ee.hidden=!levels.length;
   const running=Boolean(job?.running);
   $('#runBatch').disabled=running||!ids.length; $('#cancelBatch').hidden=!running;
-  $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='stopped_resumable'?`<div class="error-box">${t('Stopped, resumable.')} ${job.done} / ${job.total}<br>${esc(job.error)}${job.result?`<br><button type="button" class="btn destructive" id="restartStoppedBatch">${t('Restart')}</button>`:''}</div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  const progressMarkup=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='stopped_resumable'?`<div class="error-box">${t('Stopped, resumable.')} ${job.done} / ${job.total}<br>${esc(job.error)}${job.result?`<br><button type="button" class="btn destructive" id="restartStoppedBatch">${t('Restart')}</button>`:''}</div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  if(progressMarkup!==batchProgressMarkup){$('#batchProgress').innerHTML=progressMarkup;batchProgressMarkup=progressMarkup;}
   if(job?.phase==='stopped_resumable'&&job.result)$('#restartStoppedBatch').onclick=()=>act(async()=>{
     const body={...job.result,choice:'restart'};
     if(!await confirmDialog({title:t('Restart Batch'),description:t('Discard partial answers for {output} and restart this Batch?',{output:body.output}),confirmLabel:t('Restart'),destructive:true}))return;
