@@ -1650,7 +1650,7 @@ function renderLoadedRows(models) {
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
     const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='comparison'?comparisonBadge():''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(modelEntry(m.id))?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
     const health=m.health, load=m.kind==='comparison'?t('Decision server'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
-    const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
+    const warning=[m.entry?.calibration_warning,m.calibration_origin_warning&&ts(m.calibration_origin_warning,m.calibration_origin_warning_code)].filter(Boolean).map(w=>`<div class="reason wide">${esc(w)}</div>`).join('');
     const actions=m.kind==='comparison'?'':`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
     return `<div class="model-row${m.kind==='comparison'?' comparison-model':''}"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}${answering(m)?` · ${esc(t("running"))}`:""}</span><strong>${esc(modelLabel(m))}</strong>${chips}${optionChips}${m.kind==='comparison'?'':`<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>`}<span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${m.kind==='comparison'?t('Reported server memory: {memory} (outside the basal budget)',{memory:m.reported_memory_bytes==null?t('Not reported'):gb(m.reported_memory_bytes)}):stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
@@ -2022,11 +2022,11 @@ const OPTION_FIELDS={
   max_batch:{label:'Max batch',kind:'num',attrs:'min="1" step="1"'},
   wait_ms:{label:'Wait (ms)',kind:'num',attrs:'min="0" step="0.5"'},
   batch_window_ms:{label:'Batch window (ms)',kind:'num',attrs:'min="0" step="0.5"'},
-  soam:{label:'SOAM (shared option attention mask)',kind:'bool'},
+  soam:{label:'SOAM (shared option attention mask)',kind:'select'},
   state_cache_gb:{label:'State cache (GB)',kind:'num',attrs:'min="0" step="0.5"'},
   prefix_cache:{label:'Prefix cache',kind:'bool'},
   scheduler:{label:'Scheduler',kind:'select',values:['auto','on','off']},
-  long_lane:{label:'Long-request lane',kind:'bool'},
+  long_lane:{label:'Long-request lane',kind:'select'},
   long_tokens:{label:'Long request from (tokens)',kind:'num',attrs:'min="1" step="1"'},
   long_share:{label:'Long lane share',kind:'num',attrs:'min="0" max="1" step="0.05"'},
   long_slice_ms:{label:'Long lane slice (ms)',kind:'num',attrs:'min="0" step="1"'},
@@ -2061,12 +2061,13 @@ const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
   if(f.kind==='bool')return `<label><input type="checkbox" role="switch" id="${id}"${value?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(t(f.label))}</label>`;
-  const listed=(f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
+  const listed=(optionsState.data.load_choices?.[key]||f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
     :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${key==='adapter'?'list="ownedAdapters"':''} ${f.attrs||''}>${key==='adapter'?`<datalist id="ownedAdapters">${(optionsState.data.adapters||[]).map(path=>`<option value="${esc(path)}"></option>`).join('')}</datalist><p class="muted">${t('Choose a result or enter a custom adapter path. Saved settings apply on the next load.')}</p>`:''}`;
-  return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}`;
+  const unavailable=optionsState.data.load_choices?.[key]?.length<=1;
+  return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}${unavailable?`<small class="reason">${t('This option is unavailable in the installed Engine.')}</small>`:''}`;
 }
 const optionSectionOpen=new Map();  // section title → open, as the user left it (this session)
 function renderOptionsForm(values) {
@@ -2104,6 +2105,10 @@ function updateOptionVisibility() {
   else if(!think.vllm)notes.push(t('vLLM is not installed in basal-ui’s environment: give the Python of one that has it, or the URL of a running think server.'));
   if(mode!=='fast-exit')notes.push(t('Early exit needs --mode fast-exit (the exit heads of basal-1.0, bf16 on a CUDA GPU).'));
   // LoRA adapters at load: only with an engine that takes --adapter (basal-ui's feature probe)
+  for(const key of ['soam','long_lane']) {
+    const el=$(`#opt-${key}`), unavailable=(optionsState.data.load_choices?.[key]||[]).length<=1;
+    el.disabled=unavailable; el.title=unavailable?t('This option is unavailable in the installed Engine.'):'';
+  }
   const adapterBox=$('#opt-adapter'), adapterReason=optionsState.data.adapter_reason;
   if(adapterBox){adapterBox.disabled=Boolean(adapterReason); adapterBox.title=adapterReason?ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params):'';}
   $('#optExperimentalNote').textContent=notes.join(' ');
