@@ -1,5 +1,6 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import ast
 import functools
 import importlib.metadata
 import importlib.util
@@ -150,3 +151,20 @@ def serve_option(flag):
     """Choices and default declared for a basal-serve flag, or None."""
     parser = importlib.import_module("basal.server").parser()
     return next(((tuple(a.choices or ()), a.default) for a in parser._actions if flag in a.option_strings), None)
+
+
+@functools.cache
+def bench_flags():
+    """Long options declared by the installed basal-bench parser."""
+    try:
+        source = inspect.getsource(importlib.import_module("basal.bench").main)
+        tree = ast.parse(source)
+    except (ImportError, AttributeError, OSError, TypeError, SyntaxError):
+        return frozenset()
+    return frozenset(
+        arg.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
+        for arg in node.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("--")
+    )

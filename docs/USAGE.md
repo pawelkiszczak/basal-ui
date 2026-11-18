@@ -271,7 +271,23 @@ CUDA graph engine's kernel switches (`--gemma-attn`, `--merge`, `--lean`, `--tre
 `--template-prefix`, `--fp8-accum`), `--strict-calibration` and a **revision** (a commit, tag or branch of the
 repository: downloaded and served as that snapshot, which calibration and Inspect then read too; a **revision** chip
 marks the model in the catalog and on its loaded row). A warning on the model row reports calibration fitted on other
-model files; Logs has the Engine details. Older Saved load settings and imported load presets are migrated on use. Each field shows only for the modes that read it. **Presets**
+model files; Logs has the Engine details. Older Saved load settings and imported load presets are migrated on use. Each field shows only for the modes that read it.
+
+
+With engine 2.5 the dialog also offers the second read of uncertain answers (`--reread`, `--reread-combine`,
+`--reread-max-tokens`, `--reread-image`) and K-order averaging (`--order-average`), the prepared start-up kernels
+(`--prepared auto`, `off` or a directory), compile scope and graph memory sizing (`--compile-scope`,
+`--graph-memory-gb`, whose value replaces the fixed graph-engine overhead in the fit estimate for Native graph mode; fast-exit retains the fixed estimate), the MLX forward and
+compute (`--mlx-forward`, `--mlx-compute`), the FP8 / NVFP4 quantisation switches (`--fp8-scaling`,
+`--fp8-bf16-layers`, `--quant-load`, `--nvfp4-amax`, `--nvfp4-scope`), state-cache locking and precision
+(`--state-cache-lock`, `--state-cache-bits`), the long-request lane for Qwen3.5 models (`--long-lane-gdn` for supported recurrent-model scheduling),
+rank candidates (`--rank-max-candidates`), vLLM's overlapping engine calls
+(`--vllm-overlap`) and the Gemma 4 global attention kernel (`--global-attn`). On engine 2.4.1 each of these is greyed
+out with a visible availability reason, and a saved non-default value is refused with that reason instead of
+reaching a basal-serve that would not know the flag; the defaults emit nothing, so a configuration saved on 2.4.1
+loads unchanged.
+
+**Presets**
 save a set of options under a name to apply to any model; the Playground saves requests the same way (**Saved
 requests** in the examples list), and both export to and import from one `presets.json`. Settings also imports a pack from a public HTTP(S) URL with `application/json` content, up to 1 MiB. Imports update entries in order; a failure can leave earlier entries saved. Only the values that differ
 from basal-serve's defaults are
@@ -431,12 +447,16 @@ five other measurements, one at a time:
   questions per request, synthetic states of about N tokens (with a share of long ones and a seed) and, for a
   `fast-exit` model, an early-exit level.
 - **Determinism check**: `basal-loadtest --determinism N`: N requests alone, then the same N mixed with N others; a
-  model loaded with **Deterministic** (load options) must return identical probabilities.
+  model loaded with **Deterministic** (load options) must return identical probabilities. When reported by the Engine,
+  load errors count failed background requests.
 - **Compare engine modes**: `basal-bench` in basal-ui's own process for a downloaded model: every chosen mode (the
   ones this machine can run, plus `eager-fp32`, `vllm@deterministic` and `fast-exit@<policy>` where available) is
   loaded, measured (latency with one and both option orders, decisions per second, agreement with the first mode,
   accuracy, load time, memory) and freed in turn. Its memory is counted in the budget while it runs (twice the
-  estimate with `eager-fp32`); a mode that fails is listed with its error.
+  estimate with `eager-fp32`); a mode that fails is listed with its error. The Active load settings supply the
+  adapter and any Active MLX forward setting when `basal-bench` declares the corresponding flags; for an unloaded
+  model, Saved load settings are used. Other comparison settings continue to use Saved load settings. Older Engines
+  omit unsupported flags.
 
 - **Identity gate**: `basal-bench --identity` for a downloaded model, in fp32 or bf16. It uses saved attention, merge,
   lean, tree and Gemma attention settings when non-default; the fast mode must be available for this model and
