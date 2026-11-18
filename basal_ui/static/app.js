@@ -14,13 +14,37 @@ async function api(path, options={}) {
   const text = await response.text(); let data;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!response.ok) {  // basal-ui: {"detail": msg}; basal-serve 422: {"error": msg, "detail": [{"msg"}]}
-    const detail = typeof data?.detail === 'string' ? data.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
+    const nested=data?.detail&&typeof data.detail==='object'&&!Array.isArray(data.detail)?data.detail:null;
+    const detail = typeof data?.detail === 'string' ? data.detail : typeof nested?.detail === 'string' ? nested.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
-    const message=data?.code?ts(raw,data.code,data.params):raw;
+    const code=data?.code||nested?.code;
+    const upstream=raw.match(/^Comparison server returned HTTP (\d+)$/);
+    const message=code==='UNSUPPORTED_FOR_COMPARISON'?comparisonFailure(raw):code==='CONSENT_REQUIRED'?t('Consent is required to send requests to {host}',{host:raw.split(' ').at(-1)}):upstream?t('Comparison server returned HTTP {status}',{status:upstream[1]}):code?ts(t(raw),code,data.params):t(raw);
     const id=response.headers.get('x-request-id');
     throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
   }
   return data;
+}
+function comparisonFailure(raw) {
+  const prefix=raw.match(/^(.*: line \d+: )/), lead=prefix?.[1]||'', reason=raw.slice(lead.length);
+  if(reason==='Comparison models do not support audio')return lead+t(reason);
+  let match=reason.match(/^Comparison models do not support (.+)$/);
+  if(match)return lead+t('Comparison models do not support {field}',{field:match[1]});
+  match=reason.match(/^(.+) has (\d+) options; this Comparison model's limit is (\d+)$/);
+  if(match)return lead+t('{field} has {count} options; this Comparison model’s limit is {limit}',{field:match[1],count:match[2],limit:match[3]});
+  match=reason.match(/^Decisions servers cannot preserve (.+)$/);
+  if(match)return lead+t('Decisions servers cannot preserve {field}',{field:match[1]});
+  match=reason.match(/^Decisions servers require text descriptions in (.+)$/);
+  if(match)return lead+t('Decisions servers require text descriptions in {field}',{field:match[1]});
+  match=reason.match(/^(questions\..+\.instructions) must be text for a Decisions server$/);
+  if(match)return lead+t('{field} must be text for a Decisions server',{field:match[1]});
+  match=reason.match(/^(questions\..+\.criteria) must list (choices|score levels)$/);
+  if(match)return lead+t('{field} must list choices or score levels',{field:match[1]});
+  match=reason.match(/^(questions\..+) needs distinct text options for a Decisions server$/);
+  if(match)return lead+t('{field} needs distinct text options for a Decisions server',{field:match[1]});
+  match=reason.match(/^basal-run would discard (.+)$/);
+  if(match)return lead+t('basal-run would discard {field}',{field:match[1]});
+  return lead+t(reason);
 }
 function toast(message, type='success') {
   const node=document.createElement('div'); node.className=`toast ${type}`; node.textContent=message;
@@ -891,6 +915,7 @@ function resultHeadline(name, answer, requestQuestion) {
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
 const modelEntry=id=>(statusCache?.models||[]).find(m=>m.id===id)?.entry||null;
+const modelLabel=m=>m?.kind==='comparison'?`${(statusCache?.decision_servers||[]).find(s=>s.id===m.entry?.server)?.name||t('Decision server')} / ${m.entry?.upstream_model||m.id}`:m.id;
 const uncalibrated=entry=>Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length;
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
@@ -904,6 +929,7 @@ function decisionBase(answer,q) {
 // text decisions with the served option orders; a media answer ("text"), one fitted on other option orders or an act
 // question shape the calibration was not validated for ("unvalidated") and uncalibrated probabilities get no claim.
 function certificateGap(answer, entry) {
+  if(entry?.kind==='comparison')return t('Comparison confidence is not calibrated');
   if(entry?.calibration_warning)return `calibration warning: ${entry.calibration_warning}`;
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
@@ -1293,8 +1319,41 @@ const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+
+function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
+let decisionServerSignature='';
+function renderDecisionServers(status){
+  const servers=status.decision_servers||[], models=status.models||[];
+  const signature=JSON.stringify([servers,models.filter(m=>m.kind==='comparison').map(m=>[m.id,m.state])]);
+  if(signature===decisionServerSignature)return;
+  decisionServerSignature=signature;
+  $('#decisionServerList').innerHTML=servers.length?servers.map(server=>`<div class="disk-row"><div class="disk-info"><strong>${esc(server.name)}</strong> <span class="badge">${esc(t(server.state))}</span><div class="muted">${esc(server.url)}</div><div>${models.filter(m=>m.entry?.server===server.id).map(m=>`<div>${esc(m.entry?.upstream_model||m.id)} ${comparisonBadge()}</div>`).join('')||t('No models reported')}</div></div><button type="button" data-detach-server="${esc(server.id)}">${t('Detach')}</button></div>`).join(''):`<p class="muted">${t('No Decision servers attached.')}</p>`;
+  $('#decisionServerList').querySelectorAll('[data-detach-server]').forEach(button=>button.onclick=async()=>{
+    if(!await confirmDialog({title:t('Detach Decision server?'),description:t('Its models and saved key will be removed.'),confirmLabel:t('Detach'),destructive:true}))return;
+    try{await api(`/api/decision-servers/${encodeURIComponent(button.dataset.detachServer)}`,{method:'DELETE'});await refreshStatus();$('#addDecisionServer').focus();}
+    catch(error){$('#decisionServerError').textContent=error.message;$('#decisionServerError').hidden=false;}
+  });
+}
+let decisionConsentHost='';
+function decisionServerConsent(){
+  let host='';try{host=new URL($('#decisionServerUrl').value).hostname.toLowerCase().replace(/^\[|\]$/g,'');}catch{}
+  if(host!==decisionConsentHost)$('#decisionServerConsent').checked=false;
+  decisionConsentHost=host;
+  const local=host==='localhost'||host==='::1'||/^127(?:\.\d{1,3}){3}$/.test(host)||/^169\.254(?:\.\d{1,3}){2}$/.test(host)||/^fe[89ab][0-9a-f]:/i.test(host);
+  $('#decisionServerConsentField').hidden=!host||local;
+  $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
+}
+$('#decisionServerUrl').addEventListener('input',decisionServerConsent);
+$('#decisionServerForm').addEventListener('submit',async event=>{
+  event.preventDefault();const error=$('#decisionServerError');error.hidden=true;
+  const button=$('#addDecisionServer');let added=false;button.disabled=true;
+  try{await api('/api/decision-servers',{method:'POST',body:JSON.stringify({name:$('#decisionServerName').value,url:$('#decisionServerUrl').value,key:$('#decisionServerKey').value||null,consent:$('#decisionServerConsent').checked})});
+    event.target.reset();decisionServerConsent();await refreshStatus();added=true;}
+  catch(reason){error.textContent=reason.message;error.hidden=false;error.focus();}
+  finally{button.disabled=false;if(added)button.focus();}
+});
 function renderManagerSummary() {
-  const loaded=statusCache?.models?.length||0, downloaded=modelData.filter(m=>m.downloaded);
+  const loaded=statusCache?.models?.filter(m=>m.kind!=='comparison').length||0, downloaded=modelData.filter(m=>m.downloaded);
   const bytes=downloaded.reduce((sum,model)=>sum+(Number(model.downloaded_bytes)||0),0);
   $('#managerLoadedCount').textContent=`${loaded} ${t('loaded')}`;
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
@@ -1308,23 +1367,26 @@ function renderStatus(s) {
   const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   rowsSignature=signature;
-  if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
+  const primaryReady=ready.filter(m=>m.kind!=='comparison');
+  if(!primaryReady.some(m=>m.id===selectedModel))selectedModel=primaryReady[0]?.id||'';
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
   $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
   $('#footerDot').className=`status-dot${ready.length?' ready':models.some(m=>m.state==='error')?' error':''}${live?' active':''}`;
-  $('#footerModel').textContent=models.map(m=>shortName(m.id)).join(', ')||t('No model loaded');
-  $('#footerModel').title=models.map(m=>m.id).join(', ')||t('No model loaded');
+  $('#footerModel').textContent=models.map(m=>`${shortName(m.id)}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
+  $('#footerModel').title=models.map(m=>`${m.id}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
   $('#footerUrl').textContent=s.serving?.url||''; $('#footerUrl').hidden=!s.serving?.url;
-  $('#footerUnload').hidden=!models.length; $('#footerUnload').textContent=models.length>1?t('Unload all'):t('Unload');
+  const owned=models.filter(m=>m.kind!=='comparison');
+  $('#footerUnload').hidden=!owned.length; $('#footerUnload').textContent=owned.length>1?t('Unload all'):t('Unload');
   renderMemoryBar(s.memory||{},models);
   renderLoadedRows(models);
+  renderDecisionServers(s);
   renderManagerSummary();
   if($('#modelLoaderDialog').open)renderModelLoader();
   renderInference(s);
   renderPlaygroundModels(ready);
-  renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
+  renderBenchmarkState(s.jobs?.benchmark,primaryReady); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
   renderInspectState(s.inspect,s.jobs?.inspect);
   if(serveData)renderServeStatus(s);
   loadStats();
@@ -1342,7 +1404,7 @@ function renderMemoryBar(memory, models) {
 }
 // a loaded model answering now: requests basal-ui waits on (inflight) or its basal-serve's running / queued counters
 const answering=m=>m.state==='ready'&&((m.inflight||[]).length>0||m.health?.running>0||m.health?.queued>0);
-const INFERENCE_SOURCES={playground:'Playground',api:'API server',mcp:'MCP',benchmark:'Benchmark'};
+const INFERENCE_SOURCES={playground:'Playground',api:'API server',mcp:'MCP',benchmark:'Benchmark',batch:'Batch'};
 const INFERENCE_JOBS={batch:'Batch',benchmark:'Benchmark',calibrate:'Calibration','backend-test':'Backend test'};
 const ago=seconds=>seconds<60?`${Math.max(1,Math.round(seconds))} s`:seconds<3600?`${Math.round(seconds/60)} min`:`${Math.round(seconds/3600)} h`;
 function renderInference(s) {
@@ -1353,39 +1415,42 @@ function renderInference(s) {
     const counts=h.running>0||h.queued>0?t('{running} running · {queued} queued',{running:h.running??0,queued:h.queued??0}):tp(inflight.length,'{n} request','{n} requests');
     const sources=Object.entries(bySource).map(([k,n])=>`${t(INFERENCE_SOURCES[k]||k)} ${n}`).join(' · ');
     const longest=inflight.length?t('longest {seconds} s',{seconds:inflight[0].seconds.toFixed(1)}):'';
-    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(m.id)}</strong><span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
+    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(modelLabel(m))}</strong>${m.kind==='comparison'?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
   });
   for(const [kind,j] of Object.entries(s.jobs||{})){
     if(!j.running||!INFERENCE_JOBS[kind])continue;
     const share=j.total?Math.min(100,j.done/j.total*100):null;
-    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong><span class="muted">${esc([j.model,ts(j.phase,j.phase_code,j.phase_params),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
+    const comparison=typeof j.model==='string'&&j.model.startsWith('comparison:');
+    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong>${comparison?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([j.model,ts(j.phase,j.phase_code,j.phase_params),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
   }
   const last=Math.max(0,...Object.values(statsData.models||{}).map(x=>Number(x.last_used)||0));
   const idle=last?t('Idle · last decision {ago} ago',{ago:ago(Date.now()/1000-last)}):t('Idle');
   $('#inferenceNow').innerHTML=rows.length?rows.join(''):`<div class="inference-row idle"><span class="status-dot"></span><span class="muted">${esc(idle)}</span></div>`;
 }
 function renderLoadedRows(models) {
+  if ($('#loadedModels').contains(document.activeElement)) return;
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
-    const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='comparison'?comparisonBadge():''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const health=m.health, load=m.kind==='comparison'?t('Decision server'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
-    const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
+    const actions=m.kind==='comparison'?'':`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
-    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
+    return `<div class="model-row${m.kind==='comparison'?' comparison-model':''}"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(modelLabel(m))}</strong>${chips}${optionChips}${m.kind==='comparison'?'':`<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>`}<span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${m.kind==='comparison'?t('Reported server memory: {memory} (outside the basal budget)',{memory:m.reported_memory_bytes==null?t('Not reported'):gb(m.reported_memory_bytes)}):stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
   }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`;
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
 }
 function renderPlaygroundModels(ready) {
-  const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media]));
+  const primary=ready.filter(m=>m.kind!=='comparison');
+  const select=$('#playgroundModel'), signature=JSON.stringify(primary.map(m=>[m.id,m.media]));
   if(signature!==playgroundSignature){
     playgroundSignature=signature;
-    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    select.innerHTML=primary.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
   }
-  select.value=selectedModel; select.disabled=!ready.length;
-  $('#playgroundForm').disabled=!ready.length; $('#playgroundHint').hidden=Boolean(ready.length);
+  select.value=selectedModel; select.disabled=!primary.length;
+  $('#playgroundForm').disabled=!primary.length; $('#playgroundHint').hidden=Boolean(primary.length);
   setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
   setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
   DecisionTools.refreshModels(ready);
@@ -1399,7 +1464,7 @@ $('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
 async function restartOne(id){await api('/api/restart',{method:'POST',body:JSON.stringify({id})});toast(`${t('Restarting {model}',{model:shortName(id)})}`);await refreshStatus();}
 $('#footerUnload').onclick=()=>act(async()=>{
-  if((statusCache?.models||[]).length>1&&!await confirmDialog({title:t('Unload all models?'),description:t('Every loaded model stops; clients of the API server get 404 until a model is loaded again.'),confirmLabel:t('Unload all'),destructive:true}))return;
+  if((statusCache?.models||[]).filter(m=>m.kind!=='comparison').length>1&&!await confirmDialog({title:t('Unload all models?'),description:t('Every loaded model stops; clients of the API server get 404 until a model is loaded again.'),confirmLabel:t('Unload all'),destructive:true}))return;
   await api('/api/unload',{method:'POST',body:'{}'}); await refreshStatus();
 });
 let statsSequence=0;
@@ -1424,7 +1489,7 @@ async function loadStats() {
 }
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
-  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
+  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}${id.startsWith('comparison:')?comparisonBadge():''}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
   $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
   const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
 }
@@ -1441,7 +1506,7 @@ $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
 $('#benchmarkSet').onchange=()=>{localStorage.setItem('basal-ui.benchmarkSet',$('#benchmarkSet').value);updateBenchmarkForm();};
 $('#benchmarkPath').oninput=()=>localStorage.setItem('basal-ui.benchmarkPath',$('#benchmarkPath').value);
-$('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels());};
+$('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels().filter(m=>m.kind!=='comparison'));};
 $('#benchmarkModel').onchange=()=>{updateBenchmarkForm();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
 let benchModelsSignature='', comparisonFor='';
 function updateBenchmarkForm() {
@@ -1481,7 +1546,7 @@ function renderBenchmarkState(bench, ready) {
   const signature=JSON.stringify([kind,ids]);
   if(signature!==benchModelsSignature){
     benchModelsSignature=signature;
-    select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
+    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(modelLabel(m))}${m.kind==='comparison'?` · ${t('Comparison')}`:''}</option>`).join('');
     if(ids.includes(current))select.value=current;
     updateBenchmarkForm(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
   }
@@ -1492,7 +1557,7 @@ function renderBenchmarkState(bench, ready) {
   benchRunning=running;
 }
 function benchmarkRow(x) {
-  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
+  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}${x.server?` · ${esc(x.server)} · ${t('Comparison')}`:''}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
   if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}</td></tr>`;}
   if(kind==='modes'){
     const f=(v,d=1)=>v==null||Number.isNaN(Number(v))?'—':Number(v).toFixed(d);
@@ -1853,7 +1918,7 @@ async function loadHistory(mode='reset') {
 function renderHistory(items) {
   const flags=x=>`${x.deferred?` <span class="badge fit-too_large">${t('deferred')}</span>`:''}${x.truncated?` <span class="badge fit-tight">${t('truncated')}</span>`:''}`;
   const focused=$('#historyTable').contains(document.activeElement)?document.activeElement.closest('[data-history]')?.dataset.history:null;
-  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:`<div class="empty">${t('No decisions yet — try the Playground.')}</div>`;
+  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}${x.server?` · ${esc(x.server)} ${comparisonBadge()}`:''}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:`<div class="empty">${t('No decisions yet — try the Playground.')}</div>`;
   $('#historyTable').querySelectorAll('[data-history]').forEach(row=>{
     row.onclick=()=>act(()=>toggleHistory(row));  // pointer users click anywhere on the row
     const open=$('.history-open',row);
@@ -1882,11 +1947,18 @@ function historyDetailRow(x) {
 function replayRequest(x) {
   if(x.replay_error||!x.replay_request){toast(x.replay_error||t('This request cannot be replayed.'),'error');return;}
   if(!readyModels().some(m=>m.id===x.model)){toast(t('Model {model} is not loaded',{model:x.model}),'error');return;}
-  selectedModel=x.model; localStorage.setItem('basal-ui.model',selectedModel);
+  const model=readyModels().find(m=>m.id===x.model);
+  if(model.kind==='comparison'){
+    const primary=readyModels().filter(m=>m.kind!=='comparison');
+    if(!primary.length){toast(t('Load a basal model before replaying a Comparison.'),'error');return;}
+    if(!primary.some(m=>m.id===selectedModel))selectedModel=primary[0].id;
+  }else selectedModel=x.model;
+  localStorage.setItem('basal-ui.model',selectedModel);
   $('#playgroundModel').value=selectedModel; setPlaygroundMedia(readyModels().find(m=>m.id===selectedModel)?.media||[]);
   $('#results').innerHTML='';$('#rawDetails').hidden=true;$('#decideError').hidden=true;
-  setRequest(x.replay_request);
+  setRequest(model.kind==='comparison'?{...x.replay_request,model:selectedModel}:x.replay_request);
   showView('playground',true);
+  if(model.kind==='comparison')DecisionTools.selectComparison(model.id);
 }
 function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
@@ -1952,9 +2024,13 @@ function renderBatchState(job, ready) {
   if(!running&&job?.phase==='done'&&(batchRunning||!batchResult))showBatchResult(job.result);
   batchRunning=running;
 }
+const batchAccuracy=new Map();
 function showBatchResult(r) {
   batchResult=r;
-  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
+  const model=(statusCache?.models||[]).find(m=>m.id===r.model), label=model?modelLabel(model):r.model, comparison=r.model.startsWith('comparison:');
+  if(r.accuracy!=null)batchAccuracy.set(`${r.input}\n${r.model}`,{input:r.input,label,comparison,accuracy:r.accuracy});
+  $('#batchAccuracy').innerHTML=[...batchAccuracy.values()].map(x=>`<div>${esc(x.label)} ${x.comparison?comparisonBadge():''} · ${esc(x.input)} · ${t('accuracy')} ${pct(x.accuracy)}</div>`).join('');
+  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${esc(label)}</span>${comparison?comparisonBadge():''}<span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
   $('#downloadBatch').hidden=$('#copyBatchPath').hidden=false;
   batchRowsLoaded=0; $('#batchRows').innerHTML=''; loadBatchRows();
 }
@@ -1971,6 +2047,7 @@ $('#runBatch').onclick=()=>act(async()=>{
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
   await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+  batchRunning=true;
   $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
   toast(t('Batch started')); await refreshStatus();
 });

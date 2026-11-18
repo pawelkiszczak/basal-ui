@@ -1775,3 +1775,110 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_comparison_server_keyboard_attach_and_detach(page, child, tmp_path):
+    child.models = [{"id": "comparison-fixture"}]
+    manager_tab(page, "library")
+    page.locator("#decisionServerName").fill("Local fixture")
+    page.locator("#decisionServerUrl").fill("https://example.com")
+    sync_api.expect(page.locator("#decisionServerConsentField")).to_be_visible()
+    sync_api.expect(page.locator("#decisionServerConsentText")).to_contain_text("example.com")
+    page.locator("#decisionServerConsent").check()
+    page.locator("#decisionServerUrl").fill("https://another.example")
+    sync_api.expect(page.locator("#decisionServerConsent")).not_to_be_checked()
+    sync_api.expect(page.locator("#decisionServerConsentText")).to_contain_text("another.example")
+    page.locator("#decisionServerUrl").fill(child.url)
+    sync_api.expect(page.locator("#decisionServerConsentField")).to_be_hidden()
+    page.locator("#addDecisionServer").focus()
+    page.keyboard.press("Enter")
+    row = page.locator("#decisionServerList .disk-row").filter(has_text="Local fixture")
+    sync_api.expect(row).to_contain_text("comparison-fixture", timeout=10_000)
+    badge = row.locator("details summary")
+    badge.focus()
+    page.keyboard.press("Enter")
+    sync_api.expect(row.locator("details")).to_have_attribute("open", "")
+    explanation = row.locator("details p")
+    sync_api.expect(explanation).to_be_visible()
+    assert explanation.evaluate("el => el.getBoundingClientRect().right <= innerWidth")
+    view(page, "playground")
+    sync_api.expect(page.locator("#decisionCompare .dt-model").nth(1)).to_contain_text("Comparison")
+    assert "Comparison" not in page.locator("#decisionCompare .dt-model").first.inner_text()
+    page.evaluate("request => setRequest(request)", CHOICE)
+    child.gate.clear()
+    try:
+        page.locator("#dt-run").click()
+        page.wait_for_function("() => document.querySelector('#decisionCompare .dt-model-result:first-child .dt-raw')")
+        assert child.post_started.wait(10)
+        sync_api.expect(page.locator("#decisionCompare .dt-model-result").nth(1)).to_have_attribute(
+            "data-running", "true"
+        )
+        sync_api.expect(
+            page.locator("#decisionCompare .dt-model-result").nth(1).locator(".comparison-badge")
+        ).to_be_visible()
+        child.reply_status = 500
+        child.gate.set()
+        sync_api.expect(page.locator("#decisionCompare .dt-model-result").nth(1).locator(".error-box")).to_be_visible()
+        sync_api.expect(page.locator("#decisionCompare .dt-model-result").first.locator(".dt-raw")).to_be_visible()
+    finally:
+        child.gate.set()
+    child.reply_status = 200
+    original_reply = child.reply
+    child.reply = {
+        "answers": {
+            "dept": {
+                "type": "choice",
+                "choice": "cards",
+                "probabilities": {"cards": 0.8, "loans": 0.1, "online": 0.1},
+                "confidence": 0.8,
+            }
+        },
+        "usage": {
+            "truncated": {
+                "dropped_tokens": 30,
+                "state_tokens": 100,
+                "head_tokens": 50,
+                "tail_tokens": 20,
+                "diagnostic": "synthetic-secret",
+            }
+        },
+    }
+    page.locator("#dt-run").click()
+    second = page.locator("#decisionCompare .dt-model-result").nth(1)
+    sync_api.expect(second.locator(".dt-raw")).to_be_visible(timeout=30000)
+    sync_api.expect(second.locator(".error-box")).to_contain_text("dropped 30 of 100 tokens")
+    assert "synthetic-secret" not in second.inner_text()
+    child.reply = original_reply
+    child.post_started.clear()
+    child.gate.clear()
+    source = tmp_path / "batch.jsonl"
+    source.write_text(json.dumps({"state": "synthetic", "question": "Pick", "options": ["a", "b"]}) + "\n")
+    try:
+        view(page, "batch")
+        model = next(
+            o.get_attribute("value")
+            for o in page.locator("#batchModel option").all()
+            if "comparison-fixture" in (o.get_attribute("value") or "")
+        )
+        page.locator("#batchModel").select_option(model)
+        page.locator("#batchInput").fill(str(source))
+        page.locator("#runBatch").click()
+        assert child.post_started.wait(30)
+        manager_tab(page, "library")
+        job = page.locator("#inferenceNow .inference-row").filter(has_text="Batch")
+        sync_api.expect(job.locator(".chip")).to_have_text("Comparison", timeout=10000)
+    finally:
+        child.gate.set()
+    manager_tab(page, "library")
+    button = row.get_by_role("button", name="Detach")
+    button.focus()
+    page.keyboard.press("Enter")
+    page.locator("#confirmAccept").focus()
+    page.keyboard.press("Enter")
+    sync_api.expect(row).to_have_count(0)
+    page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
+    page.reload()
+    manager_tab(page, "library")
+    sync_api.expect(page.locator("#decisionServers h2")).to_have_text("Serwery decyzji")
+    page.locator("#decisionServerUrl").fill("https://example.com")
+    sync_api.expect(page.locator("#decisionServerConsentText")).to_contain_text("hosta example.com")
