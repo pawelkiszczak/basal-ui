@@ -87,9 +87,9 @@ def test_every_pin_names_the_tested_release():
         assert tags or doc == "CONTRIBUTING.md", f"{doc} lost its install line"
         ranges = set(re.findall(r">=\d[\d.]*,<\d[\d.]*", text))
         assert ranges <= {engine.SUPPORTED_RANGE}, f"{doc} names range {ranges}"
-    ci = (ROOT / ".github/workflows/ci.yml").read_text()  # actions are pinned with `# vX.Y.Z` comments: not engines
+    ci = (ROOT / ".github/workflows/release-ci.yml").read_text()  # actions are pinned with `# vX.Y.Z` comments: not engines
     assert not re.search(r"rkinas/basal\S*?v\d+\.\d+\.\d+", ci), (
-        "ci.yml names an engine tag; its matrix comes from TESTED_RELEASES"
+        "release-ci.yml names an engine tag; its matrix comes from TESTED_RELEASES"
     )
 
 
