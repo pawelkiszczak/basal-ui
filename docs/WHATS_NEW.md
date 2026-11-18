@@ -41,6 +41,8 @@
 - **Playground answer sets and conditional questions:** edit coverage and gates when supported by the Engine; see
   answer sets, abstention, coverage notes and skipped questions. History preserves truncation details and Replay
   retains native question fields. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
+- Mode comparisons use the Active adapter and MLX forward when supported by `basal-bench`; determinism results show
+  Engine-reported load errors. [USAGE.md](USAGE.md#statistics-and-benchmarks)
 - The Playground supports experimental rank questions on Engines that provide them, with candidate screening and a best-first ranking.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
@@ -74,6 +76,17 @@
   calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
 - For an Engine that does not report context metadata, show the parsed child overflow policy and truncation share; the
   context limit remains unknown because the child may impose a backend-specific limit.
+- `GLOSSARY.md` adds **Decision server**, **Comparison model**, **Attached model** and **Cascade**; ADR 0004 records
+  why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
+  ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
+  `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- Every engine 2.5 `basal-serve` load option is in Load options — the second read (`--reread` and its combine,
+  token and image controls), `--order-average`, `--prepared`, `--compile-scope`, `--graph-memory-gb` (which sizes the
+  fit estimate), `--mlx-forward` / `--mlx-compute`, the FP8 / NVFP4 quantisation switches, `--state-cache-lock` /
+  `--state-cache-bits`, `--long-lane-gdn` for recurrent models,
+  `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
+  not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
+  value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
 
 - Separate Calibration file warnings and errors so each message is readable.
 

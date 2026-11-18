@@ -212,6 +212,10 @@ def create_app(
         elif not assessment.runnable:
             raise ValueError(assessment.reason)
         load_options.check_combination(variant, current, merged, assessment.mode, media)
+        sized = catalog.assess(variant, current, {**merged, "mode": assessment.mode})
+        assessment = dataclasses.replace(
+            assessment, est_memory_bytes=sized.est_memory_bytes, fit=sized.fit, fit_now=sized.fit_now
+        )
         return assessment, load_options.non_default(merged)
 
     auto_load_stop = threading.Event()
@@ -990,9 +994,15 @@ def create_app(
                 return dataclasses.replace(
                     baseline_assessment, mode=mode, est_memory_bytes=None, fit="unknown", fit_now="unknown"
                 )
-            needed = int(variant.weights_bytes * 1.2) + (
-                catalog.GRAPH_ENGINE_OVERHEAD if mode in catalog.GRAPH_ENGINE_MODES else catalog.GIB
-            )
+            overhead = catalog.GIB
+            if mode in catalog.GRAPH_ENGINE_MODES:
+                graph_memory = saved_options.get(variant.id, {}).get("graph_memory_gb")
+                overhead = (
+                    catalog.graph_memory_bytes(graph_memory)
+                    if graph_memory and catalog.is_graph_backend(mode)
+                    else catalog.GRAPH_ENGINE_OVERHEAD
+                )
+            needed = int(variant.weights_bytes * 1.2) + overhead
             if mode in ("vllm", "sglang"):
                 needed = max(needed, int(current_hw.memory_bytes * load_options.DEFAULTS["gpu_memory"]))
             return dataclasses.replace(
@@ -1018,7 +1028,20 @@ def create_app(
             raise HTTPException(400, f"unknown or unavailable recommendation backend {backend!r}")
         variants, source = all_variants(refresh=refresh, cache_dir=cache_dir)
         baseline = [catalog.assess(v, current_hw) for v in variants]
-        recommended = baseline
+        saved = settings_mod.load().get("load_options")  # once, not load_options() per row
+        revisions = (
+            {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
+        )
+        saved_estimates, saved_options = {}, {}
+        for item in baseline:
+            try:
+                chosen = load_options.validate((saved or {}).get(item.variant.id), item.mode)
+                estimate = catalog.assess(item.variant, current_hw, chosen)
+                saved_estimates[item.variant.id] = dataclasses.replace(estimate, mode=chosen["mode"] or item.mode)
+                saved_options[item.variant.id] = chosen
+            except (ValueError, AttributeError):
+                saved_estimates[item.variant.id] = item
+        recommended = list(saved_estimates.values())
         if backend != "automatic":
             recommended = []
             for item in baseline:
@@ -1104,11 +1127,6 @@ def create_app(
             "local_dir",
         )
         on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in baseline}
-        saved = settings_mod.load().get("load_options")  # once, not load_options() per row
-        revisions = (
-            {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
-        )
-
         return {
             "source": source,
             "recommendation_backends": installed,
@@ -1131,9 +1149,9 @@ def create_app(
                     else catalog.message_fields(a.reason, "")[0],
                     "reason_params": catalog.message_fields(a.reason, "")[1],
                     "mode": a.mode,
-                    "est_memory_bytes": a.est_memory_bytes,
-                    "fit": a.fit,
-                    "fit_now": a.fit_now,
+                    "est_memory_bytes": saved_estimates[a.variant.id].est_memory_bytes,
+                    "fit": saved_estimates[a.variant.id].fit,
+                    "fit_now": saved_estimates[a.variant.id].fit_now,
                     "media": list(a.variant.media),
                     "media_mode": a.media_mode,
                     "media_reason": a.media_reason,
@@ -1227,6 +1245,11 @@ def create_app(
         cache_dir = settings_mod.models_dir()
         local_dir = catalog.is_downloaded(variant, cache_dir, revision=effective_revision(variant))
         assessment = catalog.assess(variant, hw())
+        try:
+            saved = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+            assessment = catalog.assess(variant, hw(), saved)
+        except ValueError:
+            pass
         loaded = next((m.get("entry") for m in fleet.status()["models"] if m["id"] == variant.id), None)
         from huggingface_hub import scan_cache_dir
         from huggingface_hub.errors import CacheNotFound
@@ -1367,19 +1390,15 @@ def create_app(
         saved = settings_mod.load_options(variant.id)
         try:
             merged = load_options.validate(saved, assessment.mode)
-        except ValueError:  # options saved by another basal-ui version
-            try:
-                merged = load_options.validate({**saved, "adapter": None}, assessment.mode)
-            except ValueError:
-                merged = dict(load_options.DEFAULTS)
-            if isinstance(saved.get("adapter"), str):
-                merged["adapter"] = saved["adapter"]
+        except ValueError:  # Keep saved values visible so the user can explicitly reset them.
+            merged = {**load_options.DEFAULTS, **saved}
         family_ok = variant.family == "basal-2.0" and variant.tier == "4.5B"
         packed_reason = load_options.mlx_packed_unavailable(variant, current)
         packed_code, packed_params = load_options.option_message_fields(packed_reason)
         think_reason = None if family_ok else load_options.THINK_REASON
         think_code, think_params = load_options.option_message_fields(think_reason)
-        adapter_reason = load_options.adapter_unavailable()
+        unavailable = load_options.unavailable_options()
+        adapter_reason = unavailable.get("adapter")
         adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
         local = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=served_revision(variant))
         base = str(local.resolve()) if local else None
@@ -1393,6 +1412,7 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
+            "unavailable": unavailable,
             "limits_available": {
                 key: bool(load_options.serve_option("--" + key.replace("_", "-")))
                 for key in load_options.LIMIT_DEFAULTS
@@ -1429,7 +1449,7 @@ def create_app(
         saved = load_options.non_default(merged)
         previous = settings_mod.load_options(variant.id)
         if (
-            load_options.adapter_unavailable()
+            load_options.unavailable_options().get("adapter")
             and "adapter" not in (body.get("options") or {})
             and previous.get("adapter")
         ):
@@ -1711,10 +1731,27 @@ def create_app(
         """(local dir, assessment, merged load options, the modes a comparison may run) of a downloaded variant."""
         from . import bench
 
-        local_dir = downloaded(variant)
         current = hw()
         assessment = catalog.assess(variant, current)
-        options = load_options.validate(settings_mod.load_options(variant.id), assessment.mode)
+        selected = settings_mod.load_options(variant.id)
+        active = None
+        local_dir = None
+        with fleet.lock:
+            runner = fleet.runners.get(variant.id)
+            if runner is not None and runner.status()["state"] == "ready":
+                with runner.lock:
+                    if runner.state == "ready" and runner.loaded_path:
+                        local_dir = Path(runner.loaded_path)
+                        active = {key: runner.options.get(key) for key in ("adapter", "mlx_forward")}
+        if local_dir is None:
+            local_dir = downloaded(variant)
+        if active is not None:
+            selected = {key: value for key, value in selected.items() if key not in active}
+        options = load_options.validate(selected, assessment.mode)
+        if active is not None:
+            options.update(active)
+        else:
+            options["mlx_forward"] = selected.get("mlx_forward")
         return (
             local_dir,
             assessment,
@@ -2024,7 +2061,7 @@ def create_app(
         if in_process and not from_rows:
             engine_args = calibration.engine_flags(
                 catalog.serve_args(variant, local_dir, assessment.mode, platform=hw().platform)
-                + load_options.args(options)
+                + load_options.args(options, assessment.mode)
             )
         advanced["reserve"] = reserve
         try:
