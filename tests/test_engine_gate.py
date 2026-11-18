@@ -202,3 +202,15 @@ def test_installed_release_capability(name):
     if name == "mcp_models":
         pytest.importorskip("mcp.server.mcpserver", reason="MCP dependency is not installed")
     assert engine.feature(name) is expected[version]
+
+
+def test_calibrate_layout_probe_detects_cli_option(monkeypatch):
+    import argparse
+
+    from basal import calibrate
+
+    parser = argparse.ArgumentParser()
+    monkeypatch.setattr(calibrate, "parser", lambda: parser)
+    assert engine.feature("calibrate_layout") is False
+    parser.add_argument("--layout")
+    assert engine.feature("calibrate_layout") is True

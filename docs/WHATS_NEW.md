@@ -45,6 +45,7 @@
   Engine-reported load errors. [USAGE.md](USAGE.md#statistics-and-benchmarks)
 - The Playground supports experimental rank questions on Engines that provide them, with candidate screening and a best-first ranking.
 - Record audio in the Playground as a playable PCM WAV attachment, with an opt-in bounded audio-only History retention setting, explicit unknown-policy errors and on-demand Replay. [Usage](USAGE.md#recording-audio-in-the-playground)
+- Calibration fits and compares the layout in one snapshot of active or saved load settings, including its model revision and mode. Invalid model metadata leaves fitted files available and shows the shipped calibration as unavailable. Imported and fitted files are labelled, layout mismatches are flagged, and saved-row refits preserve the original layout.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
 - basal-ui supports Engine `>=2.4.1,<2.9` and pins **2.8.0**; CI tests 2.4.1, 2.5.0, 2.5.1, 2.6.0 and 2.8.0.

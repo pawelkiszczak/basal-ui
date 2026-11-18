@@ -161,6 +161,7 @@ def test_calibration_file_messages_are_separate_and_escaped(browser, tmp_path):
                 "warnings": messages[2:],
                 "has_report": True,
                 "rows": "/synthetic.jsonl",
+                "layout": "canonical",
             }
         ],
     }
