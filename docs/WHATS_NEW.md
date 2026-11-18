@@ -1,5 +1,8 @@
 # Unreleased
 
+- Calibration offers parser-supported conformal levels and compatible kept thresholds, and shows new Engine report
+  metadata while retaining older reports. [Usage](USAGE.md#custom-calibration)
+
 - Improved text spacing and navigation wrapping for readable zoomed layouts.
 
 - Use consistent bordered card surfaces and restore side-navigation state transitions, respecting reduced motion.
