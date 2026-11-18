@@ -4,7 +4,10 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
-let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
+let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
+let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
+let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
+let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 function httpFailure(status,message) {
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
@@ -14,17 +17,54 @@ async function api(path, options={}) {
   const text = await response.text(); let data;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!response.ok) {  // basal-ui: {"detail": msg}; basal-serve 422: {"error": msg, "detail": [{"msg"}]}
-    const detail = typeof data?.detail === 'string' ? data.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
+    const nested=data?.detail&&typeof data.detail==='object'&&!Array.isArray(data.detail)?data.detail:null;
+    const detail = typeof data?.detail === 'string' ? data.detail : typeof nested?.detail === 'string' ? nested.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
-    const message=data?.code?ts(raw,data.code,data.params):raw;
+    const code=data?.code||nested?.code;
+    const upstream=raw.match(/^Comparison server returned HTTP (\d+)$/);
+    const message=code==='UNSUPPORTED_FOR_COMPARISON'?comparisonFailure(raw):code==='CONSENT_REQUIRED'?t('Consent is required to send requests to {host}',{host:raw.split(' ').at(-1)}):upstream?t('Comparison server returned HTTP {status}',{status:upstream[1]}):code?ts(t(raw),code,data.params):t(raw);
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    const error=new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`); error.code=data?.code; throw error;
   }
   return data;
 }
+function comparisonFailure(raw) {
+  const prefix=raw.match(/^(.*: line \d+: )/), lead=prefix?.[1]||'', reason=raw.slice(lead.length);
+  if(reason==='Comparison models do not support audio')return lead+t(reason);
+  let match=reason.match(/^Comparison models do not support (.+)$/);
+  if(match)return lead+t('Comparison models do not support {field}',{field:match[1]});
+  match=reason.match(/^(.+) has (\d+) options; this Comparison model's limit is (\d+)$/);
+  if(match)return lead+t('{field} has {count} options; this Comparison model’s limit is {limit}',{field:match[1],count:match[2],limit:match[3]});
+  match=reason.match(/^Decisions servers cannot preserve (.+)$/);
+  if(match)return lead+t('Decisions servers cannot preserve {field}',{field:match[1]});
+  match=reason.match(/^Decisions servers require text descriptions in (.+)$/);
+  if(match)return lead+t('Decisions servers require text descriptions in {field}',{field:match[1]});
+  match=reason.match(/^(questions\..+\.instructions) must be text for a Decisions server$/);
+  if(match)return lead+t('{field} must be text for a Decisions server',{field:match[1]});
+  match=reason.match(/^(questions\..+\.criteria) must list (choices|score levels)$/);
+  if(match)return lead+t('{field} must list choices or score levels',{field:match[1]});
+  match=reason.match(/^(questions\..+) needs distinct text options for a Decisions server$/);
+  if(match)return lead+t('{field} needs distinct text options for a Decisions server',{field:match[1]});
+  match=reason.match(/^basal-run would discard (.+)$/);
+  if(match)return lead+t('basal-run would discard {field}',{field:match[1]});
+  return lead+t(reason);
+}
 function toast(message, type='success') {
   const node=document.createElement('div'); node.className=`toast ${type}`; node.textContent=message;
-  $('#toastStack').append(node); setTimeout(()=>node.remove(),4000);
+  if(type==='error') {
+    const close=document.createElement('button'); close.type='button'; close.textContent='×'; close.setAttribute('aria-label',t('Dismiss')); close.onclick=()=>node.remove(); node.append(close);
+  } else {
+    node.tabIndex=0;
+    let remaining=4000, started, timer=null, hovered=false, focused=false;
+    const pause=()=>{if(timer!==null){clearTimeout(timer);remaining-=performance.now()-started;timer=null;}};
+    const resume=()=>{if(!hovered&&!focused&&timer===null){started=performance.now();timer=setTimeout(()=>node.remove(),remaining);}};
+    node.addEventListener('mouseenter',()=>{hovered=true;pause();});
+    node.addEventListener('mouseleave',()=>{hovered=false;resume();});
+    node.addEventListener('focusin',()=>{focused=true;pause();});
+    node.addEventListener('focusout',e=>{focused=node.contains(e.relatedTarget);resume();});
+    $('#toastStack').append(node); hovered=node.matches(':hover'); resume(); return;
+  }
+  $('#toastStack').append(node);
 }
 function confirmDialog({title,description,confirmLabel=t('Confirm'),destructive=false}) {
   return new Promise(resolve=>{
@@ -41,7 +81,6 @@ function applyTheme(theme) {
   const value=['light','dark','system'].includes(theme)?theme:'system';
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
   document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
-  document.querySelectorAll('.side-nav button').forEach(b=>{if(document.documentElement.dataset.theme==='dark')b.style.setProperty('color','#edf0e9','important');else b.style.removeProperty('color');});
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
@@ -51,7 +90,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((lo
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
-  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden){e.preventDefault();$('#sendButton').click();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('#sendButton').click();}
   else if(!typing&&e.key==='?'&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();$('#shortcutsDialog').showModal();}
   else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
@@ -103,7 +142,9 @@ function renderModels(data) {
   backendSelect.value=recommendationBackend;
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
+  renderAttachControl();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
+  document.dispatchEvent(new CustomEvent('app:models',{detail:modelData}));
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
@@ -126,8 +167,8 @@ function renderModels(data) {
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
       const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):downloadButton}${m.runnable?optionsButton(m.id,false,'save'):''}${!loaded&&m.downloaded?deleteButton(m.id):''}`;
-      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
   }
@@ -191,20 +232,23 @@ async function openModelCard(id) {
   $('#modelCardBody').scrollTop=0;  // the dialog is reused: a new card starts at its top
 }
 function renderDiskModels() {
-  const rows = modelData.filter(m => m.downloaded), total = rows.reduce((sum,m) => sum + (Number(m.downloaded_bytes) || 0),0);
+  const rows = modelData.filter(m => m.downloaded || m.attached), total = rows.reduce((sum,m) => sum + (m.attached?0:(Number(m.downloaded_bytes) || 0)),0);
   const groups=new Map();
   for(const model of rows){
-    const type=model.family||'Other';
+    const type=model.attached?'Attached':model.family||'Other';
     if(!groups.has(type))groups.set(type,[]);
     groups.get(type).push(model);
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${type==='Attached'?t('Linked weights: {size}',{size:gb(bytes)}):gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.attached?`<span>${esc(m.repo)}</span>`:''}${m.attached?`<span class="chip">${t('Attached')}</span>${m.uncalibrated?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${m.attached?t('Linked weights: {size}',{size:gb(m.downloaded_bytes)}):gb(m.downloaded_bytes)}</span>${idleUnloadText(statusCache?.idle_unloads?.[m.id])}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${m.attached?`${m.downloaded?diskActions(m):`<span class="reason">${t('Model files are missing; remove and attach again.')}</span>`}<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
-  $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
+  const ordinary=rows.filter(m=>m.downloaded&&!m.attached);
+  $('#diskTotal').textContent=t('Total: {size} in {models}',{size:gb(total),models:tp(ordinary.length,'{n} model','{n} models',{n:ordinary.length})})+(rows.some(m=>m.attached)?` · ${t('Shared base weights are not included.')}`:'');
   renderManagerSummary();
 }
+function idleUnloadText(reason){return reason?.code==='idle_unload'?`<span class="muted">${esc(idleUnloadMessage(reason))}</span>`:'';}
+function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} idle minute at {time}','Unloaded after {n} idle minutes at {time}',{time:new Date(reason.at*1000).toLocaleString()});}
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
@@ -223,6 +267,40 @@ function renderModelLoader() {
   }).join(''):`<p class="muted">${t(inspecting?'Download a bf16 model first':'Nothing downloaded yet')}</p>`;
   if(container.innerHTML!==html)container.innerHTML=html;
 }
+async function renderAttachControl() {
+  const card=$('#attachCard');
+  try{
+    const data=await api('/api/attach');
+    card.hidden=false;
+    $('#attachUnavailable').hidden=data.available;
+    $('#attachControls').hidden=!data.available;
+    $('#attachBase').innerHTML=(data.bases||[]).map(base=>`<option value="${esc(base)}">${esc(base)}</option>`).join('');
+  }catch{card.hidden=true;}
+}
+$('#openAttach').onclick=()=>$('#attachDialog').showModal();
+$('#attachModel').onclick=()=>act(async()=>{
+  const base=$('#attachBase').value;
+  await api('/api/attach',{method:'POST',body:JSON.stringify({base,format:Number($('#attachFormat').value)})});
+  $('#attachDialog').close();
+  toast(t('Attach job started'));
+  await refreshStatus();
+});
+$('#cancelAttach').onclick=()=>act(async()=>{await api('/api/attach',{method:'DELETE'});await refreshStatus();});
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.remove-attached');
+  if(!button)return;
+  act(async()=>{
+    const id=button.dataset.id;
+    if(!await confirmDialog({title:t('Remove attached model?'),description:t('{model} will be removed. Shared base weights remain in the cache.',{model:id}),confirmLabel:t('Remove'),destructive:true}))return;
+    const result=await api(`/api/attach/${encodeURIComponent(id)}`,{method:'DELETE'});
+    if(result.cleanup_error){
+      $('#attachRecovery').textContent=t('Cleanup was incomplete. Inspect the retained directory: {path}',{path:result.retained_path});
+      $('#attachRecovery').hidden=false;
+      showView('manager/library',true);$('#attachRecovery').scrollIntoView({block:'center'});
+    }else toast(result.retained_directory?t('Record removed; unverified model directory was retained.'):t('Attached model removed'));
+    await loadModels();
+  });
+});
 $('#openModelLoader').onclick=()=>{$('#modelLoaderDialog').showModal();renderModelLoader();};
 document.addEventListener('click',event=>{
   const button=event.target.closest('.use-loaded-model');if(!button)return;
@@ -277,7 +355,7 @@ async function loadModel(id, media=false, mode=null) {
   if(mode)return openLoadOptions(id,media,'load',mode);
   statusSequence++;
   try { await api('/api/load', {method:'POST', body:JSON.stringify({id,...(media?{media:true}:{})})}); toast(t('Model load started')); await refreshStatus(); }
-  catch (e) { showStatusError(e.message); toast(e.message,'error'); }
+  catch (e) { showStatusError(e.message); }
 }
 function showStatusError(text) { if(text)toast(text,'error'); }
 function mediaTitle(kinds) { return kinds.map(kind => kind === 'image' ? t('images') : kind === 'audio' ? t('audio') : kind).join(` ${t('and')} `); }
@@ -375,9 +453,9 @@ async function refreshStatus() {
   const sequence = ++statusSequence;
   try {
     const status = await api('/api/status');
-    if (sequence === statusSequence) { renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; showStatusError(e.message); trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {
@@ -387,14 +465,40 @@ async function loadExamples() {
     renderRequestPresets();
   } catch { examples=[];renderRequestPresets(); }
 }
+// Engine question sets are added to the current request, including in Edit JSON mode.
+$('#examples').insertAdjacentHTML('afterend', `<details id="questionSets"><summary>${t('Insert question set')}</summary><div class="controls"><label>${t('Question set')} <select id="questionSet" disabled></select></label><label>${t('Language')} <select id="questionSetLang" disabled><option value="auto">${t('Auto')}</option><option value="pl">${t('Polish')}</option><option value="en">${t('English')}</option></select></label><label>${t('Max error (optional)')} <input id="questionSetError" type="number" disabled min="0" max="1" step="any"></label><button type="button" id="insertQuestionSet" disabled>${t('Insert questions')}</button></div><p id="questionSetHint" class="muted" role="status">${t('Loading question sets…')}</p></details>`);
+async function loadQuestionSets() {
+  try {
+    const sets=await api('/api/question-sets');
+    $('#questionSet').innerHTML=sets.map(set=>`<option value="${esc(set.name)}">${esc(set.name)} (${set.question_count})</option>`).join('');
+    for(const selector of ['#questionSet','#questionSetLang','#questionSetError','#insertQuestionSet'])$(selector).disabled=!sets.length;
+    $('#questionSetHint').textContent=sets.length?'':t('No question sets are available.');
+  } catch { $('#questionSetHint').textContent=t('Question sets are unavailable in this Engine.'); }
+}
+$('#insertQuestionSet').onclick=()=>act(async()=>{
+  const jsonMode=$('#editJsonToggle').checked;
+  const request=jsonMode?JSON.parse($('#requestJson').value):buildRequest();
+  if(!request||typeof request!=='object'||Array.isArray(request)||!request.questions||typeof request.questions!=='object'||Array.isArray(request.questions))throw new Error(t('Request must contain a questions object.'));
+  const field=$('#questionSetError');if(!field.checkValidity()){field.reportValidity();return;}
+  const state=typeof request.state==='string'?request.state:JSON.stringify(request.state??'');
+  const questions=await api(`/api/question-sets/${encodeURIComponent($('#questionSet').value)}`,{method:'POST',body:JSON.stringify({lang:$('#questionSetLang').value,state,max_error:field.value===''?null:Number(field.value)})});
+  if(jsonMode!==$('#editJsonToggle').checked||JSON.stringify(request)!==JSON.stringify(jsonMode?JSON.parse($('#requestJson').value):buildRequest()))throw new Error(t('Request changed while loading questions. Try again.'));
+  const names=new Set(Object.keys(request.questions));
+  for(const [base,q] of Object.entries(questions)){
+    let name=base;for(let i=2;names.has(name);i++)name=`${base}_${i}`;names.add(name);
+    if(jsonMode)request.questions[name]=q;else addQuestion(name,q);
+  }
+  if(jsonMode){$('#requestJson').value=JSON.stringify(request,null,2);window.RequestCode.invalidate();}else syncRequest();
+});
+loadQuestionSets();
 // Question builder: one card per question, a type-specific fieldset; fields the builder does not own stay on the card
 // (card._extra) and are merged back, so Edit JSON → builder → JSON keeps them.
 const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract'];
 const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['act','tool','classify','verify','extract'];
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
-let presetData={load:{},request:{}},presetTarget='load';
-async function loadPresets() {try{presetData=await api('/api/presets');renderRequestPresets();renderLoadPresets();}catch{}}
+let presetData={load:{},request:{}},presetTarget='load',presetGeneration=0;
+async function loadPresets(current=()=>true) {const generation=++presetGeneration;try{const data=await api('/api/presets');if(generation!==presetGeneration||!current())return;presetData=data;renderRequestPresets();renderLoadPresets();}catch{}}
 function renderRequestPresets() {
   const select=$('#examples'), current=select.value;
   const saved=Object.keys(presetData.request||{});
@@ -415,7 +519,8 @@ $('#presetNameSave').onclick=()=>act(async()=>{
   let value;
   try { value=presetTarget==='load'?collectOptions():$('#editJsonToggle').checked?JSON.parse($('#requestJson').value):buildRequest(); if(presetTarget==='request')value._elements=elementPresetData(); }
   catch(e) { toast(e.message,'error');$('.q-name:invalid')?.reportValidity();return; }
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  ++presetGeneration;presetData=data;
   $('#presetNameDialog').close(); renderLoadPresets();renderRequestPresets();toast(t('Preset saved'));
 });
 $('#examples').addEventListener('change',e=>{
@@ -430,7 +535,8 @@ $('#examples').addEventListener('change',e=>{
   }else if(item)setRequest({state:item.state,questions:item.questions});
 });
 async function deletePreset(kind,name) {
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  ++presetGeneration;presetData=data;
   renderLoadPresets();renderRequestPresets();toast(t('Preset deleted'));
 }
 $('#exportPresets').onclick=()=>act(async()=>{
@@ -438,6 +544,13 @@ $('#exportPresets').onclick=()=>act(async()=>{
   a.href=url;a.download='presets.json';a.click();URL.revokeObjectURL(url);
 });
 $('#importPresetsButton').onclick=()=>$('#importPresets').click();
+$('#importPresetsUrl').onclick=()=>act(async()=>{
+  const url=prompt(t('Enter the presets URL'));if(url===null)return;
+  const button=$('#importPresetsUrl');button.disabled=true;button.textContent=t('Importing…');
+  try {const result=await api('/api/presets/import-url',{method:'POST',body:JSON.stringify({url})});await loadPresets();toast(t('Imported {count} presets',{count:result.count}));}
+  catch(e){await loadPresets();throw e;}
+  finally {button.disabled=false;button.textContent=t('Import from URL');}
+});
 $('#importPresets').onchange=()=>act(async()=>{
   const file=$('#importPresets').files[0];if(!file)return;
   const data=JSON.parse(await file.text());let count=0;
@@ -517,6 +630,7 @@ function renderTypeFields(card, type, q) {
   else if(type==='tool'){
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
+      +`<button type="button" class="mcp-open">${t('Import or refresh MCP tools')}</button>`
       +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
@@ -678,7 +792,7 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
 }
 function extraOf(q, type) {
   const owned=new Set(['type','instructions','evidence',...OWNED[type]]);
-  if(!Array.isArray(q.max_error))owned.add('max_error');  // a list of targets (tasks) is kept as given
+  if(MAX_ERROR_TYPES.includes(type)&&!Array.isArray(q.max_error))owned.add('max_error');  // uneditable targets stay as given
   return Object.fromEntries(Object.entries(q||{}).filter(([k])=>!owned.has(k)));
 }
 function mediaRequestFields() {
@@ -698,6 +812,83 @@ function requestOptionFields() {
   return fields;
 }
 const REQUEST_OPTION_KEYS=['facts','lang','think','think_text','early_exit'];
+function renderFetchProvenance() {
+  const note=$('#fetchProvenance');
+  $('#openFetchDialog').hidden=replayLocked;
+  note.hidden=sourceUrl===null;
+  if(sourceUrl===null){note.textContent='';return;}
+  note.textContent=replayLocked?t('Recorded source: {url}',{url:sourceUrl}):t('Source: {url}',{url:sourceUrl});
+  if(fetchInfo&&fetchInfo.final_url===sourceUrl)note.textContent+='\n'+t('Original: {url}',{url:fetchInfo.url})+'\n'+
+    t('Final: {url}',{url:fetchInfo.final_url})+'\n'+t('Type: {type} · {bytes} bytes · {truncation}',{
+      type:fetchInfo.content_type,bytes:fetchInfo.bytes,truncation:fetchInfo.truncated?t('Text truncated to 200,000 characters'):t('Text not truncated')});
+}
+function renderStateEstimate() {
+  let state;
+  try {
+    if($('#editJsonToggle').checked)state=JSON.parse($('#requestJson').value).state;
+    else {const input=$('#stateInput');state=input._requestState&&input.value===input._requestState.text?input._requestState.value:parseStructuredText(input.value);}
+    if(state===undefined)throw new Error();
+    const text=typeof state==='string'?state:JSON.stringify(state);
+    const tokens=Math.ceil(new TextEncoder().encode(text).length/4);
+    const context=(statusCache?.models||[]).find(model=>model.id===selectedModel)?.entry?.context;
+    $('#stateEstimate').textContent=t('Estimated State tokens: {tokens} · Active context limit: {limit} · policy: {policy}',{
+      tokens,limit:context?.limit??t('unknown'),policy:context?.overflow??t('unknown')});
+  } catch {$('#stateEstimate').textContent=t('State estimate unavailable until request JSON is valid.');}
+}
+function cancelFetch() {
+  fetchGeneration++;
+  if(fetchOperation)fetchOperation.abort();
+  fetchOperation=null;
+  $('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';
+}
+function closeFetch() {
+  cancelFetch();
+  if($('#fetchDialog').open)$('#fetchDialog').close();
+  if(!$('#openFetchDialog').hidden)$('#openFetchDialog').focus();
+}
+$('#openFetchDialog').addEventListener('click',()=>{
+  if(replayLocked)return;
+  cancelFetch();$('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');
+  $('#fetchDialog').showModal();$('#fetchUrl').focus();
+});
+$('#fetchCancel').addEventListener('click',closeFetch);
+$('#fetchDialog').addEventListener('cancel',event=>{event.preventDefault();closeFetch();});
+$('#fetchForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(fetchOperation||replayLocked)return;
+  let jsonRequest;
+  if($('#editJsonToggle').checked){
+    try {jsonRequest=JSON.parse($('#requestJson').value);if(!jsonRequest||typeof jsonRequest!=='object'||Array.isArray(jsonRequest))throw new Error();}
+    catch {$('#fetchError').textContent=t('Fix the request JSON before fetching.');$('#fetchError').hidden=false;return;}
+  }
+  const controller=new AbortController(), generation=++fetchGeneration;
+  fetchOperation=controller;$('#fetchSubmit').disabled=true;$('#fetchUrl').disabled=true;
+  $('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');$('#fetchStatus').textContent=t('Fetching…');
+  try {
+    const result=await api('/api/fetch',{method:'POST',body:JSON.stringify({url:$('#fetchUrl').value}),signal:controller.signal});
+    if(generation!==fetchGeneration||fetchOperation!==controller)return;
+    sourceUrl=result.final_url;fetchInfo={url:result.url,final_url:result.final_url,content_type:result.content_type,bytes:result.bytes,truncated:result.truncated};renderFetchProvenance();
+    applyingFetch=true;
+    try {
+      if(jsonRequest){jsonRequest.state=result.state;jsonRequest.source_url=sourceUrl;$('#requestJson').value=JSON.stringify(jsonRequest,null,2);$('#requestJson').dispatchEvent(new Event('input',{bubbles:true}));renderStateEstimate();}
+      else {const input=$('#stateInput');input.value=typeof result.state==='string'?result.state:JSON.stringify(result.state,null,2);input._requestState={text:input.value,value:structuredClone(result.state)};input.dispatchEvent(new Event('input',{bubbles:true}));}
+    } finally {applyingFetch=false;}
+    closeFetch();
+  } catch(error) {
+    if(generation!==fetchGeneration||fetchOperation!==controller||error.name==='AbortError')return;
+    $('#fetchError').textContent=error.message;$('#fetchError').hidden=false;$('#fetchUrl').setAttribute('aria-invalid','true');
+  } finally {
+    if(generation===fetchGeneration&&fetchOperation===controller){fetchOperation=null;$('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';}
+  }
+});
+['input','change'].forEach(type=>$('#playground').addEventListener(type,event=>{
+  if(applyingFetch)return;
+  cancelFetch();
+  if(event.target.id==='requestJson'){
+    try {const request=JSON.parse(event.target.value);const next=typeof request?.source_url==='string'?request.source_url:null;if(next!==sourceUrl)fetchInfo=null;sourceUrl=next;renderFetchProvenance();}catch{}
+  }
+  if(event.target.id==='requestJson')renderStateEstimate();
+},true));
 // think / early_exit appear for a model loaded with Thinking / with early-exit levels (--mode fast-exit)
 function setPlaygroundExperimental(model) {
   const think=Boolean(model?.options?.think), levels=model?.entry?.early_exit||[], select=$('#earlyExitSelect');
@@ -719,9 +910,10 @@ function buildRequest() {
   }
   if([...document.querySelectorAll('.q-name')].some(input=>!input.checkValidity()))throw new Error(t('Question names must be non-blank and unique.'));
   const stateInput=$('#stateInput'), state=stateInput._requestState;
-  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields()};
+  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields(),...(sourceUrl!==null?{source_url:sourceUrl}:{})};
 }
 function syncRequest(force=false, keys=['media','detail']) {
+  if(fetchOperation&&!applyingFetch)cancelFetch();
   window.RequestCode.invalidate();
   const textarea = $('#requestJson');
   if ($('#editJsonToggle').checked && !force) {
@@ -738,6 +930,7 @@ function syncRequest(force=false, keys=['media','detail']) {
     try { textarea.value = JSON.stringify(buildRequest(), null, 2); }
     catch (e) { showMediaError(e.message); }
   }
+  renderStateEstimate();
 }
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
@@ -755,6 +948,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
     if(e.target.matches('.q-type')){
       if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
+      if(next!=='tool'){delete card._extra._mcp_source;delete current._mcp_source;if(card._orig?.q)delete card._orig.q._mcp_source;}
       card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
       renderTypeFields(card,next,{...current,type:next});
     } else {
@@ -778,21 +972,25 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   $('#questions').append(card); updateMediaEvidence(); syncRequest();
 }
-function setRequest(req, names=[]) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+function setRequest(req, names=[], replay=false) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+  cancelFetch();
+  sourceUrl=typeof req?.source_url==='string'?req.source_url:null;
+  fetchInfo=null; replayLocked=replay; renderFetchProvenance();
   clearSelectedMedia();
   const preserveJson=()=>{
     $('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;
     $('#requestJson').value=JSON.stringify(req,null,2);
+    renderStateEstimate();
     showMediaError(t('This request contains fields or values the Playground builder cannot edit. It remains in Edit JSON mode.'));
     return false;
   };
-  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||req.state==null||
+  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||
      !Object.hasOwn(req,'questions')||!req.questions||typeof req.questions!=='object'||Array.isArray(req.questions))return preserveJson();
-  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model']);
+  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model','source_url']);
   const media=Array.isArray(req.media)?req.media:[];
   let restored=[];
   try {
-    if(Object.keys(req).some(key=>!known.has(key))||
+    if(Object.keys(req).some(key=>!known.has(key))||(Object.hasOwn(req,'source_url')&&typeof req.source_url!=='string')||
        Object.values(req.questions).some(q=>!q||typeof q!=='object'||Array.isArray(q)||!QUESTION_TYPES.includes(q.type))||
        (Object.hasOwn(req,'media')&&!Array.isArray(req.media))||
        media.some(item=>!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(k=>!['type','data'].includes(k))||
@@ -818,8 +1016,8 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
     const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);
   }
   const stateInput=$('#stateInput');
-  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state??'',null,2);
-  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state??'')};
+  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state,null,2);
+  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state)};
   setChecked($('#factsToggle'),req.facts==='auto'); $('#langSelect').value=['pl','en'].includes(req.lang)?req.lang:'auto';
   $('#thinkSelect').value=['off','force'].includes(req.think)?req.think:''; setChecked($('#thinkTextToggle'),req.think_text===true);
   if([...$('#earlyExitSelect').options].some(o=>o.value===req.early_exit))$('#earlyExitSelect').value=req.early_exit; else $('#earlyExitSelect').value='';
@@ -835,13 +1033,13 @@ window.preparePlaygroundLanguageSwitch=()=>{
   if($('#editJsonToggle').checked){
     let text=$('#requestJson').value;
     try {const request=JSON.parse(text);if(request&&typeof request==='object'&&!Array.isArray(request)){hadMedia=hadMedia||(Array.isArray(request.media)&&request.media.length>0);if('media' in request||'_elements' in request){delete request.media;delete request._elements;text=JSON.stringify(request,null,2);}}} catch {}
-    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia}));
+    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia,replayLocked,fetchInfo}));
     return;
   }
   const cards=[...document.querySelectorAll('#questions .question')];
   const stateInput=$('#stateInput'), state=stateInput._requestState&&stateInput.value===stateInput._requestState.text
     ?stateInput._requestState.value:parseStructuredText(stateInput.value);
-  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default'};
+  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default',...(sourceUrl!==null?{source_url:sourceUrl}:{})};
   const names=cards.map(card=>$('.q-name',card).value);
   const controls=cards.map(card=>[...card.querySelectorAll('input,select,textarea')].filter(el=>!el.closest('.choice-editor')).map(el=>el.type==='checkbox'?{checked:el.checked}:{value:el.value}));
   const choiceRows=cards.map(card=>ChoiceEditor.snapshot(card));
@@ -850,16 +1048,16 @@ window.preparePlaygroundLanguageSwitch=()=>{
   cards.forEach((card,i)=>{request.questions[`__language_draft_${i}`]=parseQuestionCard(card)[1];});
   const model=selectedModel||$('#playgroundModel').value;
   if(model)request.model=model;
-  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows}));
+  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows,replayLocked,fetchInfo}));
 };
 function restorePlaygroundLanguageDraft(){
   const saved=sessionStorage.getItem(PLAYGROUND_DRAFT);if(!saved)return;
   sessionStorage.removeItem(PLAYGROUND_DRAFT);
   try{
     const draft=JSON.parse(saved);
-    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;}
+    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;try{const request=JSON.parse(draft.text);sourceUrl=typeof request?.source_url==='string'?request.source_url:null;}catch{sourceUrl=null;}replayLocked=Boolean(draft.replayLocked);}
     else if(draft.request){
-      setRequest(draft.request);
+      setRequest(draft.request,[],Boolean(draft.replayLocked));
       const cards=[...document.querySelectorAll('#questions .question')];
       cards.forEach((card,i)=>{
         ChoiceEditor.restore(card,draft.choiceRows?.[i]);
@@ -879,6 +1077,7 @@ function restorePlaygroundLanguageDraft(){
       });
       syncRequest(true);
     }
+    fetchInfo=draft.fetchInfo||null;renderFetchProvenance();
     if(draft.hadMedia)showMediaError(t('Media must be attached again after changing language.'));
   }catch{}
 }
@@ -890,8 +1089,9 @@ function resultHeadline(name, answer, requestQuestion) {
   return null;
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
-const modelEntry=id=>(statusCache?.models||[]).find(m=>m.id===id)?.entry||null;
-const uncalibrated=entry=>Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length;
+const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(String(id).startsWith('attached/'))return {...entry,attached_uncalibrated:!entry||model.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length};return entry||null;};
+const uncalibrated=entry=>Boolean(entry?.attached_uncalibrated)||(Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length);
+const modelLabel=m=>m?.kind==='comparison'?`${(statusCache?.decision_servers||[]).find(s=>s.id===m.entry?.server)?.name||t('Decision server')} / ${m.entry?.upstream_model||m.id}`:m.id;
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
   if(type==='tool')return 'choice';  // a single tool decision is deferred against the choice threshold
@@ -904,10 +1104,12 @@ function decisionBase(answer,q) {
 // text decisions with the served option orders; a media answer ("text"), one fitted on other option orders or an act
 // question shape the calibration was not validated for ("unvalidated") and uncalibrated probabilities get no claim.
 function certificateGap(answer, entry) {
+  if(entry?.kind==='comparison')return t('Comparison confidence is not calibrated');
   if(entry?.calibration_warning)return `calibration warning: ${entry.calibration_warning}`;
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
   if(answer.calibration!=null&&answer.calibration!=='validated')return `calibration: ${answer.calibration}`;
+  if(entry?.attached_uncalibrated)return t('no active certified thresholds for this Attached model');
   if(uncalibrated(entry))return t('the probabilities are not calibrated');
   return null;
 }
@@ -925,6 +1127,7 @@ function automationBadge(answer,q,entry) {
 }
 function calibrationChip(answer,entry) {
   const c=answer.calibration;
+  if(entry?.attached_uncalibrated)return `<span class="badge fit-tight">${t('uncalibrated')}</span>`;
   if(c==='validated')return `<span class="badge fit-fits">${t('calibrated')}</span>`;
   if(c==='unvalidated')return `<span class="badge fit-tight">${t(answer.type==='act'?'calibration not validated for this question shape':'unvalidated — fitted on other option orders')}</span>`;
   if(c==='text')return `<span class="badge fit-tight">${t('fitted on text (media request)')}</span>`;
@@ -933,23 +1136,25 @@ function calibrationChip(answer,entry) {
   return '';
 }
 // a task answer's `automated`: {max_error: true (use as is) | false (review) | null (no certificate for the task)}
-function automatedChips(automated) {
-  if(!automated||typeof automated!=='object')return '';
+function automatedChips(automated,entry,answer) {
+  const hasCalibration=Boolean(entry&&(Object.keys(entry.certified||{}).length||Object.keys(entry.temperature_per_prim||{}).length||entry.calibration||entry.calibration_file||entry.selected_calibration||entry.shipped_calibration));
+  if((answer&&(!hasCalibration||answer.deferred===true||answer.refused!=null||typeof answer.max_error==='string'||certificateGap(answer,entry)))||entry?.attached_uncalibrated||!automated||typeof automated!=='object')return '';
   return Object.entries(automated).map(([risk,v])=>{
     const at=`${(Number(risk)*100).toFixed(0)}%`;
-    return v===true?`<span class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
+    return v===true?`<span data-certification-evidence class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span data-certification-evidence class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span data-certification-evidence class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
   }).join(' ');
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
+  for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
+  parts.push(automatedChips(answer.automated,entry,answer));
   const html=parts.filter(Boolean).join(' ');
   const reason=typeof answer.max_error==='string'?`<span class="reason">${esc(answer.max_error)}</span>`:'';
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
 }
 function resultBanners(entry,u) {
-  let html=entry?.calibration_warning?`<div class="error-box">${esc(entry.calibration_warning)}</div>`:'';
+  let html=entry?.calibration_warning?`<div data-certification-evidence class="error-box">${esc(entry.calibration_warning)}</div>`:'';
   const truncated=u?.truncated;
   if(truncated)html+=`<div class="error-box">${t('State truncated to the context: dropped {dropped} of {total} tokens (kept {head} from the start, {tail} from the end)',{dropped:esc(truncated.dropped_tokens),total:esc(truncated.state_tokens),head:esc(truncated.head_tokens),tail:esc(truncated.tail_tokens)})}</div>`;
   return html;
@@ -993,17 +1198,17 @@ const RESULT_VIEWS={
     const head=multi?chipList(a.labels,'no label'):headlineDiv(`${esc(a.label)}${labelOf(q,a.label)?` · ${esc(labelOf(q,a.label))}`:''}`);
     return head+metaLine(multi?t('set confidence {confidence}',{confidence:pct(a.set_confidence)}):`${t('Confidence')}: ${pct(a.confidence)}`)+probBars(a.scores,q,new Set(multi?a.labels:[a.label]));
   },
-  verify(a,q){
+  verify(a,q,entry){
     const claims=q.claims, text=k=>Array.isArray(claims)?claims[Number(k)]:claims?.[k];
     const verdict=v=>`<span class="badge ${v==='supported'?'fit-fits':v==='contradicted'?'fit-too_large':'fit-tight'}">${esc(t(v))}</span>`;
-    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated)}</td></tr>`).join('');
+    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Claim')}</th><th>${t('Verdict')}</th><th>${t('Confidence')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div>`+metaLine(t('All supported: {answer}',{answer:a.all_supported?t('yes'):t('no')})+((a.not_supported||[]).length?` · ${t('not supported: {items}',{items:esc(a.not_supported.join(', '))})}`:''));
   },
   compress(a){
     return `<pre class="compressed">${esc(a.compressed)}</pre>`+metaLine(t('kept {kept} of {total} {unit}s · {compressed}/{original} chars ({ratio})',{kept:(a.kept||[]).length,total:(a.units||[]).length,unit:esc(a.unit),compressed:esc(a.compressed_chars),original:esc(a.original_chars),ratio:esc(a.ratio)}));
   },
-  extract(a){
-    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated)}</td></tr>`).join('');
+  extract(a,q,entry){
+    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Field')}</th><th>${t('Value')}</th><th>${t('Confidence')}</th><th>${t('Source')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div><details><summary>${t('data')}</summary><pre>${esc(JSON.stringify(a.data,null,2))}</pre></details>`;
   },
 };
@@ -1056,9 +1261,23 @@ function thinkBlock(a) {
   const think=a.think, used=a.meta?.think;
   if(think?.skipped)return `<div class="chips"><span class="chip muted">${t('thinking skipped ({reason})',{reason:esc(think.skipped)})}</span></div>`;
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
-  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · ${t('calibration')} ${esc(t(think.calibration??'—'))}; ${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
+  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · <span data-certification-evidence>${t('calibration')} ${esc(t(think.calibration??'—'))}; </span>${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
-function renderResults(data, request, mediaSnapshot=selectedMedia) {
+function modelEvidenceStamp(id) {
+  const m=(statusCache?.models||[]).find(item=>item.id===id);
+  return JSON.stringify(m?[m.id,m.state,m.generation,m.mode,m.options,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.temperature_per_prim,m.entry?.calibration,m.entry?.calibration_file,m.entry?.calibration_warning,m.entry?.adapter,m.entry?.orders,m.entry?.layout,m.entry?.context]:null);
+}
+function invalidateModelEvidence(node) {
+  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===modelEvidenceStamp(node.dataset.evidenceModel))return;
+  node.querySelectorAll('[data-certification-evidence]').forEach(element=>element.remove());
+  const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
+  node.prepend(notice);node.dataset.evidenceStale='1';
+}
+function inspectBlockedReason(id) {
+  const variant=modelData.find(m=>m.id===id);
+  return variant?.attached||String(id||'').startsWith('attached/')?t(variant?.inspect_reason||'attached models cannot be inspected'):null;
+}
+function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=modelEvidenceStamp(request.model)) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
@@ -1071,7 +1290,9 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const inspectReason=inspectBlockedReason(request.model);
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const results=$('#results');results.dataset.evidenceModel=request.model||'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateModelEvidence(results);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
@@ -1086,6 +1307,7 @@ async function sendDecision() {
     const invalid=[...document.querySelectorAll('.question')].filter(card=>card._error);
     if(invalid.length){showDecideError(invalid.map(card=>`${$('.q-name',card).value||t('question')}: ${card._error}`).join('\n'));return;}
   }
+  const limitError=toolBudgetError(request, selectedModel); if(limitError){showDecideError(limitError);return;}
   request.model=selectedModel;
   const unsupported=[...new Set((Array.isArray(request.media)?request.media:[]).map(m=>m?.type))].filter(k=>['image','audio'].includes(k)&&!loadedMedia.includes(k));
   if(unsupported.length){showDecideError(t('{model} does not take {media}. Remove the media, or load a basal-omni model with "Load with media" and select it.',{model:shortName(selectedModel||t('This model')),media:mediaTitle(unsupported)}));return;}
@@ -1094,7 +1316,8 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
+  const evidenceStamp=modelEvidenceStamp(request.model);
+  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) { showDecideError(e.message); toast(e.message,'error'); }
   finally { $('#sendButton').disabled=false; }
 }
@@ -1110,7 +1333,7 @@ function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===
 $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
-$('#stateInput').addEventListener('input',()=>{$('#stateInput')._requestState=undefined;syncRequest();});
+$('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
   if($('#editJsonToggle').checked){
     try {$('#requestJson').value=JSON.stringify(buildRequest(),null,2);showMediaError();}
@@ -1125,10 +1348,11 @@ $('#editJsonToggle').addEventListener('change',()=>{
     const meta=elementPresetData(),media=Array.isArray(request.media)?request.media:[];
     const names=media.map(item=>selectedMedia.find(current=>current.data===item?.data)?.file.name);
     const marks=meta.marked.flatMap(record=>{const index=media.findIndex(item=>item?.data===record.markedData);return index<0?[]:[{...record,index}];});
-    if(!setRequest(request,names))restorePresetMediaFallback(request,names);
+    if(!setRequest(request,names,replayLocked))restorePresetMediaFallback(request,names);
     restoreElementMarks(marks);
   }
   $('#editJsonArea').hidden=!$('#editJsonToggle').checked;$('#builder').hidden=$('#editJsonToggle').checked;
+  renderStateEstimate();
 });
 $('#mediaInput').addEventListener('change',event=>selectMedia(Array.from(event.target.files||[])));
 $('#mediaDetail').addEventListener('change',()=>syncRequest());
@@ -1140,7 +1364,6 @@ $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox
 window.addEventListener('beforeunload',()=>selectedMedia.forEach(item=>URL.revokeObjectURL(item.url)));
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 function connectionEndpoint() {
   const settings=serveData.settings, serving=statusCache?.serving;
   if (serving?.url) return serving.url;
@@ -1282,7 +1505,6 @@ async function copyText(text, success=t('Copied to clipboard')) {
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
-let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
@@ -1293,41 +1515,96 @@ const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+
+function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
+let decisionServerSignature='';
+function renderDecisionServers(status){
+  const servers=status.decision_servers||[], models=status.models||[];
+  const signature=JSON.stringify([servers,models.filter(m=>m.kind==='comparison').map(m=>[m.id,m.state])]);
+  if(signature===decisionServerSignature)return;
+  decisionServerSignature=signature;
+  $('#decisionServerList').innerHTML=servers.length?servers.map(server=>`<div class="disk-row"><div class="disk-info"><strong>${esc(server.name)}</strong> <span class="badge">${esc(t(server.state))}</span><div class="muted">${esc(server.url)}</div><div>${models.filter(m=>m.entry?.server===server.id).map(m=>`<div>${esc(m.entry?.upstream_model||m.id)} ${comparisonBadge()}</div>`).join('')||t('No models reported')}</div></div><button type="button" data-detach-server="${esc(server.id)}">${t('Detach')}</button></div>`).join(''):`<p class="muted">${t('No Decision servers attached.')}</p>`;
+  $('#decisionServerList').querySelectorAll('[data-detach-server]').forEach(button=>button.onclick=async()=>{
+    if(!await confirmDialog({title:t('Detach Decision server?'),description:t('Its models and saved key will be removed.'),confirmLabel:t('Detach'),destructive:true}))return;
+    try{await api(`/api/decision-servers/${encodeURIComponent(button.dataset.detachServer)}`,{method:'DELETE'});await refreshStatus();$('#addDecisionServer').focus();}
+    catch(error){$('#decisionServerError').textContent=error.message;$('#decisionServerError').hidden=false;}
+  });
+}
+let decisionConsentHost='';
+function decisionServerConsent(){
+  let host='';try{host=new URL($('#decisionServerUrl').value).hostname.toLowerCase().replace(/^\[|\]$/g,'');}catch{}
+  if(host!==decisionConsentHost)$('#decisionServerConsent').checked=false;
+  decisionConsentHost=host;
+  const local=host==='localhost'||host==='::1'||/^127(?:\.\d{1,3}){3}$/.test(host)||/^169\.254(?:\.\d{1,3}){2}$/.test(host)||/^fe[89ab][0-9a-f]:/i.test(host);
+  $('#decisionServerConsentField').hidden=!host||local;
+  $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
+}
+$('#decisionServerUrl').addEventListener('input',decisionServerConsent);
+$('#decisionServerForm').addEventListener('submit',async event=>{
+  event.preventDefault();const error=$('#decisionServerError');error.hidden=true;
+  const button=$('#addDecisionServer');let added=false;button.disabled=true;
+  try{await api('/api/decision-servers',{method:'POST',body:JSON.stringify({name:$('#decisionServerName').value,url:$('#decisionServerUrl').value,key:$('#decisionServerKey').value||null,consent:$('#decisionServerConsent').checked})});
+    event.target.reset();decisionServerConsent();await refreshStatus();added=true;}
+  catch(reason){error.textContent=reason.message;error.hidden=false;error.focus();}
+  finally{button.disabled=false;if(added)button.focus();}
+});
 function renderManagerSummary() {
-  const loaded=statusCache?.models?.length||0, downloaded=modelData.filter(m=>m.downloaded);
-  const bytes=downloaded.reduce((sum,model)=>sum+(Number(model.downloaded_bytes)||0),0);
+  const loaded=statusCache?.models?.filter(m=>m.kind!=='comparison').length||0, downloaded=modelData.filter(m=>m.downloaded);
+  const bytes=downloaded.reduce((sum,model)=>sum+(model.attached?0:(Number(model.downloaded_bytes)||0)),0);
   $('#managerLoadedCount').textContent=`${loaded} ${t('loaded')}`;
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
+let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
   statusAvailable=true; statusCache=s;
+  invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
+  const attachJob=s.jobs?.attach;
+  if(attachJob){
+    const progress=s.downloads?.[$('#attachBase').value];
+    $('#cancelAttach').hidden=!attachJob.running;
+    $('#openAttach').disabled=attachJob.running;
+    $('#attachFormat').disabled=attachJob.running;
+    $('#attachBase').disabled=attachJob.running;
+    $('#attachModel').disabled=attachJob.running;
+    $('#attachJob').textContent=attachJob.running?`${t('Attaching {model}',{model:attachJob.model})}${progress?` · ${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}`:''}`:attachJob.phase==='error'?t('Failed: {error}',{error:attachJob.error}):attachJob.phase==='done'?t('Attached model ready'):'';
+    if(!attachJob.running&&attachJob.phase==='done'&&lastAttachedJobRefresh!==attachJob.started){
+      lastAttachedJobRefresh=attachJob.started;
+      loadModels();
+    }
+  }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
+  const attachedSignature=JSON.stringify(models.filter(m=>m.id.startsWith('attached/')).map(m=>[m.id,m.state,m.generation,m.restart_required,m.entry?.certified,m.entry?.calibration_warning,m.uncalibrated]));
+  if(attachedSignature!==attachedStatusSignature){attachedStatusSignature=attachedSignature;loadModels().then(()=>renderLoadedRows(statusCache?.models||[]));}
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
-  const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads]);
+  const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
   const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
   lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;
-  if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
+  const primaryReady=ready.filter(m=>m.kind!=='comparison');
+  if(!primaryReady.some(m=>m.id===selectedModel)){cancelFetch();selectedModel=primaryReady[0]?.id||'';}
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
-  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
-  $('#footerDot').className=`status-dot${ready.length?' ready':models.some(m=>m.state==='error')?' error':''}${live?' active':''}`;
-  $('#footerModel').textContent=models.map(m=>shortName(m.id)).join(', ')||t('No model loaded');
-  $('#footerModel').title=models.map(m=>m.id).join(', ')||t('No model loaded');
+  const failed=models.some(m=>m.state==='error');
+  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:failed?`${t('error')}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
+  $('#footerDot').className=`status-dot${ready.length?' ready':failed?' error':''}${live?' active':''}`;
+  $('#footerModel').textContent=models.map(m=>`${shortName(m.id)}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
+  $('#footerModel').title=models.map(m=>`${m.id}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
   $('#footerUrl').textContent=s.serving?.url||''; $('#footerUrl').hidden=!s.serving?.url;
-  $('#footerUnload').hidden=!models.length; $('#footerUnload').textContent=models.length>1?t('Unload all'):t('Unload');
+  const owned=models.filter(m=>m.kind!=='comparison');
+  $('#footerUnload').hidden=!owned.length; $('#footerUnload').textContent=owned.length>1?t('Unload all'):t('Unload');
   renderMemoryBar(s.memory||{},models);
   renderLoadedRows(models);
+  renderDecisionServers(s);
   renderManagerSummary();
   if($('#modelLoaderDialog').open)renderModelLoader();
   renderInference(s);
   renderPlaygroundModels(ready);
-  renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
+  renderBenchmarkState(s.jobs?.benchmark,primaryReady); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
   renderInspectState(s.inspect,s.jobs?.inspect);
   if(serveData)renderServeStatus(s);
   loadStats();
@@ -1345,7 +1622,7 @@ function renderMemoryBar(memory, models) {
 }
 // a loaded model answering now: requests basal-ui waits on (inflight) or its basal-serve's running / queued counters
 const answering=m=>m.state==='ready'&&((m.inflight||[]).length>0||m.health?.running>0||m.health?.queued>0);
-const INFERENCE_SOURCES={playground:'Playground',api:'API server',mcp:'MCP',benchmark:'Benchmark'};
+const INFERENCE_SOURCES={playground:'Playground',api:'API server',mcp:'MCP',benchmark:'Benchmark',batch:'Batch'};
 const INFERENCE_JOBS={batch:'Batch',benchmark:'Benchmark',calibrate:'Calibration','backend-test':'Backend test'};
 const ago=seconds=>seconds<60?`${Math.max(1,Math.round(seconds))} s`:seconds<3600?`${Math.round(seconds/60)} min`:`${Math.round(seconds/3600)} h`;
 function renderInference(s) {
@@ -1356,53 +1633,58 @@ function renderInference(s) {
     const counts=h.running>0||h.queued>0?t('{running} running · {queued} queued',{running:h.running??0,queued:h.queued??0}):tp(inflight.length,'{n} request','{n} requests');
     const sources=Object.entries(bySource).map(([k,n])=>`${t(INFERENCE_SOURCES[k]||k)} ${n}`).join(' · ');
     const longest=inflight.length?t('longest {seconds} s',{seconds:inflight[0].seconds.toFixed(1)}):'';
-    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(m.id)}</strong><span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
+    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(modelLabel(m))}</strong>${m.kind==='comparison'?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
   });
   for(const [kind,j] of Object.entries(s.jobs||{})){
     if(!j.running||!INFERENCE_JOBS[kind])continue;
     const share=j.total?Math.min(100,j.done/j.total*100):null;
-    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong><span class="muted">${esc([j.model,ts(j.phase,j.phase_code,j.phase_params),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
+    const phase=ts(j.phase,j.phase_code,j.phase_params);
+    const comparison=typeof j.model==='string'&&j.model.startsWith('comparison:');
+    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong>${comparison?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([j.model,phase||t('running'),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
   }
   const last=Math.max(0,...Object.values(statsData.models||{}).map(x=>Number(x.last_used)||0));
   const idle=last?t('Idle · last decision {ago} ago',{ago:ago(Date.now()/1000-last)}):t('Idle');
   $('#inferenceNow').innerHTML=rows.length?rows.join(''):`<div class="inference-row idle"><span class="status-dot"></span><span class="muted">${esc(idle)}</span></div>`;
 }
 function renderLoadedRows(models) {
+  if ($('#loadedModels').contains(document.activeElement)) return;
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
-    const health=m.health, load=health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='comparison'?comparisonBadge():''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(modelEntry(m.id))?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const health=m.health, load=m.kind==='comparison'?t('Decision server'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
-    const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
+    const actions=m.kind==='comparison'?'':`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
-    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
+    return `<div class="model-row${m.kind==='comparison'?' comparison-model':''}"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}${answering(m)?` · ${esc(t("running"))}`:""}</span><strong>${esc(modelLabel(m))}</strong>${chips}${optionChips}${m.kind==='comparison'?'':`<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>`}<span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${m.kind==='comparison'?t('Reported server memory: {memory} (outside the basal budget)',{memory:m.reported_memory_bytes==null?t('Not reported'):gb(m.reported_memory_bytes)}):stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
   }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`;
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
 }
 function renderPlaygroundModels(ready) {
-  const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media]));
+  const primary=ready.filter(m=>m.kind!=='comparison');
+  const select=$('#playgroundModel'), signature=JSON.stringify(primary.map(m=>[m.id,m.media]));
   if(signature!==playgroundSignature){
     playgroundSignature=signature;
-    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    select.innerHTML=primary.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
   }
-  select.value=selectedModel; select.disabled=!ready.length;
-  $('#playgroundForm').disabled=!ready.length; $('#playgroundHint').hidden=Boolean(ready.length);
+  select.value=selectedModel; select.disabled=!primary.length;
+  $('#playgroundForm').disabled=!primary.length; $('#playgroundHint').hidden=Boolean(primary.length);
   setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
   setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
   DecisionTools.refreshModels(ready);
+  renderStateEstimate();
 }
 function setPlaygroundMedia(kinds) {
   if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
   loadedMedia=kinds; renderSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
 }
-$('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
+$('#playgroundModel').addEventListener('change',e=>{cancelFetch();selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
 async function restartOne(id){await api('/api/restart',{method:'POST',body:JSON.stringify({id})});toast(`${t('Restarting {model}',{model:shortName(id)})}`);await refreshStatus();}
 $('#footerUnload').onclick=()=>act(async()=>{
-  if((statusCache?.models||[]).length>1&&!await confirmDialog({title:t('Unload all models?'),description:t('Every loaded model stops; clients of the API server get 404 until a model is loaded again.'),confirmLabel:t('Unload all'),destructive:true}))return;
+  if((statusCache?.models||[]).filter(m=>m.kind!=='comparison').length>1&&!await confirmDialog({title:t('Unload all models?'),description:t('Every loaded model stops; clients of the API server get 404 until a model is loaded again.'),confirmLabel:t('Unload all'),destructive:true}))return;
   await api('/api/unload',{method:'POST',body:'{}'}); await refreshStatus();
 });
 let statsSequence=0;
@@ -1427,7 +1709,7 @@ async function loadStats() {
 }
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
-  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
+  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}${id.startsWith('comparison:')?comparisonBadge():''}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
   $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
   const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
 }
@@ -1439,13 +1721,29 @@ $('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
 <details class="manager-help"><summary>${t('How this measurement runs')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
+$('#benchmarkResults').insertAdjacentHTML('beforebegin',`<div class="bench-params"><div class="qf-row"><div class="qf"><label for="engineCheckModel">${t('Model for Engine checks')}</label><select class="select" id="engineCheckModel"></select></div><div class="qf"><label for="identityDtype">${t('Identity gate dtype')}</label><select class="select" id="identityDtype"><option value="fp32">fp32</option><option value="bf16">bf16</option></select></div><button class="btn" type="button" id="runIdentity" data-variant="outline">${t('Identity gate')}</button><button class="btn" type="button" id="runOrderCheck" data-variant="outline">${t('Order check')}</button></div><p class="muted">${t('Identity gate uses Saved load settings, which can differ from Active load settings.')}</p><p class="muted" id="engineCheckReason" role="status"></p></div>`);
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
 $('#benchmarkSet').onchange=()=>{localStorage.setItem('basal-ui.benchmarkSet',$('#benchmarkSet').value);updateBenchmarkForm();};
 $('#benchmarkPath').oninput=()=>localStorage.setItem('basal-ui.benchmarkPath',$('#benchmarkPath').value);
-$('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels());};
+$('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels().filter(m=>m.kind!=='comparison'));};
 $('#benchmarkModel').onchange=()=>{updateBenchmarkForm();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+$('#engineCheckModel').onchange=updateEngineCheckAvailability;
+async function updateEngineCheckAvailability() {
+  const id=$('#engineCheckModel').value;
+  if(!id){$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;return;}
+  try{
+    const d=await api(`/api/benchmark/availability?id=${encodeURIComponent(id)}`);
+    if(id!==$('#engineCheckModel').value)return;
+    $('#runIdentity').disabled=!d.identity.available||Boolean(statusCache?.jobs?.benchmark?.running); $('#runIdentity').title=ts(d.identity.reason,d.identity.reason_code,d.identity.reason_params);
+    $('#runOrderCheck').disabled=!d.order_check.available||Boolean(statusCache?.jobs?.benchmark?.running); $('#runOrderCheck').title=t(d.order_check.reason||'');
+    $('#engineCheckReason').textContent=[!d.identity.available?`${t('Identity gate')}: ${ts(d.identity.reason,d.identity.reason_code,d.identity.reason_params)}`:'',!d.order_check.available?`${t('Order check')}: ${t(d.order_check.reason)}`:''].filter(Boolean).join(' · ');
+  }catch(error){if(id!==$('#engineCheckModel').value)return;$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;$('#engineCheckReason').textContent=error.message;}
+}
+$('#runIdentity').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#engineCheckModel').value,kind:'identity',dtype:$('#identityDtype').value})});toast(t('Identity gate started'));await refreshStatus();});
+$('#runOrderCheck').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#engineCheckModel').value,kind:'order_check'})});toast(t('Order check started'));await refreshStatus();});
+updateEngineCheckAvailability();
 let benchModelsSignature='', comparisonFor='';
 function updateBenchmarkForm() {
   const kind=$('#benchmarkKind').value;
@@ -1481,22 +1779,36 @@ $('#cancelBenchmark').onclick=()=>act(async()=>{await api('/api/benchmark',{meth
 function renderBenchmarkState(bench, ready) {
   const kind=$('#benchmarkKind').value, select=$('#benchmarkModel'), current=select.value;
   const ids=kind==='modes'?modelData.filter(m=>m.downloaded).map(m=>m.id):ready.map(m=>m.id);
+  const checkSelect=$('#engineCheckModel'), checkCurrent=checkSelect.value, checkIds=modelData.filter(m=>m.downloaded).map(m=>m.id);
+  if(JSON.stringify([...checkSelect.options].map(o=>o.value))!==JSON.stringify(checkIds)){
+    checkSelect.innerHTML=checkIds.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
+    if(checkIds.includes(checkCurrent))checkSelect.value=checkCurrent;
+    updateEngineCheckAvailability();
+  }
   const signature=JSON.stringify([kind,ids]);
   if(signature!==benchModelsSignature){
     benchModelsSignature=signature;
-    select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
+    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(modelLabel(m))}${m.kind==='comparison'?` · ${t('Comparison')}`:''}</option>`).join('');
     if(ids.includes(current))select.value=current;
     updateBenchmarkForm(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
   }
   const running=Boolean(bench?.running);
+  if(running){$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;}
   $('#runBenchmark').disabled=running||!ids.length; $('#cancelBenchmark').hidden=!running;
   $('#benchmarkProgress').textContent=!bench?(ids.length?'':kind==='modes'?t('Download a model to compare its modes.'):t('Load a model to benchmark it.')):running?`${shortName(bench.model)} · ${bench.label} · ${ts(bench.phase,bench.phase_code,bench.phase_params)} ${bench.done}/${bench.total}`:bench.phase==='error'?`${t('Failed: {error}',{error:bench.error})}`:bench.phase==='cancelled'?t('Cancelled'):'';
-  if(benchRunning&&!running)loadStats();
+  if(benchRunning&&!running){loadStats();updateEngineCheckAvailability();}
   benchRunning=running;
 }
 function benchmarkRow(x) {
-  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
+  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}${x.server?` · ${esc(x.server)} · ${t('Comparison')}`:''}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set||''))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set||''))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
   if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}</td></tr>`;}
+  if(kind==='identity'){
+    const rows=x.rows||[];
+    const detail=rows.map(r=>`<tr><td>${esc(r.path)}</td><td>${r.gate==='pass'?t('Passed'):t('Failed')}</td><td>${Number(r.max_dp).toExponential(2)}</td></tr>`).join('');
+    const max=Math.max(...rows.map(r=>Number(r.max_dp))).toExponential(2);
+    return `<tr>${head}<td colspan="7"><details><summary><span class="badge ${x.pass?'fit-fits':'fit-tight'}">${x.pass?t('Passed'):t('Failed')}</span> · ${esc(x.dtype)} · ${esc(x.engine)} · ${t('max |Δp|')} ${max}</summary><table class="mini-table"><thead><tr><th>${t('Path')}</th><th>${t('Gate')}</th><th>${t('max |Δp|')}</th></tr></thead><tbody>${detail}</tbody></table></details></td></tr>`;
+  }
+  if(kind==='order_check')return `<tr>${head}<td colspan="7"><details><summary>${t('Order check')}</summary><pre>${esc(JSON.stringify(x.report,null,2))}</pre></details></td></tr>`;
   if(kind==='modes'){
     const f=(v,d=1)=>v==null||Number.isNaN(Number(v))?'—':Number(v).toFixed(d);
     const rows=(x.modes||[]).map(m=>m.error?`<tr><td>${esc(m.mode)}</td><td colspan="8"><span class="reason wide">${esc(m.error)}</span></td></tr>`:`<tr><td>${esc(m.mode)}</td><td>${f(m.lat1_ms)}</td><td>${f(m.lat2_ms)}</td><td>${f(m.lat2_p95_ms)}</td><td>${f(m.dec_s)}</td><td>${m.agree==null?`ref`:f(m.agree,3)}</td><td>${m.acc==null?'—':pct(m.acc)}</td><td>${f(m.load_s)}</td><td>${f(m.mem_gb,2)}</td></tr>`).join('');
@@ -1510,9 +1822,25 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog" aria-labelledby="reportTitle"><h3 id="reportTitle">${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
-$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;};
+$('#calibrationAdvanced').insertAdjacentHTML('beforeend',`<div class="manager-fields"><label class="manager-field">${t('Conformal coverage levels')}<input id="calConformal" type="text" placeholder="0.8, 0.9"><span id="calConformalReason" class="reason"></span></label><fieldset><legend>${t('Keep compared thresholds')}</legend><div class="controls">${['choice','noul','score'].map(type=>`<label><input type="checkbox" data-keep-type="${type}" disabled> ${esc(type)}</label>`).join('')}</div><span id="calKeepReason" class="reason"></span></fieldset></div>`);
+let calibrationOptions={}, keepSequence=0;
+async function refreshKeepOptions(){
+  const id=$('#calibrationModel').value, choice=$('#calCompare').value, compare=choice==='path'?$('#calComparePath').value.trim():choice, seq=++keepSequence;
+  const boxes=[...document.querySelectorAll('[data-keep-type]')];
+  boxes.forEach(x=>{x.disabled=true;x.checked=false;});
+  $('#calKeepReason').textContent=!calibrationOptions.keep_shipped?t('Installed Engine does not support keeping thresholds'):t('No compatible compared thresholds available');
+  if(!id||!calibrationOptions.keep_shipped||!compare||compare==='none')return;
+  try{
+    const data=await api(`/api/calibrations/keep-options?id=${encodeURIComponent(id)}&compare=${encodeURIComponent(compare)}`);
+    if(seq!==keepSequence)return;
+    boxes.forEach(x=>{x.disabled=!data.types[x.dataset.keepType];});
+    $('#calKeepReason').textContent=boxes.some(x=>!x.disabled)?'':t('No compatible compared thresholds available');
+  }catch(e){if(seq===keepSequence)$('#calKeepReason').textContent=e.message;}
+}
+$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;refreshKeepOptions();};
+$('#calComparePath').oninput=refreshKeepOptions;
 $('#calCompare').onchange();
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
@@ -1532,7 +1860,7 @@ function renderCalibrationModels() {
   }
   $('#runCalibration').disabled=calibrationRunning||calibrationBlocked||!rows.length;
 }
-$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);loadCalibrations();};
+$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);calibrationOptions={};refreshKeepOptions();loadCalibrations();};
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets})});
@@ -1542,6 +1870,9 @@ $('#cancelCalibration').onclick=()=>act(async()=>{await api('/api/calibrate',{me
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   const compare=$('#calCompare').value,advanced={strict:$('#calStrict').checked,reference:$('#calReference').value.trim()||null,min_per_type:Number($('#calMinType').value),min_blend:Number($('#calMinBlend').value),min_family:Number($('#calMinFamily').value),min_per_set:Number($('#calMinSet').value),concurrency:Number($('#calConcurrency').value),compare:compare==='path'?$('#calComparePath').value.trim():compare,save_rows:$('#calSaveRows').checked,report_only:$('#calReportOnly').checked};
+  const levels=$('#calConformal').value.trim();
+  if(levels&&!$('#calConformal').disabled){const parts=levels.split(',').map(x=>x.trim());if(parts.some(x=>!x||!Number.isFinite(Number(x))||Number(x)<=0||Number(x)>=1))throw new Error(t('Enter coverage levels between 0 and 1, separated by commas'));advanced.conformal=parts.map(Number);}
+  advanced.keep_shipped=[...document.querySelectorAll('[data-keep-type]:checked:not(:disabled)')].map(x=>x.dataset.keepType);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets,advanced})});
   toast(t('Calibration started')); await refreshStatus();
 });
@@ -1563,7 +1894,7 @@ function renderCalibrationState(job) {
   $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||calibrationBlocked||!$('#calibrationModel').value;
   $('#calibrationProgress').textContent=!job?'':running?`${shortName(job.model)} · ${ts(job.phase,job.phase_code,job.phase_params)}…`:job.phase==='error'?`${t('Failed: {error}',{error:job.error})}`:job.phase==='cancelled'?t('Cancelled'):['done','done_with_warnings'].includes(job.phase)?`${job.phase==='done_with_warnings'?t('Completed with warnings'):t('Completed (see report for certification)')}: ${shortName(job.result?.file||'')}${job.result?.warnings?.length?' · '+job.result.warnings.join(' · '):''}`:'';
   if(calibrationRunning&&!running)loadCalibrations();
-  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';$('#reportDialog').showModal();}
+  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';renderCalibrationReport(null);$('#reportDialog').showModal();}
   calibrationRunning=running;
 }
 async function loadCalibrations() {
@@ -1575,7 +1906,9 @@ async function loadCalibrations() {
   try{
     const data=await api(`/api/calibrations?id=${encodeURIComponent(id)}`);
     if(!calibrationCurrent(id,sequence))return;
-    renderCalibrationFiles(id,data);
+    calibrationOptions=data.options||{};$('#calConformal').disabled=!calibrationOptions.conformal;
+    $('#calConformalReason').textContent=calibrationOptions.conformal?'':t('Installed Engine does not support conformal levels');
+    refreshKeepOptions();renderCalibrationFiles(id,data);
   }catch(e){
     if(!calibrationCurrent(id,sequence))return;
     files.dataset.content=''; files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
@@ -1628,14 +1961,27 @@ function renderCalibrationFiles(id, d) {
     const sequence=++calibrationSequence, data=await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})});
     if(!calibrationCurrent(id,sequence))return;
     renderCalibrationFiles(id,data);
-    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus();
+    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus(); await loadModels();
   }));
   $('#calibrationFiles').querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
     const sequence=++calibrationSequence, r=await api(`/api/calibrations/report?id=${encodeURIComponent(id)}&file=${encodeURIComponent(b.dataset.report)}`);
     if(!calibrationCurrent(id,sequence))return;
-    $('#reportText').textContent=r.report; $('#reportDialog').showModal();
+    $('#reportText').textContent=r.report; renderCalibrationReport(r.details); $('#reportDialog').showModal();
   }));
+}
+function renderCalibrationReport(details){
+  const root=$('#reportDetails');root.innerHTML='';if(!details)return;
+  const fitted=details.fitted_on||{}, items=[];
+  for(const [key,label] of [['revision','Revision'],['model_files','Model files digest'],['model_content','Model content digest']])if(fitted[key]!=null)items.push(`<dt>${t(label)}</dt><dd>${esc(fitted[key])}</dd>`);
+  if(Array.isArray(fitted.kept_shipped)&&fitted.kept_shipped.length)items.push(`<dt>${t('Kept from')}</dt><dd>${esc(fitted.kept_shipped.join(', '))}: ${esc(fitted.kept_shipped_from?.file||'—')}</dd>`);
+  const rows=[];
+  for(const [target,group] of Object.entries(details.thresholds||{}))for(const [type,e] of Object.entries(group?.per_type||{})){
+    if(e&&['icc','design_effect','refuted','kept'].some(k=>e[k]!=null))rows.push(`<tr><td>${esc(target)}</td><td>${esc(type)}</td><td>${esc(e.icc??'—')}</td><td>${esc(e.design_effect??'—')}</td><td>${e.refuted!=null?`${esc(e.refuted)}: ${esc(e.reason||'')}`:''}${e.kept?` ${t('Kept from')} ${esc(fitted.kept_shipped_from?.file||'—')}`:''}</td></tr>`);
+  }
+  const conformal=[];
+  for(const [level,group] of Object.entries(details.conformal?.levels||{}))for(const [type,e] of Object.entries(group?.per_type||{}))if(e)conformal.push(`<tr><td>${esc(level)}</td><td>${esc(type)}</td><td>${esc(e.cert_coverage??'—')}</td><td>${esc(e.cert_mean_size??'—')}</td><td>${esc(e.reason||'')}</td></tr>`);
+  root.innerHTML=`${items.length?`<dl>${items.join('')}</dl>`:''}${rows.length?`<div class="table-wrap"><table><thead><tr><th>${t('Max error')}</th><th>${t('Type')}</th><th>ICC</th><th>${t('Design effect')}</th><th>${t('Refuted or kept')}</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:''}${conformal.length?`<h4>${t('Conformal results')}</h4><div class="table-wrap"><table><thead><tr><th>${t('Coverage level')}</th><th>${t('Type')}</th><th>${t('CERT coverage')}</th><th>${t('Mean set size')}</th><th>${t('Reason')}</th></tr></thead><tbody>${conformal.join('')}</tbody></table></div>`:''}`;
 }
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
 const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
@@ -1645,12 +1991,19 @@ const OPTION_SECTIONS=[
   ['Batching',['max_batch','wait_ms','batch_window_ms','soam']],
   ['Caching',['state_cache_gb','prefix_cache']],
   ['Scheduling',['scheduler','long_lane','long_tokens','long_share','long_slice_ms']],
+  ['Server limits',['max_requests','request_timeout','max_body_mb','max_branches','max_prompt_mb','stall_s']],
   ['Context',['layout','context_overflow','truncate_head','max_len']],
   ['Kernels (CUDA graph engine)',['gemma_attn','merge','lean','tree','batches','readout_layer','template_prefix','fp8_accum']],
   ['Calibration',['strict_calibration']],
   ['Experimental',['think','think_tokens','think_python','think_url','think_calibration','think_model','think_adapter','think_memory','think_max_len','think_log','early_exit']],
 ];
 const OPTION_FIELDS={
+  max_requests:{label:'Maximum requests',kind:'num',attrs:'min="1" step="1"'},
+  request_timeout:{label:'Request timeout (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_body_mb:{label:'Maximum body (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_branches:{label:'Maximum branches',kind:'num',attrs:'min="1" step="1"'},
+  max_prompt_mb:{label:'Maximum prompt (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  stall_s:{label:'Stall detection (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
   mlx_packed:{label:'MLX packed (opt-in)',kind:'bool',modes:['mlx','mlx-q8']},
   quant:{label:'Quantisation',kind:'select',values:[[null,'as the mode'],['fp8','fp8'],['nvfp4','nvfp4'],['q8','q8 (mlx)']],modes:[...GRAPH_MODES,'mlx','mlx-q8']},
   attn:{label:'Attention kernel',kind:'select',values:['auto','fa2','fa3','fa4','cudnn'],modes:GRAPH_MODES},
@@ -1711,13 +2064,13 @@ const OPTION_FIELDS={
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
-document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog"><h3>${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
+document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
 $('#deleteLoadPreset').onclick=()=>act(async()=>{const n=$('#loadPresetSelect').value;if(n)await deletePreset('load',n);});
 $('#loadPresetSelect').onchange=()=>$('#deleteLoadPreset').disabled=!$('#loadPresetSelect').value;
-let optionsState=null;
+let optionsState=null, optionsSequence=0;
 const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
@@ -1726,7 +2079,7 @@ function optionInput(key, value) {
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
-    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${f.attrs||''}>`;
+    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${key==='adapter'?'list="ownedAdapters"':''} ${f.attrs||''}>${key==='adapter'?`<datalist id="ownedAdapters">${(optionsState.data.adapters||[]).map(path=>`<option value="${esc(path)}"></option>`).join('')}</datalist><p class="muted">${t('Choose a result or enter a custom adapter path. Saved settings apply on the next load.')}</p>`:''}`;
   return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}`;
 }
 const optionSectionOpen=new Map();  // section title → open, as the user left it (this session)
@@ -1743,6 +2096,7 @@ function renderOptionsForm(values) {
   $('#optionsForm').querySelectorAll('input[type=range]').forEach(r=>r.oninput=()=>{$(`#${r.id}-out`).textContent=`${r.value}%`;});
   $('#optionsForm').onchange=()=>updateOptionVisibility();
   updateOptionVisibility();
+  Object.entries(d.limits_available||{}).forEach(([key,available])=>{const el=$(`#opt-${key}`);el.disabled=!available;if(!available){el.title=t('This option is not available in the installed Engine.');el.insertAdjacentHTML('afterend',`<small>${t('This option is not available in the installed Engine.')}</small>`);}});
 }
 const optionModes=()=>optionsState.media?optionsState.data.media_modes:optionsState.data.modes;
 function selectedOptionMode() { return $('#optionsForm input[name=optMode]:checked')?.value||optionModes().find(m=>m.default)?.mode; }
@@ -1765,7 +2119,7 @@ function updateOptionVisibility() {
   if(mode!=='fast-exit')notes.push(t('Early exit needs --mode fast-exit (the exit heads of basal-1.0, bf16 on a CUDA GPU).'));
   // LoRA adapters at load: only with an engine that takes --adapter (basal-ui's feature probe)
   const adapterBox=$('#opt-adapter'), adapterReason=optionsState.data.adapter_reason;
-  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); if(adapterReason){adapterBox.value='';adapterBox.title=ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params);}else adapterBox.title='';}
+  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); adapterBox.title=adapterReason?ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params):'';}
   $('#optExperimentalNote').textContent=notes.join(' ');
 }
 function collectOptions() {
@@ -1784,7 +2138,13 @@ function collectOptions() {
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));
 }
 async function openLoadOptions(id, media=false, action='load', initialMode=null) {
-  const data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);
+  const sequence=++optionsSequence;
+  let data;
+  try{data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);}
+  catch(e){if(sequence===optionsSequence)throw e;return;}
+  if(sequence!==optionsSequence)return;
+  await loadPresets(()=>sequence===optionsSequence);
+  if(sequence!==optionsSequence)return;
   const loaded=(statusCache?.models||[]).find(m=>m.id===id), restart=action==='restart', save=action==='save';
   optionsState={id,media,restart,save,data,initialMode};
   $('#optionsModel').textContent=`${id}${media?` · ${t('with media')}`:''}${restart?` · ${t('restarts the running model')}`:save?` · ${t('kept for the next load')}`:''}`;
@@ -1794,13 +2154,14 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   setChecked($('#optionsRemember'),initialMode?false:data.saved);
   renderOptionsForm(restart&&loaded?{...data.defaults,...loaded.options}:{...data.options,...(initialMode?{mode:initialMode}:{})});
   $('#optionsError').hidden=true;
-  await loadPresets();renderLoadPresets();
+  renderLoadPresets();
   $('#loadPresetSelect').value='';
   $('#deleteLoadPreset').disabled=true;
   $('#loadOptions').showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
 document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
+$('#loadOptions').addEventListener('close',()=>{optionsSequence++;});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
@@ -1867,7 +2228,7 @@ async function loadHistory(mode='reset') {
 function renderHistory(items) {
   const flags=x=>`${x.deferred?` <span class="badge fit-too_large">${t('deferred')}</span>`:''}${x.truncated?` <span class="badge fit-tight">${t('truncated')}</span>`:''}`;
   const focused=$('#historyTable').contains(document.activeElement)?document.activeElement.closest('[data-history]')?.dataset.history:null;
-  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:`<div class="empty">${t('No decisions yet — try the Playground.')}</div>`;
+  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}${x.server?` · ${esc(x.server)} ${comparisonBadge()}`:''}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:`<div class="empty">${t('No decisions yet — try the Playground.')}</div>`;
   $('#historyTable').querySelectorAll('[data-history]').forEach(row=>{
     row.onclick=()=>act(()=>toggleHistory(row));  // pointer users click anywhere on the row
     const open=$('.history-open',row);
@@ -1896,11 +2257,18 @@ function historyDetailRow(x) {
 function replayRequest(x) {
   if(x.replay_error||!x.replay_request){toast(x.replay_error||t('This request cannot be replayed.'),'error');return;}
   if(!readyModels().some(m=>m.id===x.model)){toast(t('Model {model} is not loaded',{model:x.model}),'error');return;}
-  selectedModel=x.model; localStorage.setItem('basal-ui.model',selectedModel);
+  const model=readyModels().find(m=>m.id===x.model);
+  if(model.kind==='comparison'){
+    const primary=readyModels().filter(m=>m.kind!=='comparison');
+    if(!primary.length){toast(t('Load a basal model before replaying a Comparison.'),'error');return;}
+    if(!primary.some(m=>m.id===selectedModel))selectedModel=primary[0].id;
+  }else selectedModel=x.model;
+  localStorage.setItem('basal-ui.model',selectedModel);
   $('#playgroundModel').value=selectedModel; setPlaygroundMedia(readyModels().find(m=>m.id===selectedModel)?.media||[]);
   $('#results').innerHTML='';$('#rawDetails').hidden=true;$('#decideError').hidden=true;
-  setRequest(x.replay_request);
+  setRequest(model.kind==='comparison'?{...x.replay_request,model:selectedModel}:x.replay_request,[],true);
   showView('playground',true);
+  if(model.kind==='comparison')DecisionTools.selectComparison(model.id);
 }
 function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
@@ -1950,9 +2318,33 @@ function answerBest(a) {
   if(typeof a.noul==='number')return a.noul>=0.5?'true':'false';
   return a.type||null;
 }
-let batchRowsLoaded=0, batchRunning=false, batchResult=null;
+let batchRowsLoaded=0, batchRunning=false, batchResult=null, batchProgressMarkup=null;
+let batchPresetAvailable=false;
+async function loadBatchPresets() {
+  const select=$('#batchPreset'), lang=$('#batchLang'), reason=$('#batchPresetReason');
+  try {
+    const data=await api('/api/batch/presets');
+    batchPresetAvailable=data.available;
+    if(data.available)select.innerHTML=`<option value="">${t('None')}</option>`+data.presets.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    select.disabled=lang.disabled=!data.available;
+    reason.hidden=data.available;
+    if(!data.available)reason.textContent=t('Presets need Engine 2.5. Installed Engine: {version}',{version:data.version||t('unknown')});
+  } catch(error) {
+    batchPresetAvailable=false; select.disabled=lang.disabled=true; reason.hidden=false; reason.textContent=error.message;
+  }
+}
+loadBatchPresets();
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
+api('/api/batch/capabilities').then(c=>{const input=$('#batchStopAfter'); input.disabled=!c.stop_after; $('#batchStopHelp').textContent=c.stop_after?t('Stop after consecutive unanswered lines; 0 records per-line errors.'):t('Requires an Engine with Batch stop support');}).catch(()=>{});
+function chooseBatch() {
+  return new Promise(resolve=>{
+    const dialog=$('#batchChoiceDialog');
+    const finish=value=>{dialog.removeEventListener('click',clicked);dialog.removeEventListener('close',closed);if(dialog.open)dialog.close();resolve(value);};
+    const clicked=e=>{if(e.target.value)finish(e.target.value);}, closed=()=>finish('cancel');
+    dialog.addEventListener('click',clicked);dialog.addEventListener('close',closed);dialog.showModal();
+  });
+}
 function renderBatchState(job, ready) {
   const select=$('#batchModel'), current=select.value, ids=ready.map(m=>m.id);
   if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
@@ -1962,13 +2354,24 @@ function renderBatchState(job, ready) {
   ee.hidden=!levels.length;
   const running=Boolean(job?.running);
   $('#runBatch').disabled=running||!ids.length; $('#cancelBatch').hidden=!running;
-  $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  const progressMarkup=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='stopped_resumable'?`<div class="error-box">${t('Stopped, resumable.')} ${job.done} / ${job.total}<br>${esc(job.error)}${job.result?`<br><button type="button" class="btn destructive" id="restartStoppedBatch">${t('Restart')}</button>`:''}</div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  if(progressMarkup!==batchProgressMarkup){$('#batchProgress').innerHTML=progressMarkup;batchProgressMarkup=progressMarkup;}
+  if(job?.phase==='stopped_resumable'&&job.result)$('#restartStoppedBatch').onclick=()=>act(async()=>{
+    const body={...job.result,choice:'restart'};
+    if(!await confirmDialog({title:t('Restart Batch'),description:t('Discard partial answers for {output} and restart this Batch?',{output:body.output}),confirmLabel:t('Restart'),destructive:true}))return;
+    await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+    toast(t('Batch started')); await refreshStatus();
+  });
   if(!running&&job?.phase==='done'&&(batchRunning||!batchResult))showBatchResult(job.result);
   batchRunning=running;
 }
+const batchAccuracy=new Map();
 function showBatchResult(r) {
   batchResult=r;
-  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
+  const model=(statusCache?.models||[]).find(m=>m.id===r.model), label=model?modelLabel(model):r.model, comparison=r.model.startsWith('comparison:');
+  if(r.accuracy!=null)batchAccuracy.set(`${r.input}\n${r.model}`,{input:r.input,label,comparison,accuracy:r.accuracy});
+  $('#batchAccuracy').innerHTML=[...batchAccuracy.values()].map(x=>`<div>${esc(x.label)} ${x.comparison?comparisonBadge():''} · ${esc(x.input)} · ${t('accuracy')} ${pct(x.accuracy)}</div>`).join('');
+  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${esc(label)}</span>${comparison?comparisonBadge():''}<span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
   $('#downloadBatch').hidden=$('#copyBatchPath').hidden=false;
   batchRowsLoaded=0; $('#batchRows').innerHTML=''; loadBatchRows();
 }
@@ -1984,7 +2387,15 @@ $('#runBatch').onclick=()=>act(async()=>{
   const body={id:$('#batchModel').value,input:$('#batchInput').value.trim(),concurrency:Number($('#batchConcurrency').value)||16};
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
-  await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+  if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
+  if(!$('#batchStopAfter').disabled){if(!$('#batchStopAfter').reportValidity())return; body.stop_after=Number($('#batchStopAfter').value);}
+  try { await api('/api/batch',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e) {
+    if(e.code!=='batch_choice')throw e;
+    body.choice=await chooseBatch(); if(body.choice==='cancel')return;
+    await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+  }
+  batchRunning=true;
   $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
   toast(t('Batch started')); await refreshStatus();
 });
@@ -1999,7 +2410,7 @@ function renderInspectModels() {
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
-  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
+  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(t(m.inspect_reason))}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
   loadInspectCalibrations();
@@ -2031,13 +2442,14 @@ function renderInspectState(state, job) {
 // What the inspector would explain of a Playground decision: the request it can explain and how that differs from
 // the served one, or why it cannot (another model, media, nothing but task questions).
 function inspectHandoff(request) {
+  const reason=inspectBlockedReason(request.model);if(reason)return {blocked:reason};
   const st=statusCache?.inspect||{}, served=(statusCache?.models||[]).find(m=>m.id===request.model);
   const variant=id=>modelData.find(m=>m.id===id), sv=variant(request.model), iv=variant(st.model);
   if(request.media)return {blocked:t('basal-viz reads text only; remove the media to inspect this request')};
   if(st.model!==request.model&&!(sv&&iv&&sv.family===iv.family&&sv.tier===iv.tier))
     return {blocked:t('the inspector runs {inspector}, this decision came from {model}: start the inspector with the bf16 weights of {weights}',{inspector:st.model,model:request.model,weights:sv?`${sv.family} ${sv.tier}`:request.model})};
-  const body=structuredClone(request), notes=[];
-  for(const key of ['model','think','think_text','early_exit'])delete body[key];
+  const body=stripMcpMetadata(request), notes=[];
+  for(const key of ['model','think','think_text','early_exit','source_url'])delete body[key];
   const tasks=Object.entries(body.questions||{}).filter(([,q])=>TASK_TYPES.includes(q?.type)).map(([n])=>n);
   tasks.forEach(n=>delete body.questions[n]);
   if(!Object.keys(body.questions||{}).length)return {blocked:t('basal-viz explains decision questions; this request has only task questions')};
@@ -2053,6 +2465,7 @@ function inspectHandoff(request) {
   return {body,notes};
 }
 function inspectDecision(request) {
+  const reason=inspectBlockedReason(request.model);if(reason){toast(reason,'error');return;}
   if(statusCache?.inspect?.state!=='ready'){toast(t('Start the inspector for {model} first',{model:request.model||t('a model')}),'error');showView('inspect',true);return;}
   const handoff=inspectHandoff(request), notice=$('#inspectNotice');
   if(handoff.blocked){toast(handoff.blocked,'error');return;}
@@ -2064,13 +2477,19 @@ function inspectDecision(request) {
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
 const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, and MCP.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],settings:['12 / SETTINGS','Settings','Manage memory, storage, defaults, and appearance.']};
+let currentView=null;
+$('.skip-link').onclick=event=>{event.preventDefault();$('#main-content').focus();};
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
+  if(name!=='playground'){if($('#fetchDialog').open)closeFetch();else cancelFetch();}
   const wasDashboard=!$('#dashboard').hidden;
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
+  const changed=currentView!==null&&currentView!==name; currentView=name;
+  document.title=`${t(title)} | basal`;
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
   document.querySelectorAll('.view').forEach(v=>v.hidden=v.dataset.page!==name);
+  if(changed)$('#pageTitle').focus();
   document.querySelectorAll('.side-nav [data-view]').forEach(b=>{const active=b.dataset.view===name;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   const secondary=Boolean(document.querySelector(`.nav-tools [data-view="${name}"]`));
   $('.nav-tools').classList.toggle('active',secondary);
@@ -2093,7 +2512,7 @@ function showView(hash, updateHash=false) {
     loadLogs();
   }
 }
-const route=()=>{if(location.hash!==shownHash)showView(location.hash);};
+const route=()=>{if(location.hash!==shownHash){const previous=currentView;showView(location.hash);if(previous!==currentView){const target=currentView;setTimeout(()=>{if(currentView===target)$('#pageTitle').focus();},0);}}};
 document.querySelectorAll('.side-nav [data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 window.addEventListener('hashchange',route); window.addEventListener('popstate',route);
 function selectManagerTab(tab) {
@@ -2117,12 +2536,22 @@ managerTabs.forEach((button,index)=>{
   };
 });
 selectManagerTab(new URLSearchParams(location.search).get('managerTab')||localStorage.getItem('basal-ui.managerTab')||'library');
-function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
-$('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
+function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));b.tabIndex=x===tab?0:-1;}localStorage.setItem('basal-ui.tab',tab);}
+const modelTabs=[$('#suggestedTab'),$('#allModelsTab')];
+modelTabs.forEach((button,index)=>{
+  button.onclick=()=>selectModelsTab(index?'all':'suggested');
+  button.onkeydown=event=>{
+    if(event.altKey||event.ctrlKey||event.metaKey||!['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    const target=event.key==='Home'?0:event.key==='End'?1:(index+1)%modelTabs.length;
+    selectModelsTab(target?'all':'suggested');modelTabs[target].focus();
+  };
+});
 selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
 async function loadMemorySettings(){
   try{
     const d=await api('/api/memory'), budget=$('input#memoryBudget');
+    $('#idleUnload').value=d.settings.idle_unload_minutes??'';
     budget.placeholder=t('Hardware budget: {size} GiB',{size:(d.hardware_budget_bytes/2**30).toFixed(1)});
     for(const [input,bytes] of [[budget,d.settings.budget_bytes],[$('#memoryReserve'),d.settings.reserve_bytes]]){
       input.value=bytes==null?'':String(Number((bytes/2**30).toFixed(3)));
@@ -2133,7 +2562,9 @@ async function loadMemorySettings(){
 $('#saveMemory').onclick=async()=>{
   const bytesOf=input=>{const value=input.value.trim();if(value===input.dataset.shown&&input.dataset.bytes!==undefined)return input.dataset.bytes===''?null:Number(input.dataset.bytes);return value===''?null:Math.round(Number(value)*2**30);};
   try{
-    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0})});
+    const input=$('#idleUnload'), value=input.value.trim(), number=Number(value);
+    if(!input.validity.valid || (value && (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number<1))) throw new Error(t('Enter whole minutes from 1 to 9,007,199,254,740,991, or leave empty to turn off.'));
+    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0,idle_unload_minutes:value?number:null})});
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };
