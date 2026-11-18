@@ -844,6 +844,7 @@ def create_app(
             "options": merged,
             "saved": bool(saved),
             "defaults": load_options.DEFAULTS,
+            "load_choices": {key: load_options.CHOICES[key] for key in ("long_lane", "soam")},
             "media_modes": load_options.available_media_modes(assessment, current),
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,

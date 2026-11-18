@@ -304,3 +304,35 @@ def test_the_first_catalog_check_reports_no_new_models_then_only_new_ones(tmp_pa
     assert settings.update_seen_ids(["a", "b", "c"]) == ["c"]
     settings.mark_models_seen(["c"])
     assert settings.update_seen_ids(["a", "b", "c"]) == []
+
+
+def test_load_option_migration_is_atomic_and_covers_legacy_and_presets(tmp_path, monkeypatch):
+    from basal_ui.options import DEFAULTS
+
+    config = tmp_path / "settings.json"
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    config.write_text(
+        json.dumps(
+            {
+                "load_options": {
+                    "on": {"long_lane": True, "soam": True},
+                    "off": {"long_lane": False, "soam": False},
+                    "empty": {},
+                },
+                "presets": {"load": {"old": {"long_lane": False, "soam": False}, "empty": {}}, "request": {}},
+                "last_model": {"id": "old", "options": {"long_lane": True, "soam": True}},
+            }
+        )
+    )
+    data = settings.load()
+    assert data["load_options"] == {
+        "on": {"long_lane": "on", "soam": "auto"},
+        "off": {"long_lane": DEFAULTS["long_lane"], "soam": "off"},
+        "empty": {},
+    }
+    assert data["presets"]["load"]["old"] == {"long_lane": DEFAULTS["long_lane"], "soam": "off"}
+    assert data["last_models"][0]["options"] == {"long_lane": "on", "soam": "auto"}
+    persisted = json.loads(config.read_text())
+    assert persisted["last_model"]["options"] == {"long_lane": "on", "soam": "auto"}
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert settings.load() == data

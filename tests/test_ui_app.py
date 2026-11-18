@@ -1035,6 +1035,10 @@ def test_presets_validate_and_strip_request_model(tmp_path):
         result = client.put("/api/presets", json={"kind": "load", "name": "cpu", "value": {"mode": "eager"}})
         assert result.status_code == 200 and result.json()["load"]["cpu"] == {"mode": "eager"}  # the non-default ones
         result = client.put(
+            "/api/presets", json={"kind": "load", "name": "old", "value": {"long_lane": True, "soam": False}}
+        )
+        assert result.status_code == 200 and result.json()["load"]["old"] == {"long_lane": "on", "soam": "off"}
+        result = client.put(
             "/api/presets",
             json={
                 "kind": "request",
@@ -1178,3 +1182,22 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_runner_calibration_origin_warning_is_process_scoped():
+    from types import SimpleNamespace
+
+    warning = "basal: warning: CALIBRATION.json: copied; its temperatures and certified thresholds may not hold for this model"
+    runner = Runner()
+    old = SimpleNamespace(stdout=[warning + "\n"])
+    runner.process = old
+    with runner.lock:
+        reader = threading.Thread(target=runner._read_logs, args=(old,))
+        reader.start()
+        reader.join(timeout=1)
+        assert not reader.is_alive()  # PR #103 may join the reader while holding the Runner lock
+    assert runner.status()["calibration_origin_warning"] == warning
+    assert runner.status()["calibration_origin_warning_code"] == "calibration_origin"
+    runner.process = SimpleNamespace(stdout=[])
+    runner._read_logs(old)
+    assert runner.status()["calibration_origin_warning"] is None

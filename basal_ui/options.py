@@ -13,7 +13,7 @@ from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
 from .catalog import _cuda_graph, _quantized_hardware_reason
-from .engine import feature
+from .engine import feature, serve_option
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
 # gdn_graph.refused; 2.5.0 lifted the 2.4 refusals of the caches, compact rows and --lean), MLX from 2.5.0 ("mlx_recurrent")
@@ -28,14 +28,14 @@ DEFAULTS = {
     "orders": None,
     "auto_tau": 0.6,
     "auto_band": [0.2, 0.8],
-    "soam": True,
+    "soam": "auto",
     "max_batch": 64,
     "wait_ms": 0.0,
     "batch_window_ms": 3.0,
     "state_cache_gb": 0.0,
     "prefix_cache": False,
     "scheduler": "auto",
-    "long_lane": False,
+    "long_lane": (serve_option("--long-lane") or ((), "off"))[1],
     "long_tokens": 2048,
     "long_share": 0.5,
     "long_slice_ms": 10.0,
@@ -81,6 +81,8 @@ DEFAULTS = {
     "think_log": "basal-think-vllm.log",
 }
 CHOICES = {
+    "soam": ("auto", *(serve_option("--soam") or ((), None))[0]),
+    "long_lane": (serve_option("--long-lane") or (("off",), "off"))[0],
     "quant": (None, "fp8", "nvfp4", "q8"),  # --quant int8 is in basal-serve 2.5.0's choices, validate_quant refuses it
     "attn": ("auto", "fa2", "fa3", "fa4", "cudnn"),
     "gemma_attn": ("auto", "math", "flex", "fa3", "fa3+math"),
@@ -103,9 +105,7 @@ CHOICES = {
 }
 BOOLS = (
     "deterministic",
-    "soam",
     "prefix_cache",
-    "long_lane",
     "think",
     "ple_offload",
     "strict_calibration",
@@ -187,6 +187,10 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
         raise ValueError("options must be an object")  # noqa: TRY004 — validation exposes a ValueError API
     out = dict(DEFAULTS)
     for key, value in options.items():
+        if key == "long_lane" and isinstance(value, bool):
+            value = "on" if value else DEFAULTS[key]
+        elif key == "soam" and isinstance(value, bool):
+            value = "auto" if value else "off"
         if key not in DEFAULTS:
             raise ValueError(f"unknown load option: {key}")
         if key == "mode":
@@ -266,7 +270,7 @@ def args(options: dict) -> list[str]:
             continue
         if key in ("deterministic", "strict_calibration", "mlx_packed"):
             flags.append(flag)
-        elif key in ("soam", "prefix_cache", "long_lane", "ple_offload"):
+        elif key in ("prefix_cache", "ple_offload"):
             flags += [flag, "on" if value else "off"]
         elif key == "think":
             flags += [flag, "auto"]
@@ -553,7 +557,7 @@ def check_combination(v, hw, options, default_mode, media=False):
             options["template_prefix"],
             device=False,
         )
-        if not reason and options["long_lane"]:
+        if not reason and options["long_lane"] == "on":
             reason = "--long-lane is not available for Qwen3.5 (Gated DeltaNet) models"
         if reason:
             raise ValueError(reason)

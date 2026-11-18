@@ -10,7 +10,7 @@ They are skipped unless `BASAL_E2E=1`, so `pytest` stays fast.
 
 ```bash
 uv sync --group dev --extra mcp --extra e2e      # the dev group pins the engine release basal-ui is tested with
-uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
+uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.8.0.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
 uv run --no-sync playwright install chromium     # once: the page tests drive Chromium
 BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what this machine skipped and why
 ```
@@ -62,6 +62,14 @@ the hardware allows.
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Focused Engine 2.8 load-options check, 2026-11-18
+
+On macOS Apple Silicon with Engine 2.8.0 and MLX, an offline cached `Remek/basal-2.0-mini` ran
+`tests/e2e/test_load_options.py`: 6 passed and the pico-only test skipped because pico was not downloaded.
+The browser load-options and synthetic calibration-warning row checks each passed in Chromium; the load-options
+screenshot was captured from that real model. Settings and auxiliary caches were isolated. This is not the complete
+release E2E gate; CUDA and other hardware remain untested.
 
 ## Stage gate, engine 2.5.1, 2026-11-02
 

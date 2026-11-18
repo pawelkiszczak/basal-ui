@@ -154,13 +154,49 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
-def load() -> dict:
+def _read() -> dict:
     try:
         value = json.loads(_settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    if not isinstance(value, dict):
-        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _migrate_options(value):
+    groups = [
+        value.get("load_options"),
+        (value.get("presets") or {}).get("load") if isinstance(value.get("presets"), dict) else None,
+    ]
+    entries = [item for group in groups if isinstance(group, dict) for item in group.values() if isinstance(item, dict)]
+    models = value.get("last_models") if isinstance(value.get("last_models"), list) else []
+    if isinstance(value.get("last_model"), dict):
+        models = [*models, value["last_model"]]
+    entries += [item["options"] for item in models if isinstance(item, dict) and isinstance(item.get("options"), dict)]
+    changed = False
+    for item in entries:
+        if isinstance(item.get("long_lane"), bool):
+            from .engine import serve_option
+
+            item["long_lane"] = "on" if item["long_lane"] else (serve_option("--long-lane") or ((), "off"))[1]
+            changed = True
+        if isinstance(item.get("soam"), bool):
+            item["soam"] = "auto" if item["soam"] else "off"
+            changed = True
+    return changed
+
+
+@_locked
+def _migrate_saved_options():
+    value = _read()
+    if _migrate_options(value):
+        save(value)
+    return value
+
+
+def load() -> dict:
+    value = _read()
+    if _migrate_options(value):
+        value = _migrate_saved_options()  # re-read under the lock to preserve concurrent writes
     legacy = value.pop("last_model", None)  # one model before basal-ui loaded several
     if isinstance(legacy, dict) and "last_models" not in value:
         value["last_models"] = [legacy]

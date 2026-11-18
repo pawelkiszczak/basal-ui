@@ -1,5 +1,6 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import functools
 import importlib.metadata
 import importlib.util
 import inspect
@@ -11,8 +12,8 @@ from packaging.version import InvalidVersion, Version
 
 ENGINE_REPO = "rkinas/basal"
 # every release basal-ui is tested with; CI runs each; the last is the pin
-TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1")
-SUPPORTED_RANGE = ">=2.4.1,<2.6"  # bump with TESTED_RELEASES
+TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1", "2.6.0", "2.8.0")
+SUPPORTED_RANGE = ">=2.4.1,<2.9"  # bump with TESTED_RELEASES
 SUPPORTED = SpecifierSet(SUPPORTED_RANGE)
 UNCHECKED_ENV = "BASAL_UI_ENGINE_UNCHECKED"
 PINNED_RELEASE = TESTED_RELEASES[-1]
@@ -102,6 +103,18 @@ FEATURES = {
 }
 
 
+def _flags(module):
+    """Long options declared by an Engine console script's parser."""
+    parser = importlib.import_module(module).parser()
+    return frozenset(s for action in parser._actions for s in action.option_strings if s.startswith("--")) - {"--help"}
+
+
+@functools.cache
+def serve_flags():
+    """Long options declared by basal-serve."""
+    return _flags("basal.server")
+
+
 def feature(name):
     """Whether the installed Engine provides capability `name` (a key of FEATURES)."""
     return FEATURES[name]()
@@ -110,3 +123,10 @@ def feature(name):
 def supported(version):
     """Whether an Engine release (e.g. the latest on GitHub) is in this basal-ui's supported range."""
     return _in_range(version)
+
+
+@functools.cache
+def serve_option(flag):
+    """Choices and default declared for a basal-serve flag, or None."""
+    parser = importlib.import_module("basal.server").parser()
+    return next(((tuple(a.choices or ()), a.default) for a in parser._actions if flag in a.option_strings), None)

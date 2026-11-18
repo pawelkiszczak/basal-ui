@@ -107,3 +107,19 @@ def test_pico_serves_with_mlx_on_apple_silicon(ui, hardware, pico_model):
     finally:
         ui.unload(model_id)
         ui.put("/api/models/options", {"id": model_id, "options": {}})
+
+
+def test_lane_and_soam_reach_real_engine(ui, text_model):
+    model_id = text_model["id"]
+    options = options_of(ui, model_id)
+    assert options["options"]["soam"] == "auto"
+    lane_choices = options["load_choices"]["long_lane"]
+    if "off" not in lane_choices or options["defaults"]["long_lane"] == "off":
+        pytest.skip("this Engine defaults long lane to off; turning it on needs a CUDA graph Engine")
+    lane = "off"
+    model = ui.load(model_id, {"long_lane": lane, "soam": "off"})
+    command = model["command"]
+    assert command[command.index("--long-lane") + 1] == lane
+    assert command[command.index("--soam") + 1] == "off"
+    assert ui.decide(model_id, CHOICE)["answers"]["dept"]["choice"]
+    ui.load(model_id)

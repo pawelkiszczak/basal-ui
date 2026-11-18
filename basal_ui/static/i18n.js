@@ -945,6 +945,8 @@ const PL = {
   "code:phase_warm_up": "rozgrzewka",
   "code:reason_fla": "silnik grafów CUDA obsługuje warstwy Gated DeltaNet w Qwen3.5 przez flash-linear-attention: zainstaluj flash-linear-attention (lub użyj --mode eager)",
   "code:reason_gdn_quant": "--mode {quant} nie jest dostępne dla Qwen3.5 (Gated DeltaNet): silnik grafów CUDA obsługuje je w bf16 (--mode fast); --mode vllm obsługuje ich checkpointy FP8",
+  "This option is unavailable in the installed Engine.": "Ta opcja nie jest dostępna w zainstalowanym Engine.",
+  "code:calibration_origin": "Kalibracja pochodzi z innych plików modelu; jej temperatury i progi certyfikacji mogą nie obowiązywać dla tego modelu. Szczegóły w logach.",
   "code:reason_long_lane": "--long-lane nie jest dostępne dla modeli Qwen3.5 (Gated DeltaNet)",
   "code:reason_mlx_q8_recurrent": "kwantyzowane wagi MLX nie są sprawdzone dla modeli Qwen3.5 (Gated DeltaNet); użyj wag bf16 z mlx",
   "code:reason_mlx_recurrent": "MLX obsługuje modele ze stanem rekurencyjnym (Qwen3.5) od silnika basal 2.5.0; z tym silnikiem użyj eager",
