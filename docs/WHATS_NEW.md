@@ -1,5 +1,6 @@
 # Unreleased
 
+- On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)
