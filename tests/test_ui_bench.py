@@ -488,9 +488,10 @@ def test_determinism_result_preserves_engine_shape(tmp_path, monkeypatch, load_e
         from pathlib import Path
 
         Path(command[command.index("--out") + 1]).write_text(json.dumps({"url": "private", "determinism": result}))
-        return SimpleNamespace(stdout=[], wait=lambda: None, returncode=0)
+        return SimpleNamespace(stdout=[], wait=lambda: None, poll=lambda: 0, pid=0, returncode=0)
 
     monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    monkeypatch.setattr("basal_ui.jobs._group_alive", lambda _pid: False)
     stats = Stats(tmp_path / "stats.json")
     fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://local"), stats=stats)
     job = Job("benchmark", "mini", "test", LogBuffer())

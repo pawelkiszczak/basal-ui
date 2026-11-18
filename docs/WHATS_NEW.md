@@ -38,10 +38,17 @@
 - Extend the Decision forwarding read timeout to 600 seconds, report gateway read timeouts as 504
   `UPSTREAM_TIMEOUT`, and cancel forwarding on client disconnect. Engine computation may continue after disconnect;
   see [API.md](API.md#several-models-behind-basal-ui).
+- **Playground answer sets and conditional questions:** edit coverage and gates when supported by the Engine; see
+  answer sets, abstention, coverage notes and skipped questions. History preserves truncation details and Replay
+  retains native question fields. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
 - Mode comparisons use the Active adapter and MLX forward when supported by `basal-bench`; determinism results show
   Engine-reported load errors. [USAGE.md](USAGE.md#statistics-and-benchmarks)
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
+- basal-ui supports Engine `>=2.4.1,<2.9` and pins **2.8.0**; CI tests 2.4.1, 2.5.0, 2.5.1, 2.6.0 and 2.8.0.
+  Long-request lane choices follow the installed parser, SOAM offers auto/on/off, and older Saved load settings and
+  presets are migrated. Recurrent model predictions follow the Engine's accelerated GPU architectures and a foreign
+  calibration warning appears on the model row.
   [README](../README.md#supported-engine-range)
 - With engine 2.5.0 the API server's MCP `decide` / `decide_many` tools take a `model` argument and `list_models`
   names the loaded models; the Playground's MCP example then targets the selected model instead of refusing it.
@@ -68,6 +75,17 @@
   calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
 - For an Engine that does not report context metadata, show the parsed child overflow policy and truncation share; the
   context limit remains unknown because the child may impose a backend-specific limit.
+- `GLOSSARY.md` adds **Decision server**, **Comparison model**, **Attached model** and **Cascade**; ADR 0004 records
+  why Comparison models are restricted and that Attached models (served by the Engine through `basal-attach`) are
+  ordinary catalog entries. New feature probes (`router`, `attach`, `finetune`, `presets`, `order_check`) and
+  `engine.serve_flags()` / `engine.calibrate_flags()` gate the Engine 2.5 features that follow.
+- Every engine 2.5 `basal-serve` load option is in Load options — the second read (`--reread` and its combine,
+  token and image controls), `--order-average`, `--prepared`, `--compile-scope`, `--graph-memory-gb` (which sizes the
+  fit estimate), `--mlx-forward` / `--mlx-compute`, the FP8 / NVFP4 quantisation switches, `--state-cache-lock` /
+  `--state-cache-bits`, `--long-lane-gdn` for recurrent models,
+  `--rank-max-candidates`, `--vllm-overlap` and `--global-attn`. Options the installed engine's `basal-serve` does
+  not declare (all of them on 2.4.1) are disabled with "needs basal engine 2.5.0 or newer" and a saved non-default
+  value is refused with that reason; defaults never emit a flag. [USAGE.md](USAGE.md#load-options)
 
 - Separate Calibration file warnings and errors so each message is readable.
 

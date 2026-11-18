@@ -6,6 +6,7 @@ reports whether this machine can serve it and whether it fits the memory budget;
 
 import json
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
@@ -473,7 +474,12 @@ def _mode(v: Variant, hw: Hardware) -> tuple[str | None, str | None]:
             return None, _text("gguf_dependency")
         return "gguf", None
     if v.recurrent:  # basal-serve defaults to fast on Hopper with fla, eager elsewhere
-        fast = hw.platform == "cuda" and cap[0] == 9 and "fla" in hw.engines
+        fast = False
+        if hw.platform == "cuda" and "fla" in hw.engines:
+            from basal import gdn_graph
+
+            architectures = getattr(gdn_graph, "ACCELERATED_ARCHITECTURES", None)
+            fast = cap in architectures if architectures is not None else cap[0] == 9
         return ("fast" if fast else "eager"), None
     if hw.platform == "cuda":
         if hw.cuda_capability and cap < (8, 0) and not v.experimental:
@@ -515,9 +521,29 @@ def _fit(est: int | None, budget: int | None) -> str:
     return "too_large"
 
 
-def assess(v: Variant, hw: Hardware) -> Assessment:
+def is_graph_backend(mode):
+    from basal.server import MODES
+
+    return MODES.get(mode, (None,))[0] == "graph"
+
+
+def graph_memory_bytes(value):
+    """Convert graph GiB to bytes without overflowing the floating-point estimate."""
+    if value > sys.float_info.max / GIB:
+        raise ValueError("load option graph_memory_gb is too large to convert to bytes")
+    try:
+        return int(value * GIB)
+    except (OverflowError, ValueError):
+        raise ValueError("load option graph_memory_gb is too large to convert to bytes") from None
+
+
+def assess(v: Variant, hw: Hardware, options: dict | None = None) -> Assessment:
     mode, reason = _mode(v, hw)
-    overhead = GRAPH_ENGINE_OVERHEAD if mode in GRAPH_ENGINE_MODES else GIB
+    overhead = GIB
+    effective_mode = (options or {}).get("mode") or mode
+    if effective_mode in GRAPH_ENGINE_MODES:
+        graph_memory = (options or {}).get("graph_memory_gb") if is_graph_backend(effective_mode) else None
+        overhead = graph_memory_bytes(graph_memory) if graph_memory else GRAPH_ENGINE_OVERHEAD
     est = int(v.weights_bytes * 1.2) + overhead if v.weights_bytes is not None else None  # weights + runtime + KV cache
     fit = _fit(est, hw.memory_bytes) if hw.memory_bytes else "unknown"
     fit_now = _fit(est, hw.available_bytes)
