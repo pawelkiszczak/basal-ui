@@ -4,6 +4,7 @@ own refusals, and options remembered for a model."""
 from contextlib import contextmanager
 
 import pytest
+from basal import server
 
 from basal_ui.engine import feature
 from basal_ui.options import MODE_ORDER
@@ -75,11 +76,15 @@ def test_invalid_unavailable_and_refused_combinations(ui, text_model):
     assert ui.detail("POST", "/api/restart", {"id": model_id, "options": {"mode": unavailable}}, 400).startswith(
         f"--mode {unavailable}:"
     )
-    # basal-serve's own refusal reaches the model's row (on every engine: prefix cache with --deterministic)
-    ui.post("/api/restart", {"id": model_id, "options": {"deterministic": True, "prefix_cache": True}})
-    m = ui.wait_model(model_id)
-    assert m["state"] == "error" and "--prefix-cache" in m["error"]
-    assert ui.load(model_id)["state"] == "ready"
+    invalid_options = {"id": model_id, "options": {"deterministic": True, "prefix_cache": True}}
+    if hasattr(server, "serve_options"):
+        assert "--prefix-cache" in ui.detail("POST", "/api/restart", invalid_options, 400)
+        assert ui.model(model_id)["state"] == "ready"
+    else:
+        ui.post("/api/restart", invalid_options)
+        m = ui.wait_model(model_id)
+        assert m["state"] == "error" and "--prefix-cache" in m["error"]
+        assert ui.load(model_id)["state"] == "ready"
 
 
 def test_remembered_options_are_used_by_a_plain_load(ui, text_model):

@@ -196,12 +196,11 @@ def test_installed_console_capabilities_include_common_options():
 )
 def test_installed_release_capability(name):
     version, _ = engine.installed()
-    expected = {"2.4.1": False, "2.5.0": True, "2.5.1": True}
-    if version not in expected:
+    if version not in engine.TESTED_RELEASES:
         pytest.skip(f"no capability expectation for Engine {version}")
     if name == "mcp_models":
         pytest.importorskip("mcp.server.mcpserver", reason="MCP dependency is not installed")
-    assert engine.feature(name) is expected[version]
+    assert engine.feature(name) is (version != "2.4.1")
 
 
 def test_calibrate_layout_probe_detects_cli_option(monkeypatch):

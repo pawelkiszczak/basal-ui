@@ -36,10 +36,15 @@ def test_scheduled_and_manual_batch_in_browser(page, ui, text_model, tmp_path):
     assert ui.get("/api/schedules")["schedules"][0]["interval"] == {"daily_at": "10:30"}
     page.click("[data-action=preview]")
     test_pages.sync_api.expect(page.locator("[data-preview]")).to_contain_text("A synthetic ticket")
-    page.click("[data-action=run]")
-    job = ui.wait_job("batch")
-    assert job["phase"] == "done", job
-    assert (outputs / "ticket.answers.jsonl").is_file()
+    scheduled_output = outputs / "ticket.answers.jsonl"
+    with page.expect_response(lambda response: response.url.endswith("/run")) as started:
+        page.click("[data-action=run]")
+    assert started.value.ok and started.value.json()["status"] == "started"
+    page.wait_for_function(
+        "path => statusCache?.jobs?.batch?.phase === 'done' && statusCache.jobs.batch.result?.output === path",
+        arg=str(scheduled_output),
+    )
+    assert scheduled_output.is_file()
     schedule_id = ui.get("/api/schedules")["schedules"][0]["id"]
     ui.post(f"/api/schedules/{schedule_id}/run")
     run = ui.get(f"/api/schedules/{schedule_id}/runs")["runs"][0]

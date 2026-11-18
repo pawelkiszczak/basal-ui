@@ -34,7 +34,7 @@
 - Dialogs announce their purpose to screen readers using translated names.
 - Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
   per-model log remains available in Logs.
-- Load options keeps the latest selected model and action when earlier responses arrive late.
+- Load options keeps the latest selected model and action when earlier responses arrive late, including when its dialog is reopened immediately.
 - Use logical layout properties throughout the app and Inspect to prepare for right-to-left layouts.
 - Extend the Decision forwarding read timeout to 600 seconds, report gateway read timeouts as 504
   `UPSTREAM_TIMEOUT`, and cancel forwarding on client disconnect. Engine computation may continue after disconnect;
@@ -45,6 +45,7 @@
 - Mode comparisons use the Active adapter and MLX forward when supported by `basal-bench`; determinism results show
   Engine-reported load errors. [USAGE.md](USAGE.md#statistics-and-benchmarks)
 - The Playground supports experimental rank questions on Engines that provide them, with candidate screening and a best-first ranking.
+- Playground validation highlights the correct question card when its name contains surrounding spaces and distinguishes Engine overload from other service failures.
 - Record audio in the Playground as a playable PCM WAV attachment, with an opt-in bounded audio-only History retention setting, explicit unknown-policy errors and on-demand Replay. [Usage](USAGE.md#recording-audio-in-the-playground)
 - Calibration fits and compares the layout in one snapshot of active or saved load settings, including its model revision and mode. Invalid model metadata leaves fitted files available and shows the shipped calibration as unavailable. Imported and fitted files are labelled, layout mismatches are flagged, and saved-row refits preserve the original layout.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
