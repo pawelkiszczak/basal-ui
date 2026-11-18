@@ -1,5 +1,8 @@
 # Unreleased
 
+- Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
+  per-model log remains available in Logs.
+
 - Load options keeps the latest selected model and action when earlier responses arrive late.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.

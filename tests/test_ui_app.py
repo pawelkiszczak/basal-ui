@@ -1,7 +1,9 @@
 import base64
 import contextlib
+import json
 import os
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -436,6 +438,97 @@ def test_startup_timeout_kills_child_process_group(tmp_path, monkeypatch):
         time.sleep(0.05)
     else:
         pytest.fail("grandchild process survived startup timeout")
+
+
+def test_runner_detached_stdin_and_fatal_startup_log(tmp_path):
+    if os.name != "posix":
+        pytest.skip("closing the launcher stdin requires POSIX")
+    child = (
+        "import sys; assert sys.stdin.read() == ''; "
+        "print('Fatal Python error: init_sys_streams', file=sys.stderr); "
+        "print('OSError: [Errno 9] Bad file descriptor', file=sys.stderr); "
+        "print('<no Python frame>', file=sys.stderr); sys.exit(1)"
+    )
+    launcher = f"""
+import json, os, sys, time
+from types import SimpleNamespace
+from basal_ui import catalog
+from basal_ui.fleet import Runner
+os.close(0)
+catalog.is_downloaded = lambda *args, **kwargs: {str(tmp_path)!r}
+runner = Runner(models_dir_fn=lambda: {str(tmp_path)!r})
+runner._build_command = lambda *args: [sys.executable, '-c', {child!r}]
+assessment = SimpleNamespace(variant=SimpleNamespace(id='synthetic', repo='synthetic', weights_bytes=0),
+                             mode='eager', est_memory_bytes=0)
+runner.load(assessment)
+deadline = time.monotonic() + 5
+while runner.status()['state'] != 'error' and time.monotonic() < deadline:
+    time.sleep(0.01)
+print(json.dumps({{'status': runner.status(), 'log': runner.log.text()}}))
+"""
+    result = subprocess.run([sys.executable, "-c", launcher], capture_output=True, text=True, timeout=10, check=True)
+    data = json.loads(result.stdout)
+    assert data["status"]["state"] == "error"
+    assert "OSError: [Errno 9] Bad file descriptor" in data["status"]["error"]
+    assert data["log"].endswith("<no Python frame>")
+
+
+def test_runner_exit_excerpt_is_bounded_without_truncating_log():
+    runner = Runner()
+    runner.log.append("x" * 3000)
+    runner.log.append("OSError: [Errno 9] Bad file descriptor")
+    runner.log.append("<no Python frame>")
+    error = runner._exit_error(SimpleNamespace(returncode=1), None)
+    assert len(error) < 2100 and "OSError: [Errno 9] Bad file descriptor" in error
+    assert runner.log.text().startswith("x" * 3000)
+
+
+@pytest.mark.parametrize("later_exit", [False, True])
+def test_runner_exit_waits_for_log_reader(tmp_path, monkeypatch, later_exit):
+    runner = Runner(models_dir_fn=lambda: tmp_path)
+    assessment = catalog.assess(MINI, HW)
+    release = tmp_path / "exit"
+    code = (
+        "import pathlib,sys,time; "
+        + (f"p=pathlib.Path({str(release)!r}); \nwhile not p.exists(): time.sleep(0.01)\n" if later_exit else "")
+        + "print('OSError: [Errno 9] Bad file descriptor', file=sys.stderr); "
+        "print('<no Python frame>', file=sys.stderr); sys.exit(1)"
+    )
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(runner, "_build_command", lambda *args: [sys.executable, "-c", code])
+    read = runner._read_logs
+    entered, unblock = threading.Event(), threading.Event()
+
+    def delayed_read(proc):
+        entered.set()
+        assert unblock.wait(5)
+        read(proc)
+
+    monkeypatch.setattr(runner, "_read_logs", delayed_read)
+    if later_exit:
+        monkeypatch.setattr(
+            "basal_ui.fleet.httpx.get",
+            lambda *args, **kwargs: httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", args[0])),
+        )
+        monkeypatch.setattr(runner, "_models_entry", lambda media: (None, []))
+    try:
+        runner.load(assessment)
+        assert entered.wait(2)
+        if later_exit:
+            wait_for(lambda: runner.status()["state"] == "ready")
+            release.touch()
+        wait_for(lambda: runner.process is not None and runner.process.poll() is not None)
+        timer = threading.Timer(0.1, unblock.set)
+        timer.start()
+        wait_for(lambda: runner.status()["state"] == "error")
+        timer.join()
+        error = runner.status()["error"]
+        assert "OSError: [Errno 9] Bad file descriptor" in error
+        assert "<no Python frame>" in runner.log.text()
+        assert len(error) < 2100
+    finally:
+        unblock.set()
+        runner.unload()
 
 
 def test_api_serve_settings_and_key_routes(tmp_path):
