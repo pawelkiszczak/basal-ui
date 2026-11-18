@@ -1198,7 +1198,10 @@ def create_app(
             raise HTTPException(400, "compare must be shipped, none, or a calibration path")
         for key, value, names in (("reference", reference, ("basal-1.5",)), ("compare", compare, ("shipped", "none"))):
             if value and value not in names:
-                path = Path(value).expanduser()
+                try:
+                    path = Path(value).expanduser()
+                except RuntimeError:
+                    raise HTTPException(400, f"{key}: {value} is not a readable file") from None
                 if not path.is_file():
                     raise HTTPException(400, f"{key}: {value} is not a readable file")
                 advanced[key] = str(path)
@@ -1318,9 +1321,12 @@ def create_app(
         selected_options, local_dir = calibration_fit_settings(variant)
         if "--keep-shipped" not in engine.calibrate_flags():
             return {"types": {}}
-        try:
-            if compare not in ("shipped", "none"):
+        if compare not in ("shipped", "none"):
+            try:
                 compare = str(Path(compare).expanduser())
+            except RuntimeError:
+                return {"types": {}}
+        try:
             assessment, options = prepare(variant, False, selected_options)
             return {"types": calibration.keep_options(local_dir, assessment.mode or "eager", options, compare)}
         except (OSError, ValueError):

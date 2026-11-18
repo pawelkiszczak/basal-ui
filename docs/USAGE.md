@@ -395,6 +395,7 @@ and 1 and lets you keep compared thresholds and temperatures per question type. 
 thresholds are enabled; changing the comparison rechecks them. A fit uses Active load settings for a loaded model,
 otherwise Saved load settings. Reports show available identity digests, kept sources, refuted thresholds, ICC and
 design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
+[Advanced calibration controls](images/calibration-advanced.png).
 
 ## History and logs
 

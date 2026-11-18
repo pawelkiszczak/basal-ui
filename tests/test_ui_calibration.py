@@ -550,6 +550,27 @@ def test_keep_options_expands_comparison_path_like_calibration_start(tmp_path, m
     assert calls[0][calls[0].index("--calibration") + 1] == str(compared)
 
 
+def test_unknown_comparison_user_is_refused_without_starting_a_job(tmp_path, monkeypatch, config):
+    import os.path
+
+    source = tmp_path / "labelled.jsonl"
+    source.write_text("{}\n")
+    real_expanduser = os.path.expanduser
+    monkeypatch.setattr(os.path, "expanduser", lambda p: p if p == "~missing-calibration-user" else real_expanduser(p))
+    monkeypatch.setattr(engine, "calibrate_flags", lambda: {"--keep-shipped"})
+    monkeypatch.setattr(calibrate, "main", lambda argv: pytest.fail("calibration should not start"))
+    _, app = make_app(tmp_path)
+    compared = "~missing-calibration-user/compared.json"
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        available = client.get("/api/calibrations/keep-options", params={"id": "mini", "compare": compared})
+        assert available.status_code == 200 and available.json() == {"types": {}}
+        response = client.post(
+            "/api/calibrate", json={"id": "mini", "input": str(source), "advanced": {"compare": compared}}
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == f"compare: {compared} is not a readable file"
+
+
 def test_calibration_report_returns_new_fields_only_when_present(tmp_path, config):
     _, app = make_app(tmp_path)
     directory = settings.calibrations_dir("mini")
