@@ -19,8 +19,22 @@ def test_inspect_direction(ui, direction):
                 options: ['Synthetic'], orders: [{canon: [0.8]}, {canon: [0.7]}],
                 mean: [0.75], calibrated: [0.75], temperature: 1, answer: {index: 0}
               });
-              document.body.append(comparison);
+              const decision = decisionView({
+                options: ['Yes', 'No'], thresholds: {'0.05': 0.75},
+                answer: {confidence: 0.75}
+              }, {why: 'synthetic', color: 'red'});
+              document.body.append(comparison, decision);
+              const center = node => {
+                const rect = node.getBoundingClientRect();
+                return (rect.left + rect.right) / 2;
+              };
+              const meter = decision.querySelector('.meter'), track = meter.querySelector('.track').getBoundingClientRect();
+              const fill = meter.querySelector('.fill').getBoundingClientRect();
+              const atStart = direction === 'rtl' ? fill.right === track.right : fill.left === track.left;
+              const labels = decision.firstChild.children;
               return {
+                scaleFits: atStart && Math.abs(center(meter.querySelector('.dot')) - (track.left + track.right)/2) < 1 &&
+                  (direction === 'rtl' ? center(labels[0]) > center(labels[1]) : center(labels[0]) < center(labels[1])),
                 headerFits: document.querySelector('header').scrollWidth <= window.innerWidth,
                 alignment: [...comparison.querySelectorAll('.cmp')].map(chart =>
                   ['.hdr:nth-child(3)', '.val'].map(s => getComputedStyle(chart.querySelector(s)).textAlign))
@@ -28,5 +42,5 @@ def test_inspect_direction(ui, direction):
             }""",
             direction,
         )
-        assert actual == {"headerFits": True, "alignment": [["end", "end"], ["end", "end"]]}
+        assert actual == {"scaleFits": True, "headerFits": True, "alignment": [["end", "end"], ["end", "end"]]}
         browser.close()

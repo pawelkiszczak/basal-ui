@@ -150,13 +150,14 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .cmp .val { text-align: end; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .cmp .hdr { color: var(--muted); font-size: 11px; }
 .meter { position: relative; height: 56px; margin: 6px 0 4px; }
-.meter .track { position: absolute; left: 0; right: 0; top: 22px; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+.meter .track { position: absolute; inset-inline: 0; top: 22px; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
 .meter .zone { position: absolute; top: 0; bottom: 0; }
-.meter .fill { position: absolute; top: 22px; left: 0; height: 10px; border-radius: 5px; }
-.meter .tick { position: absolute; top: 14px; height: 26px; width: 0; border-left: 1px solid var(--ink-2); }
-.meter .tick span { position: absolute; top: 28px; transform: translateX(-50%); font-size: 11px; color: var(--ink-2); white-space: nowrap; }
+.meter .fill { position: absolute; top: 22px; inset-inline-start: 0; height: 10px; border-radius: 5px; }
+.meter .tick { position: absolute; top: 14px; height: 26px; width: 0; border-inline-start: 1px solid var(--ink-2); }
+.meter .tick span { position: absolute; top: 28px; inset-inline-start: 0; transform: translateX(-50%); font-size: 11px; color: var(--ink-2); white-space: nowrap; }
 .meter .mk { position: absolute; top: 0; transform: translateX(-50%); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .meter .dot { position: absolute; top: 19px; width: 16px; height: 16px; border-radius: 50%; transform: translateX(-50%); border: 2px solid var(--surface); }
+[dir="rtl"] .meter :is(.tick span, .mk, .dot) { transform: translateX(50%); }
 .foot { color: var(--muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
 .err { color: var(--critical); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 16px; }
 .loading { display: flex; gap: 10px; align-items: center; color: var(--ink-2); padding: 12px 4px; }
@@ -626,10 +627,10 @@ function decisionView(q, v) {
   const X = p => ((p - lo) / (1 - lo) * 100).toFixed(2) + "%";
   const m = h("div", { class: "meter", role: "img", "aria-label": `confidence ${pct(conf)}; thresholds ${t5} and ${t1}` },
     h("div", { class: "track" }), h("div", { class: "fill", style: { width: X(conf), background: v.color, opacity: .35 } }),
-    t5 != null ? h("div", { class: "tick", style: { left: X(t5) } }, h("span", {}, `5% error · ${t5.toFixed(2)}`)) : null,
-    t1 != null ? h("div", { class: "tick", style: { left: X(t1) } }, h("span", {}, `1% error · ${t1.toFixed(2)}`)) : null,
-    h("div", { class: "dot", style: { left: X(conf), background: v.color } }),
-    h("div", { class: "mk", style: { left: X(conf) } }, pct(conf)));
+    t5 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t5) } }, h("span", {}, `5% error · ${t5.toFixed(2)}`)) : null,
+    t1 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t1) } }, h("span", {}, `1% error · ${t1.toFixed(2)}`)) : null,
+    h("div", { class: "dot", style: { insetInlineStart: X(conf), background: v.color } }),
+    h("div", { class: "mk", style: { insetInlineStart: X(conf) } }, pct(conf)));
   const body = [h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--muted)" } },
     h("span", {}, `${pct(lo, 0)} (pure guess among ${q.options.length})`), h("span", {}, "100%")), m,
     h("p", { style: { margin: "22px 0 0", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, statusChip(v), h("span", { class: "hint" }, v.why + "."))];
