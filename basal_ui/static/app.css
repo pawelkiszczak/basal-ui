@@ -235,3 +235,6 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 .toast-stack{z-index:100;max-width:min(440px,calc(100vw - 30px));max-height:calc(100dvh - 30px);overflow:auto}
 .toast{display:flex;align-items:center;gap:12px;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);margin-top:8px}
 .toast button{margin-left:auto;flex-shrink:0}
+
+.fetch-dialog{width:min(560px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto}.fetch-dialog input{width:100%;min-width:0}.fetch-provenance{overflow-wrap:anywhere;white-space:pre-line}.fetch-dialog .dialog-actions{display:flex;gap:8px;flex-wrap:wrap}
+.playground-shell{min-width:0}

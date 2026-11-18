@@ -50,6 +50,21 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Fetch a public page for Playground
+
+`POST /api/fetch` on the UI port accepts `{"url":"https://example.com/"}` and returns `url`, `final_url`,
+`content_type`, actual response `bytes`, `truncated` and typed `state`. It fetches anonymously without cookies,
+credentials, proxy settings or automatic redirect following. Every destination is checked for public unicast
+addresses before connecting; mixed public and non-public DNS results are refused. Responses are limited to 4 MiB,
+three redirects and 10 seconds for the entire operation, and text is truncated at 200,000 characters. JSON remains
+structured and is refused if invalid, nonfinite, contains a number that cannot survive the browser round trip, or is too large for the state limit; unsupported content types and
+content encodings are refused. Errors have English `detail` and a translation `code`. Cancelling or disconnecting
+the request and shutting down the app terminate the owned fetch process.
+
+`POST /api/decide` accepts optional top-level `source_url` as Playground metadata. History stores it with the
+recorded request, but it is removed before forwarding to the model; nested State fields remain unchanged. The
+external gateway and model API do not define this UI-only metadata as a request field.
+
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:

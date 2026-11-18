@@ -1,5 +1,8 @@
 # Unreleased
 
+- Fetch a public HTTP(S) page into editable Playground State, with bounded anonymous loading, provenance in History,
+  and Replay that restores the recorded State without re-fetching. [Usage](USAGE.md)
+
 - Calibration offers parser-supported conformal levels and compatible kept thresholds, and shows new Engine report
   metadata while retaining older reports. [Usage](USAGE.md#custom-calibration)
 

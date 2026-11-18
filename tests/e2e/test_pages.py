@@ -1989,3 +1989,51 @@ def test_failed_script_preserves_deep_link(browser, ui):
     page.goto(ui.url + "/#manager/calibration")
     assert page.evaluate("location.hash") == "#manager/calibration"
     context.close()
+
+
+def test_fetch_draft_generation_and_replay_do_not_submit(page):
+    view(page, "playground")
+    page.evaluate("""() => {
+      const original = window.fetch; window.pendingFetch = []; window.decisionCount = 0;
+      window.fetch = (url, options) => {
+        if (url === '/api/decide') { window.decisionCount++; return original(url, options); }
+        if (url !== '/api/fetch') return original(url, options);
+        return new Promise(resolve => window.pendingFetch.push(resolve));
+      };
+      window.completeFetch = (index, state, url) => window.pendingFetch[index](new Response(JSON.stringify({
+        url, final_url:url, content_type:'application/json', bytes:4, truncated:false, state
+      }), {status:200, headers:{'Content-Type':'application/json'}}));
+    }""")
+    page.click("#openFetchDialog")
+    page.fill("#fetchUrl", "https://example.com/first")
+    page.click("#fetchSubmit")
+    page.keyboard.press("Control+Enter")
+    page.click("#fetchCancel")
+    page.click("#openFetchDialog")
+    page.fill("#fetchUrl", "https://example.com/second")
+    page.click("#fetchSubmit")
+    page.evaluate("() => completeFetch(0, 'old', 'https://example.com/first')")
+    sync_api.expect(page.locator("#fetchSubmit")).to_be_disabled()
+    page.evaluate("() => completeFetch(1, {source_url:'inside',value:null}, 'https://example.com/second')")
+    sync_api.expect(page.locator("#fetchDialog")).not_to_be_visible()
+    assert page.evaluate("buildRequest().state") == {"source_url": "inside", "value": None}
+    assert page.evaluate("buildRequest().source_url") == "https://example.com/second"
+    assert page.evaluate("window.decisionCount") == 0
+    page.click("#openFetchDialog")
+    page.fill("#fetchUrl", "https://example.com/third")
+    page.click("#fetchSubmit")
+    page.evaluate("""() => { const input = $('#stateInput'); input.value = 'new draft';
+      input.dispatchEvent(new Event('input', {bubbles:true})); }""")
+    page.evaluate("() => completeFetch(2, 'stale', 'https://example.com/third')")
+    assert page.input_value("#stateInput") == "new draft"
+    assert page.evaluate("buildRequest().source_url") == "https://example.com/second"
+    page.click("#fetchCancel")
+    page.evaluate("""() => replayRequest({model:$('#playgroundModel').value, replay_request:{
+      state:null, questions:{q:{type:'choice',criteria:['a','b']}}, source_url:'https://example.com/recorded'}})""")
+    sync_api.expect(page.locator("#openFetchDialog")).to_be_hidden()
+    assert page.evaluate("buildRequest().state") is None
+    assert "https://example.com/recorded" in page.locator("#fetchProvenance").inner_text()
+    page.evaluate("""() => setRequest({state:'ordinary',questions:{q:{type:'choice',criteria:['a','b']}},
+      source_url:'https://example.com/saved'})""")
+    sync_api.expect(page.locator("#openFetchDialog")).to_be_visible()
+    assert page.evaluate("window.pendingFetch.length") == 3

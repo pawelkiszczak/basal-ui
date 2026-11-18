@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anyio
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -30,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
+from .fetch import FetchError, FetchManager
 from .fleet import Fleet
 from .gateway import Gateway
 from .history import History, replay_fields
@@ -106,6 +108,7 @@ def create_app(
     stats=None,
     history=None,
     addons=None,
+    fetch_manager=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -119,6 +122,7 @@ def create_app(
     )
     gateway = gateway or Gateway(fleet, settings_mod, stats)
     addon_manager = addons or AddonManager(fleet, hardware_fn)
+    fetch_manager = fetch_manager or FetchManager()
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -189,6 +193,7 @@ def create_app(
         await asyncio.to_thread(gateway.start)
         fleet.start_idle_timer()
         yield
+        await fetch_manager.close()
         await asyncio.to_thread(fleet.stop_idle_timer)
         with auto_load_lock:
             auto_load_stop.set()
@@ -942,10 +947,13 @@ def create_app(
     def decide(body: dict = Body(...)):  # sync: runs in the threadpool, a slow decision does not block the UI
         body = dict(body)
         model_id = body.pop("model", None)
+        source_url = body.pop("source_url", None)
+        if source_url is not None and not isinstance(source_url, str):
+            raise HTTPException(400, "source_url must be a string")
         if not isinstance(model_id, str) or not model_id:
             raise HTTPException(400, f"model is required; loaded: {fleet.loaded_ids()}")
         try:
-            r = fleet.decide(model_id, body, source="playground")
+            r = fleet.decide(model_id, body, source="playground", source_url=source_url)
         except KeyError as exc:
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
@@ -1476,6 +1484,13 @@ def create_app(
             return paths.check(body.get("path"), body.get("kind"))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/fetch")
+    def fetch_url(request: Request, body: dict = Body(...)):
+        try:
+            return anyio.from_thread.run(fetch_manager.run, body.get("url"), request)
+        except FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
 
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
