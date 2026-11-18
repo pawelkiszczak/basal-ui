@@ -1,11 +1,8 @@
-name: ci
-# Branches: dev (integration) -> stage (release candidate) -> main (released; tags v* publish). CI runs on every push
-# to the three and on every pull request into them, in either direction (dev -> stage, stage -> dev, stage -> main).
+name: release-ci
+# Stage and main accept changes through protected pull-request merges.
 on:
   push:
-    branches: [main, stage, dev]
-  pull_request:
-    branches: [main, stage, dev]
+    branches: [stage, main]
 
 permissions:
   contents: read
@@ -59,8 +56,7 @@ jobs:
       - run: uv run --no-sync pytest -q --ignore=tests/e2e
 
   ci-ok:
-    # the one check branch protection requires: green only when every matrix job passed (the matrix names change with
-    # TESTED_RELEASES, so they cannot be required one by one)
+    # Report one result for the matrix on each merged release commit.
     needs: [releases, ci]
     if: always()
     runs-on: ubuntu-latest
