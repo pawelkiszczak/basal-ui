@@ -608,34 +608,27 @@ between 0 and 1) and `keep_shipped` (a list drawn from `choice`, `noul`, and `sc
 when the installed `basal-calibrate` parser does not declare them. Kept types require compatible temperatures and
 per-type thresholds in the Shipped calibration or the explicitly compared file; `compare: "none"` cannot keep any.
 A loaded model's Active load settings and snapshot are used; otherwise its Saved load settings are used.
-
 `GET /api/calibrations?id=...` reports option availability in `options`. `GET /api/calibrations/keep-options?id=...&compare=...`
 returns a `types` object mapping eligible question types to their compared file, using `shipped`, `none`, or a file
 path for `compare`. The start request rechecks eligibility. `GET /api/calibrations/report?id=...&file=...` returns
 its original `report` text and, when present, `details` with fitted identity, conformal results and per-type threshold
 metadata. Old reports without those fields retain the original response shape.
-
 ### Playground question sets
-
 `GET /api/question-sets` lists Engine set names, available languages and question counts.
 `POST /api/question-sets/{name}` accepts JSON with `lang` (`auto`, `pl` or `en`, default `auto`), string `state`
 (default empty), and optional numeric `max_error` strictly between 0 and 1. It returns the Engine's questions unchanged;
 Auto delegates language guessing to the Engine. An unknown name returns 404, invalid inputs 400, and both routes return
 503 when the Engine lacks question sets.
-
 ## Preset URL import
-
 `POST /api/presets/import-url` accepts `{"url": "https://example.com/presets.json"}` and returns
 `{"presets": {"load": {}, "request": {}}, "count": 0}` with the resulting presets and processed entry count.
 Only public HTTP(S) addresses and `application/json` responses up to 1 MiB are accepted; redirects are checked too.
 Entries use the same validation, replacement and deletion rules as `PUT /api/presets`, in load then request order.
 A failed entry can leave earlier entries saved. Request preset root `model` is removed.
-
 ### MCP tool import and shortlist
-
 `POST /api/mcp/tools` accepts `{ "url": "http://localhost:PORT/mcp", "token": "..." }` (token optional) and returns `{ "tools": [...] }`. It initializes a streamable HTTP MCP session and follows up to 20 pages within a 10-second operation and 4 MiB response budget. Explicit loopback servers are allowed; other hosts must resolve exclusively to public unicast addresses, and bearer tokens for remote hosts require HTTPS. The token is operation-only; failures include an English `detail` and a `code`.
-
 `POST /api/tools/shortlist` accepts `{ "tools": [...], "query": "...", "k": 40 }` and returns ranked original definitions in `tools`. Ranking uses local BM25 and does not call a model or an MCP tool.
+Load options use the installed Engine parser's `long_lane` choices and default. `soam` accepts `auto`, `on`, or `off`; `auto` sends no flag. Legacy `long_lane: true` stays on and `false` inherits the installed Engine's default. If a load preset uses `long_lane: auto` on an Engine without that choice, it uses the installed Engine's default. Legacy boolean `soam` values migrate to `auto` or `off`. A model status may include `calibration_origin_warning` and `calibration_origin_warning_code` when the Engine reports a calibration fitted on other model files.
 
 ### Load option availability
 

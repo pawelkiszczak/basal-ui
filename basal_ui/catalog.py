@@ -474,7 +474,12 @@ def _mode(v: Variant, hw: Hardware) -> tuple[str | None, str | None]:
             return None, _text("gguf_dependency")
         return "gguf", None
     if v.recurrent:  # basal-serve defaults to fast on Hopper with fla, eager elsewhere
-        fast = hw.platform == "cuda" and cap[0] == 9 and "fla" in hw.engines
+        fast = False
+        if hw.platform == "cuda" and "fla" in hw.engines:
+            from basal import gdn_graph
+
+            architectures = getattr(gdn_graph, "ACCELERATED_ARCHITECTURES", None)
+            fast = cap in architectures if architectures is not None else cap[0] == 9
         return ("fast" if fast else "eager"), None
     if hw.platform == "cuda":
         if hw.cuda_capability and cap < (8, 0) and not v.experimental:

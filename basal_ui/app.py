@@ -1392,7 +1392,7 @@ def create_app(
         think_reason = None if family_ok else load_options.THINK_REASON
         think_code, think_params = load_options.option_message_fields(think_reason)
         unavailable = load_options.unavailable_options()
-        adapter_reason = load_options.adapter_unavailable()
+        adapter_reason = unavailable.get("adapter")
         adapter_code, adapter_params = load_options.option_message_fields(adapter_reason)
         local = catalog.is_downloaded(variant, settings_mod.models_dir(), revision=served_revision(variant))
         base = str(local.resolve()) if local else None
@@ -1401,6 +1401,7 @@ def create_app(
             "options": merged,
             "saved": bool(saved),
             "defaults": load_options.DEFAULTS,
+            "load_choices": {key: load_options.CHOICES[key] for key in ("long_lane", "soam")},
             "media_modes": load_options.available_media_modes(assessment, current),
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,

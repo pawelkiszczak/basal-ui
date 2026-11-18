@@ -41,14 +41,14 @@ DEFAULTS = {
     "orders": None,
     "auto_tau": 0.6,
     "auto_band": [0.2, 0.8],
-    "soam": True,
+    "soam": "auto",
     "max_batch": 64,
     "wait_ms": 0.0,
     "batch_window_ms": 3.0,
     "state_cache_gb": 0.0,
     "prefix_cache": False,
     "scheduler": "auto",
-    "long_lane": False,
+    "long_lane": (serve_option("--long-lane") or ((), "off"))[1],
     "long_tokens": 2048,
     "long_share": 0.5,
     "long_slice_ms": 10.0,
@@ -116,6 +116,8 @@ DEFAULTS = {
     "rank_max_candidates": 10_000,  # basal.rank.MAX_CANDIDATES (2.5)
 }
 CHOICES = {
+    "soam": ("auto", *(serve_option("--soam") or ((), None))[0]),
+    "long_lane": (serve_option("--long-lane") or (("off",), "off"))[0],
     "quant": (None, "fp8", "nvfp4", "q8"),  # --quant int8 is in basal-serve 2.5.0's choices, validate_quant refuses it
     "attn": ("auto", "fa2", "fa3", "fa4", "cudnn"),
     "gemma_attn": ("auto", "math", "flex", "fa3", "fa3+math"),
@@ -148,9 +150,7 @@ CHOICES = {
 }
 BOOLS = (
     "deterministic",
-    "soam",
     "prefix_cache",
-    "long_lane",
     "think",
     "ple_offload",
     "strict_calibration",
@@ -254,6 +254,13 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
     out = dict(DEFAULTS)
     unavailable = unavailable_options()
     for key, value in options.items():
+        if key == "long_lane":
+            if isinstance(value, bool):
+                value = "on" if value else DEFAULTS[key]
+            elif value == "auto" and value not in CHOICES[key]:
+                value = DEFAULTS[key]
+        elif key == "soam" and isinstance(value, bool):
+            value = "auto" if value else "off"
         if key not in DEFAULTS:
             raise ValueError(f"unknown load option: {key}")
         if key == "mode":
@@ -331,9 +338,10 @@ def _value(v):
     return f"{v:g}" if isinstance(v, float) else str(v)
 
 
-def args(options: dict, mode: str) -> list[str]:
+def args(options: dict, mode: str | None = None) -> list[str]:
     """basal-serve flags of the non-default options; the mode is applied by the runner (serve_args's --mode)."""
     merged = validate(options)
+    mode = mode or merged["mode"] or "eager"
     kind, mode_quant, compiled = MODES[mode]
     quant = merged["quant"] or mode_quant
     graph = is_graph_backend(mode)
@@ -360,9 +368,7 @@ def args(options: dict, mode: str) -> list[str]:
         if key in ("deterministic", "strict_calibration", "mlx_packed"):
             flags.append(flag)
         elif key in (
-            "soam",
             "prefix_cache",
-            "long_lane",
             "ple_offload",
             "vllm_overlap",
             "state_cache_lock",
@@ -671,7 +677,10 @@ def check_combination(v, hw, options, default_mode, media=False):
     native = None
     if hasattr(server, "serve_options") or v.recurrent or options["long_lane_gdn"]:
         try:
-            native = server.parser().parse_args(["--model", v.repo, "--mode", mode, *args(options, mode)])
+            command = ["--model", v.repo, "--mode", mode, *args(options, mode)]
+            if MODES[mode][0] == "gguf" and v.gguf_file:
+                command += ["--gguf", v.gguf_file]
+            native = server.parser().parse_args(command)
             if hasattr(server, "serve_options"):
                 server.serve_options(native)
             elif getattr(native, "long_lane_gdn", "off") == "on" and native.long_lane != "on":
