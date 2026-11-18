@@ -168,3 +168,116 @@ def test_logs_clear_old_lines_when_source_buffer_generation_changes(page):
     page.evaluate("() => loadLogs()")
     page.wait_for_function("() => document.querySelector('#logOutput').textContent.includes('new buffer line')")
     assert "old buffer line" not in page.locator("#logOutput").inner_text()
+
+
+def test_answer_set_editor_and_error_cards_without_model(page):
+    if not page.evaluate("() => statusCache.features.answer_sets && statusCache.features.conditional_questions"):
+        pytest.skip("Engine does not support answer sets and conditional questions")
+    test_pages.view(page, "playground")
+    request = {
+        "state": "s",
+        "questions": {
+            "first": {"type": "choice", "instructions": "choose", "criteria": {"a": "A", "b": "B"}, "coverage": 0.9},
+            "second": {
+                "type": "noul",
+                "instructions": "follow up",
+                "ask_if": {"first": ["b"]},
+                "depends_on": ["first"],
+            },
+        },
+    }
+    page.evaluate("request => setRequest(request)", request)
+    assert page.evaluate("() => buildRequest()") == request
+    second = page.locator(".question").nth(1)
+    second.locator(".q-gates summary").click()
+    assert second.locator('[data-gate-question="first"][data-gate-answer="b"]').is_checked()
+    page.evaluate("() => $('#playgroundForm').disabled = false")
+    second.locator(".q-instructions-input").fill("changed")
+    assert page.evaluate("() => buildRequest().questions.second.ask_if") == {"first": ["b"]}
+    second.locator(".q-type").select_option("score")
+    assert page.evaluate("() => buildRequest().questions.second.depends_on") == ["first"]
+    second.locator(".q-type").select_option("noul")
+    assert page.evaluate("() => buildRequest().questions.second.ask_if") == {"first": ["b"]}
+    page.evaluate(
+        """request => renderResults({answers:{first:{type:'choice',choice:'a',probabilities:{a:0.8,b:0.2},answer_set:['a'],abstain:true,coverage_note:'no level'},second:null},usage:{skipped:['second']}},request)""",
+        request,
+    )
+    assert "Answer set" in page.locator("#results").inner_text()
+    assert "Abstain" in page.locator("#results").inner_text()
+    assert "no level" in page.locator("#results").inner_text()
+    assert "Skipped" in page.locator("#results").inner_text()
+
+
+def test_gate_editor_special_names_aliases_and_live_options(page):
+    if not page.evaluate("() => statusCache.features.conditional_questions"):
+        pytest.skip("Engine does not support conditional questions")
+    test_pages.view(page, "playground")
+    request = {
+        "state": "s",
+        "questions": {
+            "__proto__": {"type": "noul", "instructions": "source"},
+            "target": {"type": "noul", "instructions": "target", "ask_if": {"__proto__": [True, "no"]}},
+        },
+    }
+    page.evaluate("request => setRequest(JSON.parse(request))", json.dumps(request))
+    page.evaluate("() => $('#playgroundForm').disabled = false")
+    target = page.locator(".question").nth(1)
+    target.locator(".q-gates summary").click()
+    test_pages.sync_api.expect(target.locator('[data-gate-question="__proto__"]:checked')).to_have_count(2)
+    assert json.loads(page.evaluate("() => JSON.stringify(buildRequest())")) == request
+    target.locator('[data-gate-question="__proto__"][data-gate-answer="true"]').uncheck()
+    assert json.loads(page.evaluate("() => JSON.stringify(buildRequest().questions.target.ask_if)")) == {
+        "__proto__": ["no"]
+    }
+    page.locator(".question").first.locator(".q-name").fill("constructor")
+    test_pages.sync_api.expect(target.locator('[data-gate-question="constructor"]')).to_have_count(2)
+    target.locator('[data-gate-question="constructor"][data-gate-answer="true"]').check()
+    assert page.evaluate("() => Object.hasOwn(buildRequest().questions.target.ask_if, 'constructor')")
+
+
+@pytest.mark.parametrize(
+    "message,names",
+    [
+        ("question 'second': depends on unknown question 'missing'", ["second"]),
+        ("question 'second': ask_if values ['bad'] for 'first' must be among ['a', 'b']", ["second"]),
+        ("depends_on / ask_if: a cycle among ['first', 'second']", ["first", "second"]),
+    ],
+)
+def test_engine_validation_errors_on_named_cards(page, message, names):
+    test_pages.view(page, "playground")
+    request = {
+        "state": "s",
+        "questions": {
+            "first": {"type": "noul", "instructions": "first"},
+            "second": {"type": "noul", "instructions": "second"},
+        },
+    }
+    page.evaluate("request => setRequest(request)", request)
+    page.route(
+        "**/api/decide", lambda route: route.fulfill(status=422, json={"error": message, "code": "INVALID_REQUEST"})
+    )
+    page.evaluate("() => { selectedModel='test'; return sendDecision(); }")
+    for card in page.locator(".question").all():
+        name = card.locator(".q-name").input_value()
+        error = card.locator(".q-error")
+        if name in names:
+            test_pages.sync_api.expect(error).to_have_text(message)
+            test_pages.sync_api.expect(error).to_be_visible()
+        else:
+            test_pages.sync_api.expect(error).to_be_hidden()
+
+
+def test_unsupported_features_show_disabled_controls(page):
+    test_pages.view(page, "playground")
+    page.evaluate(
+        "() => {statusCache.features = {answer_sets:false,conditional_questions:false}; document.querySelectorAll('.question').forEach(card => {renderSharedFields(card); updateCardVisibility(card);}); $('#playgroundForm').disabled = false;}"
+    )
+    assert page.locator("[data-shared-coverage]").is_disabled()
+    assert page.locator('[data-f="max_error"]').is_disabled()
+    page.locator(".q-gates summary").click()
+    test_pages.sync_api.expect(page.locator(".q-gate-options")).to_contain_text(
+        "This Engine does not support conditional questions."
+    )
+    test_pages.sync_api.expect(page.locator(".q-shared")).to_contain_text(
+        "This Engine does not support answer sets and abstention."
+    )

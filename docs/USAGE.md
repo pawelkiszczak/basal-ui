@@ -140,6 +140,10 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   keys retain their request semantics. Renaming an act outcome keeps its cost-matrix column attached to that outcome.
   Blank or duplicate row keys are reported instead of silently dropping an option. Marked-image options remain
   read-only here and are edited through **Mark elements**.
+  On supported Engines, choice, noul and score cards offer `coverage` and `max_error`; conditional controls choose
+  dependencies and matching answers from other choice, noul and score cards. The Engine validates names, values and
+  cycles. Answer sets, abstention, calibration notes and skipped questions appear in the Decision. A missing conformal
+  level can produce every option; the note explains this, rather than claiming a calibrated set.
   Loading or selecting a model, including from another view, retains this tab's attachments and marked-element
   questions. Sending is blocked if the selected model cannot accept the retained media; remove it or select a
   compatible media-loaded model.
@@ -400,7 +404,8 @@ or **Replay in Playground** (a converted request in the Playground with its mode
 Media payloads, including nested image/audio payload objects in recorded Decisions-style requests, are replaced by
 their size. Replay is blocked with an explanation when an original attachment is missing; redaction is not a promise
 that the API accepts every recorded media shape. Ordinary structured context and question descriptions, including
-fields named `data`, are preserved. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
+fields named `data`, are preserved. Native `coverage`, `ask_if` and `depends_on` survive Replay; skipped names and
+the full truncation object remain in the recorded response. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
 next to the settings file. A live-only History view keeps the newest 500 rows. **More** enters older-page browsing:
 explicitly loaded pages and their cursor are kept across polls until the view or filters are reset.
 **Clear history** empties the file before clearing the live view; a failed write leaves the existing records available.

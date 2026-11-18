@@ -235,7 +235,7 @@ def test_records_flag_deferred_answers_and_truncated_states():
         {"answers": {"q": {"type": "act", "deferred": True}}, "usage": {"truncated": {"dropped_tokens": 3}}},
         1.0,
     )
-    assert r["deferred"] is True and r["truncated"] is True
+    assert r["deferred"] is True and r["truncated"] == {"dropped_tokens": 3}
     plain = record("a", "api", "s")
     assert plain["deferred"] is False and plain["truncated"] is False
 
@@ -253,3 +253,43 @@ def test_persistence_rotation_and_clear(tmp_path):
     assert len(History(path, keep=3).list()) == 3
     assert history.clear() == 3
     assert history.list() == [] and History(path).list() == []
+
+
+def test_native_fields_reach_child_and_replay(tmp_path, monkeypatch, child):
+    from fastapi.testclient import TestClient
+
+    from tests.test_ui_bench import make_app
+
+    app, _ = make_app(tmp_path, monkeypatch, base_url=child.url)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        request = {
+            "state": "s",
+            "questions": {
+                "first": {
+                    "type": "choice",
+                    "instructions": "Choose",
+                    "criteria": {"a": "A", "b": "B"},
+                    "coverage": 0.9,
+                },
+                "second": {
+                    "type": "noul",
+                    "instructions": "Follow up",
+                    "ask_if": {"first": ["b"]},
+                    "depends_on": ["first"],
+                },
+            },
+        }
+        child.reply = {
+            "answers": {"first": {"type": "choice", "choice": "a"}, "second": None},
+            "usage": {"skipped": ["second"], "truncated": {"dropped_tokens": 3}},
+        }
+        response = client.post("/api/decide", json={"model": "mini", **request})
+        assert response.status_code == 200
+        assert child.seen[-1] == ("/v1/systemone", request)
+        item = client.get("/api/history").json()["items"][0]
+        assert item["truncated"] == {"dropped_tokens": 3}
+        record = client.get(f"/api/history/{item['id']}").json()
+        assert record["response"]["usage"]["skipped"] == ["second"]
+        assert record["replay_request"] == {"model": "mini", **request}
+        assert client.post("/api/decide", json={"model": "mini", **record["replay_request"]}).status_code == 200
+        assert child.seen[-1] == ("/v1/systemone", request)

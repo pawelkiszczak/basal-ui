@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -286,7 +286,12 @@ def create_app(
         return variant
 
     def full_status():
-        return {**fleet.status(), "serving": gateway.status(), "inspect": inspector.state()}
+        return {
+            **fleet.status(),
+            "serving": gateway.status(),
+            "inspect": inspector.state(),
+            "features": {name: engine.feature(name) for name in ("answer_sets", "conditional_questions")},
+        }
 
     def serve_response():
         config = settings_mod.serve_settings()

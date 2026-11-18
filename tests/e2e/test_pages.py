@@ -1775,3 +1775,36 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_answer_sets_and_conditional_replay_in_browser(page, ui, text_model):
+    if not feature("answer_sets") or not feature("conditional_questions"):
+        pytest.skip("Engine does not support answer sets and conditional questions")
+    request = {
+        "state": "A blocked card",
+        "questions": {
+            "first": {"type": "noul", "instructions": "Is this about a card?", "coverage": 0.9, "max_error": 0.001},
+            "second": {
+                "type": "noul",
+                "instructions": "Is this urgent?",
+                "ask_if": {"first": ["false"]},
+                "depends_on": ["first"],
+            },
+        },
+    }
+    view(page, "playground")
+    page.evaluate("request => setRequest(request)", request)
+    assert page.evaluate("() => buildRequest()") == request
+    assert page.locator("[data-shared-coverage]").first.input_value() == "0.9"
+    page.locator(".question").nth(1).locator(".q-gates summary").click()
+    assert page.locator('[data-gate-question="first"][data-gate-answer="false"]').is_checked()
+    with page.expect_response(lambda response: "/api/decide" in response.url, timeout=WAIT) as sent:
+        page.click("#sendButton")
+    assert sent.value.status == 200
+    sync_api.expect(page.locator("#results")).to_contain_text("Answer set")
+    sync_api.expect(page.locator("#results")).to_contain_text("Abstain")
+    record = ui.get("/api/history", params={"model": text_model["id"], "source": "playground"})["items"][0]
+    saved = ui.get(f"/api/history/{record['id']}")
+    assert saved["replay_request"]["questions"] == request["questions"]
+    page.evaluate("r => replayRequest(r)", saved)
+    assert page.evaluate("() => buildRequest().questions") == request["questions"]

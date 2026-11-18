@@ -3,7 +3,7 @@
 const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
-let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
+let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0, statusCache=null;
 let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
 function httpFailure(status,message) {
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
@@ -18,7 +18,7 @@ async function api(path, options={}) {
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    const error=new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);error.status=response.status;error.detail=raw;throw error;
   }
   return data;
 }
@@ -390,7 +390,8 @@ async function loadExamples() {
 // Question builder: one card per question, a type-specific fieldset; fields the builder does not own stay on the card
 // (card._extra) and are merged back, so Edit JSON → builder → JSON keeps them.
 const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract'];
-const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['act','tool','classify','verify','extract'];
+const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['choice','noul','score','act','tool','classify','verify','extract'];
+const SHARED_QUESTION_FIELDS=['coverage','ask_if','depends_on'];
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
 let presetData={load:{},request:{}},presetTarget='load';
@@ -567,7 +568,9 @@ function updateCardVisibility(card) {
   const multiTool=type==='tool'&&on('multi');
   show('.evidence-only',EVIDENCE_TYPES.includes(type)&&!multiTool);
   show('.max-error-only',MAX_ERROR_TYPES.includes(type)&&!multiTool);
-  const custom=$('[data-f="max_error_custom"]',card); if(custom)custom.hidden=$('[data-f="max_error"]',card).value!=='custom';
+  const maxError=$('[data-f="max_error"]',card), plain=['choice','noul','score'].includes(type);
+  if(maxError){maxError.disabled=plain&&!statusCache?.features?.answer_sets;maxError.title=maxError.disabled?t('This Engine does not support answer sets and abstention.'):'';}
+  const custom=$('[data-f="max_error_custom"]',card); if(custom){custom.hidden=$('[data-f="max_error"]',card).value!=='custom';custom.disabled=plain&&!statusCache?.features?.answer_sets;}
   const objective=$('[data-f="objective"]',card); show('.set-threshold',!objective||objective.value==='threshold');
   show('.multi-only',on('multi_label')); show('.single-only',type==='classify'&&!on('multi_label'));
   show('.multi-tool-only',multiTool);
@@ -578,7 +581,7 @@ function updateCardVisibility(card) {
 }
 // every value the user can change on a card (the cost matrix too): equal to the rendered one = nothing was edited
 function cardSnapshot(card) {
-  return JSON.stringify([...card.querySelectorAll('input,select,textarea')].filter(x=>!x.matches('.q-name'))
+  return JSON.stringify([...card.querySelectorAll('input,select,textarea')].filter(x=>!x.matches('.q-name')&&!x.closest('.q-shared'))
     .map(x=>x.type==='checkbox'||x.type==='radio'?x.checked:x.value).concat([card._costMode??null]));
 }
 // the request a card was made from, to give it back exactly where the user did not edit it: the builder's own text
@@ -605,7 +608,9 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
   const orig=card._orig&&card._orig.type===type?card._orig:null, box=$('.q-error',card);
   if(orig&&cardSnapshot(card)===orig.snapshot){  // nothing edited: the request as it came
     card._error=null; if(box){box.textContent='';box.hidden=true;}
-    return [name,structuredClone(orig.q)];
+    const unchanged=structuredClone(orig.q);
+    SHARED_QUESTION_FIELDS.forEach(k=>{if(Object.hasOwn(card._extra,k))unchanged[k]=structuredClone(card._extra[k]);else delete unchanged[k];});
+    return [name,unchanged];
   }
   const el=f=>$(`[data-f="${f}"]`,card), str=f=>(el(f)?.value??'').trim(), num=f=>str(f)===''?undefined:Number(str(f)), on=f=>Boolean(el(f)?.checked);
   const q={type}, errors=ChoiceEditor.errors(card), editor=ChoiceEditor.read(card), set=(k,v)=>{if(v!==undefined&&v!==''&&!(Array.isArray(v)&&!v.length))q[k]=v;};
@@ -739,24 +744,57 @@ function syncRequest(force=false, keys=['media','detail']) {
     catch (e) { showMediaError(e.message); }
   }
 }
+function renderSharedFields(card) {
+  const host=$('.q-shared',card), type=$('.q-type',card).value, features=statusCache?.features||{};
+  if(!host)return;
+  const coverage=['choice','noul','score'].includes(type)
+    ?qField('Coverage',`<input class="input" type="number" data-shared-coverage min="0" max="1" step="0.01" value="${esc(card._extra.coverage??'')}" ${features.answer_sets?'':'disabled'}>`):'';
+  host.innerHTML=`${coverage}${coverage&&!features.answer_sets?`<small class="muted">${t('This Engine does not support answer sets and abstention.')}</small>`:''}<details class="q-gates"><summary>${t('Conditional question')}</summary><div class="q-gate-options"></div></details>`;
+  const details=$('.q-gates',host);
+  details.addEventListener('toggle',()=>{if(details.open)renderGateOptions(card);});
+}
+function refreshOpenGates(except) {
+  document.querySelectorAll('.question').forEach(card=>{if(card!==except&&$('.q-gates',card)?.open)renderGateOptions(card);});
+}
+function renderGateOptions(card) {
+  const host=$('.q-gate-options',card), supported=statusCache?.features?.conditional_questions;
+  if(!supported){host.innerHTML=`<p class="muted">${t('This Engine does not support conditional questions.')}</p>`;return;}
+  const candidates=[...document.querySelectorAll('.question')].filter(other=>other!==card&&['choice','noul','score'].includes($('.q-type',other).value));
+  host.innerHTML=candidates.map(other=>{
+    const [name,q]=parseQuestionCard(other), deps=card._extra.depends_on||[], gates=card._extra.ask_if||{}, selected=Object.hasOwn(gates,name)?gates[name]:[];
+    const criteria=q.criteria??q.levels??[], answers=q.type==='noul'?['true','false']:q.type==='score'&&Array.isArray(criteria)?criteria.map((_,i)=>String(i)):Array.isArray(criteria)?criteria.map(String):Object.keys(criteria);
+    const options=answers.map(value=>{const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${Array.isArray(selected)&&selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;}).join(' ');
+    return `<fieldset><legend>${esc(name)}</legend><label><input type="checkbox" data-dependency="${esc(name)}" ${deps.includes(name)?'checked':''}> ${t('Depends on this question')}</label>${options?`<div>${t('Ask if answer is')}: ${options}</div>`:''}</fieldset>`;
+  }).join('')||`<p class="muted">${t('Add another question to create a condition.')}</p>`;
+}
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
   const card=document.createElement('div'); card.className='question'; const fieldId=`question-card-${++questionFieldId}`;
   const type=QUESTION_TYPES.includes(q.type)?q.type:'choice';
   card._extra=extraOf(q,type); card._type=type;
-  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div>`;
+  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div><div class="q-shared"></div>`;
   $('.q-type',card).value=type;
-  renderTypeFields(card,type,q); rememberOriginal(card,type,q);
+  renderTypeFields(card,type,q); renderSharedFields(card); rememberOriginal(card,type,q);
   card.addEventListener('input',e=>{
+    if(e.target.matches('[data-shared-coverage]')){const value=e.target.value;if(value==='')delete card._extra.coverage;else card._extra.coverage=Number(value);}
+    if(e.target.closest('.q-shared'))return syncRequest();
+    if(e.target.matches('.q-name,[data-f="criteria"],.choice-editor input'))refreshOpenGates(card);
     if(e.target.matches('[data-f="criteria"]')&&$('.q-type',card).value==='act')renderCostMatrix(card);
     syncRequest();
   });
   card.addEventListener('change',e=>{
-    if(e.target.matches('.q-type')){
+    if(e.target.matches('[data-dependency]')){
+      const name=e.target.dataset.dependency, deps=new Set(card._extra.depends_on||[]);e.target.checked?deps.add(name):deps.delete(name);
+      if(deps.size)card._extra.depends_on=[...deps];else delete card._extra.depends_on;
+    } else if(e.target.matches('[data-gate-question]')){
+      const name=e.target.dataset.gateQuestion, value=e.target.dataset.gateAnswer, aliases=JSON.parse(e.target.dataset.gateAliases), gates=Object.assign(Object.create(null),card._extra.ask_if||{}), values=Object.hasOwn(gates,name)&&Array.isArray(gates[name])?gates[name].filter(v=>!aliases.includes(v)):[];
+      if(e.target.checked)values.push(value);if(values.length)gates[name]=values;else delete gates[name];
+      if(Object.keys(gates).length)card._extra.ask_if=gates;else delete card._extra.ask_if;
+    } else if(e.target.matches('.q-type')){
       if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
       card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
-      renderTypeFields(card,next,{...current,type:next});
+      renderTypeFields(card,next,{...current,type:next}); renderSharedFields(card); refreshOpenGates(card);
     } else {
       if(e.target.matches('[data-f="yesno"]')){
         if(ChoiceEditor.errors(card).length){setChecked(e.target,!e.target.checked);syncRequest();return;}
@@ -771,7 +809,8 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   card.addEventListener('click',e=>{
     const b=e.target.closest('button'); if(!b)return;
-    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();syncRequest();}
+    if(b.closest('.choice-editor'))refreshOpenGates(card);
+    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();refreshOpenGates(card);syncRequest();}
     else if(b.dataset.costMode){setCostMode(card,b.dataset.costMode);syncRequest();}
     else if(b.matches('.add-action')){card._costRows=readCostRows(card);card._costRows.push({action:'',costs:{}});renderCostMatrix(card,true);syncRequest();}
     else if(b.matches('.remove-action')){card._costRows=readCostRows(card);card._costRows.splice(Number(b.dataset.row),1);renderCostMatrix(card,true);syncRequest();}
@@ -942,6 +981,9 @@ function automatedChips(automated) {
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
+  if(Array.isArray(answer.answer_set))parts.push(`<span class="chip">${t('Answer set')}: ${esc(answer.answer_set.join(', '))}</span>`);
+  if(typeof answer.abstain==='boolean')parts.push(`<span class="chip">${t('Abstain')}: ${answer.abstain?t('yes'):t('no')}</span>`);
+  if(answer.coverage_note)parts.push(`<span class="reason">${esc(answer.coverage_note)}</span>`);
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
   parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),automatedChips(answer.automated));
   const html=parts.filter(Boolean).join(' ');
@@ -1062,7 +1104,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
-    html+=DecisionTools.answerPanel(name,answer,q,entry);
+    html+=(data?.usage?.skipped||[]).includes(name)?`<article class="answer"><h3>${esc(name)}</h3><span class="badge fit-tight">${t('Skipped')}</span></article>`:DecisionTools.answerPanel(name,answer,q,entry);
   }
   const spans=typeof request.state==='string'?sourceSpans(answers,request):[];
   const u=data?.usage, mediaUsage=u?.media;
@@ -1078,6 +1120,7 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
 function showDecideError(message) { $('#decideError').textContent=message; $('#decideError').hidden=false; }
 async function sendDecision() {
   $('#decideError').hidden=true; $('#results').innerHTML='';
+  document.querySelectorAll('.q-error').forEach(box=>{box.hidden=true;box.textContent='';});
   let request;const jsonMode=$('#editJsonToggle').checked;
   try { request=jsonMode?JSON.parse($('#requestJson').value):buildRequest(); }
   catch(e) { showDecideError(jsonMode?t('Invalid JSON: {message}',{message:e.message}):e.message);if(!jsonMode)$('.q-name:invalid')?.reportValidity();return; }
@@ -1095,7 +1138,14 @@ async function sendDecision() {
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
-  catch(e) { showDecideError(e.message); toast(e.message,'error'); }
+  catch(e) {
+    if(e.status===422&&!jsonMode){
+      const detail=String(e.detail||''), cycle=detail.includes('cycle among');
+      document.querySelectorAll('.question').forEach(card=>{const name=$('.q-name',card).value, quoted=JSON.stringify(name), single="'"+name.replaceAll("'","\\'")+"'";
+        if((cycle&&(detail.includes(single)||detail.includes(quoted)))||detail.startsWith('question '+single+':')||detail.startsWith('question '+quoted+':')){const box=$('.q-error',card);box.textContent=detail;box.hidden=false;} });
+    }
+    showDecideError(e.message); toast(e.message,'error');
+  }
   finally { $('#sendButton').disabled=false; }
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
@@ -1140,7 +1190,7 @@ $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox
 window.addEventListener('beforeunload',()=>selectedMedia.forEach(item=>URL.revokeObjectURL(item.url)));
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
+let serveData=null, serveHost='127.0.0.1', connectTab='curl';
 function connectionEndpoint() {
   const settings=serveData.settings, serving=statusCache?.serving;
   if (serving?.url) return serving.url;
@@ -1301,7 +1351,8 @@ function renderManagerSummary() {
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
 function renderStatus(s) {
-  statusAvailable=true; statusCache=s;
+  const oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
+  if(oldFeatures!==JSON.stringify(s.features))document.querySelectorAll('.question').forEach(card=>{renderSharedFields(card);updateCardVisibility(card);});
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
