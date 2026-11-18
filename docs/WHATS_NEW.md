@@ -1,5 +1,7 @@
 # Unreleased
 
+- Route app component colors and Mark elements annotations through semantic tokens; side navigation now follows the current theme.
+
 - Form controls have more visible borders in light and dark themes, including the Inspect view.
 
 - Match good and active status indicators to the orange skin in light and dark themes, while retaining status labels.

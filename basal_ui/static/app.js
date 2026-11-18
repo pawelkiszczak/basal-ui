@@ -41,7 +41,6 @@ function applyTheme(theme) {
   const value=['light','dark','system'].includes(theme)?theme:'system';
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
   document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
-  document.querySelectorAll('.side-nav button').forEach(b=>{if(document.documentElement.dataset.theme==='dark')b.style.setProperty('color','#edf0e9','important');else b.style.removeProperty('color');});
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
