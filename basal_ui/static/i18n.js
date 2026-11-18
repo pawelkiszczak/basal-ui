@@ -4,6 +4,11 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Question name": "Nazwa pytania",
+  "Question type": "Typ pytania",
+  "Option keys": "Klucze opcji",
+  "Option description": "Opis opcji",
+  "Question JSON": "JSON pytania",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",
@@ -724,6 +729,7 @@ const PL = {
   "Stopped models:": "Zatrzymane modele:",
   "Storage location": "Lokalizacja pamięci",
   "Strict": "Rygorystycznie",
+  "Skip to main content": "Przejdź do treści głównej",
   "Suggested": "Sugerowane",
   "Suggested for this machine": "Polecane dla tego komputera",
   "Synthetic tokens": "Tokeny syntetyczne",
@@ -1251,7 +1257,7 @@ document.documentElement.lang = LANG;
 document.querySelector('.theme-controls')?.insertAdjacentHTML('afterend',
   `<div class="theme-controls lang-controls" role="group" aria-label="Language">${['en', 'pl'].map(lang =>
     `<button class="btn" type="button" data-lang-choice="${lang}" data-variant="outline" aria-pressed="${lang === LANG}">${lang.toUpperCase()}</button>`).join('')}</div>`);
-translateStatic(document.body);
+if (!document.currentScript?.hasAttribute("data-dynamic-only")) translateStatic(document.body);
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-lang-choice]');
   if (!b) return;
