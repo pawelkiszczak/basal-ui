@@ -4,7 +4,7 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
-let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
+let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
 function httpFailure(status,message) {
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
@@ -24,7 +24,20 @@ async function api(path, options={}) {
 }
 function toast(message, type='success') {
   const node=document.createElement('div'); node.className=`toast ${type}`; node.textContent=message;
-  $('#toastStack').append(node); setTimeout(()=>node.remove(),4000);
+  if(type==='error') {
+    const close=document.createElement('button'); close.type='button'; close.textContent='×'; close.setAttribute('aria-label',t('Dismiss')); close.onclick=()=>node.remove(); node.append(close);
+  } else {
+    node.tabIndex=0;
+    let remaining=4000, started, timer=null, hovered=false, focused=false;
+    const pause=()=>{if(timer!==null){clearTimeout(timer);remaining-=performance.now()-started;timer=null;}};
+    const resume=()=>{if(!hovered&&!focused&&timer===null){started=performance.now();timer=setTimeout(()=>node.remove(),remaining);}};
+    node.addEventListener('mouseenter',()=>{hovered=true;pause();});
+    node.addEventListener('mouseleave',()=>{hovered=false;resume();});
+    node.addEventListener('focusin',()=>{focused=true;pause();});
+    node.addEventListener('focusout',e=>{focused=node.contains(e.relatedTarget);resume();});
+    $('#toastStack').append(node); hovered=node.matches(':hover'); resume(); return;
+  }
+  $('#toastStack').append(node);
 }
 function confirmDialog({title,description,confirmLabel=t('Confirm'),destructive=false}) {
   return new Promise(resolve=>{
@@ -276,7 +289,7 @@ async function loadModel(id, media=false, mode=null) {
   if(mode)return openLoadOptions(id,media,'load',mode);
   statusSequence++;
   try { await api('/api/load', {method:'POST', body:JSON.stringify({id,...(media?{media:true}:{})})}); toast(t('Model load started')); await refreshStatus(); }
-  catch (e) { showStatusError(e.message); toast(e.message,'error'); }
+  catch (e) { showStatusError(e.message); }
 }
 function showStatusError(text) { if(text)toast(text,'error'); }
 function mediaTitle(kinds) { return kinds.map(kind => kind === 'image' ? t('images') : kind === 'audio' ? t('audio') : kind).join(` ${t('and')} `); }
@@ -374,9 +387,9 @@ async function refreshStatus() {
   const sequence = ++statusSequence;
   try {
     const status = await api('/api/status');
-    if (sequence === statusSequence) { renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; showStatusError(e.message); trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {

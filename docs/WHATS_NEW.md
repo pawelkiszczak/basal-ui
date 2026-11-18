@@ -1,5 +1,6 @@
 # Unreleased
 
+- Error toasts stay visible until dismissed; informational toasts pause while hovered or focused.
 - Navigate views with a translated skip link, focused headings and page titles; use arrow keys to switch model tabs.
 
 - Inspect has more readable muted text, respects reduced motion and marks the selected tab in forced colors.
