@@ -21,6 +21,10 @@
 .app-shell{display:grid;grid-template-columns:minmax(0,1fr);align-items:start}
 .app-shell>.sidebar{grid-column:1/-1;grid-row:1}
 .main-content{grid-column:1;grid-row:2;min-width:0;container-type:inline-size}
+
+:root[data-skin=orange]{--green:#a54727;--green-light:#f8e9df}
+:root[data-theme=dark][data-skin=orange]{--green:#efb08b;--green-light:#402b22}
+
 .quick-actions-open .app-shell{grid-template-columns:minmax(0,1fr) 268px}
 .quick-actions-rail{grid-column:2;grid-row:2;position:sticky;top:100px;margin:48px 24px 32px 0;padding:20px;min-width:0;max-height:calc(100dvh - 124px);overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--white)}
 .quick-actions-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:22px}
