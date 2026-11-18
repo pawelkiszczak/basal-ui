@@ -280,8 +280,9 @@ When the installed `basal-run` supports resume, an unfinished output (`.part` or
 options and server identity; concurrency may change. If the Engine refuses the record, its reason is shown and
 Restart is offered directly on the stopped job, with the original output path and explicit confirmation. A stopped run with a partial output shows the retained line count and
 reason. **Stop after** sets the number of consecutive unanswered lines before stopping (default 16; 0 writes
-per-line errors instead). Unsupported controls are disabled on older Engines. External changes to these files while
-a job starts are not coordinated by basal-ui.
+per-line errors instead). Batch refuses checkpoint files that are symbolic links or have multiple hard links.
+Unsupported controls are disabled on older Engines. External changes to these files while a job starts are not
+coordinated by basal-ui.
 
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample

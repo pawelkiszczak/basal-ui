@@ -4,6 +4,7 @@ to the child: they are not counted in the statistics or the history (as benchmar
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from functools import lru_cache
@@ -44,6 +45,13 @@ def validate_paths(source, output):
             same = False
         if same or Path(left).resolve() == Path(right).resolve():
             raise ValueError("input, output and Batch checkpoint files must be distinct")
+    for artifact in artifacts:
+        try:
+            info = artifact.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or info.st_nlink > 1:
+            raise ValueError("Batch checkpoint files must not be symbolic links or hard links")
 
 
 def run_batch(
@@ -93,7 +101,8 @@ def run_batch(
         if restart_supported and part.exists():
             from .jobs import Resumable
 
-            done = sum(1 for line in part.read_bytes().splitlines() if line.strip())
+            with part.open("rb") as checkpoint:
+                done = sum(1 for line in checkpoint if line.endswith(b"\n") and line.strip())
             job.progress("stopped_resumable", done, total)
             raise Resumable(
                 str(exc),

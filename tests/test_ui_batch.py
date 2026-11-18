@@ -161,10 +161,12 @@ def test_batch_failed_run_preserves_partial(client, tmp_path, monkeypatch, parti
 
     def fail(job, module, args):
         if partial:
-            part.write_text('{"answer":1}\n')
+            part.write_text('{"answer":1}\n\n{"incomplete":')
         raise RuntimeError("server unavailable")
 
     monkeypatch.setattr(batch, "run_tool", fail)
+    if partial:
+        monkeypatch.setattr(type(part), "read_bytes", lambda _: pytest.fail("checkpoint must be streamed"))
     assert client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(out)}).status_code == 202
     job = wait_batch(client)
     assert job["phase"] == phase and "server unavailable" in job["error"]
@@ -279,3 +281,41 @@ def test_checkpoint_artifacts_must_not_alias(client, tmp_path, monkeypatch, firs
     )
     assert response.status_code == 400
     assert target.read_text() == "preserve"
+
+
+@pytest.mark.parametrize("suffix", [".part", ".part.json", ".part.json.tmp"])
+@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+def test_checkpoint_link_to_unrelated_file_refused(client, tmp_path, monkeypatch, suffix, link):
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out, target = tmp_path / "answers", tmp_path / "unrelated"
+    target.write_text("do not overwrite")
+    artifact = tmp_path / ("answers" + suffix)
+    if link == "symlink":
+        artifact.symlink_to(target)
+    else:
+        artifact.hardlink_to(target)
+    body = {"id": "mini", "input": str(source), "output": str(out), "choice": "restart"}
+    response = client.post("/api/batch", json=body)
+    assert response.status_code == 400 and "must not be symbolic links or hard links" in response.json()["detail"]
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1"))
+    with pytest.raises(ValueError, match="must not be symbolic links or hard links"):
+        batch.run_batch(None, fleet, "mini", source, out, choice="restart", restart_supported=True)
+    assert target.read_text() == "do not overwrite"
+
+
+def test_dangling_checkpoint_symlink_refused(client, tmp_path, monkeypatch):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    (tmp_path / "answers.part").symlink_to(tmp_path / "missing")
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(tmp_path / "answers")})
+    assert response.status_code == 400
+    assert not (tmp_path / "missing").exists()
