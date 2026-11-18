@@ -114,19 +114,22 @@ UI never blocks on a proposal. The pipeline:
 
 ## Releasing
 
-The current stable release is package version `0.1.0`, tagged `v0.1.0`. A version bump or merge does not publish
-a package: publication requires the tag workflow and approval of its `pypi` deployment.
+The published stable version is listed on [PyPI](https://pypi.org/project/basal-ui/) and in
+[GitHub Releases](https://github.com/pawelkiszczak/basal-ui/releases). Promotion to `stage` validates a candidate.
+Package publication requires a matching tag on `main` and approval of the `pypi` deployment.
 
 1. If the Engine moves, bump it ("Bumping the engine" below). Set `version` in `pyproject.toml` (for example,
    `0.2.0rc1` for a candidate or `0.2.0` for a stable release), run `uv lock`, and finalize the matching
-   `docs/WHATS_NEW.md` section. Remove its **Unreleased** label before tagging. These changes land on `dev`.
-2. Open the pull request `dev` → `stage`. On `stage`, run the e2e gate on real hardware (`make e2e`, `docs/E2E.md`)
-   and record the run (models, hardware, results) in that pull request; fixes go to `stage` and back to `dev`
-   (`stage` → `dev`).
+   `docs/WHATS_NEW.md` section under the version heading. Merge the metadata and release notes into `dev`
+   before opening the promotion PR.
+2. Open the pull request `dev` → `stage`. Run the real-hardware E2E gate on the candidate tree
+   (`make e2e`, [E2E guide](docs/E2E.md)) and record the tree, models, hardware, results, and skips in the PR.
+   After merging, confirm that `stage` matches the tested tree and that release CI passes for that commit.
+   Return any fixes made on `stage` to `dev` through a pull request.
 3. After release CI and E2E pass on `stage`, merge the pull request `stage` → `main`.
 4. After release CI passes on the merged `main` commit, tag `v<version>` on `main` and push the tag. Before building or publishing, `publish.yml`
    checks that the tagged commit is on `main`, the tag matches `pyproject.toml`, and WHATS_NEW has a nonempty
-   `# <version>` section (for this release, `# 0.1.0`).
+   `# <version>` section.
 5. Review the build and approve the waiting `pypi` deployment in GitHub Actions. It uploads to PyPI using trusted
    publishing, then creates the GitHub release with the validated notes and the same built artifacts.
 
@@ -134,8 +137,8 @@ PEP 440 prereleases (including `rc`, alpha, beta and development releases) are m
 explicitly excluded from Latest. Stable releases retain GitHub's automatic Latest selection. The GitHub release
 command requires the remote tag to exist; it will not silently create one.
 
-After the first PyPI publication, update README and SECURITY to reflect availability. Keep candidate install
-commands pinned to the prerelease version; do not describe an RC as a stable release.
+After publishing a stable version, update the README's pinned PyPI commands and the source-install section.
+The published package version follows the PyPI listing in SECURITY.
 
 ### One-time trusted publisher setup
 
