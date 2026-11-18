@@ -532,7 +532,13 @@ def create_app(
                 {**{k: v for k, v in server.items() if k in ("id", "name", "url", "consent", "state")}}
                 for server in fleet.decision_servers.values()
             ]
-        return {**status, "decision_servers": servers, "serving": gateway.status(), "inspect": inspector.state()}
+        return {
+            **status,
+            "decision_servers": servers,
+            "serving": gateway.status(),
+            "inspect": inspector.state(),
+            "features": {name: engine.feature(name) for name in ("answer_sets", "conditional_questions")},
+        }
 
     @app.get("/api/decision-servers")
     def get_decision_servers():
@@ -1406,6 +1412,7 @@ def create_app(
             "options": merged,
             "saved": bool(saved),
             "defaults": load_options.DEFAULTS,
+            "load_choices": {key: load_options.CHOICES[key] for key in ("long_lane", "soam")},
             "media_modes": load_options.available_media_modes(assessment, current),
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
