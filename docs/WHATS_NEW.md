@@ -1,5 +1,7 @@
 # Unreleased
 
+- Attach external Decision servers in Model manager → Library to compare their reported models in Playground or Batch. Comparison Decisions are recorded with server provenance and have no basal calibration or automation certificate; external models are excluded from the API server and basal-only tools.
+
 
 - Import and refresh MCP tool catalogues in tool questions, with local BM25 shortlisting.
 - On Engines with Batch resume support, choose Resume or Restart for unfinished output, set the unanswered-line

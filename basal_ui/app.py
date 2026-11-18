@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import base64
 import dataclasses
+import ipaddress
 import json
 import math
 import os
@@ -215,6 +216,7 @@ def create_app(
 
     auto_load_stop = threading.Event()
     auto_load_lock = threading.Lock()
+    decision_server_lock = threading.Lock()
 
     def _auto_load():
         try:
@@ -242,6 +244,13 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app):
         auto_load_thread = None
+
+        def restore_servers():
+            with decision_server_lock:
+                for record in settings_mod.decision_servers():
+                    fleet.attach_decision_server(record)
+
+        await asyncio.to_thread(restore_servers)
         if settings_mod.load().get("auto_load") and settings_mod.last_models():
             auto_load_thread = threading.Thread(target=_auto_load, daemon=True)
             auto_load_thread.start()
@@ -517,7 +526,65 @@ def create_app(
                 if row["id"] in attached:
                     variant = variants.get(row["id"])
                     row["uncalibrated"] = not variant or attached_uncalibrated(variant, cache_dir, current_hw)
-        return {**status, "serving": gateway.status(), "inspect": inspector.state()}
+        with fleet.lock:
+            servers = [
+                {**{k: v for k, v in server.items() if k in ("id", "name", "url", "consent", "state")}}
+                for server in fleet.decision_servers.values()
+            ]
+        return {**status, "decision_servers": servers, "serving": gateway.status(), "inspect": inspector.state()}
+
+    @app.get("/api/decision-servers")
+    def get_decision_servers():
+        status = full_status()
+        return {
+            "servers": [
+                {
+                    **server,
+                    "models": [
+                        m["entry"] for m in status["models"] if (m.get("entry") or {}).get("server") == server["id"]
+                    ],
+                }
+                for server in status["decision_servers"]
+            ]
+        }
+
+    @app.post("/api/decision-servers", status_code=201)
+    def post_decision_server(body: dict = Body(...)):
+        with decision_server_lock:
+            try:
+                url = body.get("url")
+                if not isinstance(url, str):
+                    raise ValueError("url must be an http(s) URL")
+                host = urlsplit(url.strip()).hostname
+                if not host:
+                    raise ValueError("url must be an http(s) URL")
+                try:
+                    address = ipaddress.ip_address(host)
+                    local = address.is_loopback or address.is_link_local
+                except ValueError:
+                    local = host.lower() == "localhost"
+                consent = body.get("consent", False)
+                if not local and consent is not True:
+                    raise HTTPException(
+                        400, {"code": "CONSENT_REQUIRED", "detail": f"Consent is required to send requests to {host}"}
+                    )
+                record = settings_mod.add_decision_server(body.get("name"), url, consent, body.get("key"))
+                try:
+                    fleet.attach_decision_server(record)
+                except BaseException:
+                    settings_mod.remove_decision_server(record["id"])
+                    raise
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return get_decision_servers()
+
+    @app.delete("/api/decision-servers/{server_id}")
+    def delete_decision_server(server_id: str):
+        with decision_server_lock:
+            if not settings_mod.remove_decision_server(server_id):
+                raise HTTPException(404, "Decision server not found")
+            fleet.remove_decision_server(server_id)
+            return get_decision_servers()
 
     def serve_response():
         config = settings_mod.serve_settings()
@@ -1518,6 +1585,8 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         try:
             runner = fleet.ready(model_id)
+            if (runner.models_entry or {}).get("kind") == "comparison":
+                raise HTTPException(400, "Comparison models cannot be benchmarked")
             if kind == "benchmark":
                 return fleet.start_model_job(
                     "benchmark", model_id, label, bench.benchmark_job, fleet, model_id, paths, label
@@ -2272,10 +2341,12 @@ def create_app(
             )
         source = Path(source).expanduser()
         try:
-            lines = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+            with source.open("rb") as stream:
+                source_bytes = stream.read()
+            lines = [(n, line) for n, line in enumerate(source_bytes.decode("utf-8").splitlines(), 1) if line.strip()]
         except (OSError, UnicodeDecodeError) as exc:
             raise HTTPException(400, f"cannot read {source}: {getattr(exc, 'strerror', None) or exc}") from exc
-        for n, line in enumerate(lines, 1):
+        for n, line in lines:
             try:
                 item = json.loads(line)
             except ValueError:
@@ -2343,6 +2414,63 @@ def create_app(
                 if levels
                 else f"{model_id} has no early exits (basal-serve --mode fast-exit)",
             )
+        from .fleet import ComparisonRunner, strip_mcp_metadata
+
+        if isinstance(runner, ComparisonRunner):
+            from basal.run import to_request
+
+            from .compat import comparison_request
+
+            for n, line in lines:
+                item = json.loads(line)
+                if preset and "questions" not in item and "question" not in item:
+                    from basal.presets import questions
+
+                    item["questions"] = questions(preset, None if lang == "auto" else lang, item["state"])
+                if "questions" in item and "gold" in item:
+                    raise HTTPException(
+                        400,
+                        {
+                            "code": "UNSUPPORTED_FOR_COMPARISON",
+                            "detail": f"{source.name}: line {n}: basal-run does not grade gold on full requests; use simple items",
+                        },
+                    )
+                permitted = (
+                    {"id", "state", "questions", "early_exit", "gold"}
+                    if "questions" in item
+                    else {"id", "state", "question", "options", "type", "gold"}
+                )
+                extra = set(item) - permitted
+                if extra:
+                    raise HTTPException(
+                        400,
+                        {
+                            "code": "UNSUPPORTED_FOR_COMPARISON",
+                            "detail": f"{source.name}: line {n}: basal-run would discard {sorted(extra)[0]}",
+                        },
+                    )
+                try:
+                    request = strip_mcp_metadata(to_request(item, early_exit))
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise HTTPException(400, f"{source.name}: line {n}: {exc}") from exc
+                refusal = comparison_request(
+                    request, runner.image_input, runner.option_limit, bool(runner.server.get("decisions_url"))
+                )
+                if refusal is not None:
+                    error = refusal.json()
+                    raise HTTPException(
+                        400, {"code": error["code"], "detail": f"{source.name}: line {n}: {error['error']}"}
+                    )
+        snapshot = None
+        if isinstance(runner, ComparisonRunner):
+            fd, name = tempfile.mkstemp(prefix="basal-ui-comparison-", suffix=".jsonl")
+            snapshot = Path(name)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(source_bytes)
+            except BaseException:
+                snapshot.unlink(missing_ok=True)
+                raise
         try:
             return fleet.start_model_job(
                 "batch",
@@ -2360,9 +2488,21 @@ def create_app(
                 choice,
                 stop_after,
                 caps["restart"],
+                *([runner, snapshot] if snapshot is not None else [None, None]),
+                runner_expected=runner if isinstance(runner, ComparisonRunner) else None,
             )
+        except KeyError as exc:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
+            raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
             raise HTTPException(409, str(exc)) from exc
+        except BaseException:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
+            raise
 
     @app.delete("/api/batch")
     def cancel_batch():

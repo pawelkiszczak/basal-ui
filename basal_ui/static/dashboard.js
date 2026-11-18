@@ -80,7 +80,7 @@
       const usage=state.stats?.models?.[model.id], reachable=model.health?.reachable!==false;
       const health=model.health||{}, stalled=health.status==='stalled';
       node.querySelector('.status-dot').className=`status-dot${model.state==='ready'&&reachable&&!stalled?' ready':''}`;
-      text(node.querySelector('strong'),shortName(model.id));text(node.querySelector('.chip'),t(stalled?'stalled':reachable?model.state:'unreachable'));
+      text(node.querySelector('strong'),shortName(model.id));text(node.querySelector('.chip'),`${model.kind==='comparison'?`${t('Comparison')} · `:''}${t(stalled?'stalled':reachable?model.state:'unreachable')}`);
       const age=stalled&&Number.isFinite(health.engine_call_s)?t('Engine call age: {seconds} s',{seconds:number(health.engine_call_s,true)}):'';
       const lanes=health.long&&Number.isFinite(health.running)&&Number.isFinite(health.queued)?t('Main: {running} running · {queued} queued; long: {longRunning} running · {longQueued} queued',{running:number(health.running-health.long.running),queued:number(health.queued-health.long.queued),longRunning:number(health.long.running),longQueued:number(health.long.queued)}):'';
       text(node.querySelector('.traffic-model-health'),[age,lanes].filter(Boolean).join(' · '));

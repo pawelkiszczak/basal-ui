@@ -250,3 +250,10 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 #runIdentity,#runOrderCheck{white-space:normal;height:auto;min-height:36px}
 .mcp-dialog{width:min(640px,calc(100vw - 24px));overflow:auto;overflow-wrap:anywhere}.mcp-dialog>label{display:block;margin-top:8px}.mcp-dialog input[type=url],.mcp-dialog input[type=password]{width:100%;min-width:0}.mcp-actions,.mcp-dialog .dialog-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.mcp-item{display:flex;gap:8px;align-items:start;padding:8px;border-bottom:1px solid var(--line)}.mcp-item span{min-width:0}.mcp-dialog #mcp-error{color:var(--danger)}
 #attachDialog select{line-height:normal;max-width:100%}
+
+.comparison-badge { display: inline-block; max-width: 100%; }
+.comparison-badge summary { cursor: pointer; }
+.comparison-badge p { max-width: 18rem; padding: .6rem; background: var(--white); border: 1px solid var(--line); border-radius: .4rem; overflow-wrap: anywhere; }
+.comparison-model .model-row-main strong, #decisionServerList .disk-info { min-width: 0; overflow-wrap: anywhere; }
+#decisionServerList .disk-info { display: block; }
+#decisionServerList .disk-info > div { margin-top: .3rem; }

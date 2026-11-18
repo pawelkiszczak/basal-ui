@@ -15,9 +15,13 @@ def child():
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path == "/metrics":
+                return self._metrics()
+            server.discovery_started.set()
+            server.discovery_gate.wait(30)
             if self.path == "/health":
                 return self._health()
-            self._metrics()
+            self._get_models()
 
         def _metrics(self):
             server.metrics_seen += 1
@@ -32,6 +36,14 @@ def child():
             with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                 self.wfile.write(body.encode())
 
+        def _get_models(self):
+            body = json.dumps({"data": server.models}).encode()
+            self.send_response(server.models_status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def _health(self):
             body = json.dumps(server.health).encode()
             self.send_response(server.health_status)
@@ -42,9 +54,11 @@ def child():
 
         def do_POST(self):
             seen.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+            server.request_headers.append(dict(self.headers))
+            server.post_started.set()
             gate.wait(30)
             body = json.dumps(server.reply).encode()
-            self.send_response(server.status)
+            self.send_response(server.reply_status if server.reply_status != 200 else server.status)
             self.send_header("Content-Type", "application/json")
             for key, value in server.headers.items():
                 self.send_header(key, value)
@@ -61,12 +75,18 @@ def child():
     server.metrics_seen, server.metrics_entered, server.metrics_gate = 0, None, None
     server.status, server.headers = 200, {}
     server.health_status, server.health = 200, {"status": "ok"}
+    server.discovery_started = threading.Event()
+    server.discovery_gate = threading.Event()
+    server.discovery_gate.set()
+    server.post_started = threading.Event()
+    server.request_headers, server.models, server.models_status, server.reply_status = [], [], 200, 200
     server.reply = {
-        "answers": {"q": {"type": "choice", "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.8}},
+        "answers": {"q": {"type": "choice", "choice": "0", "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.8}},
         "usage": {"latency_ms": 1.5},
     }
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server
     gate.set()
+    server.discovery_gate.set()
     server.shutdown()
     server.server_close()
