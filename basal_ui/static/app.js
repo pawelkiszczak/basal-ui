@@ -388,12 +388,12 @@ async function loadExamples() {
   } catch { examples=[];renderRequestPresets(); }
 }
 // Engine question sets are added to the current request, including in Edit JSON mode.
-$('#examples').insertAdjacentHTML('afterend', `<details id="questionSets"><summary>${t('Insert question set')}</summary><div class="controls"><label>${t('Question set')} <select id="questionSet" disabled></select></label><label>${t('Language')} <select id="questionSetLang"><option value="auto">${t('Auto')}</option><option value="pl">${t('Polish')}</option><option value="en">${t('English')}</option></select></label><label>${t('Max error (optional)')} <input id="questionSetError" type="number" min="0" max="1" step="any"></label><button type="button" id="insertQuestionSet" disabled>${t('Insert questions')}</button></div><p id="questionSetHint" class="muted" role="status">${t('Loading question sets…')}</p></details>`);
+$('#examples').insertAdjacentHTML('afterend', `<details id="questionSets"><summary>${t('Insert question set')}</summary><div class="controls"><label>${t('Question set')} <select id="questionSet" disabled></select></label><label>${t('Language')} <select id="questionSetLang" disabled><option value="auto">${t('Auto')}</option><option value="pl">${t('Polish')}</option><option value="en">${t('English')}</option></select></label><label>${t('Max error (optional)')} <input id="questionSetError" type="number" disabled min="0" max="1" step="any"></label><button type="button" id="insertQuestionSet" disabled>${t('Insert questions')}</button></div><p id="questionSetHint" class="muted" role="status">${t('Loading question sets…')}</p></details>`);
 async function loadQuestionSets() {
   try {
     const sets=await api('/api/question-sets');
     $('#questionSet').innerHTML=sets.map(set=>`<option value="${esc(set.name)}">${esc(set.name)} (${set.question_count})</option>`).join('');
-    $('#questionSet').disabled=$('#insertQuestionSet').disabled=!sets.length;
+    for(const selector of ['#questionSet','#questionSetLang','#questionSetError','#insertQuestionSet'])$(selector).disabled=!sets.length;
     $('#questionSetHint').textContent=sets.length?'':t('No question sets are available.');
   } catch { $('#questionSetHint').textContent=t('Question sets are unavailable in this Engine.'); }
 }
@@ -704,7 +704,7 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
 }
 function extraOf(q, type) {
   const owned=new Set(['type','instructions','evidence',...OWNED[type]]);
-  if(!Array.isArray(q.max_error))owned.add('max_error');  // a list of targets (tasks) is kept as given
+  if(MAX_ERROR_TYPES.includes(type)&&!Array.isArray(q.max_error))owned.add('max_error');  // uneditable targets stay as given
   return Object.fromEntries(Object.entries(q||{}).filter(([k])=>!owned.has(k)));
 }
 function mediaRequestFields() {

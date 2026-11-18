@@ -1796,7 +1796,12 @@ def test_question_set_insertion_preserves_request_and_sends(page, text_model):
     page.fill("#questionSetError", "0.05")
     page.click("#insertQuestionSet")
     page.wait_for_function("() => document.querySelectorAll('.q-name').length === 4")
+    for name in ("urgency_2", "category", "needs_human"):
+        card = page.locator(".question").filter(has=page.locator(f'.q-name[value="{name}"]'))
+        card.locator(".q-instructions-input").fill(f"Edited {name}?")
     built = page.evaluate("() => buildRequest()")
+    for name in ("urgency_2", "category", "needs_human"):
+        assert built["questions"][name]["max_error"] == 0.05
     assert built["state"] == request["state"] and built["facts"] == "auto" and built["lang"] == "en"
     assert built["questions"]["urgency"] == request["questions"]["urgency"]
     assert built["questions"]["urgency_2"]["max_error"] == 0.05
@@ -1816,7 +1821,26 @@ def test_question_set_insertion_preserves_request_and_sends(page, text_model):
         if page.locator("#quickActionsRail").is_visible():
             page.locator("#toggleQuickActions").click()
         page.screenshot(path=os.environ["BASAL_E2E_QUESTION_SETS_SCREENSHOT"])
-    page.click("#sendButton")
+    with page.expect_response(lambda response: response.url.endswith("/api/decide"), timeout=WAIT) as decision:
+        page.click("#sendButton")
+    response = decision.value
+    assert response.status == 200
+    sent = response.request.post_data_json
+    for name in ("urgency_2", "category", "needs_human"):
+        assert sent["questions"][name]["max_error"] == 0.05
+        assert sent["questions"][name]["instructions"] == f"Edited {name}?"
+        assert isinstance(response.json()["answers"][name]["abstain"], bool)
     page.wait_for_selector("#results article.answer")
     sync_api.expect(page.locator("#decideError")).to_be_hidden()
     sync_api.expect(page.locator("#results article.answer")).to_have_count(7)
+
+
+def test_question_set_controls_show_translated_unsupported_reason(page):
+    page.route("**/api/question-sets", lambda route: route.fulfill(status=503, json={"detail": "unavailable"}))
+    page.evaluate("() => localStorage.setItem('basal-ui.lang', 'pl')")
+    page.reload()
+    view(page, "playground")
+    page.locator("#questionSets summary").click()
+    sync_api.expect(page.locator("#questionSetHint")).to_have_text("Zestawy pytań są niedostępne w tym silniku.")
+    for control in ("#questionSet", "#questionSetLang", "#questionSetError", "#insertQuestionSet"):
+        sync_api.expect(page.locator(control)).to_be_disabled()
