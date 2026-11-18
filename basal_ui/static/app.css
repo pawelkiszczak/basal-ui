@@ -1,4 +1,64 @@
-:root{--dark-tabs-surface:#34352e;--dark-tab-surface:#292e2a;--dark-hover-surface:#343a35;--dark-code-surface:#1c211e;--dark-evidence-surface:#624035;--image-label-foreground:#fff;--evidence-foreground:#fff;--history-code-surface:#232824;--dark-omni-border:#4a4160;--dark-suggestion-meta-surface:#343a30;--dark-suggestion-meta-text:#d8e2ce;--code-surface:#f0efe9;--omni-border:#dcd3e9;--file-border:#d7d9d1;--file-hover-border:#a9b19f;--file-hover-surface:#f0f0e9;--media-backdrop:#232824cc;--tabs-surface:#efeee8;--tabs-border:#dcded4;--tab-text:#465243;--tab-active-surface:#fffdf7;--tab-active-border:#b9c0ac;--tab-shadow-color:#263d2310;--tab-active-text:#233522;--suggestion-surface:#f3f7f1;--suggestion-border:#d9e4d7;--suggestion-omni-surface:#f6f3fa;--suggestion-eyebrow:#58715e;--suggestion-omni-detail:#847297;--suggestion-meta-surface:#eceee6;--suggestion-meta-text:#546246;--focus-shadow-color:#32645020;--image-label-ink:#232824;--history-code-text:#f8f7f4;--probability-rest:#c9cabc;--image-box:#326450;--evidence-kept-line:#b9cdb6;--evidence-field-line:#cfc3e2;--inspect-diff-border:#f2a476;--inspect-same-border:#d4e0d2;--recommended-border:#e9c4b7;--best-surface:#f2eee3;--best-border:#e2dbc8;--best-text:#765b31;--unknown-surface:#f0f0ec;--dialog-backdrop:#23282480;--brand:#b94329;--status-idle:#85897f;--dialog-backdrop-clear:#23282400;--skin-green-swatch:#326450;--skin-orange-swatch:#b9532b;--annotation:#e07b1f;--annotation-foreground:#fff}
+:root {
+  --code-surface: #f0efe9;
+  --dark-code-surface: #1c211e;
+  --history-code-surface: #232824;
+  --history-code-text: #f8f7f4;
+  --dark-hover-surface: #343a35;
+  --focus-shadow-color: #32645020;
+
+  --tabs-surface: #efeee8;
+  --tabs-border: #dcded4;
+  --tab-text: #465243;
+  --tab-active-surface: #fffdf7;
+  --tab-active-border: #b9c0ac;
+  --tab-active-text: #233522;
+  --tab-shadow-color: #263d2310;
+  --dark-tabs-surface: #34352e;
+  --dark-tab-surface: #292e2a;
+
+  --suggestion-surface: #f3f7f1;
+  --suggestion-border: #d9e4d7;
+  --suggestion-omni-surface: #f6f3fa;
+  --suggestion-eyebrow: #58715e;
+  --suggestion-omni-detail: #847297;
+  --suggestion-meta-surface: #eceee6;
+  --suggestion-meta-text: #546246;
+  --dark-suggestion-meta-surface: #343a30;
+  --dark-suggestion-meta-text: #d8e2ce;
+  --omni-border: #dcd3e9;
+  --dark-omni-border: #4a4160;
+
+  --file-border: #d7d9d1;
+  --file-hover-border: #a9b19f;
+  --file-hover-surface: #f0f0e9;
+  --media-backdrop: #232824cc;
+
+  --image-box: #326450;
+  --image-label-ink: #232824;
+  --image-label-foreground: #fff;
+  --annotation: #e07b1f;
+  --annotation-foreground: #fff;
+  --dark-evidence-surface: #624035;
+  --evidence-foreground: #fff;
+  --evidence-kept-line: #b9cdb6;
+  --evidence-field-line: #cfc3e2;
+
+  --inspect-diff-border: #f2a476;
+  --inspect-same-border: #d4e0d2;
+  --recommended-border: #e9c4b7;
+  --best-surface: #f2eee3;
+  --best-border: #e2dbc8;
+  --best-text: #765b31;
+  --unknown-surface: #f0f0ec;
+  --probability-rest: #c9cabc;
+  --status-idle: #85897f;
+
+  --dialog-backdrop: #23282480;
+  --dialog-backdrop-clear: #23282400;
+  --brand: #b94329;
+  --skin-green-swatch: #326450;
+  --skin-orange-swatch: #b9532b;
+}
 
 @font-face{font-family:Manrope;src:url("/static/fonts/manrope.ttf") format("truetype");font-weight:400 800;font-display:swap}
 @font-face{font-family:"IBM Plex Mono";src:url("/static/fonts/ibm-plex-mono.ttf") format("truetype");font-weight:400;font-display:swap}
