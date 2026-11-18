@@ -175,7 +175,10 @@ def _migrate_options(value):
     changed = False
     for item in entries:
         if isinstance(item.get("long_lane"), bool):
-            item["long_lane"] = "on" if item["long_lane"] else "off"
+            if item["long_lane"]:
+                item["long_lane"] = "on"
+            else:
+                item.pop("long_lane")  # inherit the installed Engine's default
             changed = True
         if isinstance(item.get("soam"), bool):
             item["soam"] = "auto" if item["soam"] else "off"

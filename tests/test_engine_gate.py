@@ -102,7 +102,13 @@ def test_every_pin_names_the_tested_release():
     assert source == engine.ENGINE_URL, "pyproject.toml [tool.uv.sources] basal names another release"
     for doc in ("README.md", "docs/E2E.md", "CONTRIBUTING.md"):
         text = unquote((ROOT / doc).read_text())
-        tags = set(re.findall(r"archive/refs/tags/v(\S+?)\.tar\.gz", text))
+        tag_pattern = r"archive/refs/tags/v(\S+?)\.tar\.gz"
+        if doc == "README.md":
+            before, _, stable = text.partition("### PyPI package")
+            stable, _, after = stable.partition("## Supported engine range")
+            assert set(re.findall(tag_pattern, stable)) == {"2.4.1"}
+            text = before + after
+        tags = set(re.findall(tag_pattern, text))
         assert tags <= {engine.PINNED_RELEASE}, f"{doc} installs engine {tags}"
         assert tags or doc == "CONTRIBUTING.md", f"{doc} lost its install line"
         current = text.split("## Stage gate", 1)[0] if doc == "docs/E2E.md" else text

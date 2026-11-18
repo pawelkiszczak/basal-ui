@@ -330,16 +330,19 @@ def test_load_option_migration_is_atomic_and_covers_legacy_and_presets(tmp_path,
     data = settings.load()
     assert data["load_options"] == {
         "on": {"long_lane": "on", "soam": "auto"},
-        "off": {"long_lane": "off", "soam": "off"},
+        "off": {"soam": "off"},
         "empty": {},
     }
-    assert data["presets"]["load"]["old"] == {"long_lane": "off", "soam": "off"}
+    assert data["presets"]["load"]["old"] == {"soam": "off"}
     assert data["last_models"][0]["options"] == {"long_lane": "on", "soam": "auto"}
     persisted = json.loads(config.read_text())
     assert persisted["last_model"]["options"] == {"long_lane": "on", "soam": "auto"}
     assert config.stat().st_mode & 0o777 == 0o600
     assert settings.load() == data
-    assert options.validate({"long_lane": False})["long_lane"] == "off"
+    assert options.validate({"long_lane": False})["long_lane"] == "auto"
+    assert options.validate(settings.load_options("off"))["long_lane"] == "auto"
+    assert "--long-lane" not in options.args(settings.load_options("off"))
+    assert options.args({"long_lane": "off"}) == ["--long-lane", "off"]
 
     monkeypatch.setitem(options.DEFAULTS, "long_lane", "off")
     monkeypatch.setitem(options.CHOICES, "long_lane", ("on", "off"))

@@ -189,7 +189,7 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
     for key, value in options.items():
         if key == "long_lane":
             if isinstance(value, bool):
-                value = "on" if value else "off"
+                value = "on" if value else DEFAULTS[key]
             elif value == "auto" and value not in CHOICES[key]:
                 value = DEFAULTS[key]
         elif key == "soam" and isinstance(value, bool):
