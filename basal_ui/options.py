@@ -182,12 +182,13 @@ MODE_ORDER = (
 
 def _number(key, value):
     lo, hi, integer, open_lo = NUMBERS[key]
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or (integer and int(value) != value)
-    ):
+    valid = not isinstance(value, bool) and isinstance(value, (int, float))
+    if valid and (not integer or isinstance(value, float) or key in ("max_requests", "max_branches")):
+        try:
+            valid = math.isfinite(value)
+        except OverflowError:
+            valid = False
+    if not valid or (integer and int(value) != value):
         raise ValueError(f"load option {key} must be {'an integer' if integer else 'a number'}")
     if (value <= lo if open_lo else value < lo) or (hi is not None and value > hi):
         raise ValueError(

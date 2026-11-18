@@ -205,6 +205,21 @@ def test_invalid_options_name_the_option(bad, message):
         options.validate(bad)
 
 
+def test_large_numbers_keep_integer_precision_and_refuse_float_overflow(monkeypatch):
+    monkeypatch.setattr(options, "serve_option", lambda flag: ((), None))
+    exact = 2**53 + 1
+    validated = options.validate({"max_requests": exact, "max_branches": exact})
+    assert validated["max_requests"] == validated["max_branches"] == exact
+    assert options.validate({"max_batch": 10**400})["max_batch"] == 10**400
+    for key in ("request_timeout", "max_body_mb", "max_requests", "max_branches"):
+        with pytest.raises(ValueError, match=key):
+            options.validate({key: 10**400})
+    app = create_app(catalog_fn=lambda **_: ([BF16], "test"), hardware_fn=lambda: CPU)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.put("/api/models/options", json={"id": BF16.id, "options": {"request_timeout": 10**400}})
+    assert response.status_code == 400 and "request_timeout" in response.json()["detail"]
+
+
 def test_every_engine_switch_reaches_basal_serve_as_it_reads_it(tmp_path):
     from basal.server import parser
 
