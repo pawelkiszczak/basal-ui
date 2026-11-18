@@ -437,12 +437,16 @@ five other measurements, one at a time:
   questions per request, synthetic states of about N tokens (with a share of long ones and a seed) and, for a
   `fast-exit` model, an early-exit level.
 - **Determinism check**: `basal-loadtest --determinism N`: N requests alone, then the same N mixed with N others; a
-  model loaded with **Deterministic** (load options) must return identical probabilities.
+  model loaded with **Deterministic** (load options) must return identical probabilities. When reported by the Engine,
+  load errors count failed background requests.
 - **Compare engine modes**: `basal-bench` in basal-ui's own process for a downloaded model: every chosen mode (the
   ones this machine can run, plus `eager-fp32`, `vllm@deterministic` and `fast-exit@<policy>` where available) is
   loaded, measured (latency with one and both option orders, decisions per second, agreement with the first mode,
   accuracy, load time, memory) and freed in turn. Its memory is counted in the budget while it runs (twice the
-  estimate with `eager-fp32`); a mode that fails is listed with its error.
+  estimate with `eager-fp32`); a mode that fails is listed with its error. The Active load settings supply the
+  adapter and any Active MLX forward setting when `basal-bench` declares the corresponding flags; for an unloaded
+  model, Saved load settings are used. Other comparison settings continue to use Saved load settings. Older Engines
+  omit unsupported flags.
 
 - **Identity gate**: `basal-bench --identity` for a downloaded model, in fp32 or bf16. It uses saved attention, merge,
   lean, tree and Gemma attention settings when non-default; the fast mode must be available for this model and

@@ -1901,7 +1901,7 @@ function renderBenchmarkState(bench, ready) {
 }
 function benchmarkRow(x) {
   const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}${x.server?` · ${esc(x.server)} · ${t('Comparison')}`:''}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set||''))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set||''))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
-  if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}</td></tr>`;}
+  if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}${d.load_errors==null?'':` · ${t('load errors')} ${esc(d.load_errors)}`}</td></tr>`;}
   if(kind==='identity'){
     const rows=x.rows||[];
     const detail=rows.map(r=>`<tr><td>${esc(r.path)}</td><td>${r.gate==='pass'?t('Passed'):t('Failed')}</td><td>${Number(r.max_dp).toExponential(2)}</td></tr>`).join('');

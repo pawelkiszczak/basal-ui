@@ -760,6 +760,7 @@ const PL = {
   "Light": "Jasny",
   "Live activity, model status, and recent traffic.": "Aktywność na żywo, stan modeli i ostatni ruch.",
   "Live counters for recorded Decisions.": "Bieżące liczniki zarejestrowanych Decyzji.",
+  "load errors": "błędy pod obciążeniem",
   "LoRA adapter": "Adapter LoRA",
   "LoRA adapter directory (merged at load)": "Katalog adaptera LoRA (scalany podczas ładowania)",
   "LoRA adapters at load need basal engine 2.5.0 or newer": "Adaptery LoRA przy ładowaniu wymagają silnika basal 2.5.0 lub nowszego",
