@@ -42,8 +42,9 @@
 body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-header .chip { margin-left: 4px; }
+header .chip { margin-inline-start: 4px; }
 header .spacer { flex: 1; }
+@media (max-width: 600px) { html[dir="rtl"] header { flex-wrap: wrap; } html[dir="rtl"] header .chip { white-space: normal; overflow-wrap: anywhere; max-width: 100%; } }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; white-space: nowrap; }
 button, select, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
@@ -79,20 +80,20 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 .rhead { padding: 18px 20px; display: grid; grid-template-columns: 1fr auto; gap: 12px 20px; border-bottom: 1px solid var(--border); }
 .rhead .qname { color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rhead .qtext { font-size: 16px; font-weight: 600; margin-top: 4px; }
-.hero { text-align: right; }
+.hero { text-align: end; }
 .hero .v { font-size: 44px; font-weight: 600; line-height: 1; }
 .hero .l { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
 .answer { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .answer .opt-text { font-size: 18px; font-weight: 600; }
-.status { display: inline-flex; gap: 6px; align-items: center; padding: 3px 10px 3px 6px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink); }
+.status { display: inline-flex; gap: 6px; align-items: center; padding-block: 3px; padding-inline: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink); }
 .status .ic { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
 .step { padding: 18px 20px; border-bottom: 1px solid var(--border); }
 .step:last-child { border-bottom: 0; }
 .step h3 { margin: 0 0 2px; font-size: 14px; display: flex; gap: 10px; align-items: center; }
 .step h3 .n { width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2); color: var(--ink-2); display: inline-grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
-.step .sub { color: var(--ink-2); margin: 0 0 12px 32px; font-size: 13px; }
-.step .body { margin-left: 32px; }
-@media (max-width: 600px) { .step .body, .step .sub { margin-left: 0; } .hero .v { font-size: 34px; } }
+.step .sub { color: var(--ink-2); margin: 0 0 12px; margin-inline-start: 32px; font-size: 13px; }
+.step .body { margin-inline-start: 32px; }
+@media (max-width: 600px) { .step .body, .step .sub { margin-inline-start: 0; } .hero .v { font-size: 34px; } }
 .tabs { display: inline-flex; background: var(--surface-2); border-radius: 8px; padding: 2px; gap: 2px; margin-bottom: 8px; }
 .tabs button { border: 0; background: transparent; padding: 4px 10px; border-radius: 6px; font-size: 12px; color: var(--ink-2); }
 .tabs button.on { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--border); }
@@ -112,7 +113,7 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 @media (max-width: 760px) { .pack { grid-template-columns: 1fr; } }
 .packrow { margin-bottom: 14px; }
 .packrow .lbl { font-size: 12px; color: var(--ink-2); margin-bottom: 4px; display: flex; justify-content: space-between; }
-.packrow .bar { display: flex; gap: 2px; height: 22px; }
+.packrow .bar { direction: ltr; display: flex; gap: 2px; height: 22px; }
 .packrow .bar div { border-radius: 4px; min-width: 2px; }
 .packrow .bar .gap { width: 10px; background: transparent; }
 .bignum { font-size: 22px; font-weight: 600; }
@@ -138,15 +139,15 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .hbars .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
 .hbars .track { height: 12px; position: relative; }
 .hbars .track div { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; min-width: 1px; }
-.hbars .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.hbars .val { text-align: end; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .hbars .win .txt, .hbars .win.val { font-weight: 600; }
 .toptok { margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 .toptok code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 .cmp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(120px, 2fr) 60px; gap: 4px 10px; align-items: center; font-size: 12px; }
 .cmp .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cmp .pair { display: grid; gap: 2px; }
+.cmp .pair { direction: ltr; display: grid; gap: 2px; }
 .cmp .pair div { height: 8px; border-radius: 0 4px 4px 0; min-width: 1px; }
-.cmp .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.cmp .val { text-align: end; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .cmp .hdr { color: var(--muted); font-size: 11px; }
 .meter { position: relative; height: 56px; margin: 6px 0 4px; }
 .meter .track { position: absolute; left: 0; right: 0; top: 22px; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
@@ -161,7 +162,7 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .loading { display: flex; gap: 10px; align-items: center; color: var(--ink-2); padding: 12px 4px; }
 .spin { width: 16px; height: 16px; border: 2px solid var(--grid); border-top-color: var(--accent); border-radius: 50%; animation: sp .8s linear infinite; }
 @keyframes sp { to { transform: rotate(360deg); } }
-.scale { display: flex; gap: 2px; margin-top: 12px; }
+.scale { direction: ltr; display: flex; gap: 2px; margin-top: 12px; }
 .scale div { flex: 1; text-align: center; font-size: 11px; color: var(--ink-2); padding: 6px 4px; background: var(--surface-2); border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scale div.on { outline: 2px solid var(--ink); outline-offset: -2px; color: var(--ink); font-weight: 600; }
 </style>

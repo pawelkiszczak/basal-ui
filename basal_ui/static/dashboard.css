@@ -38,10 +38,10 @@
 #dashboard .traffic-table-wrap table { min-width: 580px; font-variant-numeric: tabular-nums; }
 #dashboard .traffic-table-wrap th { padding: 12px 8px; color: var(--muted); font-size: 10px; font-weight: 500; }
 #dashboard .traffic-table-wrap td { padding: 18px 8px; font-size: 12px; }
-#dashboard .traffic-table-wrap th:not(:first-child), #dashboard .traffic-table-wrap td:not(:first-child) { text-align: right; }
+#dashboard .traffic-table-wrap th:not(:first-child), #dashboard .traffic-table-wrap td:not(:first-child) { text-align: end; }
 #dashboard .traffic-table-wrap tbody tr:last-child td { border-bottom: 0; }
 .traffic-table-wrap code { font: 12px var(--mono); }
-.traffic-method { display: inline-block; margin-right: 12px; color: var(--accent); font: 9px var(--mono); letter-spacing: .4px; }
+.traffic-method { display: inline-block; margin-inline-end: 12px; color: var(--accent); font: 9px var(--mono); letter-spacing: .4px; }
 #dashboard .traffic-no-endpoints { padding: 24px 8px; color: var(--muted); }
 .traffic-definition { color: var(--muted); font: 11px/1.8 var(--sans); }
 @container (max-width: 900px) {
