@@ -82,8 +82,8 @@ After `make engine`, running `make install` restores the pinned Engine.
 - `basal_ui/static/dashboard.js`: pure Dashboard renderer; `app.js` owns status/traffic fetching and the existing poll cycle. Keep one polling owner.
 - `basal_ui/static/backends.js`: Backend checks and add-on UI; consume `app:status` for add-on progress rather than creating another status timer. Shared downloaded-model loading and recommendation Backend selection live in `app.js`.
 - `pyproject.toml`: deps, extras (`mcp`, `e2e`), `dev` group, pytest/ruff/uv config (CPU-only torch index on Linux).
-- `.github/workflows/ci.yml`: the merge gate, on pushes to and pull requests into `dev`, `stage` and `main` (either direction); its `ci-ok` job aggregates the matrix and is the required status check. `nightly.yml` checks upstream `main` and is non-gating. `publish.yml` releases `v*` tags (cut on `main`) to PyPI and GitHub Releases. Actions are pinned by commit SHA (Node 24 releases); Dependabot bumps them.
-- Branches: `dev` (integration; feature PRs target it) → `stage` (release candidate; e2e gate) → `main` (released). Fixes made on `stage` go back with `stage` → `dev`. Branch protection requires a PR with `ci-ok` green on all three, up to date on `stage`/`main`, enforced for admins on `stage`/`main` (`CONTRIBUTING.md`, "Branches and CI"). `CONTRIBUTORS.md` lists contributors.
+- `.github/workflows/release-ci.yml`: Engine/OS/Python matrix after merges to `stage` and `main`. Read its `ci-ok` result before promoting or tagging. See `CONTRIBUTING.md` for release and publishing steps. Pin Actions by commit SHA. Dependabot updates the pins.
+- Branches: feature PRs target `dev`. Promote via `dev` → `stage` → `main`. Return release-candidate fixes via `stage` → `dev`.
 
 ## Runtime/Tooling Preferences
 

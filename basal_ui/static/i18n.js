@@ -4,6 +4,13 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Question name": "Nazwa pytania",
+  "Question type": "Typ pytania",
+  "Option keys": "Klucze opcji",
+  "Option description": "Opis opcji",
+  "Question JSON": "JSON pytania",
+  "Unload idle models after minutes (empty = off)": "Wyładuj nieaktywne modele po minutach (puste = wyłączone)",
+  "Enter whole minutes from 1 to 9,007,199,254,740,991, or leave empty to turn off.": "Wpisz całkowitą liczbę minut od 1 do 9 007 199 254 740 991 lub pozostaw puste, aby wyłączyć.",
   "Conformal coverage levels": "Poziomy pokrycia konformalnego",
   "Keep compared thresholds": "Zachowaj porównywane progi",
   "Installed Engine does not support keeping thresholds": "Zainstalowany Engine nie obsługuje zachowywania progów",
@@ -742,6 +749,7 @@ const PL = {
   "Stopped models:": "Zatrzymane modele:",
   "Storage location": "Lokalizacja pamięci",
   "Strict": "Rygorystycznie",
+  "Skip to main content": "Przejdź do treści głównej",
   "Suggested": "Sugerowane",
   "Suggested for this machine": "Polecane dla tego komputera",
   "Synthetic tokens": "Tokeny syntetyczne",
@@ -1206,6 +1214,7 @@ const PL = {
   "— on disk": "— na dysku"
 };  // 'English text': 'tekst po polsku'
 const PL_PLURAL = {
+  "Unloaded after {n} idle minute at {time}": ["Wyładowano po {n} minucie bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}"],
   "{n} non-empty row": ["{n} niepusty wiersz", "{n} niepuste wiersze", "{n} niepustych wierszy"],
   "{n} question": ["{n} pytanie", "{n} pytania", "{n} pytań"],
   "{n} request": ["{n} żądanie", "{n} żądania", "{n} żądań"],
@@ -1269,7 +1278,7 @@ document.documentElement.lang = LANG;
 document.querySelector('.theme-controls')?.insertAdjacentHTML('afterend',
   `<div class="theme-controls lang-controls" role="group" aria-label="Language">${['en', 'pl'].map(lang =>
     `<button class="btn" type="button" data-lang-choice="${lang}" data-variant="outline" aria-pressed="${lang === LANG}">${lang.toUpperCase()}</button>`).join('')}</div>`);
-translateStatic(document.body);
+if (!document.currentScript?.hasAttribute("data-dynamic-only")) translateStatic(document.body);
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-lang-choice]');
   if (!b) return;

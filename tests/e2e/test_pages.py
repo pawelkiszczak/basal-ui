@@ -119,6 +119,103 @@ def isolated_ui(tmp_path):
     assert not left, f"basal-serve children left running after Dashboard E2E: {left}"
 
 
+def test_calibration_file_messages_are_separate_and_escaped(browser, tmp_path):
+    # Snapshot of the calibration response; rendering does not require a model or fitting.
+    messages = [
+        "Warning: " + "The calibration data needs further review before use. " * 3,
+        "Error: " + "The saved report could not be checked for this model. " * 3,
+        "First warning: " + "Some labels were omitted from the fit. " * 4,
+        "Second warning: <img src=x onerror=alert(1)> " + "Review each result carefully. " * 4,
+    ]
+    data = {
+        "selected": "/synthetic.json",
+        "shipped": {"file": "/shipped.json", "context": {"mode": "eager", "layout": "canonical"}},
+        "files": [
+            {
+                "file": "/synthetic.json",
+                "when": 1700000000,
+                "imported": True,
+                "warning": messages[0],
+                "error": messages[1],
+                "warnings": messages[2:],
+                "has_report": True,
+                "rows": "/synthetic.jsonl",
+            }
+        ],
+    }
+    app = UI(tmp_path)
+    app.settings.write_text(json.dumps({"check_updates": False, "auto_load": False}))
+    app.start()
+    context = browser.new_context(viewport={"width": 1000, "height": 900}, service_workers="block")
+    context.route_web_socket("**/*", lambda ws: ws.close())
+    context.route(
+        "**/*", lambda route: route.continue_() if route.request.url.startswith(app.url + "/") else route.abort()
+    )
+    try:
+        page = context.new_page()
+        page.goto(app.url + "/")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_function("() => statusCache !== null")
+        page.evaluate(
+            """data => {
+          document.querySelector('#calibrationModel').innerHTML = '<option value="synthetic">synthetic</option>';
+          document.querySelector('[data-page=manager]').hidden = false;
+          document.querySelector('#manager-calibration').hidden = false;
+          renderCalibrationFiles('synthetic', data);
+        }""",
+            data,
+        )
+        row = page.locator("#calibrationFiles tbody tr").last
+        reasons = row.locator(".reason")
+        assert reasons.all_text_contents() == messages
+        assert row.locator("img").count() == 0
+        assert row.locator("input[type=radio]").is_checked()
+        assert row.locator("[data-report]").count() == row.locator("[data-refit]").count() == 1
+        boxes = [row.locator("label").bounding_box()] + [reasons.nth(i).bounding_box() for i in range(4)]
+        assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(boxes, boxes[1:], strict=False))
+    finally:
+        context.close()
+        assert not app.stop()
+
+
+@pytest.mark.parametrize("width", [390, 1099, 1100, 1440, 1920])
+def test_polish_navigation_hit_targets_and_keyboard(browser, isolated_ui, width):
+    context = browser.new_context(viewport={"width": width, "height": 900})
+    page = context.new_page()
+    try:
+        page.goto(isolated_ui.url)
+        page.evaluate("localStorage.setItem('basal-ui.lang', 'pl')")
+        page.reload()
+        page.wait_for_function("() => typeof statusCache !== 'undefined' && statusCache")
+        settings = page.locator("#openSettings")
+        tools = page.locator(".nav-tools > summary")
+        settings.click(timeout=5000)
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        tools.click(timeout=5000)
+        assert page.locator(".nav-tools").evaluate("(el) => el.open")
+        tools.press("Enter")
+        assert not page.locator(".nav-tools").evaluate("(el) => el.open")
+        tools.focus()
+        tools.press("Tab")
+        assert settings.evaluate("(el) => document.activeElement === el")
+        assert settings.evaluate(
+            "(el) => getComputedStyle(el).outlineStyle !== 'none' || getComputedStyle(el).boxShadow !== 'none'"
+        )
+        settings.press("Enter")
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert page.evaluate("""() => {
+            const el = document.createElement('h3');
+            document.querySelector('.model-card-body').append(el);
+            const style = getComputedStyle(el);
+            const ratio = parseFloat(style.lineHeight) / parseFloat(style.fontSize);
+            el.remove();
+            return ratio >= 1.2 && ratio <= 1.3;
+        }""")
+    finally:
+        context.close()
+
+
 def test_dashboard_default_records_real_decisions_and_resets_model_traffic(browser, isolated_ui, text_model):
     model_id = text_model["id"]
     isolated_ui.load(model_id)
@@ -1785,3 +1882,90 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+@pytest.mark.parametrize(
+    ("language", "skip", "dashboard", "models"),
+    [("en", "Skip to main content", "Dashboard", "Models"), ("pl", "Przejdź do treści głównej", "Pulpit", "Modele")],
+)
+def test_keyboard_view_navigation_and_model_tabs(browser, ui, language, skip, dashboard, models):
+    context = browser.new_context()
+    page = context.new_page()
+    page.add_init_script(f"localStorage.setItem('basal-ui.lang', '{language}')")
+    page.goto(ui.url + "/#dashboard")
+    sync_api.expect(page).to_have_title(f"{dashboard} | basal")
+    page.keyboard.press("Tab")
+    link = page.get_by_role("link", name=skip)
+    sync_api.expect(link).to_be_focused()
+    page.keyboard.press("Enter")
+    sync_api.expect(page.locator("main")).to_be_focused()
+    page.keyboard.press("Alt+2")
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    for _ in range(12):
+        if page.locator('#models [role="tab"][aria-selected="true"]').evaluate("el => el === document.activeElement"):
+            break
+        page.keyboard.press("Tab")
+    selected = page.locator('#models [role="tab"][aria-selected="true"]')
+    sync_api.expect(selected).to_be_focused()
+    for key, target in [
+        ("End", "allModelsTab"),
+        ("ArrowLeft", "suggestedTab"),
+        ("ArrowRight", "allModelsTab"),
+        ("Home", "suggestedTab"),
+    ]:
+        page.keyboard.press(key)
+        tab = page.locator(f"#{target}")
+        sync_api.expect(tab).to_be_focused()
+        sync_api.expect(tab).to_have_attribute("aria-selected", "true")
+        sync_api.expect(tab).to_have_attribute("tabindex", "0")
+        sync_api.expect(page.locator('#models [role="tab"][aria-selected="false"]')).to_have_attribute("tabindex", "-1")
+    page.evaluate("() => new Promise(resolve => document.addEventListener('app:status', resolve, {once: true}))")
+    sync_api.expect(page.locator("#suggestedTab")).to_be_focused()
+    page.keyboard.press("Alt+1")
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    page.go_back()
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    page.reload()
+    page.keyboard.press("Tab")
+    sync_api.expect(link).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    context.close()
+
+
+@pytest.mark.parametrize("fragment", ["", "#dashboard", "#manager/calibration"])
+def test_initial_keyboard_focus_preserves_requested_url(browser, ui, fragment):
+    context = browser.new_context()
+    page = context.new_page()
+    page.add_init_script("""(() => {
+      window.historyWrites = [];
+      for (const method of ['pushState', 'replaceState']) {
+        const original = history[method];
+        history[method] = function(...args) { window.historyWrites.push(args[2]); return original.apply(this, args); };
+      }
+    })()""")
+    seen = []
+
+    def check_url(route):
+        seen.append(page.evaluate("location.hash"))
+        route.continue_()
+
+    page.route("**/static/app.js", check_url)
+    page.goto(ui.url + "/" + fragment)
+    assert seen == [fragment]
+    if fragment:
+        assert page.evaluate("location.hash") == fragment
+        assert page.evaluate("window.historyWrites") == []
+    page.keyboard.press("Tab")
+    sync_api.expect(page.locator(".skip-link")).to_be_focused()
+    context.close()
+
+
+def test_failed_script_preserves_deep_link(browser, ui):
+    context = browser.new_context()
+    page = context.new_page()
+    page.route("**/static/app.js", lambda route: route.abort())
+    page.goto(ui.url + "/#manager/calibration")
+    assert page.evaluate("location.hash") == "#manager/calibration"
+    context.close()
