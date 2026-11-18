@@ -200,6 +200,8 @@ Comparison requests reject basal-only fields and question types, too many option
 
 ![A basal Decision and a Comparison Decision side by side](images/external-comparison.png)
 
+Experimental rank questions accept candidates one per line, optionally as `key: text`. Groups and priors are JSON objects keyed by candidate key. Instructions must contain `{candidate}`. The result lists the Engine ranking in its returned order, including scores and optional choice and yes values. Rank is unavailable when the installed Engine lacks the feature. [Rank editor screenshot](images/playground-rank.png) and [ranking result](images/playground-rank-result.png).
+
 ## Recording audio in the Playground
 
 Select a ready model loaded with audio support and choose **Record audio**. The browser asks for microphone permission only after this action; HTTPS or a loopback address and a supported browser are required. The meter shows the microphone input and does not play it through speakers. Press **Stop recording** or Escape to finish; leaving the Playground cancels the recording. Changing the request, attachments or selected model cancels unfinished work. Sending is unavailable until capture and preparation finish. A clip is appended to existing attachments and can be played, renamed or removed. It uses mono 16 kHz signed 16-bit PCM WAV and the ordinary model, eight-item and 20 MiB-per-file checks.

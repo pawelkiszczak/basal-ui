@@ -82,6 +82,8 @@ def _contains_redacted_media(value, context=None, root=False):
 
 
 def _best(answer: dict):
+    if answer.get("type") == "rank":
+        return str(answer["top"]) if answer.get("top") is not None else None
     for key in ("choice", "action", "tool", "label", "score"):
         if key in answer and answer[key] is not None:
             return str(answer[key])
