@@ -635,3 +635,35 @@ def test_revision_is_validated_but_never_emitted_as_a_serve_flag():
         options.validate({"revision": "bad revision"})
     assert options.validate({"revision": ""})["revision"] is None  # a cleared field: the default branch
     assert options.validate({"revision": " abc "})["revision"] == "abc"
+
+
+@pytest.mark.parametrize("choices,default", [(("on", "off"), "off"), (("auto", "on", "off"), "auto")])
+def test_lane_and_soam_round_trip_parser(monkeypatch, choices, default):
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--long-lane", choices=choices, default=default)
+    parser.add_argument("--soam", choices=("on", "off"), default=None)
+    monkeypatch.setitem(options.DEFAULTS, "long_lane", default)
+    monkeypatch.setitem(options.CHOICES, "long_lane", choices)
+    assert options.args({}) == []
+    for key, values in (("long_lane", choices), ("soam", ("auto", "on", "off"))):
+        for value in values:
+            flags = options.args({key: value})
+            parsed = parser.parse_args(flags)
+            expected = None if key == "soam" and value == "auto" else value
+            assert getattr(parsed, key) == expected
+            assert bool(flags) == (value != options.DEFAULTS[key])
+
+
+def test_installed_parser_choices_and_defaults_round_trip():
+    from basal.server import parser
+
+    actual = parser()
+    assert engine.serve_option("--long-lane") == (options.CHOICES["long_lane"], options.DEFAULTS["long_lane"])
+    for key in ("long_lane", "soam"):
+        for value in options.CHOICES[key]:
+            parsed = actual.parse_args(options.args({key: value}))
+            assert getattr(parsed, key) == (
+                engine.serve_option("--soam")[1] if key == "soam" and value == "auto" else value
+            )

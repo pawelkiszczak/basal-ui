@@ -119,7 +119,7 @@ def make_record(model, source, body, status, response_json, latency_ms) -> dict:
             name: {"type": a.get("type"), "best": _best(a), "confidence": best_probability(a)} for name, a in items
         },
         "deferred": any(a.get("deferred") is True for _, a in items),
-        "truncated": bool(usage.get("truncated")) if isinstance(usage, dict) else False,
+        "truncated": usage.get("truncated", False) if isinstance(usage, dict) else False,
         "request": _strip_media(body, root=True),
         "response": response_json,
     }

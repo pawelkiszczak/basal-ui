@@ -736,3 +736,17 @@ def test_base_model_gguf_delete_keeps_its_metadata(tmp_path):
     )
     assert delete(v, tmp_path) == 7
     assert (base_snapshot / "config.json").exists()
+
+
+def test_recurrent_accelerated_architectures_and_old_fallback(monkeypatch):
+    from basal import gdn_graph
+
+    pico = variant("Remek/basal-omni-pico")
+    for declared in (True, False):
+        if declared:
+            monkeypatch.setattr(gdn_graph, "ACCELERATED_ARCHITECTURES", {(9, 0), (12, 0)}, raising=False)
+        else:
+            monkeypatch.delattr(gdn_graph, "ACCELERATED_ARCHITECTURES", raising=False)
+        for cap, expected in (((9, 0), "fast"), ((12, 0), "fast" if declared else "eager"), ((12, 1), "eager")):
+            assert catalog._mode(pico, hw(cap=cap, engines=frozenset({"cuda", "fla"})))[0] == expected
+            assert catalog._mode(pico, hw(cap=cap, engines=frozenset({"cuda"})))[0] == "eager"

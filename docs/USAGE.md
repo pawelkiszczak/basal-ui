@@ -164,6 +164,10 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   keys retain their request semantics. Renaming an act outcome keeps its cost-matrix column attached to that outcome.
   Blank or duplicate row keys are reported instead of silently dropping an option. Marked-image options remain
   read-only here and are edited through **Mark elements**.
+  On supported Engines, choice, noul and score cards offer `coverage` and `max_error`; conditional controls choose
+  dependencies and matching answers from other choice, noul and score cards. The Engine validates names, values and
+  cycles. Answer sets, abstention, calibration notes and skipped questions appear in the Decision. A missing conformal
+  level can produce every option; the note explains this, rather than claiming a calibrated set.
   Loading or selecting a model, including from another view, retains this tab's attachments and marked-element
   questions. Sending is blocked if the selected model cannot accept the retained media; remove it or select a
   compatible media-loaded model.
@@ -237,6 +241,8 @@ clearing it. Rails stack below their content when there is not enough width to r
 
 ## Load options
 
+![Load options for a model](images/load-options.png)
+
 **⚙ Options** next to every Load button (and **⚙** next to a loaded model's Restart) opens the load options of that
 model in collapsible sections (Engine and any section holding a non-default value open; a section you open or close
 stays that way for the next dialog in the session; a collapsed section still saves its values):
@@ -247,7 +253,8 @@ A ROCm GPU, although PyTorch reports CUDA, is offered none of the NVIDIA-only mo
 Ollama and llama-server take the URL of the running service), quantisation, attention kernels,
 dtype, the vLLM preset, GPU share and KV-sharing fast prefill, the Gemma 4 eager forward, attention and per-layer
 embedding offload (`--eager-forward`, `--eager-attn`, `--ple-offload`), the exit heads directory, determinism, option
-orders and the `auto` band, batching, the state and prefix caches, the scheduler and long-request lane, the **prompt
+orders and the `auto` band, batching, SOAM (`auto` follows the Engine default), the state and prefix caches, the
+scheduler and long-request lane (choices and default follow the installed Engine), the **prompt
 layout** (`--layout canonical`, `state_twice` or `qfirst` for prompt-format-2 models trained on it; default: the
 model's basal.json; a non-canonical layout is refused with the state or prefix cache, and a loaded row shows it as a
 `layout` chip), the **context
@@ -255,7 +262,8 @@ policy** (truncate the middle of the state, or refuse with 422; the share kept f
 CUDA graph engine's kernel switches (`--gemma-attn`, `--merge`, `--lean`, `--tree`, `--batches`, `--readout-layer`,
 `--template-prefix`, `--fp8-accum`), `--strict-calibration` and a **revision** (a commit, tag or branch of the
 repository: downloaded and served as that snapshot, which calibration and Inspect then read too; a **revision** chip
-marks the model in the catalog and on its loaded row). Each field shows only for the modes that read it. **Presets**
+marks the model in the catalog and on its loaded row). A warning on the model row reports calibration fitted on other
+model files; Logs has the Engine details. Older Saved load settings and imported load presets are migrated on use. Each field shows only for the modes that read it. **Presets**
 save a set of options under a name to apply to any model; the Playground saves requests the same way (**Saved
 requests** in the examples list), and both export to and import from one `presets.json`. Settings also imports a pack from a public HTTP(S) URL with `application/json` content, up to 1 MiB. Imports update entries in order; a failure can leave earlier entries saved. Only the values that differ
 from basal-serve's defaults are
@@ -479,7 +487,8 @@ or **Replay in Playground** (a converted request in the Playground with its mode
 Media payloads, including nested image/audio payload objects in recorded Decisions-style requests, are replaced by
 their size. Replay is blocked with an explanation when an original attachment is missing; redaction is not a promise
 that the API accepts every recorded media shape. Ordinary structured context and question descriptions, including
-fields named `data`, are preserved. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
+fields named `data`, are preserved. Native `coverage`, `ask_if` and `depends_on` survive Replay; skipped names and
+the full truncation object remain in the recorded response. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
 next to the settings file. A live-only History view keeps the newest 500 rows. **More** enters older-page browsing:
 explicitly loaded pages and their cursor are kept across polls until the view or filters are reset.
 **Clear history** empties the file before clearing the live view; a failed write leaves the existing records available.
