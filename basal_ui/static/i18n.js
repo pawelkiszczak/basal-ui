@@ -4,6 +4,7 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "code:UPSTREAM_TIMEOUT": "basal-serve nie odpowiedział w ciągu {seconds} s.",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",

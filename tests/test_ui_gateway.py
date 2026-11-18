@@ -561,6 +561,26 @@ def test_transport_failures_and_sync_timeout_are_recorded(fleet, monkeypatch):
     record = fleet.history.get(fleet.history.list()[0]["id"])
     assert record["status"] == 504 and record["response"]["code"] == "UPSTREAM_TIMEOUT"
 
+    from basal_ui.app import create_app
+
+    app = create_app(
+        fleet=fleet,
+        stats=fleet.stats,
+        history=fleet.history,
+        catalog_fn=lambda **_: ([], "test"),
+        hardware_fn=lambda: HW,
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/api/decide", json={"model": "a/one", "state": "x", "questions": {"q": {"type": "noul"}}}
+        )
+    assert response.status_code == 504
+    assert response.json() == {
+        "detail": record["response"]["error"],
+        "code": "UPSTREAM_TIMEOUT",
+        "params": {"seconds": 600},
+    }
+
 
 def test_mcp_timeout_reports_gateway_error_and_records_it(fleet, monkeypatch):
     pytest.importorskip("mcp")
