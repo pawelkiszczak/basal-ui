@@ -2,6 +2,7 @@
 
 (() => {
   const entryFacts = (entry, answer) => {
+    if (entry?.kind === 'comparison') return `<p>${t('Comparison confidence is not calibrated')}</p>`;
     const facts = [];
     if (answer?.calibration != null) facts.push(`${t('Decision calibration status')}: ${esc(answer.calibration)}`);
     for (const key of ['calibration', 'calibration_file', 'selected_calibration', 'shipped_calibration']) {
@@ -24,33 +25,36 @@
     const reportedConfidence = answer.confidence ?? answer.set_confidence;
     const confidence = reportedConfidence == null ? null : Number(reportedConfidence);
     const applicable = Number.isFinite(confidence) && !answer.deferred && typeof answer.max_error !== 'string' && !gap && answer.confidence != null && (t1 != null || t5 != null);
+    const taskItems = answer.type === 'verify' ? answer.claims : answer.type === 'extract' ? answer.fields : null;
+    const taskApplicable = Boolean(entry && (Object.keys(entry.certified || {}).length || Object.keys(entry.temperature_per_prim || {}).length || entry.calibration || entry.calibration_file || entry.selected_calibration || entry.shipped_calibration) && taskItems && !answer.deferred && answer.refused == null && typeof answer.max_error !== 'string' && !gap && Object.values(taskItems).some(item => Object.values(item?.automated || {}).some(value => value === true || value === false)));
     const reasons = [];
-    if (answer.deferred) reasons.push(t('This answer was deferred; thresholds do not change that decision.'));
+    if (taskApplicable) reasons.push(t('This task reports automation for its individual claims or fields.'));
+    else if (answer.deferred) reasons.push(t('This answer was deferred; thresholds do not change that decision.'));
     if (typeof answer.max_error === 'string') reasons.push(t('The requested max_error is not certified: {reason}', {reason: answer.max_error}));
     if (gap) reasons.push(gap);
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && applicable)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && applicable)
       reasons.push(t('The served calibration and answer scope are applicable; thresholds shown are model-reported values.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && reportedConfidence == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && reportedConfidence == null)
       reasons.push(t('This answer does not report a confidence value.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && answer.confidence == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && answer.confidence == null)
       reasons.push(t('Individual confidence is not reported for this answer.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && !Number.isFinite(confidence))
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && !Number.isFinite(confidence))
       reasons.push(t('The reported confidence is not a finite number.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && !['choice', 'noul', 'score'].includes(type))
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && !['choice', 'noul', 'score'].includes(type))
       reasons.push(t('No certified thresholds are available for this answer type.'));
-    else if (!answer.deferred && typeof answer.max_error !== 'string' && t1 == null && t5 == null)
+    else if (!taskApplicable && !answer.deferred && typeof answer.max_error !== 'string' && t1 == null && t5 == null)
       reasons.push(t('No certified thresholds are reported for this model and answer type.'));
     const reason = reasons.join(' ');
-    const status = applicable ? t('Thresholds apply to this answer') : t('Threshold applicability not established');
+    const status = taskApplicable ? t('Task automation reported for this answer') : applicable ? t('Thresholds apply to this answer') : t('Threshold applicability not established');
     const thresholds = `<dl class="dt-thresholds"><div><dt>${t('1% error threshold')}</dt><dd>${t1 == null ? t('Not reported') : esc(Number(t1).toFixed(4))}</dd></div><div><dt>${t('5% error threshold')}</dt><dd>${t5 == null ? t('Not reported') : esc(Number(t5).toFixed(4))}</dd></div></dl>`;
-    return `<aside class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
+    return `<aside data-certification-evidence class="dt-evidence" aria-label="${t('Calibration evidence')}"><div class="dt-evidence-main"><h4>${t('Calibration evidence')}</h4><div class="dt-confidence"><span>${t('Confidence')}</span><strong>${confidence == null || !Number.isFinite(confidence) ? '—' : esc(pct(confidence))}</strong></div>${thresholds}<p class="dt-applicability ${applicable || taskApplicable ? 'is-applicable' : ''}"><strong>${status}</strong>${reason ? `<span>${esc(reason)}</span>` : ''}</p></div><details class="dt-calibration"><summary>${t('Active calibration facts')}</summary>${entryFacts(entry, answer)}</details></aside>`;
   }
 
   function answerPanel(name, answer, q, entry) {
     q ||= {};
     if (!answer || typeof answer !== 'object') return `<article class="answer dt-answer"><h3>${esc(name)}</h3><div class="dt-answer-layout"><div class="dt-answer-main"><pre>${esc(JSON.stringify(answer, null, 2))}</pre></div>${evidenceRail({}, q, entry)}</div></article>`;
     const type = answer.type || q.type || 'unknown', view = RESULT_VIEWS[type];
-    const body = view ? view(answer, q) : answer.probabilities && typeof answer.probabilities === 'object'
+    const body = view ? view(answer, q, entry) : answer.probabilities && typeof answer.probabilities === 'object'
       ? decisionView(name, answer, q) : `<pre>${esc(JSON.stringify(answer, null, 2))}</pre>`;
     return `<article class="answer dt-answer"><h3><span>${esc(name)}</span><span class="chip">${esc(type)}</span>${answer.experimental ? `<span class="badge experimental">${t('experimental')}</span>` : ''}</h3><div class="dt-answer-layout"><div class="dt-answer-main">${safetyStrip(answer, q, entry)}${thinkBlock(answer)}${body}</div>${evidenceRail(answer, q, entry)}</div></article>`;
   }
@@ -58,7 +62,7 @@
   let sequence = 0, ready = [], readySignature = '', running = false;
   const modelById = id => ready.find(model => model.id === id);
   const requestMedia = request => Array.isArray(request.media) ? request.media : [];
-  const displayRequest = request => JSON.stringify(request, function (key, value) {
+  const displayRequest = request => JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key]) => key !== 'source_url')), function (key, value) {
     return key === 'data' && (this?.type === 'image' || this?.type === 'audio') && typeof value === 'string'
       ? `[${this.type} data omitted from display; ${value.length} characters]` : value;
   }, 2);
@@ -66,7 +70,7 @@
 
   function renderResults(data, request, entry, mediaSnapshot) {
     const answers = data?.answers || data || {};
-    const answerHtml = Object.entries(answers).map(([name, answer]) => `<div class="dt-result"><p class="dt-used">${t('Request')}: <code>${esc(name)}</code> · ${t('Model')}: <code>${esc(request.model)}</code></p>${answerPanel(name, answer, request.questions?.[name] || {}, entry)}</div>`).join('');
+    const answerHtml = Object.entries(answers).map(([name, answer]) => `<div class="dt-result"><p class="dt-used">${t('Request')}: <code>${esc(name)}</code> · ${t('Model')}: <code>${esc(request.model)}</code></p>${(data?.usage?.skipped||[]).includes(name) ? `<article class="answer"><h3>${esc(name)}</h3><span class="badge fit-tight">${t('Skipped')}</span></article>` : answerPanel(name, answer, request.questions?.[name] || {}, entry)}</div>`).join('');
     const spans = typeof request.state === 'string' ? sourceSpans(answers, request) : [];
     const u = data?.usage, mediaUsage = u?.media ? ` · ${t('Media')}: ${esc(u.media.images ?? 0)} ${t('images')}, ${esc(u.media.audio ?? 0)} ${t('audio')}, ${esc(u.media.media_tokens ?? 0)} ${t('tokens')}` : '';
     const thinkUsage = u?.think_questions != null ? ` · ${t('Thought on')}: ${esc(u.think_questions)} · ${t('Output tokens')}: ${esc(u.output_tokens ?? 0)}` : '';
@@ -104,19 +108,20 @@
     const selects = [...document.querySelectorAll('#decisionCompare .dt-model')];
     if (!selects.length) return;
     const old = selects.map(select => select.value), focused = selects.indexOf(document.activeElement);
+    const primary = ready.filter(model => model.kind !== 'comparison');
+    const first = primary.some(model => model.id === old[0]) ? old[0] : primary.some(model => model.id === selectedModel) ? selectedModel : primary[0]?.id || '';
     for (const [index, select] of selects.entries()) {
-      if (select.dataset.modelSignature !== readySignature) {
-        select.innerHTML = ready.map(model => `<option value="${esc(model.id)}">${esc(model.id)}${model.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
-        select.dataset.modelSignature = readySignature;
+      const choices = index === 0 ? primary : ready;
+      const signature = JSON.stringify(choices.map(model => [model.id, model.kind]));
+      if (select.dataset.modelSignature !== signature) {
+        select.innerHTML = choices.map(model => `<option value="${esc(model.id)}">${esc(modelLabel(model))}${model.kind === 'comparison' ? ` · ${t('Comparison')}` : model.kind === 'cascade' ? ` · ${t('Cascade')}` : ''}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
+        select.dataset.modelSignature = signature;
       }
-      const first = ready.some(model => model.id === old[0]) ? old[0] : ready.some(model => model.id === selectedModel) ? selectedModel : ready[0]?.id || '';
-      const next = index === 0
-        ? (ready.some(model => model.id === old[index]) ? old[index] : first)
-        : ready.some(model => model.id === old[index] && old[index] !== first) ? old[index] : ready.find(model => model.id !== first)?.id || '';
-      select.value = next || '';
-      select.disabled = ready.length < 2 || running;
+      const next = index === 0 ? first : choices.some(model => model.id === old[index] && old[index] !== first) ? old[index] : choices.find(model => model.id !== first)?.id || '';
+      select.value = next;
+      select.disabled = !first || ready.length < 2 || running;
     }
-    $('#dt-run').disabled = ready.length < 2 || running;
+    $('#dt-run').disabled = !first || ready.length < 2 || running;
     if (focused >= 0) selects[focused].focus();
   }
 
@@ -135,8 +140,9 @@
     } catch (error) { setError(error.message); return; }
     const [first, second] = [...document.querySelectorAll('#decisionCompare .dt-model')].map(select => select.value), models = [first, second].map(modelById);
     if (!models[0] || !models[1] || first === second) { setError(t('Choose two different ready models.')); return; }
+    const limitError = toolBudgetError(base, first) || toolBudgetError(base, second); if (limitError) { setError(limitError); return; }
     const mediaTypes = [...new Set(requestMedia(base).map(media => media?.type).filter(type => type === 'image' || type === 'audio'))];
-    const unsupported = models.map(model => ({id: model.id, types: mediaTypes.filter(type => !(model.media || []).includes(type))})).filter(item => item.types.length);
+    const unsupported = models.filter(model => model.kind !== 'comparison').map(model => ({id: model.id, types: mediaTypes.filter(type => !(model.media || []).includes(type))})).filter(item => item.types.length);
     if (unsupported.length) {
       setError(t('The selected models cannot all accept this request media: {models}. Choose two models that support every listed media type, or remove the media.', {models: unsupported.map(item => `${item.id} (${mediaTitle(item.types)})`).join('; ')}));
       return;
@@ -144,29 +150,35 @@
     const evidenceQuestions = requestMedia(base).length ? Object.entries(base.questions || {}).filter(([, q]) => q?.evidence).map(([name]) => name) : [];
     if (evidenceQuestions.length) { setError(t('Evidence spans are read from state text and cannot be used with media: {questions}.', {questions: evidenceQuestions.join(', ')})); return; }
     let snapshot;
-    try { snapshot = structuredClone(base); } catch (error) { setError(error.message); return; }
+    try { snapshot = stripMcpMetadata(base); } catch (error) { setError(error.message); return; }
     delete snapshot.model;
     const mediaSnapshot = requestMedia(snapshot).map(media => {
       const item = selectedMedia.find(current => current.data === media?.data);
       return item ? {kind: item.kind, data: item.data, file: item.file, elements: item.elements ? structuredClone(item.elements) : undefined} : null;
     });
     const entries = Object.fromEntries(models.map(model => [model.id, structuredClone(modelEntry(model.id))]));
+    const stamps = Object.fromEntries(models.map(model => [model.id, modelEvidenceStamp(model.id)]));
     const prompt = $('#decisionCompare .dt-prompt');
     prompt.hidden = false;
     prompt.innerHTML = `<strong>${t('Frozen request snapshot')}</strong><pre>${esc(displayRequest(snapshot))}</pre>`;
     running = true;
     reconcileSelects();
-    grid.innerHTML = models.map(model => `<article class="dt-model-result" data-model="${esc(model.id)}" data-running="true"><h3>${esc(model.id)}</h3><p class="dt-used">${t('This model will receive the frozen request above.')}</p><p class="muted">${t('Running…')}</p></article>`).join('');
+    grid.innerHTML = models.map(model => `<article class="dt-model-result" data-model="${esc(model.id)}" data-running="true"><h3>${esc(modelLabel(model))}</h3>${model.kind==='comparison'?comparisonBadge():''}<p class="dt-used">${t('This model will receive the frozen request above.')}</p><p class="muted">${t('Running…')}</p></article>`).join('');
     try {
-      const settled = await Promise.all(models.map(async model => {
+      await Promise.all(models.map(async (model, index) => {
         const request = structuredClone(snapshot); request.model = model.id;
-        try { return {model, request, data: await api('/api/decide', {method: 'POST', body: JSON.stringify(request)})}; }
-        catch (error) { return {model, request, error}; }
+        const started = performance.now();
+        let data, error;
+        try { data = await api('/api/decide', {method: 'POST', body: JSON.stringify(request)}); }
+        catch (reason) { error = reason; }
+        if (run !== sequence) return;
+        const panel = grid.children[index], latency = performance.now() - started;
+        panel.removeAttribute('data-running');
+        panel.innerHTML = error
+          ? `<h3>${esc(modelLabel(model))}</h3>${model.kind==='comparison'?comparisonBadge():''}<p class="dt-used">${t('Request sent')}: <code>${esc(model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(model.id)})}</summary><pre>${esc(displayRequest(request))}</pre></details><div class="error-box" role="alert">${esc(error.message || String(error))}</div>`
+          : `<h3>${esc(modelLabel(model))}</h3>${model.kind==='comparison'?comparisonBadge():''}<p>${t('Latency')}: ${esc(num(latency, 0))} ms</p>${renderResults(data, request, entries[model.id], mediaSnapshot)}`;
       }));
-      if (run !== sequence) return;
-      grid.innerHTML = settled.map(result => `<article class="dt-model-result" data-model="${esc(result.model.id)}">${result.error
-        ? `<h3>${esc(result.model.id)}</h3><p class="dt-used">${t('Request sent')}: <code>${esc(result.model.id)}</code></p><details class="dt-request-used"><summary>${t('Exact request sent to {model}', {model: esc(result.model.id)})}</summary><pre>${esc(displayRequest(result.request))}</pre></details><div class="error-box" role="alert">${esc(result.error.message || String(result.error))}</div>`
-        : `<h3>${esc(result.model.id)}</h3>${renderResults(result.data, result.request, entries[result.model.id], mediaSnapshot)}`}</article>`).join('');
+      grid.querySelectorAll('.dt-model-result').forEach(card=>{card.dataset.evidenceModel=card.dataset.model;card.dataset.evidenceStamp=stamps[card.dataset.model];invalidateModelEvidence(card);});
     } catch (error) {
       if (run === sequence) setError(error.message || String(error));
     } finally {
@@ -180,19 +192,28 @@
   function refreshModels(models) {
     mount();
     const nextReady = Array.isArray(models) ? models.filter(model => model?.id && model.state === 'ready') : [];
-    const signature = JSON.stringify(nextReady.map(model => [model.id, model.media || [], model.kind]));
+    const signature = JSON.stringify(nextReady.map(model => [model.id, model.kind, model.media || []]));
     if (signature !== readySignature) {
       readySignature = signature;
-      sequence++;
-      running = false;
-      const grid = $('#decisionCompare .dt-grid');
-      if (grid) grid.replaceChildren();
-      $('#decisionCompare .dt-prompt').hidden = true;
+      if (!running) {
+        sequence++;
+        const grid = $('#decisionCompare .dt-grid');
+        if (grid) grid.replaceChildren();
+        $('#decisionCompare .dt-prompt').hidden = true;
+      }
     }
     ready = nextReady;
     reconcileSelects();
   }
 
-  window.DecisionTools = {answerPanel, refreshModels};
+  function selectComparison(id) {
+    const select = document.querySelectorAll('#decisionCompare .dt-model')[1];
+    if (select && ready.some(model => model.id === id)) {
+      select.value = id;
+      select.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+  }
+
+  window.DecisionTools = {answerPanel, refreshModels, selectComparison, invalidateModelEvidence:()=>document.querySelectorAll('#decisionCompare .dt-model-result').forEach(invalidateModelEvidence)};
   document.addEventListener('DOMContentLoaded', () => { mount(); refreshModels(readyModels()); });
 })();

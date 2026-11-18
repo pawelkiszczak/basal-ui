@@ -235,7 +235,7 @@ def test_records_flag_deferred_answers_and_truncated_states():
         {"answers": {"q": {"type": "act", "deferred": True}}, "usage": {"truncated": {"dropped_tokens": 3}}},
         1.0,
     )
-    assert r["deferred"] is True and r["truncated"] is True
+    assert r["deferred"] is True and r["truncated"] == {"dropped_tokens": 3}
     plain = record("a", "api", "s")
     assert plain["deferred"] is False and plain["truncated"] is False
 
@@ -248,8 +248,560 @@ def test_persistence_rotation_and_clear(tmp_path):
     assert len(path.read_text().splitlines()) == 9  # the 504th append rewrote the file with the last 3, then 6 more
     assert [r["state_preview"] for r in History(path, keep=3).list()] == ["s509", "s508", "s507"]
     assert path.stat().st_mode & 0o777 == 0o600
-    with path.open("a") as f:
-        f.write("{broken\n")
-    assert len(History(path, keep=3).list()) == 3
-    assert history.clear() == 3
-    assert history.list() == [] and History(path).list() == []
+    with path.open("ab") as stream:
+        stream.write(b"{broken")
+    reloaded = History(path, keep=3)
+    assert len(reloaded.list()) == 3
+    newest = record(state="after malformed row")
+    reloaded.append(newest)
+    assert path.read_bytes().splitlines()[-2] == b"{broken"
+    assert History(path, keep=3).get(newest["id"])["state_preview"] == "after malformed row"
+    assert reloaded.clear() == 3
+    assert reloaded.list() == [] and History(path).list() == []
+
+
+def test_ordinary_append_does_not_reread_unchanged_history(tmp_path, monkeypatch):
+    path = tmp_path / "history.jsonl"
+    first, second = History(path), History(path)
+    first.append(record(state="initial"))
+    other = record(state="external append")
+    second.append(other)
+    assert first.get(other["id"]) is not None
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("an ordinary append should not reread unchanged history")
+
+    monkeypatch.setattr(first, "_read_file", unexpected_read)
+    new = record(state="local append")
+    first.append(new)
+    assert first.get(new["id"]) is not None
+    assert History(path).get(new["id"]) is not None
+
+
+def test_audio_policy_replay_reload_eviction_and_clear(tmp_path, monkeypatch):
+    from basal_ui import history_audio, settings
+
+    monkeypatch.setattr(history_audio, "BUDGET", 45)
+    path = tmp_path / "h.jsonl"
+    first, second = History(path), History(path)
+    settings.set_preset("request", "saved", {"audio": ["saved audio"]})
+    body = {"state": {"data": "business", "audio": "ordinary"}, "audio": ["data:audio/wav;base64,QUJD"]}
+    replay = {"state": body["state"], "media": [{"type": "audio", "data": "QUJD"}]}
+
+    def append(history, source):
+        row = make_record("m", source, body, 200, {}, 1)
+        history.append(row, body=body, keep_audio=settings.keep_history_audio)
+        return row["id"]
+
+    old = append(first, "api")
+    assert first.detail(old, True)["replay_request"] is None
+    settings.set_keep_history_audio(True)
+    retained = append(first, "api")
+    detail = second.detail(retained)
+    assert detail["replay_requires_audio"] and "QUJD" not in str(detail) and "_audio" not in detail
+    settings.set_keep_history_audio(False)
+    assert History(path).detail(retained, True)["replay_request"] == replay
+    assert append(second, "api") != retained
+    assert first.detail(retained, True)["replay_request"] == replay
+    settings.set_keep_history_audio(True)
+    newest = append(second, "api")
+    assert first.detail(retained, True)["replay_error_code"] == "history_audio_unavailable"
+    assert first.detail(newest, True)["replay_request"] == replay
+    assert len(path.read_text().splitlines()) == 4
+    assert "QUJD" not in path.read_text()
+    directory = path.with_name(path.name + ".audio")
+    assert directory.stat().st_mode & 0o777 == 0o700
+    assert all(f.stat().st_mode & 0o777 == 0o600 for f in directory.iterdir())
+    second.clear()
+    assert list(directory.iterdir()) == []
+    assert settings.presets()["request"]["saved"] == {"audio": ["saved audio"]}
+    assert first.detail(newest, True) is None
+
+
+def test_audio_mixed_media_and_corrupt_or_hostile_references(tmp_path):
+    import json
+
+    path = tmp_path / "h.jsonl"
+    history = History(path)
+    body = {"state": {"data": "business"}, "media": [{"type": "audio", "data": "QUJD"}]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    directory = path.with_name(path.name + ".audio")
+    blob = directory / row["_audio"]["name"]
+    blob.write_text("broken")
+    assert history.detail(row["id"], True)["replay_error_code"] == "history_audio_unavailable"
+    outside = tmp_path / "outside"
+    outside.write_text("secret")
+    blob.unlink()
+    blob.symlink_to(outside)
+    assert history.detail(row["id"], True)["replay_error_code"] == "history_audio_unavailable"
+    disk = json.loads(path.read_text())
+    disk["_audio"]["name"] = "../outside"
+    path.write_text(json.dumps(disk) + "\n")
+    assert "secret" not in str(history.detail(row["id"], True))
+    with pytest.raises(OSError):
+        history.clear()
+    assert outside.read_text() == "secret"
+    path.write_text("")
+    mixed = {**body, "images": ["data:image/png;base64,QUJD"]}
+    row = make_record("m", "api", mixed, 200, {}, 1)
+    history.append(row, body=mixed, keep_audio=True)
+    assert history.detail(row["id"], True)["replay_request"] is None
+
+
+def test_audio_without_eviction_appends_in_place(tmp_path):
+    path = tmp_path / "h.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    snapshot, inode = path.read_bytes(), path.stat().st_ino
+    new = make_record("m", "api", body, 200, {}, 1)
+    history.append(new, body=body, keep_audio=True)
+    assert path.read_bytes().startswith(snapshot) and path.stat().st_ino == inode
+    assert history.detail(old["id"], True)["replay_request"] == body
+    assert history.detail(new["id"], True)["replay_request"] == body
+
+
+def test_short_audio_append_preserves_history(tmp_path, monkeypatch):
+    import contextlib
+    import os
+    from unittest.mock import Mock
+
+    path = tmp_path / "h.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    snapshot = path.read_bytes()
+    new = make_record("m", "api", body, 200, {}, 1)
+    original = os.fdopen
+
+    @contextlib.contextmanager
+    def short_write(*args, **kwargs):
+        with original(*args, **kwargs) as stream:
+            broken = Mock(wraps=stream)
+            broken.write.side_effect = lambda data: stream.write(data[:20])
+            yield broken
+
+    def fdopen(fd, mode="r", *args, **kwargs):
+        opener = short_write if mode == "a+b" else original
+        return opener(fd, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fdopen", fdopen)
+        with pytest.raises(OSError, match="History append was incomplete"):
+            history.append(new, body=body, keep_audio=True)
+    assert path.read_bytes() == snapshot
+    assert history.detail(old["id"], True)["replay_request"] == body
+    assert "_audio" not in new
+    history.append(new, body=body, keep_audio=True)
+    assert history.detail(new["id"], True)["replay_request"] == body
+
+
+def test_audio_write_failure_keeps_rows_and_does_not_claim_new_clip(tmp_path, monkeypatch):
+    from basal_ui import settings
+
+    path = tmp_path / "h.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    before = path.read_text()
+    new = make_record("m", "api", body, 200, {}, 1)
+    monkeypatch.setattr(history, "_append_record", lambda *_: (_ for _ in ()).throw(OSError("failed")))
+    with pytest.raises(OSError):
+        history.append(new, body=body, keep_audio=True)
+    assert path.read_text() == before and "_audio" not in new
+    assert len(list(path.with_name(path.name + ".audio").iterdir())) == 1
+    monkeypatch.setattr(settings, "_write_private", lambda *_: (_ for _ in ()).throw(OSError("failed")))
+    with pytest.raises(OSError):
+        history.clear()
+    assert history.detail(row["id"], True)["replay_request"] == body
+
+
+def test_unsupported_decisions_audio_is_redacted_and_refused(tmp_path):
+    body = {
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_audio", "input_audio": {"data": "QUJD", "format": "wav"}},
+                    {"type": "input_text", "text": "ordinary"},
+                ],
+            }
+        ],
+        "questions": [{"type": "predicate", "instructions": "yes?"}],
+    }
+    history = History(tmp_path / "history.jsonl")
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    from basal_ui.compat import child_request
+
+    native_body, refusal = child_request("/v1/decisions", body)
+    assert native_body is None and refusal.status_code >= 400
+    detail = history.detail(row["id"], True)
+    assert detail["replay_request"] is None and detail["replay_error"]
+    assert "QUJD" not in str(detail["request"])
+    assert "QUJD" not in row["state_preview"]
+
+
+def test_audio_eviction_remains_truthful_after_metadata_failure(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    monkeypatch.setattr(history_audio, "BUDGET", 40)
+    history = History(tmp_path / "history.jsonl")
+    body = {"audio": ["data:audio/wav;base64,QUJDQUJD"]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    new = make_record("m", "api", body, 200, {}, 1)
+    monkeypatch.setattr(history, "_append_record", lambda *_: (_ for _ in ()).throw(OSError("failed")))
+    with pytest.raises(OSError):
+        history.append(new, body=body, keep_audio=True)
+    assert history.detail(old["id"], True)["replay_request"]["media"][0]["data"] == "QUJDQUJD"
+    assert History(history.path).detail(old["id"], True)["replay_request"] is not None
+    assert history.detail(new["id"], True) is None
+
+
+def test_clear_cleanup_failure_can_be_retried_without_losing_ownership(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    path = tmp_path / "history.jsonl"
+    history = History(path)
+    body = {"audio": ["QUJD"]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    directory = path.with_name(path.name + ".audio")
+    real_remove = history_audio.remove
+    monkeypatch.setattr(history_audio, "remove", lambda *_: (_ for _ in ()).throw(OSError("unlink failed")))
+    with pytest.raises(OSError):
+        history.clear()
+    assert History(path).detail(row["id"], True) is None
+    assert len(list(directory.iterdir())) == 1
+    monkeypatch.setattr(history_audio, "remove", real_remove)
+    History(path).clear()
+    assert list(directory.iterdir()) == []
+
+
+def test_two_processes_share_audio_budget_and_records(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    path = tmp_path / "history.jsonl"
+    script = """
+import sys
+from pathlib import Path
+from basal_ui import history_audio
+from basal_ui.history import History, make_record
+history_audio.BUDGET = 14
+body = {'media': [{'type': 'audio', 'data': 'QUJDQUJD'}]}
+history = History(Path(sys.argv[1]))
+print('ready', flush=True)
+sys.stdin.readline()
+row = make_record('m', 'api', body, 200, {}, 1)
+history.append(row, body=body, keep_audio=True)
+"""
+    workers = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=os.environ.copy(),
+        )
+        for _ in range(2)
+    ]
+    try:
+        for worker in workers:
+            assert worker.stdout.readline().strip() == "ready"
+        for worker in workers:
+            worker.stdin.write("go\n")
+            worker.stdin.flush()
+        for worker in workers:
+            _, error = worker.communicate(timeout=15)
+            assert worker.returncode == 0, error
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate()
+    history = History(path)
+    rows = history.list()
+    assert len(rows) == 2
+    replays = [history.detail(row["id"], True) for row in rows]
+    assert sum(item["replay_request"] is not None for item in replays) == 1
+    assert sum(item.get("replay_error_code") == "history_audio_unavailable" for item in replays) == 1
+    assert sum(p.stat().st_size for p in path.with_name(path.name + ".audio").iterdir()) <= 14
+
+
+def test_existing_unowned_filename_is_not_deleted_on_collision(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from basal_ui import history_audio
+
+    history = History(tmp_path / "history.jsonl")
+    body = {"audio": ["QUJD"]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    directory = history.path.with_name(history.path.name + ".audio")
+    directory.mkdir(mode=0o700)
+    monkeypatch.setattr(history_audio.uuid, "uuid4", lambda: SimpleNamespace(hex="f" * 32))
+    unrelated = directory / (row["id"] + "_" + "f" * 32)
+    unrelated.write_text("do not delete")
+    with pytest.raises(FileExistsError):
+        history.append(row, body=body, keep_audio=True)
+    assert unrelated.read_text() == "do not delete"
+    assert history.list() == []
+
+
+@pytest.mark.parametrize(
+    "damage", [b"{broken\n", b"[]\n", b"{}\n", b"\xff\n", b"duplicate", b'{"id":"other","_audio":{}}\n']
+)
+def test_corrupt_metadata_never_authorizes_cleanup_or_mutation(tmp_path, damage):
+    from basal_ui import history_audio
+
+    path = tmp_path / "history.jsonl"
+    history = History(path, keep=1)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    history_audio.journal_add(path, [row])
+    import json
+
+    padding = b"".join((json.dumps({"id": f"legacy-{i}"}) + "\n").encode() for i in range(502))
+    first_row = path.read_bytes()
+    path.write_bytes(first_row + padding + (first_row if damage == b"duplicate" else damage))
+    journal = path.with_name(path.name + ".audio-pending.json")
+    blob = path.with_name(path.name + ".audio") / row["_audio"]["name"]
+    before = (path.read_bytes(), journal.read_bytes(), blob.read_bytes())
+    reloaded = History(path, keep=1)
+    with pytest.raises(OSError):
+        reloaded.append(make_record("m", "api", body, 200, {}, 1), body=body, keep_audio=True)
+    with pytest.raises(OSError):
+        reloaded.clear()
+    assert (path.read_bytes(), journal.read_bytes(), blob.read_bytes()) == before
+
+
+@pytest.mark.parametrize("kind", ["regular", "symlink", "hardlink"])
+def test_replaced_blob_is_never_deleted_during_clear_or_restart_cleanup(tmp_path, monkeypatch, kind):
+    import os
+
+    from basal_ui import history_audio
+
+    path = tmp_path / "history.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    blob = path.with_name(path.name + ".audio") / row["_audio"]["name"]
+    original_remove = history_audio.remove
+    monkeypatch.setattr(history_audio, "remove", lambda *_: (_ for _ in ()).throw(OSError("unlink failed")))
+    with pytest.raises(OSError):
+        history.clear()
+    monkeypatch.setattr(history_audio, "remove", original_remove)
+    blob.replace(tmp_path / "original-owned")
+    foreign = tmp_path / "foreign"
+    foreign.write_text("foreign data")
+    if kind == "regular":
+        replacement = tmp_path / "replacement"
+        replacement.write_text("foreign data")
+        replacement.replace(blob)
+    elif kind == "symlink":
+        blob.symlink_to(foreign)
+    else:
+        os.link(foreign, blob)
+    History(path).clear()
+    assert blob.is_symlink() if kind == "symlink" else blob.read_text() == "foreign data"
+    assert foreign.read_text() == "foreign data"
+
+
+def test_postcommit_payload_failure_is_unavailable_and_budget_stays_bounded(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    monkeypatch.setattr(history_audio, "BUDGET", 14)
+    history = History(tmp_path / "history.jsonl")
+    body = {"media": [{"type": "audio", "data": "QUJDQUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    new = make_record("m", "api", body, 200, {}, 1)
+
+    def partial_write(_path, _record, reservation):
+        import os
+
+        os.write(reservation[1], reservation[3][:3])
+        raise OSError("write failed")
+
+    monkeypatch.setattr(history_audio, "fill", partial_write)
+    with pytest.raises(OSError):
+        history.append(new, body=body, keep_audio=True)
+    reloaded = History(history.path)
+    assert reloaded.detail(old["id"], True)["replay_error_code"] == "history_audio_unavailable"
+    assert reloaded.detail(new["id"], True)["replay_error_code"] == "history_audio_unavailable"
+    assert sum(p.stat().st_size for p in history.path.with_name(history.path.name + ".audio").iterdir()) <= 14
+
+
+def test_replacement_after_journal_survives_precommit_failure_and_recovery(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    path = tmp_path / "history.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    original_journal = history_audio.journal_add
+    replacement = []
+
+    def replace_after_journal(path, records):
+        original_journal(path, records)
+        if records and records[0]["id"] == row["id"]:
+            blob = path.with_name(path.name + ".audio") / records[0]["_audio"]["name"]
+            blob.replace(tmp_path / "original-owned")
+            blob.write_text("foreign")
+            replacement.append(blob)
+
+    monkeypatch.setattr(history_audio, "journal_add", replace_after_journal)
+    monkeypatch.setattr(history, "_append_record", lambda *_: (_ for _ in ()).throw(OSError("commit failed")))
+    with pytest.raises(OSError):
+        history.append(row, body=body, keep_audio=True)
+    assert replacement[0].read_text() == "foreign"
+    monkeypatch.setattr(history_audio, "journal_add", original_journal)
+    History(path).clear()
+    assert replacement[0].read_text() == "foreign"
+
+
+def test_full_budget_postcommit_unlink_failure_recovers_after_restart(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    monkeypatch.setattr(history_audio, "BUDGET", 14)
+    history = History(tmp_path / "history.jsonl")
+    body = {"media": [{"type": "audio", "data": "QUJDQUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    new = make_record("m", "api", body, 200, {}, 1)
+    real_remove = history_audio.remove
+    monkeypatch.setattr(history_audio, "remove", lambda *_: (_ for _ in ()).throw(OSError("unlink failed")))
+    with pytest.raises(OSError):
+        history.append(new, body=body, keep_audio=True)
+    monkeypatch.setattr(history_audio, "remove", real_remove)
+    reloaded = History(history.path)
+    assert reloaded.detail(old["id"], True)["replay_error_code"] == "history_audio_unavailable"
+    assert reloaded.detail(new["id"], True)["replay_error_code"] == "history_audio_unavailable"
+    assert sum(p.stat().st_size for p in history.path.with_name(history.path.name + ".audio").iterdir()) <= 14
+    reloaded.clear()
+    assert list(history.path.with_name(history.path.name + ".audio").iterdir()) == []
+
+
+def test_in_place_blob_modification_does_not_lose_ownership(tmp_path):
+    history = History(tmp_path / "history.jsonl")
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    blob = history.path.with_name(history.path.name + ".audio") / row["_audio"]["name"]
+    blob.write_text("damaged in place")
+    assert history.detail(row["id"], True)["replay_error_code"] == "history_audio_unavailable"
+    history.clear()
+    assert not blob.exists()
+
+
+def test_full_budget_journal_failure_preserves_existing_audio(tmp_path, monkeypatch):
+    from basal_ui import history_audio, settings
+
+    monkeypatch.setattr(history_audio, "BUDGET", 14)
+    history = History(tmp_path / "history.jsonl")
+    body = {"media": [{"type": "audio", "data": "QUJDQUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    before = history.path.read_bytes()
+    original_write = settings._write_private
+
+    def fail_journal(path, text):
+        if str(path).endswith(".audio-pending.json"):
+            raise OSError("journal failed")
+        return original_write(path, text)
+
+    monkeypatch.setattr(settings, "_write_private", fail_journal)
+    new = make_record("m", "api", body, 200, {}, 1)
+    with pytest.raises(OSError):
+        history.append(new, body=body, keep_audio=True)
+    assert history.path.read_bytes() == before
+    assert History(history.path).detail(old["id"], True)["replay_request"] == body
+    assert "_audio" not in new
+    assert sum(p.stat().st_size for p in history.path.with_name(history.path.name + ".audio").iterdir()) <= 14
+
+
+@pytest.mark.parametrize("damage", [b"{broken", b"{}", b"\xff"])
+def test_corrupt_pending_journal_refuses_clear_and_append_without_deletion(tmp_path, damage):
+    path = tmp_path / "history.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    row = make_record("m", "api", body, 200, {}, 1)
+    history.append(row, body=body, keep_audio=True)
+    journal = path.with_name(path.name + ".audio-pending.json")
+    blob = path.with_name(path.name + ".audio") / row["_audio"]["name"]
+    journal.write_bytes(damage)
+    before = (path.read_bytes(), journal.read_bytes(), blob.read_bytes())
+    reloaded = History(path)
+    with pytest.raises(OSError):
+        reloaded.clear()
+    with pytest.raises(OSError):
+        reloaded.append(make_record("m", "api", body, 200, {}, 1), body=body, keep_audio=True)
+    assert (path.read_bytes(), journal.read_bytes(), blob.read_bytes()) == before
+
+
+def test_full_budget_never_evicts_a_foreign_replacement(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    monkeypatch.setattr(history_audio, "BUDGET", 14)
+    history = History(tmp_path / "history.jsonl")
+    body = {"media": [{"type": "audio", "data": "QUJDQUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    blob = history.path.with_name(history.path.name + ".audio") / old["_audio"]["name"]
+    blob.replace(tmp_path / "owned-original")
+    blob.write_text("foreign data")
+    before = history.path.read_bytes()
+    with pytest.raises(OSError):
+        history.append(make_record("m", "api", body, 200, {}, 1), body=body, keep_audio=True)
+    assert history.path.read_bytes() == before
+    assert blob.read_text() == "foreign data"
+    assert history.detail(old["id"], True)["replay_error_code"] == "history_audio_unavailable"
+
+
+def test_native_fields_reach_child_and_replay(tmp_path, monkeypatch, child):
+    from fastapi.testclient import TestClient
+
+    from tests.test_ui_bench import make_app
+
+    app, _ = make_app(tmp_path, monkeypatch, base_url=child.url)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        request = {
+            "state": "s",
+            "questions": {
+                "first": {
+                    "type": "choice",
+                    "instructions": "Choose",
+                    "criteria": {"a": "A", "b": "B"},
+                    "coverage": 0.9,
+                },
+                "second": {
+                    "type": "noul",
+                    "instructions": "Follow up",
+                    "ask_if": {"first": ["b"]},
+                    "depends_on": ["first"],
+                },
+            },
+        }
+        child.reply = {
+            "answers": {"first": {"type": "choice", "choice": "a"}, "second": None},
+            "usage": {"skipped": ["second"], "truncated": {"dropped_tokens": 3}},
+        }
+        response = client.post("/api/decide", json={"model": "mini", **request})
+        assert response.status_code == 200
+        assert child.seen[-1] == ("/v1/systemone", request)
+        item = client.get("/api/history").json()["items"][0]
+        assert item["truncated"] == {"dropped_tokens": 3}
+        record = client.get(f"/api/history/{item['id']}").json()
+        assert record["response"]["usage"]["skipped"] == ["second"]
+        assert record["replay_request"] == {"model": "mini", **request}
+        assert client.post("/api/decide", json={"model": "mini", **record["replay_request"]}).status_code == 200
+        assert child.seen[-1] == ("/v1/systemone", request)

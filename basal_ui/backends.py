@@ -413,7 +413,7 @@ class Manager:
                     for r in fleet.runners.values()
                 ):
                     raise RuntimeError("Stop dependent Cascades before unloading a member for a backend test")
-                if runner.generation != item["generation"] or fleet.leases.get(runner, 0):
+                if getattr(runner, "generation", None) != item["generation"] or fleet.leases.get(runner, 0):
                     raise RuntimeError("Unload selection changed or is busy; refresh and confirm again")
                 if item["id"] not in variants or not runner.serve_snapshot:
                     raise RuntimeError("Cannot capture the active model configuration")

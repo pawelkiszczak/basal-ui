@@ -4,9 +4,13 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
-let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
-function httpFailure(status,message) {
-  const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
+let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
+let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
+let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
+let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
+let rankAvailable=false;
+function httpFailure(status,message,code) {
+  const hint={422:t('Invalid request: revise the input.'),503:code==='OVERLOADED'?t('Model is busy. Wait and retry.'):t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
 }
 async function api(path, options={}) {
@@ -14,17 +18,54 @@ async function api(path, options={}) {
   const text = await response.text(); let data;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!response.ok) {  // basal-ui: {"detail": msg}; basal-serve 422: {"error": msg, "detail": [{"msg"}]}
-    const detail = typeof data?.detail === 'string' ? data.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
+    const nested=data?.detail&&typeof data.detail==='object'&&!Array.isArray(data.detail)?data.detail:null;
+    const detail = typeof data?.detail === 'string' ? data.detail : typeof nested?.detail === 'string' ? nested.detail : typeof data?.error === 'string' ? data.error : Array.isArray(data?.detail) ? data.detail.map(d => d?.msg).filter(Boolean).join('; ') : null;
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
-    const message=data?.code?ts(raw,data.code,data.params):raw;
+    const code=data?.code||nested?.code||data?.error?.code;
+    const upstream=raw.match(/^Comparison server returned HTTP (\d+)$/);
+    const message=code==='UNSUPPORTED_FOR_COMPARISON'?comparisonFailure(raw):code==='CONSENT_REQUIRED'?t('Consent is required to send requests to {host}',{host:raw.split(' ').at(-1)}):upstream?t('Comparison server returned HTTP {status}',{status:upstream[1]}):code?ts(t(raw),code,data.params):t(raw);
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    const error=new Error(`${httpFailure(response.status,message,code)}${id?` [request ${id}]`:''}`); error.code=data?.code; error.status=response.status; error.detail=raw; throw error;
   }
   return data;
 }
+function comparisonFailure(raw) {
+  const prefix=raw.match(/^(.*: line \d+: )/), lead=prefix?.[1]||'', reason=raw.slice(lead.length);
+  if(reason==='Comparison models do not support audio')return lead+t(reason);
+  let match=reason.match(/^Comparison models do not support (.+)$/);
+  if(match)return lead+t('Comparison models do not support {field}',{field:match[1]});
+  match=reason.match(/^(.+) has (\d+) options; this Comparison model's limit is (\d+)$/);
+  if(match)return lead+t('{field} has {count} options; this Comparison model’s limit is {limit}',{field:match[1],count:match[2],limit:match[3]});
+  match=reason.match(/^Decisions servers cannot preserve (.+)$/);
+  if(match)return lead+t('Decisions servers cannot preserve {field}',{field:match[1]});
+  match=reason.match(/^Decisions servers require text descriptions in (.+)$/);
+  if(match)return lead+t('Decisions servers require text descriptions in {field}',{field:match[1]});
+  match=reason.match(/^(questions\..+\.instructions) must be text for a Decisions server$/);
+  if(match)return lead+t('{field} must be text for a Decisions server',{field:match[1]});
+  match=reason.match(/^(questions\..+\.criteria) must list (choices|score levels)$/);
+  if(match)return lead+t('{field} must list choices or score levels',{field:match[1]});
+  match=reason.match(/^(questions\..+) needs distinct text options for a Decisions server$/);
+  if(match)return lead+t('{field} needs distinct text options for a Decisions server',{field:match[1]});
+  match=reason.match(/^basal-run would discard (.+)$/);
+  if(match)return lead+t('basal-run would discard {field}',{field:match[1]});
+  return lead+t(reason);
+}
 function toast(message, type='success') {
   const node=document.createElement('div'); node.className=`toast ${type}`; node.textContent=message;
-  $('#toastStack').append(node); setTimeout(()=>node.remove(),4000);
+  if(type==='error') {
+    const close=document.createElement('button'); close.type='button'; close.textContent='×'; close.setAttribute('aria-label',t('Dismiss')); close.onclick=()=>node.remove(); node.append(close);
+  } else {
+    node.tabIndex=0;
+    let remaining=4000, started, timer=null, hovered=false, focused=false;
+    const pause=()=>{if(timer!==null){clearTimeout(timer);remaining-=performance.now()-started;timer=null;}};
+    const resume=()=>{if(!hovered&&!focused&&timer===null){started=performance.now();timer=setTimeout(()=>node.remove(),remaining);}};
+    node.addEventListener('mouseenter',()=>{hovered=true;pause();});
+    node.addEventListener('mouseleave',()=>{hovered=false;resume();});
+    node.addEventListener('focusin',()=>{focused=true;pause();});
+    node.addEventListener('focusout',e=>{focused=node.contains(e.relatedTarget);resume();});
+    $('#toastStack').append(node); hovered=node.matches(':hover'); resume(); return;
+  }
+  $('#toastStack').append(node);
 }
 function confirmDialog({title,description,confirmLabel=t('Confirm'),destructive=false}) {
   return new Promise(resolve=>{
@@ -41,7 +82,6 @@ function applyTheme(theme) {
   const value=['light','dark','system'].includes(theme)?theme:'system';
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
   document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
-  document.querySelectorAll('.side-nav button').forEach(b=>{if(document.documentElement.dataset.theme==='dark')b.style.setProperty('color','#edf0e9','important');else b.style.removeProperty('color');});
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
@@ -51,10 +91,13 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((lo
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
-  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden){e.preventDefault();$('#sendButton').click();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('#sendButton').click();}
   else if(!typing&&e.key==='?'&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();$('#shortcutsDialog').showModal();}
   else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
+document.addEventListener('click',event=>{if(recording && event.target.closest('#dt-run')){event.preventDefault();event.stopImmediatePropagation();$('#decisionCompare .dt-error').textContent=t('Finish recording before sending.');$('#decisionCompare .dt-error').hidden=false;}},true);
+document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;if(event.target.closest('#playground') && !event.target.closest('#recordAudio, #sendButton') && recording)cancelRecording();},true);
+document.addEventListener('input',event=>{if(event.target.closest('#playground')){replayIntent++;if(recording && !event.target.closest('#recordAudio'))cancelRecording();}});
 document.addEventListener('change',event=>{
   if(event.target.matches('input[type=checkbox]'))event.target.setAttribute('aria-checked',String(event.target.checked));
 });
@@ -103,7 +146,9 @@ function renderModels(data) {
   backendSelect.value=recommendationBackend;
   $('#recommendationMethod').textContent=t(data.recommendation_note);
   renderModelLoader();
+  renderAttachControl();
   renderDiskModels(); renderCalibrationModels(); renderInspectModels();
+  document.dispatchEvent(new CustomEvent('app:models',{detail:modelData}));
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
@@ -126,8 +171,8 @@ function renderModels(data) {
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
       const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):downloadButton}${m.runnable?optionsButton(m.id,false,'save'):''}${!loaded&&m.downloaded?deleteButton(m.id):''}`;
-      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
   }
@@ -191,20 +236,23 @@ async function openModelCard(id) {
   $('#modelCardBody').scrollTop=0;  // the dialog is reused: a new card starts at its top
 }
 function renderDiskModels() {
-  const rows = modelData.filter(m => m.downloaded), total = rows.reduce((sum,m) => sum + (Number(m.downloaded_bytes) || 0),0);
+  const rows = modelData.filter(m => m.downloaded || m.attached), total = rows.reduce((sum,m) => sum + (m.attached?0:(Number(m.downloaded_bytes) || 0)),0);
   const groups=new Map();
   for(const model of rows){
-    const type=model.family||'Other';
+    const type=model.attached?'Attached':model.family||'Other';
     if(!groups.has(type))groups.set(type,[]);
     groups.get(type).push(model);
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${type==='Attached'?t('Linked weights: {size}',{size:gb(bytes)}):gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.attached?`<span>${esc(m.repo)}</span>`:''}${m.attached?`<span class="chip">${t('Attached')}</span>${m.uncalibrated?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${m.attached?t('Linked weights: {size}',{size:gb(m.downloaded_bytes)}):gb(m.downloaded_bytes)}</span>${idleUnloadText(statusCache?.idle_unloads?.[m.id])}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${m.attached?`${m.downloaded?diskActions(m):`<span class="reason">${t('Model files are missing; remove and attach again.')}</span>`}<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
-  $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
+  const ordinary=rows.filter(m=>m.downloaded&&!m.attached);
+  $('#diskTotal').textContent=t('Total: {size} in {models}',{size:gb(total),models:tp(ordinary.length,'{n} model','{n} models',{n:ordinary.length})})+(rows.some(m=>m.attached)?` · ${t('Shared base weights are not included.')}`:'');
   renderManagerSummary();
 }
+function idleUnloadText(reason){return reason?.code==='idle_unload'?`<span class="muted">${esc(idleUnloadMessage(reason))}</span>`:'';}
+function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} idle minute at {time}','Unloaded after {n} idle minutes at {time}',{time:new Date(reason.at*1000).toLocaleString()});}
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
@@ -223,6 +271,40 @@ function renderModelLoader() {
   }).join(''):`<p class="muted">${t(inspecting?'Download a bf16 model first':'Nothing downloaded yet')}</p>`;
   if(container.innerHTML!==html)container.innerHTML=html;
 }
+async function renderAttachControl() {
+  const card=$('#attachCard');
+  try{
+    const data=await api('/api/attach');
+    card.hidden=false;
+    $('#attachUnavailable').hidden=data.available;
+    $('#attachControls').hidden=!data.available;
+    $('#attachBase').innerHTML=(data.bases||[]).map(base=>`<option value="${esc(base)}">${esc(base)}</option>`).join('');
+  }catch{card.hidden=true;}
+}
+$('#openAttach').onclick=()=>$('#attachDialog').showModal();
+$('#attachModel').onclick=()=>act(async()=>{
+  const base=$('#attachBase').value;
+  await api('/api/attach',{method:'POST',body:JSON.stringify({base,format:Number($('#attachFormat').value)})});
+  $('#attachDialog').close();
+  toast(t('Attach job started'));
+  await refreshStatus();
+});
+$('#cancelAttach').onclick=()=>act(async()=>{await api('/api/attach',{method:'DELETE'});await refreshStatus();});
+document.addEventListener('click',event=>{
+  const button=event.target.closest('.remove-attached');
+  if(!button)return;
+  act(async()=>{
+    const id=button.dataset.id;
+    if(!await confirmDialog({title:t('Remove attached model?'),description:t('{model} will be removed. Shared base weights remain in the cache.',{model:id}),confirmLabel:t('Remove'),destructive:true}))return;
+    const result=await api(`/api/attach/${encodeURIComponent(id)}`,{method:'DELETE'});
+    if(result.cleanup_error){
+      $('#attachRecovery').textContent=t('Cleanup was incomplete. Inspect the retained directory: {path}',{path:result.retained_path});
+      $('#attachRecovery').hidden=false;
+      showView('manager/library',true);$('#attachRecovery').scrollIntoView({block:'center'});
+    }else toast(result.retained_directory?t('Record removed; unverified model directory was retained.'):t('Attached model removed'));
+    await loadModels();
+  });
+});
 $('#openModelLoader').onclick=()=>{$('#modelLoaderDialog').showModal();renderModelLoader();};
 document.addEventListener('click',event=>{
   const button=event.target.closest('.use-loaded-model');if(!button)return;
@@ -234,13 +316,28 @@ document.addEventListener('click',event=>{
   if(serveData)renderConnect();
   $('#modelLoaderDialog').close();
 });
+let audioSettingsVersion=0, audioSettingsRead=0, audioSettingsSaving=false;
+$('#keepHistoryAudio').indeterminate=true;$('#keepHistoryAudio').setAttribute('aria-checked','mixed');
+function audioSettingsUnknown() {
+  const input=$('#keepHistoryAudio');input.indeterminate=true;input.setAttribute('aria-checked','mixed');input.disabled=true;
+  $('#historyAudioError').textContent=t('History audio setting is unknown. Reload the page to check it.');$('#historyAudioError').hidden=false;
+}
+function applyAudioSettings(settings) {
+  if(typeof settings?.keep_history_audio!=='boolean' || !Number.isFinite(settings.history_audio_budget_bytes))return false;
+  const input=$('#keepHistoryAudio');input.indeterminate=false;setChecked(input,settings.keep_history_audio);input.disabled=settings.history_audio_available===false;
+  if(input.disabled){$('#historyAudioHelp').textContent=t('History audio retention is unavailable on this platform.');return true;}
+  $('#historyAudioHelp').textContent=t('Audio only; images are not retained. Oldest clips expire when the {size} MiB budget is full, while History rows remain. Turning this off stops new retention but keeps existing audio. Clear History deletes retained audio.',{size:settings.history_audio_budget_bytes/1048576});
+  return true;
+}
 async function loadSettings() {
+  const version=audioSettingsVersion, read=++audioSettingsRead, eligible=!audioSettingsSaving;
   try {
     const settings = await api('/api/settings');
     $('#modelsDir').value = settings.models_dir;
     $('#defaultModelsDirHint').textContent = t('Default: {path}',{path:settings.default_models_dir});
     setChecked($('#checkUpdates'),settings.check_updates!==false);
-  } catch (e) { $('#modelsDirError').textContent = e.message; }
+    if(eligible && !audioSettingsSaving && version===audioSettingsVersion && read===audioSettingsRead){if(applyAudioSettings(settings))$('#historyAudioError').hidden=true;else audioSettingsUnknown();}
+  } catch (e) { $('#modelsDirError').textContent = e.code==='history_audio_policy_unavailable'?'':e.message; if(eligible && !audioSettingsSaving && version===audioSettingsVersion && read===audioSettingsRead)audioSettingsUnknown(); }
 }
 async function refreshUpdates() {
   try {
@@ -257,6 +354,27 @@ async function refreshUpdates() {
     const b=$('#showNewModels');if(b)b.onclick=()=>act(async()=>{await api('/api/updates/seen',{method:'POST'});await refreshUpdates();showView('models',true);selectModelsTab('all');});
   } catch {}
 }
+$('#keepHistoryAudio').onchange=async()=>{
+  const input=$('#keepHistoryAudio'), desired=input.checked, version=++audioSettingsVersion;audioSettingsRead++;audioSettingsSaving=true;input.disabled=true;$('#historyAudioError').hidden=true;
+  try {
+    const settings=await api('/api/settings',{method:'PUT',body:JSON.stringify({keep_history_audio:desired})});
+    if(version!==audioSettingsVersion)return;
+    audioSettingsSaving=false;
+    if(!applyAudioSettings({...settings,keep_history_audio:desired})){audioSettingsUnknown();return;}
+    toast(t('Settings saved'));
+  } catch {
+    try {
+      const settings=await api('/api/settings');
+      if(version!==audioSettingsVersion)return;
+      audioSettingsSaving=false;
+      if(!applyAudioSettings(settings)){audioSettingsUnknown();return;}
+      $('#historyAudioError').textContent=t('The save response failed. The current History audio setting has been reloaded.');$('#historyAudioError').hidden=false;
+    } catch {
+      if(version!==audioSettingsVersion)return;
+      audioSettingsSaving=false;audioSettingsUnknown();
+    }
+  }
+};
 $('#checkUpdates').onchange=()=>act(async()=>{await api('/api/settings',{method:'PUT',body:JSON.stringify({check_updates:$('#checkUpdates').checked})});refreshUpdates();});
 async function saveModelsDir(value) {
   $('#modelsDirError').textContent = '';
@@ -277,11 +395,12 @@ async function loadModel(id, media=false, mode=null) {
   if(mode)return openLoadOptions(id,media,'load',mode);
   statusSequence++;
   try { await api('/api/load', {method:'POST', body:JSON.stringify({id,...(media?{media:true}:{})})}); toast(t('Model load started')); await refreshStatus(); }
-  catch (e) { showStatusError(e.message); toast(e.message,'error'); }
+  catch (e) { showStatusError(e.message); }
 }
 function showStatusError(text) { if(text)toast(text,'error'); }
 function mediaTitle(kinds) { return kinds.map(kind => kind === 'image' ? t('images') : kind === 'audio' ? t('audio') : kind).join(` ${t('and')} `); }
 function clearSelectedMedia() {
+  cancelRecording();
   mediaSelection++;
   clearElementQuestions();
   selectedMedia.forEach(item => URL.revokeObjectURL(item.url));
@@ -293,9 +412,11 @@ const fileSize = n => n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB
 function renderSelectedMedia() {
   $('#mediaItems').innerHTML = selectedMedia.map((item,index) => `<div class="media-item">${item.kind === 'image'
     ? `<button type="button" class="media-preview" data-preview="${index}" title="${t('Open preview')}"><img src="${esc(item.url)}" alt="${esc(item.file.name)}"></button>`
-    : `<audio class="media-audio" controls preload="metadata" src="${esc(item.url)}"></audio>`}${item.kind==='image'?`<button type="button" class="mark-elements" data-mark="${index}"${selectedMedia.some((m,i)=>i!==index&&m.elements)?' hidden':''} title="${selectedMedia.some((m,i)=>i!==index&&m.elements)?t('Only one image can have marked elements at a time'):t('Mark elements')}">${t('Mark elements')}</button>`:''}<div class="media-meta"><span><span class="media-name" title="${esc(item.file.name)}">${esc(item.file.name)}</span><small data-dims="${index}">${fileSize(item.file.size)}</small></span><button type="button" data-remove="${index}" aria-label="${t('Remove {name}',{name:esc(item.file.name)})}">${t('Remove')}</button></div></div>`).join('');
+    : `<audio class="media-audio" controls preload="metadata" src="${esc(item.url)}"></audio>`}${item.kind==='image'?`<button type="button" class="mark-elements" data-mark="${index}"${selectedMedia.some((m,i)=>i!==index&&m.elements)?' hidden':''} title="${selectedMedia.some((m,i)=>i!==index&&m.elements)?t('Only one image can have marked elements at a time'):t('Mark elements')}">${t('Mark elements')}</button>`:''}<div class="media-meta"><span><span class="media-name" title="${esc(item.file.name)}">${esc(item.file.name)}</span><small data-dims="${index}">${fileSize(item.file.size)}</small></span><button type="button" data-rename="${index}">${t('Rename')}</button><button type="button" data-remove="${index}" aria-label="${t('Remove {name}',{name:esc(item.file.name)})}">${t('Remove')}</button></div></div>`).join('');
+  $('#mediaItems').querySelectorAll('[data-rename]').forEach(button=>button.onclick=()=>{const item=selectedMedia[Number(button.dataset.rename)],name=prompt(t('File name'),item.file.name);if(name?.trim()){cancelRecording();item.file=new File([item.file],name.trim(),{type:item.file.type});renderSelectedMedia();syncRequest();}});
   $('#mediaItems').querySelectorAll('[data-mark]').forEach(button=>button.addEventListener('click',()=>openElementsEditor(Number(button.dataset.mark))));
   $('#mediaItems').querySelectorAll('[data-remove]').forEach(button => button.addEventListener('click', () => {
+    cancelRecording();
     const item=selectedMedia[Number(button.dataset.remove)];
     if(item.elements)removeElementQuestion(item);
     URL.revokeObjectURL(item.url);
@@ -322,10 +443,11 @@ function showMediaError(message='') {
   $('#mediaError').textContent = message;
   $('#mediaError').hidden = !message;
 }
-async function selectMedia(files) {
+async function selectMedia(files, append=false) {
+  if(!append)cancelRecording();
   const selection = ++mediaSelection;
   showMediaError();
-  if (files.length > 8) { showMediaError(t('at most 8 media items')); return; }
+  if (files.length + (append ? selectedMedia.length : 0) > 8) { showMediaError(t('at most 8 media items')); return; }
   const supported = new Set(loadedMedia);
   for (const file of files) {
     if (file.size > 20 * 1024 * 1024) { showMediaError(t('{name} is over 20 MiB',{name:file.name})); return; }
@@ -342,12 +464,89 @@ async function selectMedia(files) {
   try {
     const filesData = await Promise.all(files.map(readFile));
     if (selection !== mediaSelection) return;
-    clearElementQuestions();
-    selectedMedia.forEach(item => URL.revokeObjectURL(item.url));
-    selectedMedia = filesData.map(item => ({...item,url:URL.createObjectURL(item.file)}));
-    renderSelectedMedia(); syncRequest();
+    if(!append){clearElementQuestions();selectedMedia.forEach(item => URL.revokeObjectURL(item.url));}
+    const additions=filesData.map(item => ({...item,url:URL.createObjectURL(item.file)}));
+    selectedMedia = append ? [...selectedMedia,...additions] : additions;
+    renderSelectedMedia(); syncRequest(); return true;
   } catch (error) { if (selection === mediaSelection) showMediaError(error.message); }
 }
+// One capture owns its permission, tracks, recorder and decode; replacement invalidates all callbacks.
+let recording=null;
+function recordingUI(message='') {
+  $('#recordAudio').textContent=t(recording?(recording.phase==='pending'?'Cancel microphone request':recording.phase==='recording'?'Stop recording':'Cancel recording'):'Record audio');
+  $('#recordStatus').textContent=message?t(message):'';
+  $('#sendButton').disabled=Boolean(recording);
+  const active=recording?.phase==='recording';
+  for(const id of ['#recordTimer','#recordLevel','#recordLevelLabel'])$(id).hidden=!active;
+}
+function releaseCapture(session) {
+  clearInterval(session.timer);cancelAnimationFrame(session.frame);
+  session.stream?.getTracks().forEach(track=>track.stop());
+  session.source?.disconnect();session.analyser?.disconnect();
+  if(session.context && session.context.state!=='closed')session.context.close().catch(()=>{});
+  if(session.decodeContext && session.decodeContext.state!=='closed')session.decodeContext.close().catch(()=>{});
+}
+function cancelRecording() {
+  const session=recording;if(!session)return;
+  recording=null;session.cancelled=true;mediaSelection++;
+  if(session.recorder){session.recorder.ondataavailable=null;session.recorder.onstop=null;session.recorder.onerror=null;if(session.recorder.state!=='inactive')session.recorder.stop();}
+  releaseCapture(session);recordingUI();
+}
+function recordingError(error) {
+  return t(({NotAllowedError:'Microphone permission was denied. Allow microphone access in your browser settings and try again.',SecurityError:'Microphone access was blocked. Check your browser permissions.',NotFoundError:'No microphone was found. Connect one and try again.',NotReadableError:'The microphone is unavailable. Close other apps using it and try again.',OverconstrainedError:'The microphone cannot meet the recording requirements.',AbortError:'Microphone access was interrupted. Try again.'})[error?.name]||'Recording failed. Check your microphone and try again.');
+}
+function wavFile(buffer) {
+  const samples=buffer.getChannelData(0), bytes=44+samples.length*2;
+  if(!samples.length || bytes>20*1024*1024 || samples.length>16000*30)throw new Error('limit');
+  const out=new ArrayBuffer(bytes),view=new DataView(out),write=(offset,text)=>[...text].forEach((c,i)=>view.setUint8(offset+i,c.charCodeAt(0)));
+  write(0,'RIFF');view.setUint32(4,bytes-8,true);write(8,'WAVE');write(12,'fmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,16000,true);view.setUint32(28,32000,true);view.setUint16(32,2,true);view.setUint16(34,16,true);write(36,'data');view.setUint32(40,bytes-44,true);
+  samples.forEach((sample,i)=>{const v=Math.max(-1,Math.min(1,sample));view.setInt16(44+i*2,v<0?v*32768:v*32767,true);});
+  return new File([out],`recording-${Date.now()}.wav`,{type:'audio/wav'});
+}
+async function finishRecording(session) {
+  if(recording!==session || session.phase!=='recording')return;
+  session.phase='preparing';recordingUI('Preparing audio…');
+  // Stop the recorder and microphone before decoding; no microphone audio reaches the speakers.
+  session.recorder.stop();releaseCapture(session);
+}
+async function startRecording() {
+  if(recording){if(recording.phase==='recording')finishRecording(recording);else cancelRecording();return;}
+  const model=readyModels().find(m=>m.id===selectedModel);
+  if(!model || !(model.media||[]).includes('audio')){showMediaError(t('This model does not support {kind}',{kind:'audio'}));return;}
+  if(!window.isSecureContext){showMediaError(t('Microphone recording requires HTTPS or a loopback address.'));return;}
+  if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !window.AudioContext || !window.OfflineAudioContext){showMediaError(t('This browser does not support microphone recording.'));return;}
+  showMediaError();const session={model:selectedModel,generation:model.generation,phase:'pending',chunks:[]};recording=session;recordingUI('Waiting for microphone permission…');
+  try {
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    if(recording!==session){stream.getTracks().forEach(track=>track.stop());return;}
+    session.stream=stream;stream.getAudioTracks().forEach(track=>track.addEventListener('ended',()=>{if(recording===session && session.phase==='recording'){cancelRecording();showMediaError(t('Microphone access was interrupted. Try again.'));}}));session.context=new AudioContext();session.source=session.context.createMediaStreamSource(stream);session.analyser=session.context.createAnalyser();session.source.connect(session.analyser);
+    session.recorder=new MediaRecorder(stream);session.recorder.ondataavailable=e=>{if(e.data.size)session.chunks.push(e.data);};
+    session.recorder.onerror=()=>{if(recording===session){cancelRecording();showMediaError(t('Recording failed. Check your microphone and try again.'));}};
+    session.recorder.onstop=async()=>{
+      session.recorder.ondataavailable=null;session.recorder.onstop=null;session.recorder.onerror=null;
+      if(recording!==session)return;
+      try{
+        const blob=new Blob(session.chunks,{type:session.recorder.mimeType});if(!blob.size)throw new Error('empty');
+        const context=new AudioContext();session.decodeContext=context;let decoded;
+        try{decoded=await context.decodeAudioData(await blob.arrayBuffer());}finally{if(context.state!=='closed')await context.close();session.decodeContext=null;}
+        if(recording!==session)return;
+        if(decoded.duration>30 || !decoded.length)throw new Error('limit');
+        const length=Math.ceil(decoded.duration*16000),offline=new OfflineAudioContext(1,length,16000),source=offline.createBufferSource();source.buffer=decoded;source.connect(offline.destination);source.start();
+        const rendered=await offline.startRendering();if(recording!==session)return;
+        const file=wavFile(rendered);const added=await selectMedia([file],true);
+        if(recording!==session)return;
+        recording=null;recordingUI(added?'Recording added.':'');
+      }catch(e){if(recording===session){recording=null;recordingUI();showMediaError(e.message==='limit'?t('Recording is empty or exceeds the 30-second or 20 MiB limit.'):t('Could not prepare the recording. Try again.'));}}
+    };
+    session.recorder.start();session.phase='recording';session.start=performance.now();recordingUI('Recording started.');
+    const data=new Uint8Array(session.analyser.fftSize);
+    const level=()=>{if(recording!==session||session.phase!=='recording')return;session.analyser.getByteTimeDomainData(data);let sum=0;for(const n of data)sum+=((n-128)/128)**2;$('#recordLevel').value=Math.min(1,Math.sqrt(sum/data.length)*4);session.frame=requestAnimationFrame(level);};level();
+    const tick=()=>{const remaining=Math.max(0,29-(performance.now()-session.start)/1000);$('#recordTimer').textContent=t('{seconds} seconds remaining',{seconds:Math.ceil(remaining)});if(remaining<=5&&!session.warned){session.warned=true;$('#recordStatus').textContent=t('Recording will stop in 5 seconds.');}if(remaining<=0)finishRecording(session);};tick();session.timer=setInterval(tick,100);
+  }catch(error){if(recording===session){cancelRecording();showMediaError(recordingError(error));}}
+}
+$('#recordAudio').addEventListener('click',startRecording);
+document.addEventListener('keydown',event=>{if(event.key==='Escape' && recording){event.preventDefault();if(recording.phase==='recording')finishRecording(recording);else cancelRecording();}});
+
 function renderDashboard() {
   window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
 }
@@ -375,9 +574,9 @@ async function refreshStatus() {
   const sequence = ++statusSequence;
   try {
     const status = await api('/api/status');
-    if (sequence === statusSequence) { renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; showStatusError(e.message); trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {
@@ -387,14 +586,41 @@ async function loadExamples() {
     renderRequestPresets();
   } catch { examples=[];renderRequestPresets(); }
 }
+// Engine question sets are added to the current request, including in Edit JSON mode.
+$('#examples').insertAdjacentHTML('afterend', `<details id="questionSets"><summary>${t('Insert question set')}</summary><div class="controls"><label>${t('Question set')} <select id="questionSet" disabled></select></label><label>${t('Language')} <select id="questionSetLang" disabled><option value="auto">${t('Auto')}</option><option value="pl">${t('Polish')}</option><option value="en">${t('English')}</option></select></label><label>${t('Max error (optional)')} <input id="questionSetError" type="number" disabled min="0" max="1" step="any"></label><button type="button" id="insertQuestionSet" disabled>${t('Insert questions')}</button></div><p id="questionSetHint" class="muted" role="status">${t('Loading question sets…')}</p></details>`);
+async function loadQuestionSets() {
+  try {
+    const sets=await api('/api/question-sets');
+    $('#questionSet').innerHTML=sets.map(set=>`<option value="${esc(set.name)}">${esc(set.name)} (${set.question_count})</option>`).join('');
+    for(const selector of ['#questionSet','#questionSetLang','#questionSetError','#insertQuestionSet'])$(selector).disabled=!sets.length;
+    $('#questionSetHint').textContent=sets.length?'':t('No question sets are available.');
+  } catch { $('#questionSetHint').textContent=t('Question sets are unavailable in this Engine.'); }
+}
+$('#insertQuestionSet').onclick=()=>act(async()=>{
+  const jsonMode=$('#editJsonToggle').checked;
+  const request=jsonMode?JSON.parse($('#requestJson').value):buildRequest();
+  if(!request||typeof request!=='object'||Array.isArray(request)||!request.questions||typeof request.questions!=='object'||Array.isArray(request.questions))throw new Error(t('Request must contain a questions object.'));
+  const field=$('#questionSetError');if(!field.checkValidity()){field.reportValidity();return;}
+  const state=typeof request.state==='string'?request.state:JSON.stringify(request.state??'');
+  const questions=await api(`/api/question-sets/${encodeURIComponent($('#questionSet').value)}`,{method:'POST',body:JSON.stringify({lang:$('#questionSetLang').value,state,max_error:field.value===''?null:Number(field.value)})});
+  if(jsonMode!==$('#editJsonToggle').checked||JSON.stringify(request)!==JSON.stringify(jsonMode?JSON.parse($('#requestJson').value):buildRequest()))throw new Error(t('Request changed while loading questions. Try again.'));
+  const names=new Set(Object.keys(request.questions));
+  for(const [base,q] of Object.entries(questions)){
+    let name=base;for(let i=2;names.has(name);i++)name=`${base}_${i}`;names.add(name);
+    if(jsonMode)request.questions[name]=q;else addQuestion(name,q);
+  }
+  if(jsonMode){$('#requestJson').value=JSON.stringify(request,null,2);window.RequestCode.invalidate();}else syncRequest();
+});
+loadQuestionSets();
 // Question builder: one card per question, a type-specific fieldset; fields the builder does not own stay on the card
 // (card._extra) and are merged back, so Edit JSON → builder → JSON keeps them.
-const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract'];
-const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['act','tool','classify','verify','extract'];
+const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract','rank'];
+const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['choice','noul','score','act','tool','classify','verify','extract'];
+const SHARED_QUESTION_FIELDS=['coverage','ask_if','depends_on'];
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
-let presetData={load:{},request:{}},presetTarget='load';
-async function loadPresets() {try{presetData=await api('/api/presets');renderRequestPresets();renderLoadPresets();}catch{}}
+let presetData={load:{},request:{}},presetTarget='load',presetGeneration=0;
+async function loadPresets(current=()=>true) {const generation=++presetGeneration;try{const data=await api('/api/presets');if(generation!==presetGeneration||!current())return;presetData=data;renderRequestPresets();renderLoadPresets();}catch{}}
 function renderRequestPresets() {
   const select=$('#examples'), current=select.value;
   const saved=Object.keys(presetData.request||{});
@@ -415,7 +641,8 @@ $('#presetNameSave').onclick=()=>act(async()=>{
   let value;
   try { value=presetTarget==='load'?collectOptions():$('#editJsonToggle').checked?JSON.parse($('#requestJson').value):buildRequest(); if(presetTarget==='request')value._elements=elementPresetData(); }
   catch(e) { toast(e.message,'error');$('.q-name:invalid')?.reportValidity();return; }
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  ++presetGeneration;presetData=data;
   $('#presetNameDialog').close(); renderLoadPresets();renderRequestPresets();toast(t('Preset saved'));
 });
 $('#examples').addEventListener('change',e=>{
@@ -430,7 +657,8 @@ $('#examples').addEventListener('change',e=>{
   }else if(item)setRequest({state:item.state,questions:item.questions});
 });
 async function deletePreset(kind,name) {
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  ++presetGeneration;presetData=data;
   renderLoadPresets();renderRequestPresets();toast(t('Preset deleted'));
 }
 $('#exportPresets').onclick=()=>act(async()=>{
@@ -438,6 +666,13 @@ $('#exportPresets').onclick=()=>act(async()=>{
   a.href=url;a.download='presets.json';a.click();URL.revokeObjectURL(url);
 });
 $('#importPresetsButton').onclick=()=>$('#importPresets').click();
+$('#importPresetsUrl').onclick=()=>act(async()=>{
+  const url=prompt(t('Enter the presets URL'));if(url===null)return;
+  const button=$('#importPresetsUrl');button.disabled=true;button.textContent=t('Importing…');
+  try {const result=await api('/api/presets/import-url',{method:'POST',body:JSON.stringify({url})});await loadPresets();toast(t('Imported {count} presets',{count:result.count}));}
+  catch(e){await loadPresets();throw e;}
+  finally {button.disabled=false;button.textContent=t('Import from URL');}
+});
 $('#importPresets').onchange=()=>act(async()=>{
   const file=$('#importPresets').files[0];if(!file)return;
   const data=JSON.parse(await file.text());let count=0;
@@ -450,7 +685,7 @@ $('#deleteRequestPreset').onclick=()=>act(async()=>{const v=$('#examples').value
 const OWNED={choice:['criteria','levels','option_keys'],noul:['criteria','option_keys'],score:['criteria','levels','option_keys'],
   multi:['criteria','option_keys',...SET_KEYS],act:['criteria','base','costs','defer_action','option_keys'],
   tool:['tools','extra','rank','multi','description_chars',...SET_KEYS],classify:['labels','criteria','multi_label','none','threshold','min','max','objective'],
-  verify:['claims','binary'],compress:['unit','threshold','keep_ratio','min_keep'],extract:['schema']};
+  verify:['claims','binary'],compress:['unit','threshold','keep_ratio','min_keep'],extract:['schema'],rank:['candidates','top','chunk','prior','choice_context','order']};
 const KEYED=/^([^\s:]{1,40}):\s*(\S.*)$/;  // "key: description"; a plain option text may contain colons too
 const textOf=v=>typeof v==='string'?v:JSON.stringify(v);
 const splitLines=text=>String(text||'').split('\n').map(x=>x.trim()).filter(Boolean);
@@ -517,6 +752,7 @@ function renderTypeFields(card, type, q) {
   else if(type==='tool'){
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
+      +`<button type="button" class="mcp-open">${t('Import or refresh MCP tools')}</button>`
       +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
@@ -524,13 +760,21 @@ function renderTypeFields(card, type, q) {
   else if(type==='classify')html=qField('Labels',qArea('labels',labelsText(q.labels??q.criteria),'key: description, or one label per line'))+qSwitch('multi_label',q.multi_label,'Several labels (multi-label)')+' '+qSwitch('none',q.none,'Add a "none" label','single-only')+`<div class="multi-only">${setFields(q,false)}</div>`;
   else if(type==='verify')html=qField('Claims',qArea('claims',keyedText(q.claims),'key: claim text, or one claim per line'))+qSwitch('binary',q.binary,'Binary (supported / not supported)');
   else if(type==='compress')html=`<div class="qf-row">${qField('Unit',qSelect('unit',[['sentence','sentence'],['line','line'],['paragraph','paragraph']],q.unit||'sentence'))}${qField('Threshold',qNum('threshold',q.threshold,'min="0" max="1" step="0.05" placeholder="0.5"'))}${qField('Keep ratio',qNum('keep_ratio',q.keep_ratio,'min="0" max="1" step="0.05" placeholder="off"'),'share of the characters kept (overrides threshold)')}${qField('Min keep',qNum('min_keep',q.min_keep,'min="0" step="1" placeholder="1"'))}</div>`;
+  else if(type==='rank'){
+    const candidates=Array.isArray(q.candidates)?q.candidates.map((c,i)=>typeof c==='object'&&c!==null?`${c.key??i}: ${textOf(c.text)}`:String(c)).join('\n'):keyedText(q.candidates);
+    const groups=Array.isArray(q.candidates)?Object.fromEntries(q.candidates.flatMap((c,i)=>c&&typeof c==='object'&&c.group!=null?[[String(c.key??i),c.group]]:[])):{};
+    html=`<span class="badge experimental">${t('experimental')}</span><p class="rank-unavailable reason" hidden>${t('This Engine does not support rank questions.')}</p>`+qField('Candidates',qArea('candidates',candidates,'key: text, or one candidate per line'),'Use one candidate per line; keys default to line numbers.')
+      +qField('Groups (JSON object)',qArea('groups',Object.keys(groups).length?JSON.stringify(groups,null,2):'','{"key": "group"}','json'),'Map candidate keys to optional groups.')
+      +qField('Priors (JSON object)',qArea('prior',q.prior?JSON.stringify(q.prior,null,2):'','{"key": 1.0}','json'),'Map candidate keys to non-negative weights.')
+      +`<div class="qf-row">${qField('Top',qNum('top',q.top,'step="1" placeholder="'+esc(t('Engine default'))+'"'))}${qField('Chunk',qNum('chunk',q.chunk,'step="1" placeholder="50"'))}${qField('Choice context',qSelect('choice_context',[['auto','auto'],['screen','screen'],['shortlist','shortlist']],q.choice_context||'auto'))}${qField('Order',qSelect('order',[['state_first','state_first'],['candidates_first','candidates_first']],q.order||'state_first'))}</div>`;
+  }
   else if(type==='extract')html=qField('Schema (JSON)',qArea('schema',q.schema?JSON.stringify(q.schema,null,2):'','{"type": "object", "properties": {"total": {"type": "number"}}}','json'),'string, number, integer, boolean, enum and arrays of enums; nested objects as dotted paths.');
   const me=q.max_error, preset=me==null||Array.isArray(me)?'':[0.01,0.05].includes(Number(me))?String(Number(me)):'custom', maxErrorId=`question-field-${++questionFieldId}`;
   html+=`<div class="qf-row common-fields">${qSwitch('evidence',q.evidence===true,'Evidence spans','evidence-only')}<div class="qf max-error-only"><label for="${maxErrorId}">max_error</label><div class="controls">${qSelect('max_error',[['','none'],['0.01','0.01'],['0.05','0.05'],['custom','custom…']],preset).replace('<select ',`<select id="${maxErrorId}" `)}${qNum('max_error_custom',preset==='custom'?me:'','min="0" max="1" step="0.001"')}</div></div></div><div class="q-error reason wide" role="alert" hidden></div>`;
   $('.q-fields',card).innerHTML=html;
   delete card._choiceEditor;
   ChoiceEditor.mount(card,type,q);
-  $('.q-instructions-input',card).placeholder=['tool',...TASK_TYPES].includes(type)?t('optional'):t('What should the model decide?');
+  $('.q-instructions-input',card).placeholder=type==='rank'?t('Does {candidate} match?'):['tool',...TASK_TYPES].includes(type)?t('optional'):t('What should the model decide?');
   if(type==='act')renderCostMatrix(card);
   updateCardVisibility(card);
 }
@@ -562,12 +806,24 @@ function setCostMode(card, mode) {
   }
   card._costMode=mode; renderCostMatrix(card,true); updateCardVisibility(card);
 }
+function updateRankAvailability(card) {
+  const unavailable=$('.q-type',card).value==='rank'&&!rankAvailable;
+  card.querySelectorAll('.q-instructions-input,.q-fields input,.q-fields textarea,.q-fields select').forEach(input=>{
+    if(unavailable&&!input.disabled){input.disabled=true;input._rankDisabled=true;}
+    else if(!unavailable&&input._rankDisabled){input.disabled=false;delete input._rankDisabled;}
+  });
+  const reason=$('.rank-unavailable',card);if(reason)reason.hidden=!unavailable;
+}
 function updateCardVisibility(card) {
   const type=$('.q-type',card).value, on=f=>Boolean($(`[data-f="${f}"]`,card)?.checked), show=(sel,visible)=>card.querySelectorAll(sel).forEach(x=>x.hidden=!visible);
   const multiTool=type==='tool'&&on('multi');
+  if(type==='rank'||$('.q-instructions-input',card)._rankDisabled)updateRankAvailability(card);
+  show('.q-shared',type!=='rank');
   show('.evidence-only',EVIDENCE_TYPES.includes(type)&&!multiTool);
   show('.max-error-only',MAX_ERROR_TYPES.includes(type)&&!multiTool);
-  const custom=$('[data-f="max_error_custom"]',card); if(custom)custom.hidden=$('[data-f="max_error"]',card).value!=='custom';
+  const maxError=$('[data-f="max_error"]',card), plain=['choice','noul','score'].includes(type);
+  if(maxError){maxError.disabled=plain&&!statusCache?.features?.answer_sets;maxError.title=maxError.disabled?t('This Engine does not support answer sets and abstention.'):'';}
+  const custom=$('[data-f="max_error_custom"]',card); if(custom){custom.hidden=$('[data-f="max_error"]',card).value!=='custom';custom.disabled=plain&&!statusCache?.features?.answer_sets;}
   const objective=$('[data-f="objective"]',card); show('.set-threshold',!objective||objective.value==='threshold');
   show('.multi-only',on('multi_label')); show('.single-only',type==='classify'&&!on('multi_label'));
   show('.multi-tool-only',multiTool);
@@ -578,7 +834,7 @@ function updateCardVisibility(card) {
 }
 // every value the user can change on a card (the cost matrix too): equal to the rendered one = nothing was edited
 function cardSnapshot(card) {
-  return JSON.stringify([...card.querySelectorAll('input,select,textarea')].filter(x=>!x.matches('.q-name'))
+  return JSON.stringify([...card.querySelectorAll('input,select,textarea')].filter(x=>!x.matches('.q-name')&&!x.closest('.q-shared'))
     .map(x=>x.type==='checkbox'||x.type==='radio'?x.checked:x.value).concat([card._costMode??null]));
 }
 // the request a card was made from, to give it back exactly where the user did not edit it: the builder's own text
@@ -588,7 +844,7 @@ function rememberOriginal(card, type, q) {
   const value=f=>$(`[data-f="${f}"]`,card)?.value;
   card._orig={type,q:structuredClone(q),snapshot:cardSnapshot(card),
     lines:{criteria:value('criteria'),labels:value('labels'),claims:value('claims'),yesno:$('[data-f="yesno"]',card)?.checked,
-           instructions:$('.q-instructions-input',card).value}};
+           instructions:$('.q-instructions-input',card).value,candidates:value('candidates'),groups:value('groups')}};
 }
 const labelObjects=v=>Array.isArray(v)&&v.length>0&&v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)&&'name' in x);
 function labelsText(v) {  // classify labels: {key: rubric}, [keys] or [{"name", "rubric" | "description"}]
@@ -605,7 +861,9 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
   const orig=card._orig&&card._orig.type===type?card._orig:null, box=$('.q-error',card);
   if(orig&&cardSnapshot(card)===orig.snapshot){  // nothing edited: the request as it came
     card._error=null; if(box){box.textContent='';box.hidden=true;}
-    return [name,structuredClone(orig.q)];
+    const unchanged=structuredClone(orig.q);
+    SHARED_QUESTION_FIELDS.forEach(k=>{if(Object.hasOwn(card._extra,k))unchanged[k]=structuredClone(card._extra[k]);else delete unchanged[k];});
+    return [name,unchanged];
   }
   const el=f=>$(`[data-f="${f}"]`,card), str=f=>(el(f)?.value??'').trim(), num=f=>str(f)===''?undefined:Number(str(f)), on=f=>Boolean(el(f)?.checked);
   const q={type}, errors=ChoiceEditor.errors(card), editor=ChoiceEditor.read(card), set=(k,v)=>{if(v!==undefined&&v!==''&&!(Array.isArray(v)&&!v.length))q[k]=v;};
@@ -668,6 +926,26 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     if(num('threshold')!==undefined&&num('threshold')!==0.5)q.threshold=num('threshold');
     set('keep_ratio',num('keep_ratio')); if(num('min_keep')!==undefined&&num('min_keep')!==1)q.min_keep=num('min_keep');
   }
+  else if(type==='rank'){
+    const object=v=>v&&typeof v==='object'&&!Array.isArray(v);
+    const groups=str('groups')?json('groups',object,'groups must be a JSON object'):{};
+    if(unedited('candidates')&&unedited('groups'))keep('candidates');
+    else {
+      const original=unedited('candidates')?orig.q.candidates:null;
+      const candidates=Array.isArray(original)?original:original&&object(original)
+        ?Object.entries(original).map(([key,text])=>({key,text}))
+        :splitLines(str('candidates')).map((line,i)=>{const m=line.match(KEYED);return {key:m?m[1]:String(i),text:m?m[2]:line};});
+      q.candidates=candidates.map((candidate,i)=>{
+        const key=candidate?.key??String(i), hasGroup=groups&&Object.hasOwn(groups,key);
+        if(!object(candidate))return hasGroup?{key,text:candidate,group:groups[key]}:candidate;
+        const updated={...candidate};
+        if(hasGroup)updated.group=groups[key];else delete updated.group;
+        return updated;
+      });
+    }
+    if(str('prior'))set('prior',json('prior',object,'prior must be a JSON object'));
+    set('top',num('top'));set('chunk',num('chunk'));set('choice_context',str('choice_context'));set('order',str('order'));
+  }
   else if(type==='extract')set('schema',json('schema',v=>v&&typeof v==='object'&&!Array.isArray(v)&&v.properties&&typeof v.properties==='object','schema must be a JSON object with properties'));
   const multiTool=type==='tool'&&q.multi;
   if(EVIDENCE_TYPES.includes(type)&&!multiTool&&on('evidence'))q.evidence=true;
@@ -678,7 +956,7 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
 }
 function extraOf(q, type) {
   const owned=new Set(['type','instructions','evidence',...OWNED[type]]);
-  if(!Array.isArray(q.max_error))owned.add('max_error');  // a list of targets (tasks) is kept as given
+  if(MAX_ERROR_TYPES.includes(type)&&!Array.isArray(q.max_error))owned.add('max_error');  // uneditable targets stay as given
   return Object.fromEntries(Object.entries(q||{}).filter(([k])=>!owned.has(k)));
 }
 function mediaRequestFields() {
@@ -698,6 +976,83 @@ function requestOptionFields() {
   return fields;
 }
 const REQUEST_OPTION_KEYS=['facts','lang','think','think_text','early_exit'];
+function renderFetchProvenance() {
+  const note=$('#fetchProvenance');
+  $('#openFetchDialog').hidden=replayLocked;
+  note.hidden=sourceUrl===null;
+  if(sourceUrl===null){note.textContent='';return;}
+  note.textContent=replayLocked?t('Recorded source: {url}',{url:sourceUrl}):t('Source: {url}',{url:sourceUrl});
+  if(fetchInfo&&fetchInfo.final_url===sourceUrl)note.textContent+='\n'+t('Original: {url}',{url:fetchInfo.url})+'\n'+
+    t('Final: {url}',{url:fetchInfo.final_url})+'\n'+t('Type: {type} · {bytes} bytes · {truncation}',{
+      type:fetchInfo.content_type,bytes:fetchInfo.bytes,truncation:fetchInfo.truncated?t('Text truncated to 200,000 characters'):t('Text not truncated')});
+}
+function renderStateEstimate() {
+  let state;
+  try {
+    if($('#editJsonToggle').checked)state=JSON.parse($('#requestJson').value).state;
+    else {const input=$('#stateInput');state=input._requestState&&input.value===input._requestState.text?input._requestState.value:parseStructuredText(input.value);}
+    if(state===undefined)throw new Error();
+    const text=typeof state==='string'?state:JSON.stringify(state);
+    const tokens=Math.ceil(new TextEncoder().encode(text).length/4);
+    const context=(statusCache?.models||[]).find(model=>model.id===selectedModel)?.entry?.context;
+    $('#stateEstimate').textContent=t('Estimated State tokens: {tokens} · Active context limit: {limit} · policy: {policy}',{
+      tokens,limit:context?.limit??t('unknown'),policy:context?.overflow??t('unknown')});
+  } catch {$('#stateEstimate').textContent=t('State estimate unavailable until request JSON is valid.');}
+}
+function cancelFetch() {
+  fetchGeneration++;
+  if(fetchOperation)fetchOperation.abort();
+  fetchOperation=null;
+  $('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';
+}
+function closeFetch() {
+  cancelFetch();
+  if($('#fetchDialog').open)$('#fetchDialog').close();
+  if(!$('#openFetchDialog').hidden)$('#openFetchDialog').focus();
+}
+$('#openFetchDialog').addEventListener('click',()=>{
+  if(replayLocked)return;
+  cancelFetch();$('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');
+  $('#fetchDialog').showModal();$('#fetchUrl').focus();
+});
+$('#fetchCancel').addEventListener('click',closeFetch);
+$('#fetchDialog').addEventListener('cancel',event=>{event.preventDefault();closeFetch();});
+$('#fetchForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(fetchOperation||replayLocked)return;
+  let jsonRequest;
+  if($('#editJsonToggle').checked){
+    try {jsonRequest=JSON.parse($('#requestJson').value);if(!jsonRequest||typeof jsonRequest!=='object'||Array.isArray(jsonRequest))throw new Error();}
+    catch {$('#fetchError').textContent=t('Fix the request JSON before fetching.');$('#fetchError').hidden=false;return;}
+  }
+  const controller=new AbortController(), generation=++fetchGeneration;
+  fetchOperation=controller;$('#fetchSubmit').disabled=true;$('#fetchUrl').disabled=true;
+  $('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');$('#fetchStatus').textContent=t('Fetching…');
+  try {
+    const result=await api('/api/fetch',{method:'POST',body:JSON.stringify({url:$('#fetchUrl').value}),signal:controller.signal});
+    if(generation!==fetchGeneration||fetchOperation!==controller)return;
+    sourceUrl=result.final_url;fetchInfo={url:result.url,final_url:result.final_url,content_type:result.content_type,bytes:result.bytes,truncated:result.truncated};renderFetchProvenance();
+    applyingFetch=true;
+    try {
+      if(jsonRequest){jsonRequest.state=result.state;jsonRequest.source_url=sourceUrl;$('#requestJson').value=JSON.stringify(jsonRequest,null,2);$('#requestJson').dispatchEvent(new Event('input',{bubbles:true}));renderStateEstimate();}
+      else {const input=$('#stateInput');input.value=typeof result.state==='string'?result.state:JSON.stringify(result.state,null,2);input._requestState={text:input.value,value:structuredClone(result.state)};input.dispatchEvent(new Event('input',{bubbles:true}));}
+    } finally {applyingFetch=false;}
+    closeFetch();
+  } catch(error) {
+    if(generation!==fetchGeneration||fetchOperation!==controller||error.name==='AbortError')return;
+    $('#fetchError').textContent=error.message;$('#fetchError').hidden=false;$('#fetchUrl').setAttribute('aria-invalid','true');
+  } finally {
+    if(generation===fetchGeneration&&fetchOperation===controller){fetchOperation=null;$('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';}
+  }
+});
+['input','change'].forEach(type=>$('#playground').addEventListener(type,event=>{
+  if(applyingFetch)return;
+  cancelFetch();
+  if(event.target.id==='requestJson'){
+    try {const request=JSON.parse(event.target.value);const next=typeof request?.source_url==='string'?request.source_url:null;if(next!==sourceUrl)fetchInfo=null;sourceUrl=next;renderFetchProvenance();}catch{}
+  }
+  if(event.target.id==='requestJson')renderStateEstimate();
+},true));
 // think / early_exit appear for a model loaded with Thinking / with early-exit levels (--mode fast-exit)
 function setPlaygroundExperimental(model) {
   const think=Boolean(model?.options?.think), levels=model?.entry?.early_exit||[], select=$('#earlyExitSelect');
@@ -713,15 +1068,17 @@ function buildRequest() {
     if(invalid)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
     names.add(name);
     const [,q]=parseQuestionCard(card);
+    if(card._hideCoverage)delete q.coverage;
     const rowErrors=ChoiceEditor.errors(card);
     if(rowErrors.length)throw new Error(`${name}: ${rowErrors.join(' ')}`);
     if(!invalid)questions[name]=q;
   }
   if([...document.querySelectorAll('.q-name')].some(input=>!input.checkValidity()))throw new Error(t('Question names must be non-blank and unique.'));
   const stateInput=$('#stateInput'), state=stateInput._requestState;
-  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields()};
+  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields(),...(sourceUrl!==null?{source_url:sourceUrl}:{})};
 }
 function syncRequest(force=false, keys=['media','detail']) {
+  if(fetchOperation&&!applyingFetch)cancelFetch();
   window.RequestCode.invalidate();
   const textarea = $('#requestJson');
   if ($('#editJsonToggle').checked && !force) {
@@ -738,25 +1095,111 @@ function syncRequest(force=false, keys=['media','detail']) {
     try { textarea.value = JSON.stringify(buildRequest(), null, 2); }
     catch (e) { showMediaError(e.message); }
   }
+  renderStateEstimate();
+}
+function renderSharedFields(card) {
+  const host=$('.q-shared',card), type=$('.q-type',card).value, features=statusCache?.features||{};
+  if(!host)return;
+  const coverage=['choice','noul','score'].includes(type)
+    ?qField('Coverage',`<input class="input" type="number" data-shared-coverage min="0" max="1" step="0.01" value="${esc(card._extra.coverage??'')}" ${features.answer_sets?'':'disabled'}>`):'';
+  host.innerHTML=`${coverage}${coverage&&!features.answer_sets?`<small class="muted">${t('This Engine does not support answer sets and abstention.')}</small>`:''}<details class="q-gates"><summary>${t('Conditional question')}</summary><div class="q-gate-options"></div></details>`;
+  const details=$('.q-gates',host);
+  details.addEventListener('toggle',()=>{if(details.open)renderGateOptions(card);});
+}
+function refreshOpenGates(except) {
+  document.querySelectorAll('.question').forEach(card=>{if(card!==except&&$('.q-gates',card)?.open)renderGateOptions(card);});
+}
+function updateGateReferences(name, replacement) {
+  if(name===replacement||[...document.querySelectorAll('.q-name')].some(input=>input.value===name))return;
+  for(const card of document.querySelectorAll('.question')){
+    const extra=card._extra;
+    if(Array.isArray(extra.depends_on)&&extra.depends_on.includes(name)){
+      const deps=[...new Set(extra.depends_on.map(key=>key===name?replacement:key).filter(key=>key!==undefined))];
+      if(deps.length)extra.depends_on=deps;else delete extra.depends_on;
+    }
+    if(extra.ask_if&&Object.hasOwn(extra.ask_if,name)){
+      const gates=Object.entries(extra.ask_if).filter(([key])=>key!==name);
+      if(replacement!==undefined&&!Object.hasOwn(extra.ask_if,replacement))gates.push([replacement,extra.ask_if[name]]);
+      if(gates.length)extra.ask_if=Object.fromEntries(gates);else delete extra.ask_if;
+    }
+  }
+}
+function renderGateOptions(card) {
+  const host=$('.q-gate-options',card), supported=statusCache?.features?.conditional_questions;
+  if(!supported){host.innerHTML=`<p class="muted">${t('This Engine does not support conditional questions.')}</p>`;return;}
+  const extra=card._extra, deps=Array.isArray(extra.depends_on)?extra.depends_on:[], rawGates=extra.ask_if;
+  const gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{};
+  const unlisted=new Map(Object.entries(gates).filter(([,values])=>Array.isArray(values)&&values.length));
+  const candidates=[...document.querySelectorAll('.question')].filter(other=>other!==card&&['choice','noul','score'].includes($('.q-type',other).value));
+  const fields=candidates.map(other=>{
+    const [name,q]=parseQuestionCard(other), selected=unlisted.get(name)||[], recognized=new Set();
+    const criteria=q.criteria??q.levels??[], answers=q.type==='noul'?['true','false']:q.type==='score'&&Array.isArray(criteria)?criteria.map((_,i)=>String(i)):Array.isArray(criteria)?criteria.map(String):Object.keys(criteria);
+    const options=answers.map(value=>{
+      const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];
+      aliases.forEach(alias=>recognized.add(alias));
+      return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;
+    }).join(' ');
+    const missing=selected.filter(value=>!recognized.has(value));
+    if(missing.length)unlisted.set(name,missing);else unlisted.delete(name);
+    return `<fieldset><legend>${esc(name)}</legend><label><input type="checkbox" data-dependency="${esc(name)}" ${deps.includes(name)?'checked':''}> ${t('Depends on this question')}</label>${options?`<div>${t('Ask if answer is')}: ${options}</div>`:''}</fieldset>`;
+  }).join('');
+  host.innerHTML=fields||`<p class="muted">${t('Add another question to create a condition.')}</p>`;
+  if(!unlisted.size)return;
+  const other=document.createElement('fieldset'), legend=document.createElement('legend');
+  legend.textContent=t('Other condition answers');other.append(legend);
+  for(const [name,values] of unlisted)for(const value of values){
+    const remove=document.createElement('button');
+    remove.type='button';
+    remove.textContent=t('Remove condition on {question}: {answer}',{question:name,answer:typeof value==='string'?value:JSON.stringify(value)});
+    remove.onclick=()=>{
+      const remaining={...extra.ask_if}, answers=remaining[name];
+      if(!Array.isArray(answers))return;
+      const kept=answers.filter(answer=>answer!==value);
+      if(kept.length)remaining[name]=kept;else delete remaining[name];
+      if(Object.keys(remaining).length)extra.ask_if=remaining;else delete extra.ask_if;
+      renderGateOptions(card);$('.q-gates summary',card).focus();syncRequest();
+    };
+    other.append(remove);
+  }
+  host.append(other);
 }
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
   const card=document.createElement('div'); card.className='question'; const fieldId=`question-card-${++questionFieldId}`;
   const type=QUESTION_TYPES.includes(q.type)?q.type:'choice';
+  let gateName=name;
   card._extra=extraOf(q,type); card._type=type;
-  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div>`;
+  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}"${type==='rank'&&!rankAvailable?` disabled title="${t('This Engine does not support rank questions.')}"`:""}>${type==='rank'?t('rank (experimental)'):type}</option>`).join('')}</select><small class="rank-gate-reason reason"${rankAvailable?' hidden':''}>${t('This Engine does not support rank questions.')}</small></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div><div class="q-shared"></div>`;
   $('.q-type',card).value=type;
-  renderTypeFields(card,type,q); rememberOriginal(card,type,q);
+  renderTypeFields(card,type,q); renderSharedFields(card); rememberOriginal(card,type,q);
   card.addEventListener('input',e=>{
+    if(!['choice','noul','score'].includes(card._type))card._hideCoverage=true;
+    if(e.target.matches('[data-shared-coverage]')){const value=e.target.value;if(value==='')delete card._extra.coverage;else card._extra.coverage=Number(value);}
+    if(e.target.closest('.q-shared'))return syncRequest();
+    if(e.target.matches('.q-name,[data-f="criteria"],.choice-editor input'))refreshOpenGates(card);
     if(e.target.matches('[data-f="criteria"]')&&$('.q-type',card).value==='act')renderCostMatrix(card);
     syncRequest();
   });
   card.addEventListener('change',e=>{
-    if(e.target.matches('.q-type')){
+    if(!e.target.matches('.q-type')&&!['choice','noul','score'].includes(card._type))card._hideCoverage=true;
+    if(e.target.matches('.q-name')){
+      const next=e.target.value;
+      if(next.trim()&&![...document.querySelectorAll('.q-name')].some(input=>input!==e.target&&input.value===next)){
+        updateGateReferences(gateName,next);gateName=next;refreshOpenGates();
+      }
+    } else if(e.target.matches('[data-dependency]')){
+      const name=e.target.dataset.dependency, deps=new Set(Array.isArray(card._extra.depends_on)?card._extra.depends_on:[]);e.target.checked?deps.add(name):deps.delete(name);
+      if(deps.size)card._extra.depends_on=[...deps];else delete card._extra.depends_on;
+    } else if(e.target.matches('[data-gate-question]')){
+      const name=e.target.dataset.gateQuestion, value=e.target.dataset.gateAnswer, aliases=JSON.parse(e.target.dataset.gateAliases), rawGates=card._extra.ask_if, gates=Object.assign(Object.create(null),rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{}), values=Object.hasOwn(gates,name)&&Array.isArray(gates[name])?gates[name].filter(v=>!aliases.includes(v)):[];
+      if(e.target.checked)values.push(value);if(values.length)gates[name]=values;else delete gates[name];
+      if(Object.keys(gates).length)card._extra.ask_if=gates;else delete card._extra.ask_if;
+    } else if(e.target.matches('.q-type')){
       if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
-      card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
-      renderTypeFields(card,next,{...current,type:next});
+      if(next!=='tool'){delete card._extra._mcp_source;delete current._mcp_source;if(card._orig?.q)delete card._orig.q._mcp_source;}
+      card._type=next; card._hideCoverage=!['choice','noul','score'].includes(next); card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)&&!(next==='rank'&&['coverage','max_error','evidence','ask_if','depends_on','media'].includes(k))));
+      renderTypeFields(card,next,{...current,type:next}); renderSharedFields(card); refreshOpenGates(card);
     } else {
       if(e.target.matches('[data-f="yesno"]')){
         if(ChoiceEditor.errors(card).length){setChecked(e.target,!e.target.checked);syncRequest();return;}
@@ -771,28 +1214,34 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   card.addEventListener('click',e=>{
     const b=e.target.closest('button'); if(!b)return;
-    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();syncRequest();}
+    if(b.closest('.choice-editor'))refreshOpenGates(card);
+    if(b.matches('.remove-question')){if(card._elementItem)removeElementQuestion(card._elementItem);card.remove();updateGateReferences(gateName);refreshOpenGates();syncRequest();}
     else if(b.dataset.costMode){setCostMode(card,b.dataset.costMode);syncRequest();}
     else if(b.matches('.add-action')){card._costRows=readCostRows(card);card._costRows.push({action:'',costs:{}});renderCostMatrix(card,true);syncRequest();}
     else if(b.matches('.remove-action')){card._costRows=readCostRows(card);card._costRows.splice(Number(b.dataset.row),1);renderCostMatrix(card,true);syncRequest();}
   });
   $('#questions').append(card); updateMediaEvidence(); syncRequest();
 }
-function setRequest(req, names=[]) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+function setRequest(req, names=[], replay=false) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+  replayIntent++;
+  cancelFetch();
+  sourceUrl=typeof req?.source_url==='string'?req.source_url:null;
+  fetchInfo=null; replayLocked=replay; renderFetchProvenance();
   clearSelectedMedia();
   const preserveJson=()=>{
     $('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;
     $('#requestJson').value=JSON.stringify(req,null,2);
+    renderStateEstimate();
     showMediaError(t('This request contains fields or values the Playground builder cannot edit. It remains in Edit JSON mode.'));
     return false;
   };
-  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||req.state==null||
+  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||
      !Object.hasOwn(req,'questions')||!req.questions||typeof req.questions!=='object'||Array.isArray(req.questions))return preserveJson();
-  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model']);
+  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model','source_url']);
   const media=Array.isArray(req.media)?req.media:[];
   let restored=[];
   try {
-    if(Object.keys(req).some(key=>!known.has(key))||
+    if(Object.keys(req).some(key=>!known.has(key))||(Object.hasOwn(req,'source_url')&&typeof req.source_url!=='string')||
        Object.values(req.questions).some(q=>!q||typeof q!=='object'||Array.isArray(q)||!QUESTION_TYPES.includes(q.type))||
        (Object.hasOwn(req,'media')&&!Array.isArray(req.media))||
        media.some(item=>!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(k=>!['type','data'].includes(k))||
@@ -818,8 +1267,8 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
     const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);
   }
   const stateInput=$('#stateInput');
-  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state??'',null,2);
-  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state??'')};
+  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state,null,2);
+  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state)};
   setChecked($('#factsToggle'),req.facts==='auto'); $('#langSelect').value=['pl','en'].includes(req.lang)?req.lang:'auto';
   $('#thinkSelect').value=['off','force'].includes(req.think)?req.think:''; setChecked($('#thinkTextToggle'),req.think_text===true);
   if([...$('#earlyExitSelect').options].some(o=>o.value===req.early_exit))$('#earlyExitSelect').value=req.early_exit; else $('#earlyExitSelect').value='';
@@ -831,17 +1280,18 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
 }
 const PLAYGROUND_DRAFT='basal-ui.language-draft';
 window.preparePlaygroundLanguageSwitch=()=>{
+  cancelRecording();
   let hadMedia=selectedMedia.length>0;
   if($('#editJsonToggle').checked){
     let text=$('#requestJson').value;
     try {const request=JSON.parse(text);if(request&&typeof request==='object'&&!Array.isArray(request)){hadMedia=hadMedia||(Array.isArray(request.media)&&request.media.length>0);if('media' in request||'_elements' in request){delete request.media;delete request._elements;text=JSON.stringify(request,null,2);}}} catch {}
-    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia}));
+    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia,replayLocked,fetchInfo}));
     return;
   }
   const cards=[...document.querySelectorAll('#questions .question')];
   const stateInput=$('#stateInput'), state=stateInput._requestState&&stateInput.value===stateInput._requestState.text
     ?stateInput._requestState.value:parseStructuredText(stateInput.value);
-  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default'};
+  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default',...(sourceUrl!==null?{source_url:sourceUrl}:{})};
   const names=cards.map(card=>$('.q-name',card).value);
   const controls=cards.map(card=>[...card.querySelectorAll('input,select,textarea')].filter(el=>!el.closest('.choice-editor')).map(el=>el.type==='checkbox'?{checked:el.checked}:{value:el.value}));
   const choiceRows=cards.map(card=>ChoiceEditor.snapshot(card));
@@ -850,16 +1300,16 @@ window.preparePlaygroundLanguageSwitch=()=>{
   cards.forEach((card,i)=>{request.questions[`__language_draft_${i}`]=parseQuestionCard(card)[1];});
   const model=selectedModel||$('#playgroundModel').value;
   if(model)request.model=model;
-  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows}));
+  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows,replayLocked,fetchInfo}));
 };
 function restorePlaygroundLanguageDraft(){
   const saved=sessionStorage.getItem(PLAYGROUND_DRAFT);if(!saved)return;
   sessionStorage.removeItem(PLAYGROUND_DRAFT);
   try{
     const draft=JSON.parse(saved);
-    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;}
+    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;try{const request=JSON.parse(draft.text);sourceUrl=typeof request?.source_url==='string'?request.source_url:null;}catch{sourceUrl=null;}replayLocked=Boolean(draft.replayLocked);}
     else if(draft.request){
-      setRequest(draft.request);
+      setRequest(draft.request,[],Boolean(draft.replayLocked));
       const cards=[...document.querySelectorAll('#questions .question')];
       cards.forEach((card,i)=>{
         ChoiceEditor.restore(card,draft.choiceRows?.[i]);
@@ -879,6 +1329,7 @@ function restorePlaygroundLanguageDraft(){
       });
       syncRequest(true);
     }
+    fetchInfo=draft.fetchInfo||null;renderFetchProvenance();
     if(draft.hadMedia)showMediaError(t('Media must be attached again after changing language.'));
   }catch{}
 }
@@ -890,8 +1341,9 @@ function resultHeadline(name, answer, requestQuestion) {
   return null;
 }
 // decision safety: deferral, automation against the served model's certified thresholds, calibration validity
-const modelEntry=id=>(statusCache?.models||[]).find(m=>m.id===id)?.entry||null;
-const uncalibrated=entry=>Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length;
+const modelEntry=id=>{const model=(statusCache?.models||[]).find(m=>m.id===id),entry=model?.entry;if(String(id).startsWith('attached/'))return {...entry,attached_uncalibrated:!entry||model.uncalibrated!==false||model.restart_required||Boolean(entry.calibration_warning)||!Object.keys(entry.certified||{}).length};return entry||null;};
+const uncalibrated=entry=>Boolean(entry?.attached_uncalibrated)||(Boolean(entry?.temperature_per_prim)&&!Object.keys(entry.temperature_per_prim).length);
+const modelLabel=m=>m?.kind==='comparison'?`${(statusCache?.decision_servers||[]).find(s=>s.id===m.entry?.server)?.name||t('Decision server')} / ${m.entry?.upstream_model||m.id}`:m.id;
 function decisionBase(answer,q) {
   const type=answer.type||q.type;
   if(type==='tool')return 'choice';  // a single tool decision is deferred against the choice threshold
@@ -904,11 +1356,13 @@ function decisionBase(answer,q) {
 // text decisions with the served option orders; a media answer ("text"), one fitted on other option orders or an act
 // question shape the calibration was not validated for ("unvalidated") and uncalibrated probabilities get no claim.
 function certificateGap(answer, entry) {
+  if(entry?.kind==='comparison')return t('Comparison confidence is not calibrated');
   if(answer.calibrated===false)return t('this Cascade answer is not calibrated');
   if(entry?.calibration_warning)return `calibration warning: ${entry.calibration_warning}`;
   if(answer.calibration==='text')return t('the thresholds are certified on text decisions, not on media');
   if(answer.calibration==='unvalidated')return t(answer.type==='act'?'the calibration is not validated for this question shape':'the calibration was fitted on other option orders');
   if(answer.calibration!=null&&answer.calibration!=='validated')return `calibration: ${answer.calibration}`;
+  if(entry?.attached_uncalibrated)return t('no active certified thresholds for this Attached model');
   if(uncalibrated(entry))return t('the probabilities are not calibrated');
   return null;
 }
@@ -927,6 +1381,7 @@ function automationBadge(answer,q,entry) {
 function calibrationChip(answer,entry) {
   if(answer.calibrated===false)return `<span class="badge fit-tight">${t('uncalibrated probabilities')}</span>`;
   const c=answer.calibration;
+  if(entry?.attached_uncalibrated)return `<span class="badge fit-tight">${t('uncalibrated')}</span>`;
   if(c==='validated')return `<span class="badge fit-fits">${t('calibrated')}</span>`;
   if(c==='unvalidated')return `<span class="badge fit-tight">${t(answer.type==='act'?'calibration not validated for this question shape':'unvalidated — fitted on other option orders')}</span>`;
   if(c==='text')return `<span class="badge fit-tight">${t('fitted on text (media request)')}</span>`;
@@ -935,20 +1390,27 @@ function calibrationChip(answer,entry) {
   return '';
 }
 // a task answer's `automated`: {max_error: true (use as is) | false (review) | null (no certificate for the task)}
-function automatedChips(automated) {
-  if(!automated||typeof automated!=='object')return '';
+function automatedChips(automated,entry,answer) {
+  const hasCalibration=Boolean(entry&&(Object.keys(entry.certified||{}).length||Object.keys(entry.temperature_per_prim||{}).length||entry.calibration||entry.calibration_file||entry.selected_calibration||entry.shipped_calibration));
+  if((answer&&(!hasCalibration||answer.deferred===true||answer.refused!=null||typeof answer.max_error==='string'||certificateGap(answer,entry)))||entry?.attached_uncalibrated||!automated||typeof automated!=='object')return '';
   return Object.entries(automated).map(([risk,v])=>{
     const at=`${(Number(risk)*100).toFixed(0)}%`;
-    return v===true?`<span class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
+    return v===true?`<span data-certification-evidence class="badge fit-fits" title="max_error ${esc(risk)}">${at}: ${t('automated')}</span>`:v===false?`<span data-certification-evidence class="badge fit-tight" title="max_error ${esc(risk)}">${at}: ${t('review')}</span>`:`<span data-certification-evidence class="badge fit-unknown" title="max_error ${esc(risk)}">${at}: ${t('no certificate')}</span>`;
   }).join(' ');
 }
 function safetyStrip(answer,q,entry) {
   const parts=[];
+  if(Array.isArray(answer.answer_set))parts.push(`<span class="chip">${t('Answer set')}: ${esc(answer.answer_set.join(', '))}</span>`);
+  if(typeof answer.abstain==='boolean')parts.push(`<span class="chip">${t('Abstain')}: ${answer.abstain?t('yes'):t('no')}</span>`);
+  if(answer.coverage_note)parts.push(`<span class="reason">${esc(answer.coverage_note)}</span>`);
   if(answer.deferred===true)parts.push(`<span class="badge fit-too_large">${t('Deferred to a person')}</span>${answer.refused!=null?` <span class="muted"><code>refused</code>: ${esc(answer.refused)}</span>`:''}`);
-  parts.push(automationBadge(answer,q,entry),calibrationChip(answer,entry),answer.calibrated===false?'':automatedChips(answer.automated));
+  for(const evidence of [automationBadge(answer,q,entry),calibrationChip(answer,entry)])if(evidence)parts.push(`<span data-certification-evidence>${evidence}</span>`);
+  parts.push(automatedChips(answer.automated,entry,answer));
   if(answer.answered_by){const names={first:t('first'),escalated:t('escalated'),fallback:t('fallback')};parts.push(`<span class="chip">${t('Answered by')} ${esc(names[answer.answered_by]??answer.answered_by)}</span>`);}
-  const inferred=entry?.kind==='cascade'&&entry.levels?.length===2&&['first','escalated'].includes(answer.answered_by)?(answer.answered_by==='first'?1:2):null;
-  const level=answer.level??inferred, model=answer.model??(inferred?entry.levels[inferred-1]?.model:null);
+  const levels=entry?.kind==='cascade'?entry.levels:null;
+  const inferred=levels?.length===2&&['first','escalated'].includes(answer.answered_by)?(answer.answered_by==='first'?1:2):null;
+  const level=answer.level??(levels&&answer.answered_by==='fallback'?levels.length+1:inferred);
+  const model=answer.model??(inferred?levels[inferred-1]?.model:null);
   if(level!=null)parts.push(`<span class="chip">${t('Cascade level')} ${esc(level)}</span>`);
   if(model)parts.push(`<span class="chip">${t('Answer model')} ${esc(model)}</span>`);
   const html=parts.filter(Boolean).join(' ');
@@ -956,7 +1418,7 @@ function safetyStrip(answer,q,entry) {
   return html||reason?`<div class="chips safety">${html}</div>${reason}`:'';
 }
 function resultBanners(entry,u) {
-  let html=entry?.calibration_warning?`<div class="error-box">${esc(entry.calibration_warning)}</div>`:'';
+  let html=entry?.calibration_warning?`<div data-certification-evidence class="error-box">${esc(entry.calibration_warning)}</div>`:'';
   const truncated=u?.truncated;
   if(truncated)html+=`<div class="error-box">${t('State truncated to the context: dropped {dropped} of {total} tokens (kept {head} from the start, {tail} from the end)',{dropped:esc(truncated.dropped_tokens),total:esc(truncated.state_tokens),head:esc(truncated.head_tokens),tail:esc(truncated.tail_tokens)})}</div>`;
   return html;
@@ -980,6 +1442,10 @@ const confidenceLine=answer=>metaLine(`${t('Confidence')}: ${answer.confidence==
 const chipList=(items,empty)=>items.length?`<div class="chips">${items.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}</div>`:`<div class="muted">${esc(t(empty))}</div>`;
 const headlineDiv=text=>`<div class="headline">${text}</div>`;
 const RESULT_VIEWS={
+  rank(a){
+    const rows=(a.ranking||[]).map((r,i)=>`<tr><td>${i+1}</td><td><code>${esc(r.key)}</code></td><td>${r.score==null?'—':num(r.score,4)}</td><td>${r.choice==null?'—':num(r.choice,4)}</td><td>${r.yes==null?'—':num(r.yes,4)}</td></tr>`).join('');
+    return metaLine(`${t('Top')}: ${esc(a.top)} · ${t('Candidates')}: ${esc(a.candidates)} · ${t('Requests')}: ${esc(a.requests)}`)+`<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Rank')}</th><th>${t('Key')}</th><th>${t('Score')}</th><th>${t('Choice')}</th><th>${t('Yes')}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  },
   multi(a,q){
     const sel=a.selected||[], objective=a.objective&&a.objective!=='threshold';
     const constraints=Object.entries(a.constraints_applied||{}).map(([k,v])=>`<span class="chip muted">${esc(k)}: ${esc(textOf(v))}</span>`).join('');
@@ -1000,17 +1466,17 @@ const RESULT_VIEWS={
     const head=multi?chipList(a.labels,'no label'):headlineDiv(`${esc(a.label)}${labelOf(q,a.label)?` · ${esc(labelOf(q,a.label))}`:''}`);
     return head+metaLine(multi?t('set confidence {confidence}',{confidence:pct(a.set_confidence)}):`${t('Confidence')}: ${pct(a.confidence)}`)+probBars(a.scores,q,new Set(multi?a.labels:[a.label]));
   },
-  verify(a,q){
+  verify(a,q,entry){
     const claims=q.claims, text=k=>Array.isArray(claims)?claims[Number(k)]:claims?.[k];
     const verdict=v=>`<span class="badge ${v==='supported'?'fit-fits':v==='contradicted'?'fit-too_large':'fit-tight'}">${esc(t(v))}</span>`;
-    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated)}</td></tr>`).join('');
+    const rows=Object.entries(a.claims||{}).map(([k,c])=>`<tr><td><code>${esc(k)}</code> ${esc(textOf(text(k)??''))}</td><td>${verdict(c.verdict)}</td><td>${pct(c.confidence)}</td><td>${automatedChips(c.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Claim')}</th><th>${t('Verdict')}</th><th>${t('Confidence')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div>`+metaLine(t('All supported: {answer}',{answer:a.all_supported?t('yes'):t('no')})+((a.not_supported||[]).length?` · ${t('not supported: {items}',{items:esc(a.not_supported.join(', '))})}`:''));
   },
   compress(a){
     return `<pre class="compressed">${esc(a.compressed)}</pre>`+metaLine(t('kept {kept} of {total} {unit}s · {compressed}/{original} chars ({ratio})',{kept:(a.kept||[]).length,total:(a.units||[]).length,unit:esc(a.unit),compressed:esc(a.compressed_chars),original:esc(a.original_chars),ratio:esc(a.ratio)}));
   },
-  extract(a){
-    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated)}</td></tr>`).join('');
+  extract(a,q,entry){
+    const rows=Object.entries(a.fields||{}).map(([path,f])=>`<tr><td><code>${esc(path)}</code></td><td>${esc(f.value==null?'—':textOf(f.value))}${f.error?`<span class="reason">${esc(f.error)}</span>`:''}</td><td>${pct(f.confidence)}</td><td>${esc(f.source)}</td><td>${automatedChips(f.automated,entry,a)}</td></tr>`).join('');
     return `<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Field')}</th><th>${t('Value')}</th><th>${t('Confidence')}</th><th>${t('Source')}</th><th>${t('Automated')}</th></tr></thead><tbody>${rows}</tbody></table></div><details><summary>${t('data')}</summary><pre>${esc(JSON.stringify(a.data,null,2))}</pre></details>`;
   },
 };
@@ -1063,13 +1529,27 @@ function thinkBlock(a) {
   const think=a.think, used=a.meta?.think;
   if(think?.skipped)return `<div class="chips"><span class="chip muted">${t('thinking skipped ({reason})',{reason:esc(think.skipped)})}</span></div>`;
   if(!think||think.tokens==null)return used?`<div class="chips"><span class="chip muted">${t('no reasoning')}</span></div>`:'';
-  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · ${t('calibration')} ${esc(t(think.calibration??'—'))}; ${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
+  return `<div class="think-block"><span class="chip">${t('reasoned')}</span> ${esc(think.tokens)} ${t('tokens')} · ${num(think.ms,0)} ms · <span data-certification-evidence>${t('calibration')} ${esc(t(think.calibration??'—'))}; </span>${t('without thinking')}: ${pct(think.no_think?.confidence)}${think.text?`<details><summary>${t('Reasoning')}</summary><pre>${esc(think.text)}</pre></details>`:''}</div>`;
 }
-function renderResults(data, request, mediaSnapshot=selectedMedia) {
+function modelEvidenceStamp(id) {
+  const m=(statusCache?.models||[]).find(item=>item.id===id);
+  return JSON.stringify(m?[m.id,m.state,m.generation,m.mode,m.options,m.uncalibrated,m.restart_required,m.entry?.certified,m.entry?.temperature_per_prim,m.entry?.calibration,m.entry?.calibration_file,m.entry?.calibration_warning,m.entry?.adapter,m.entry?.orders,m.entry?.layout,m.entry?.context]:null);
+}
+function invalidateModelEvidence(node) {
+  if(!node?.hasChildNodes()||!node.dataset.evidenceModel||node.dataset.evidenceStale||node.dataset.evidenceStamp===modelEvidenceStamp(node.dataset.evidenceModel))return;
+  node.querySelectorAll('[data-certification-evidence]').forEach(element=>element.remove());
+  const notice=document.createElement('p');notice.className='reason evidence-stale';notice.textContent=t('Calibration or model state changed; previous certification evidence is no longer current.');
+  node.prepend(notice);node.dataset.evidenceStale='1';
+}
+function inspectBlockedReason(id) {
+  const variant=modelData.find(m=>m.id===id);
+  return variant?.attached||String(id||'').startsWith('attached/')?t(variant?.inspect_reason||'attached models cannot be inspected'):null;
+}
+function renderResults(data, request, mediaSnapshot=selectedMedia, evidenceStamp=modelEvidenceStamp(request.model)) {
   const answers=data?.answers || data || {}, entry=modelEntry(request.model); let html='';
   for(const [name,answer] of Object.entries(answers)) {
     const q=request.questions?.[name]||{};
-    html+=DecisionTools.answerPanel(name,answer,q,entry);
+    html+=(data?.usage?.skipped||[]).includes(name)?`<article class="answer"><h3>${esc(name)}</h3><span class="badge fit-tight">${t('Skipped')}</span></article>`:DecisionTools.answerPanel(name,answer,q,entry);
   }
   const spans=typeof request.state==='string'?sourceSpans(answers,request):[];
   const u=data?.usage, mediaUsage=u?.media;
@@ -1078,13 +1558,35 @@ function renderResults(data, request, mediaSnapshot=selectedMedia) {
   const extraUsage=[['branches',u?.branches],['second_order_branches',u?.second_order_branches],['lane',u?.lane]].filter(([,v])=>v!=null).map(([k,v])=>`${k}: ${esc(v)}`).join(' · ');
   const usage=u?`<div class="answer-meta">${t('Latency')}: ${u.latency_ms??'—'} ms · ${t('Input tokens')}: ${u.input_tokens??'—'} · ${t('Questions')}: ${u.questions??'—'}${extraUsage?` · ${extraUsage}`:''}${mediaSummary}${thinkUsage}</div>`:'';
   const meter=u&&entry?.context?`<div class="answer-meta">${t('Longest prompt')} ${esc(u.longest_prompt_tokens??'—')} / ${esc(entry.context.limit??'—')} ${t('tokens')} · ${t('policy')} ${esc(entry.context.overflow)}</div>`:'';
-  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media&&entry?.kind!=='cascade'?`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`:''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const inspectReason=inspectBlockedReason(request.model);
+  $('#results').innerHTML=`<div class="section-head"><strong>${esc(request.model||'')}</strong>${html&&!request.media&&entry?.kind!=='cascade'?(inspectReason?`<span class="reason">${esc(inspectReason)}</span>`:`<button type="button" id="inspectDecision">${t('Inspect this decision')}</button>`):''}</div>`+resultBanners(entry,u)+(html ? usage+meter+html+(spans.length?renderSource(request.state,spans):'')+imageSources(answers,request,mediaSnapshot) : `<div class="empty">${t('No answers returned.')}</div>`);
+  const results=$('#results');results.dataset.evidenceModel=request.model||'';results.dataset.evidenceStamp=evidenceStamp;delete results.dataset.evidenceStale;invalidateModelEvidence(results);
   const inspectButton=$('#inspectDecision'); if(inspectButton)inspectButton.onclick=()=>inspectDecision(request);
   $('#rawResponse').textContent=JSON.stringify(data,null,2); $('#rawDetails').hidden=false;
 }
 function showDecideError(message) { $('#decideError').textContent=message; $('#decideError').hidden=false; }
+// Engine formats question names with Python repr, choosing double quotes when that avoids escaping a single quote.
+function engineName(name) {
+  const quote=name.includes("'")&&!name.includes('"')?'"':"'";
+  const escaped=name.replace(/[\\'"\x00-\x1f\x7f]/g,c=>{
+    if(c===quote||c==='\\')return '\\'+c;
+    if(c==='\n')return '\\n';if(c==='\r')return '\\r';if(c==='\t')return '\\t';
+    return c.charCodeAt(0)<32||c.charCodeAt(0)===127?`\\x${c.charCodeAt(0).toString(16).padStart(2,'0')}`:c;
+  });
+  return quote+escaped+quote;
+}
+function showQuestionErrors(detail, request) {
+  const rankError=detail==='rank questions do not take media'||/^\d+ rank candidates in this request, more than the \d+ this server takes per request \(basal-serve --rank-max-candidates\)$/.test(detail)||detail==='a rank request is longer than the context (--context-overflow truncate would cut its list); lower chunk';
+  document.querySelectorAll('.question').forEach(card=>{
+    const name=$('.q-name',card).value, quoted=engineName(name);
+    const named=detail.startsWith("question "+quoted+":")||(detail.includes("cycle among")&&detail.includes(quoted));
+    if(named||(rankError&&request.questions?.[name]?.type==='rank')){const box=$('.q-error',card);box.textContent=detail;box.hidden=false;}
+  });
+}
 async function sendDecision() {
+  if(recording){showDecideError(t('Finish recording before sending.'));return;}
   $('#decideError').hidden=true; $('#results').innerHTML='';
+  document.querySelectorAll('.q-error').forEach(box=>{box.hidden=true;box.textContent='';});
   let request;const jsonMode=$('#editJsonToggle').checked;
   try { request=jsonMode?JSON.parse($('#requestJson').value):buildRequest(); }
   catch(e) { showDecideError(jsonMode?t('Invalid JSON: {message}',{message:e.message}):e.message);if(!jsonMode)$('.q-name:invalid')?.reportValidity();return; }
@@ -1093,6 +1595,7 @@ async function sendDecision() {
     const invalid=[...document.querySelectorAll('.question')].filter(card=>card._error);
     if(invalid.length){showDecideError(invalid.map(card=>`${$('.q-name',card).value||t('question')}: ${card._error}`).join('\n'));return;}
   }
+  const limitError=toolBudgetError(request, selectedModel); if(limitError){showDecideError(limitError);return;}
   request.model=selectedModel;
   const unsupported=[...new Set((Array.isArray(request.media)?request.media:[]).map(m=>m?.type))].filter(k=>['image','audio'].includes(k)&&!loadedMedia.includes(k));
   if(unsupported.length){showDecideError(t('{model} does not take {media}. Remove the media, or load a basal-omni model with "Load with media" and select it.',{model:shortName(selectedModel||t('This model')),media:mediaTitle(unsupported)}));return;}
@@ -1101,9 +1604,13 @@ async function sendDecision() {
   if($('#editJsonToggle').checked)$('#requestJson').value=JSON.stringify(request,null,2);
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
-  catch(e) { showDecideError(e.message); toast(e.message,'error'); }
-  finally { $('#sendButton').disabled=false; }
+  const evidenceStamp=modelEvidenceStamp(request.model);
+  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
+  catch(e) {
+    if(e.status===422&&!jsonMode)showQuestionErrors(String(e.detail||''),request);
+    showDecideError(e.message); toast(e.message,'error');
+  }
+  finally { $('#sendButton').disabled=Boolean(recording); }
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
 $('#recommendationBackend').onchange=event=>{recommendationBackend=event.target.value;loadModels();};
@@ -1117,7 +1624,7 @@ function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===
 $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
-$('#stateInput').addEventListener('input',()=>{$('#stateInput')._requestState=undefined;syncRequest();});
+$('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
   if($('#editJsonToggle').checked){
     try {$('#requestJson').value=JSON.stringify(buildRequest(),null,2);showMediaError();}
@@ -1132,10 +1639,11 @@ $('#editJsonToggle').addEventListener('change',()=>{
     const meta=elementPresetData(),media=Array.isArray(request.media)?request.media:[];
     const names=media.map(item=>selectedMedia.find(current=>current.data===item?.data)?.file.name);
     const marks=meta.marked.flatMap(record=>{const index=media.findIndex(item=>item?.data===record.markedData);return index<0?[]:[{...record,index}];});
-    if(!setRequest(request,names))restorePresetMediaFallback(request,names);
+    if(!setRequest(request,names,replayLocked))restorePresetMediaFallback(request,names);
     restoreElementMarks(marks);
   }
   $('#editJsonArea').hidden=!$('#editJsonToggle').checked;$('#builder').hidden=$('#editJsonToggle').checked;
+  renderStateEstimate();
 });
 $('#mediaInput').addEventListener('change',event=>selectMedia(Array.from(event.target.files||[])));
 $('#mediaDetail').addEventListener('change',()=>syncRequest());
@@ -1144,10 +1652,9 @@ $('#langSelect').addEventListener('change',()=>syncRequest(false,REQUEST_OPTION_
 ['#thinkSelect','#thinkTextToggle','#earlyExitSelect'].forEach(s=>$(s).addEventListener('change',()=>syncRequest(false,REQUEST_OPTION_KEYS)));
 $('#mediaLightboxClose').addEventListener('click',()=>$('#mediaLightbox').close());
 $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox'))$('#mediaLightbox').close();});
-window.addEventListener('beforeunload',()=>selectedMedia.forEach(item=>URL.revokeObjectURL(item.url)));
+window.addEventListener('beforeunload',()=>{cancelRecording();selectedMedia.forEach(item=>URL.revokeObjectURL(item.url));});
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 function connectionEndpoint() {
   const settings=serveData.settings, serving=statusCache?.serving;
   if (serving?.url) return serving.url;
@@ -1289,7 +1796,6 @@ async function copyText(text, success=t('Copied to clipboard')) {
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
-let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
@@ -1300,39 +1806,101 @@ const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+
+function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
+let decisionServerSignature='';
+function renderDecisionServers(status){
+  const servers=status.decision_servers||[], models=status.models||[];
+  const signature=JSON.stringify([servers,models.filter(m=>m.kind==='comparison').map(m=>[m.id,m.state])]);
+  if(signature===decisionServerSignature)return;
+  decisionServerSignature=signature;
+  $('#decisionServerList').innerHTML=servers.length?servers.map(server=>`<div class="disk-row"><div class="disk-info"><strong>${esc(server.name)}</strong> <span class="badge">${esc(t(server.state))}</span><div class="muted">${esc(server.url)}</div><div>${models.filter(m=>m.entry?.server===server.id).map(m=>`<div>${esc(m.entry?.upstream_model||m.id)} ${comparisonBadge()}</div>`).join('')||t('No models reported')}</div></div><button type="button" data-detach-server="${esc(server.id)}">${t('Detach')}</button></div>`).join(''):`<p class="muted">${t('No Decision servers attached.')}</p>`;
+  $('#decisionServerList').querySelectorAll('[data-detach-server]').forEach(button=>button.onclick=async()=>{
+    if(!await confirmDialog({title:t('Detach Decision server?'),description:t('Its models and saved key will be removed.'),confirmLabel:t('Detach'),destructive:true}))return;
+    try{await api(`/api/decision-servers/${encodeURIComponent(button.dataset.detachServer)}`,{method:'DELETE'});await refreshStatus();$('#addDecisionServer').focus();}
+    catch(error){$('#decisionServerError').textContent=error.message;$('#decisionServerError').hidden=false;}
+  });
+}
+let decisionConsentHost='';
+function decisionServerConsent(){
+  let host='';try{host=new URL($('#decisionServerUrl').value).hostname.toLowerCase().replace(/^\[|\]$/g,'');}catch{}
+  if(host!==decisionConsentHost)$('#decisionServerConsent').checked=false;
+  decisionConsentHost=host;
+  const local=host==='localhost'||host==='::1'||/^127(?:\.\d{1,3}){3}$/.test(host)||/^169\.254(?:\.\d{1,3}){2}$/.test(host)||/^fe[89ab][0-9a-f]:/i.test(host);
+  $('#decisionServerConsentField').hidden=!host||local;
+  $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
+}
+$('#decisionServerUrl').addEventListener('input',decisionServerConsent);
+$('#decisionServerForm').addEventListener('submit',async event=>{
+  event.preventDefault();const error=$('#decisionServerError');error.hidden=true;
+  const button=$('#addDecisionServer');let added=false;button.disabled=true;
+  try{await api('/api/decision-servers',{method:'POST',body:JSON.stringify({name:$('#decisionServerName').value,url:$('#decisionServerUrl').value,key:$('#decisionServerKey').value||null,consent:$('#decisionServerConsent').checked})});
+    event.target.reset();decisionServerConsent();await refreshStatus();added=true;}
+  catch(reason){error.textContent=reason.message;error.hidden=false;error.focus();}
+  finally{button.disabled=false;if(added)button.focus();}
+});
 function renderManagerSummary() {
-  const loaded=statusCache?.models?.length||0, downloaded=modelData.filter(m=>m.downloaded);
-  const bytes=downloaded.reduce((sum,model)=>sum+(Number(model.downloaded_bytes)||0),0);
+  const loaded=statusCache?.models?.filter(m=>m.kind!=='comparison').length||0, downloaded=modelData.filter(m=>m.downloaded);
+  const bytes=downloaded.reduce((sum,model)=>sum+(model.attached?0:(Number(model.downloaded_bytes)||0)),0);
   $('#managerLoadedCount').textContent=`${loaded} ${t('loaded')}`;
   $('#managerDiskCount').textContent=`${downloaded.length} ${t('downloaded')}`;
   $('#managerDiskBytes').textContent=`${gb(bytes)} ${t('on disk')}`;
 }
+let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
-  statusAvailable=true; statusCache=s;
+  const oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
+  if(oldFeatures!==JSON.stringify(s.features))document.querySelectorAll('.question').forEach(card=>{renderSharedFields(card);updateCardVisibility(card);});
+  invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
+  const attachJob=s.jobs?.attach;
+  if(attachJob){
+    const progress=s.downloads?.[$('#attachBase').value];
+    $('#cancelAttach').hidden=!attachJob.running;
+    $('#openAttach').disabled=attachJob.running;
+    $('#attachFormat').disabled=attachJob.running;
+    $('#attachBase').disabled=attachJob.running;
+    $('#attachModel').disabled=attachJob.running;
+    $('#attachJob').textContent=attachJob.running?`${t('Attaching {model}',{model:attachJob.model})}${progress?` · ${gb(progress.done_bytes)} / ${gb(progress.total_bytes)}`:''}`:attachJob.phase==='error'?t('Failed: {error}',{error:attachJob.error}):attachJob.phase==='done'?t('Attached model ready'):'';
+    if(!attachJob.running&&attachJob.phase==='done'&&lastAttachedJobRefresh!==attachJob.started){
+      lastAttachedJobRefresh=attachJob.started;
+      loadModels();
+    }
+  }
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
+  const attachedSignature=JSON.stringify(models.filter(m=>m.id.startsWith('attached/')).map(m=>[m.id,m.state,m.generation,m.restart_required,m.entry?.certified,m.entry?.calibration_warning,m.uncalibrated]));
+  if(attachedSignature!==attachedStatusSignature){attachedStatusSignature=attachedSignature;loadModels().then(()=>renderLoadedRows(statusCache?.models||[]));}
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
-  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
+  const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
+  const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
+  lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;
-  if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
+  const priorModel=selectedModel;
+  const primaryReady=ready.filter(m=>m.kind!=='comparison');
+  if(!primaryReady.some(m=>m.id===selectedModel)){cancelFetch();selectedModel=primaryReady[0]?.id||'';}
+  if(recording && (recording.model!==selectedModel || priorModel!==selectedModel || !ready.some(m=>m.id===recording.model && m.generation===recording.generation && (m.media||[]).includes('audio'))))cancelRecording();
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
-  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
-  $('#footerDot').className=`status-dot${ready.length?' ready':models.some(m=>m.state==='error')?' error':''}${live?' active':''}`;
-  $('#footerModel').textContent=models.map(m=>shortName(m.id)).join(', ')||t('No model loaded');
-  $('#footerModel').title=models.map(m=>m.id).join(', ')||t('No model loaded');
+  const failed=models.some(m=>m.state==='error');
+  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:failed?`${t('error')}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
+  $('#footerDot').className=`status-dot${ready.length?' ready':failed?' error':''}${live?' active':''}`;
+  $('#footerModel').textContent=models.map(m=>`${shortName(m.id)}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
+  $('#footerModel').title=models.map(m=>`${m.id}${m.kind==='comparison'?` · ${t('Comparison')}`:''}`).join(', ')||t('No model loaded');
   $('#footerUrl').textContent=s.serving?.url||''; $('#footerUrl').hidden=!s.serving?.url;
-  $('#footerUnload').hidden=!models.length; $('#footerUnload').textContent=models.length>1?t('Unload all'):t('Unload');
+  const owned=models.filter(m=>m.kind!=='comparison');
+  $('#footerUnload').hidden=!owned.length; $('#footerUnload').textContent=owned.length>1?t('Unload all'):t('Unload');
   renderMemoryBar(s.memory||{},models);
   setupCascadeUI(s.router_available);
   renderLoadedRows(models);
+  renderDecisionServers(s);
   renderManagerSummary();
   if($('#modelLoaderDialog').open)renderModelLoader();
+  rankAvailable=Boolean(s.features?.rank); document.querySelectorAll('.q-type option[value=rank]').forEach(option=>{option.disabled=!rankAvailable;option.title=rankAvailable?'':t('This Engine does not support rank questions.');}); document.querySelectorAll('.question').forEach(card=>{card.querySelector('.rank-gate-reason').hidden=rankAvailable;if($('.q-type',card).value==='rank')updateRankAvailability(card);});
   renderInference(s);
   renderPlaygroundModels(ready);
-  renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
+  renderBenchmarkState(s.jobs?.benchmark,primaryReady); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
   renderInspectState(s.inspect,s.jobs?.inspect);
   if(serveData)renderServeStatus(s);
   loadStats();
@@ -1350,7 +1918,7 @@ function renderMemoryBar(memory, models) {
 }
 // a loaded model answering now: requests basal-ui waits on (inflight) or its basal-serve's running / queued counters
 const answering=m=>m.state==='ready'&&((m.inflight||[]).length>0||m.health?.running>0||m.health?.queued>0);
-const INFERENCE_SOURCES={playground:'Playground',api:'API server',mcp:'MCP',benchmark:'Benchmark'};
+const INFERENCE_SOURCES={playground:'Playground',api:'API server',mcp:'MCP',benchmark:'Benchmark',batch:'Batch'};
 const INFERENCE_JOBS={batch:'Batch',benchmark:'Benchmark',calibrate:'Calibration','backend-test':'Backend test'};
 const ago=seconds=>seconds<60?`${Math.max(1,Math.round(seconds))} s`:seconds<3600?`${Math.round(seconds/60)} min`:`${Math.round(seconds/3600)} h`;
 function renderInference(s) {
@@ -1361,27 +1929,30 @@ function renderInference(s) {
     const counts=h.running>0||h.queued>0?t('{running} running · {queued} queued',{running:h.running??0,queued:h.queued??0}):tp(inflight.length,'{n} request','{n} requests');
     const sources=Object.entries(bySource).map(([k,n])=>`${t(INFERENCE_SOURCES[k]||k)} ${n}`).join(' · ');
     const longest=inflight.length?t('longest {seconds} s',{seconds:inflight[0].seconds.toFixed(1)}):'';
-    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(m.id)}</strong><span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
+    return `<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(modelLabel(m))}</strong>${m.kind==='comparison'?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([counts,sources,longest].filter(Boolean).join(' · '))}</span></div>`;
   });
   for(const [kind,j] of Object.entries(s.jobs||{})){
     if(!j.running||!INFERENCE_JOBS[kind])continue;
     const share=j.total?Math.min(100,j.done/j.total*100):null;
-    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong><span class="muted">${esc([j.model,ts(j.phase,j.phase_code,j.phase_params),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
+    const phase=ts(j.phase,j.phase_code,j.phase_params);
+    const comparison=typeof j.model==='string'&&j.model.startsWith('comparison:');
+    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong>${comparison?`<span class="chip">${t('Comparison')}</span>`:''}<span class="muted">${esc([j.model,phase||t('running'),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
   }
   const last=Math.max(0,...Object.values(statsData.models||{}).map(x=>Number(x.last_used)||0));
   const idle=last?t('Idle · last decision {ago} ago',{ago:ago(Date.now()/1000-last)}):t('Idle');
   $('#inferenceNow').innerHTML=rows.length?rows.join(''):`<div class="inference-row idle"><span class="status-dot"></span><span class="muted">${esc(idle)}</span></div>`;
 }
 function renderLoadedRows(models) {
+  if ($('#loadedModels').contains(document.activeElement)) return;
   $('#loadedModels').innerHTML=models.length?models.map(m=>{
     const stats=statsAvailable?statsData.models?.[m.id]:null, p=m.progress;
     const progress=p?`<div class="progress-wrap"><div class="progress"><span style="width:${p.total_bytes?Math.min(100,p.done_bytes/p.total_bytes*100):0}%"></span></div><small>${gb(p.done_bytes)} / ${gb(p.total_bytes)}</small></div>`:'';
-    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='cascade'?`<span class="badge">${t('Cascade')}</span>`:''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(m.entry)?`<span class="badge fit-tight" title="${t('temperature_per_prim is {}: the probabilities are the raw model outputs')}">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
-    const health=m.health, load=m.kind==='cascade'?t('router process'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
-    const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
-    const actions=m.kind==='cascade'?`<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Stop cascade')}</button>`:`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
+    const variant=modelData.find(x=>x.id===m.id), chips=`${m.kind==='comparison'?comparisonBadge():m.kind==='cascade'?'<span class="badge">'+t('Cascade')+'</span>':''}${m.mode?`<span class="chip">${esc(m.mode)}</span>`:''}${variant?.community?`<span class="chip">${t('community')}</span>`:''}${(m.media||[]).map(x=>`<span class="chip media">${esc(x)}</span>`).join('')}${['prompt_format','layout','orders','vllm_preset','adapter'].filter(k=>m.entry?.[k]!=null).map(k=>`<span class="chip">${esc(k)} ${esc(m.entry[k])}</span>`).join('')}${uncalibrated(modelEntry(m.id))?`<span class="badge fit-tight">${t('uncalibrated')}</span>`:''}${m.restart_required?`<span class="badge fit-tight">${t('Restart to apply')}</span>`:''}`;
+    const health=m.health, load=m.kind==='comparison'?t('Decision server'):m.kind==='cascade'?t('router process'):health?.reachable===false?t('unreachable'):health?.reachable!==true?t('load unavailable'):health.running==null||health.queued==null?t('load counters unavailable'):health.running===0&&health.queued===0?t('idle'):`${health.running} ${t('running')} · ${health.queued} ${t('queued')}`;
+    const warning=[m.entry?.calibration_warning,m.calibration_origin_warning&&ts(m.calibration_origin_warning,m.calibration_origin_warning_code)].filter(Boolean).map(w=>`<div class="reason wide">${esc(w)}</div>`).join('');
+    const actions=m.kind==='comparison'?'':m.kind==='cascade'?`<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Stop cascade')}</button>`:`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
-    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}${m.kind==='cascade'?'':`<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>`}<span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
+    return `<div class="model-row${m.kind==='comparison'?' comparison-model':''}"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}${answering(m)?` · ${esc(t("running"))}`:""}</span><strong>${esc(modelLabel(m))}</strong>${chips}${optionChips}${['comparison','cascade'].includes(m.kind)?'':`<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>`}<span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${m.kind==='comparison'?t('Reported server memory: {memory} (outside the basal budget)',{memory:m.reported_memory_bytes==null?t('Not reported'):gb(m.reported_memory_bytes)}):stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
   }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`;
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
@@ -1395,7 +1966,7 @@ function setupCascadeUI(available) {
   document.body.insertAdjacentHTML('beforeend',`<dialog id="cascadeDialog"><form method="dialog" id="cascadeForm"><h2>${t('New cascade')}</h2><label>${t('Name')}<input id="cascadeName" required pattern="[a-z0-9][a-z0-9-]{0,39}"></label><label>${t('Cascade kind')}<select id="cascadeKind"><option value="escalate">${t('Escalate')}</option><option value="blend">${t('Blend')}</option></select></label><div id="cascadeLevels"></div><button type="button" id="cascadeAddLevel">${t('Add level')}</button><p id="cascadeFallbackUnavailable" class="muted" hidden>${t('Blend does not support an LLM fallback.')}</p><details id="cascadeFallback"><summary>${t('LLM fallback (optional)')}</summary><label>${t('Fallback URL')}<input id="cascadeFallbackUrl" type="url" placeholder="${t('https://host/v1')}"></label><label>${t('Fallback model')}<input id="cascadeFallbackModel"></label><label>${t('Fallback below')}<input id="cascadeFallbackBelow" type="number" min="0.01" max="1" step="0.01" value="0.5"></label><label>${t('Fallback timeout (seconds)')}<input id="cascadeFallbackTimeout" type="number" min="1" value="60"></label><label>${t('Fallback max tokens')}<input id="cascadeFallbackTokens" type="number" min="1" value="8192"></label><label>${t('Fallback API key')}<input id="cascadeFallbackKey" type="password" autocomplete="off"></label></details><div class="controls"><button type="button" id="cancelCascade">${t('Cancel')}</button><button type="submit" class="primary">${t('Create cascade')}</button></div><p id="cascadeError" class="error-box" hidden></p></form></dialog>`);
   const dialog=$('#cascadeDialog');
   const addLevel=(selected='')=>{
-    const members=readyModels().filter(m=>m.kind!=='cascade');
+    const members=readyModels().filter(m=>!['cascade','comparison'].includes(m.kind));
     const row=document.createElement('div');row.className='cascade-level';
     row.innerHTML=`<label>${t('Model')}<select required>${members.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')}</select></label><label class="cascade-threshold">${t('Escalate below')}<input type="number" min="0.000001" max="1" step="any" value="0.8" required></label><label class="cascade-weight">${t('Weight')}<input type="number" min="0.000001" step="any" value="1" required></label><button type="button">${t('Remove level')}</button>`;
     row.querySelector('select').value=selected||members[0]?.id||'';
@@ -1409,7 +1980,7 @@ function setupCascadeUI(available) {
     rows.forEach((row,i)=>{const threshold=row.querySelector('.cascade-threshold'),weight=row.querySelector('.cascade-weight');threshold.hidden=blend||i===rows.length-1;weight.hidden=!blend;threshold.querySelector('input').disabled=threshold.hidden;weight.querySelector('input').disabled=weight.hidden;row.querySelector('button').disabled=rows.length<=2;});
   };
   $('#newCascade').onclick=()=>{
-    const members=readyModels().filter(m=>m.kind!=='cascade');$('#cascadeLevels').replaceChildren();
+    const members=readyModels().filter(m=>!['cascade','comparison'].includes(m.kind));$('#cascadeLevels').replaceChildren();
     addLevel(members[0]?.id);addLevel(members[1]?.id);$('#cascadeError').hidden=true;dialog.showModal();
   };
   $('#cascadeAddLevel').onclick=()=>addLevel();
@@ -1444,27 +2015,29 @@ async function renderCascadeDefinitions() {
   }catch(error){cascadeSignature='';target.innerHTML=`<p class="muted">${esc(error.message)}</p>`;}
 }
 function renderPlaygroundModels(ready) {
-  const select=$('#playgroundModel'), signature=JSON.stringify(ready.map(m=>[m.id,m.media,m.kind]));
+  const primary=ready.filter(m=>m.kind!=='comparison');
+  const select=$('#playgroundModel'), signature=JSON.stringify(primary.map(m=>[m.id,m.media,m.kind]));
   if(signature!==playgroundSignature){
     playgroundSignature=signature;
-    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
+    select.innerHTML=primary.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('No model loaded')}</option>`;
   }
-  select.value=selectedModel; select.disabled=!ready.length;
-  $('#playgroundForm').disabled=!ready.length; $('#playgroundHint').hidden=Boolean(ready.length);
+  select.value=selectedModel; select.disabled=!primary.length;
+  $('#playgroundForm').disabled=!primary.length; $('#playgroundHint').hidden=Boolean(primary.length);
   setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
   setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
   DecisionTools.refreshModels(ready);
+  renderStateEstimate();
 }
 function setPlaygroundMedia(kinds) {
   if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
   loadedMedia=kinds; renderSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
 }
-$('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
+$('#playgroundModel').addEventListener('change',e=>{cancelFetch();if(recording && recording.model!==e.target.value)cancelRecording();selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
 async function restartOne(id){await api('/api/restart',{method:'POST',body:JSON.stringify({id})});toast(`${t('Restarting {model}',{model:shortName(id)})}`);await refreshStatus();}
 $('#footerUnload').onclick=()=>act(async()=>{
-  if((statusCache?.models||[]).length>1&&!await confirmDialog({title:t('Unload all models?'),description:t('Every loaded model stops; clients of the API server get 404 until a model is loaded again.'),confirmLabel:t('Unload all'),destructive:true}))return;
+  if((statusCache?.models||[]).filter(m=>m.kind!=='comparison').length>1&&!await confirmDialog({title:t('Unload all models?'),description:t('Every loaded model stops; clients of the API server get 404 until a model is loaded again.'),confirmLabel:t('Unload all'),destructive:true}))return;
   await api('/api/unload',{method:'POST',body:'{}'}); await refreshStatus();
 });
 let statsSequence=0;
@@ -1489,7 +2062,7 @@ async function loadStats() {
 }
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
-  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
+  $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}${id.startsWith('comparison:')?comparisonBadge():''}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
   $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
   const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
 }
@@ -1501,13 +2074,29 @@ $('#benchmarks').innerHTML=`<div class="section-head"><h3>${t('Benchmarks')}</h3
 <div class="bench-params" data-kinds="loadtest determinism"><div class="qf-row"><div class="qf"><label for="bpSynthetic">${t('Synthetic tokens')}</label><input type="number" id="bpSynthetic" min="50" step="50" placeholder="${t('use the set')}"></div><div class="qf" data-kinds="loadtest"><label for="bpNSeq">${t('Sequential')}</label><input type="number" id="bpNSeq" min="1" value="200"></div><div class="qf" data-kinds="loadtest"><label for="bpNConc">${t('Concurrent')}</label><input type="number" id="bpNConc" min="1" value="1000"></div><div class="qf"><label for="bpConcurrency">${t('Concurrency')}</label><input type="number" id="bpConcurrency" min="1" value="32"></div><div class="qf" data-kinds="loadtest"><label for="bpQpr">${t('Questions per request')}</label><input type="number" id="bpQpr" min="1" max="5" value="1"></div><div class="qf" data-kinds="loadtest"><label for="bpSeed">${t('Seed')}</label><input type="number" id="bpSeed" min="0" value="0"></div><div class="qf" data-kinds="loadtest"><label for="bpLong">${t('Long share')}</label><input type="number" id="bpLong" min="0" max="1" step="0.1" value="0"></div><div class="qf" data-kinds="determinism"><label for="bpN">${t('Requests (N)')}</label><input type="number" id="bpN" min="1" value="50"></div><div class="qf" data-kinds="loadtest" id="bpEarlyExitField" hidden><label for="bpEarlyExit">${t('Early exit')}</label><select id="bpEarlyExit"></select></div></div></div>
 <div class="bench-params" data-kinds="modes"><div id="bpModes" class="controls" role="group" aria-label="${t('Compare engine modes')}"></div><div class="qf-row"><div class="qf"><label for="bpModesN">${t('Questions (n)')}</label><input type="number" id="bpModesN" min="10" value="100"></div><div class="qf"><label for="bpLatN">${t('Latency samples')}</label><input type="number" id="bpLatN" min="5" value="30"></div></div></div>
 <details class="manager-help"><summary>${t('How this measurement runs')}</summary><p class="muted" id="benchmarkHint"></p></details><div id="benchmarkResults"></div>`;
+$('#benchmarkResults').insertAdjacentHTML('beforebegin',`<div class="bench-params"><div class="qf-row"><div class="qf"><label for="engineCheckModel">${t('Model for Engine checks')}</label><select class="select" id="engineCheckModel"></select></div><div class="qf"><label for="identityDtype">${t('Identity gate dtype')}</label><select class="select" id="identityDtype"><option value="fp32">fp32</option><option value="bf16">bf16</option></select></div><button class="btn" type="button" id="runIdentity" data-variant="outline">${t('Identity gate')}</button><button class="btn" type="button" id="runOrderCheck" data-variant="outline">${t('Order check')}</button></div><p class="muted">${t('Identity gate uses Saved load settings, which can differ from Active load settings.')}</p><p class="muted" id="engineCheckReason" role="status"></p></div>`);
 $('#benchmarkSet').value=localStorage.getItem('basal-ui.benchmarkSet')==='custom'?'custom':'bundled';
 $('#benchmarkPath').value=localStorage.getItem('basal-ui.benchmarkPath')||'';
 $('#benchmarkKind').value=localStorage.getItem('basal-ui.benchmarkKind')||'benchmark';
 $('#benchmarkSet').onchange=()=>{localStorage.setItem('basal-ui.benchmarkSet',$('#benchmarkSet').value);updateBenchmarkForm();};
 $('#benchmarkPath').oninput=()=>localStorage.setItem('basal-ui.benchmarkPath',$('#benchmarkPath').value);
-$('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels());};
+$('#benchmarkKind').onchange=()=>{localStorage.setItem('basal-ui.benchmarkKind',$('#benchmarkKind').value);benchModelsSignature='';renderBenchmarkState(statusCache?.jobs?.benchmark,readyModels().filter(m=>m.kind!=='comparison'));};
 $('#benchmarkModel').onchange=()=>{updateBenchmarkForm();if($('#benchmarkKind').value==='modes')loadComparisonModes();};
+$('#engineCheckModel').onchange=updateEngineCheckAvailability;
+async function updateEngineCheckAvailability() {
+  const id=$('#engineCheckModel').value;
+  if(!id){$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;return;}
+  try{
+    const d=await api(`/api/benchmark/availability?id=${encodeURIComponent(id)}`);
+    if(id!==$('#engineCheckModel').value)return;
+    $('#runIdentity').disabled=!d.identity.available||Boolean(statusCache?.jobs?.benchmark?.running); $('#runIdentity').title=ts(d.identity.reason,d.identity.reason_code,d.identity.reason_params);
+    $('#runOrderCheck').disabled=!d.order_check.available||Boolean(statusCache?.jobs?.benchmark?.running); $('#runOrderCheck').title=t(d.order_check.reason||'');
+    $('#engineCheckReason').textContent=[!d.identity.available?`${t('Identity gate')}: ${ts(d.identity.reason,d.identity.reason_code,d.identity.reason_params)}`:'',!d.order_check.available?`${t('Order check')}: ${t(d.order_check.reason)}`:''].filter(Boolean).join(' · ');
+  }catch(error){if(id!==$('#engineCheckModel').value)return;$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;$('#engineCheckReason').textContent=error.message;}
+}
+$('#runIdentity').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#engineCheckModel').value,kind:'identity',dtype:$('#identityDtype').value})});toast(t('Identity gate started'));await refreshStatus();});
+$('#runOrderCheck').onclick=()=>act(async()=>{await api('/api/benchmark',{method:'POST',body:JSON.stringify({id:$('#engineCheckModel').value,kind:'order_check'})});toast(t('Order check started'));await refreshStatus();});
+updateEngineCheckAvailability();
 let benchModelsSignature='', comparisonFor='';
 function updateBenchmarkForm() {
   const kind=$('#benchmarkKind').value;
@@ -1543,22 +2132,36 @@ $('#cancelBenchmark').onclick=()=>act(async()=>{await api('/api/benchmark',{meth
 function renderBenchmarkState(bench, ready) {
   const kind=$('#benchmarkKind').value, select=$('#benchmarkModel'), current=select.value;
   const ids=kind==='modes'?modelData.filter(m=>m.downloaded).map(m=>m.id):ready.filter(m=>m.kind!=='cascade').map(m=>m.id);
+  const checkSelect=$('#engineCheckModel'), checkCurrent=checkSelect.value, checkIds=modelData.filter(m=>m.downloaded).map(m=>m.id);
+  if(JSON.stringify([...checkSelect.options].map(o=>o.value))!==JSON.stringify(checkIds)){
+    checkSelect.innerHTML=checkIds.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
+    if(checkIds.includes(checkCurrent))checkSelect.value=checkCurrent;
+    updateEngineCheckAvailability();
+  }
   const signature=JSON.stringify([kind,ids]);
   if(signature!==benchModelsSignature){
     benchModelsSignature=signature;
-    select.innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
+    select.innerHTML=ready.map(m=>`<option value="${esc(m.id)}">${esc(modelLabel(m))}${m.kind==='comparison'?` · ${t('Comparison')}`:''}</option>`).join('');
     if(ids.includes(current))select.value=current;
     updateBenchmarkForm(); if(kind==='modes'){comparisonFor='';loadComparisonModes();}
   }
   const running=Boolean(bench?.running);
+  if(running){$('#runIdentity').disabled=true;$('#runOrderCheck').disabled=true;}
   $('#runBenchmark').disabled=running||!ids.length; $('#cancelBenchmark').hidden=!running;
   $('#benchmarkProgress').textContent=!bench?(ids.length?'':kind==='modes'?t('Download a model to compare its modes.'):t('Load a model to benchmark it.')):running?`${shortName(bench.model)} · ${bench.label} · ${ts(bench.phase,bench.phase_code,bench.phase_params)} ${bench.done}/${bench.total}`:bench.phase==='error'?`${t('Failed: {error}',{error:bench.error})}`:bench.phase==='cancelled'?t('Cancelled'):'';
-  if(benchRunning&&!running)loadStats();
+  if(benchRunning&&!running){loadStats();updateEngineCheckAvailability();}
   benchRunning=running;
 }
 function benchmarkRow(x) {
-  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
-  if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}</td></tr>`;}
+  const kind=x.kind||'benchmark', head=`<td title="${esc(x.model)}">${esc(shortName(x.model))}${x.server?` · ${esc(x.server)} · ${t('Comparison')}`:''}</td><td><span class="chip">${esc(kind)}</span></td><td title="${esc(t(x.set||''))}">${esc(x.set==='bundled'?t('bundled'):shortName(x.set||''))}${x.items!=null?` (${x.items})`:''}</td><td>${esc(new Date(x.when*1000).toLocaleString())}</td>`;
+  if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}${d.load_errors==null?'':` · ${t('load errors')} ${esc(d.load_errors)}`}</td></tr>`;}
+  if(kind==='identity'){
+    const rows=x.rows||[];
+    const detail=rows.map(r=>`<tr><td>${esc(r.path)}</td><td>${r.gate==='pass'?t('Passed'):t('Failed')}</td><td>${Number(r.max_dp).toExponential(2)}</td></tr>`).join('');
+    const max=Math.max(...rows.map(r=>Number(r.max_dp))).toExponential(2);
+    return `<tr>${head}<td colspan="7"><details><summary><span class="badge ${x.pass?'fit-fits':'fit-tight'}">${x.pass?t('Passed'):t('Failed')}</span> · ${esc(x.dtype)} · ${esc(x.engine)} · ${t('max |Δp|')} ${max}</summary><table class="mini-table"><thead><tr><th>${t('Path')}</th><th>${t('Gate')}</th><th>${t('max |Δp|')}</th></tr></thead><tbody>${detail}</tbody></table></details></td></tr>`;
+  }
+  if(kind==='order_check')return `<tr>${head}<td colspan="7"><details><summary>${t('Order check')}</summary><pre>${esc(JSON.stringify(x.report,null,2))}</pre></details></td></tr>`;
   if(kind==='modes'){
     const f=(v,d=1)=>v==null||Number.isNaN(Number(v))?'—':Number(v).toFixed(d);
     const rows=(x.modes||[]).map(m=>m.error?`<tr><td>${esc(m.mode)}</td><td colspan="8"><span class="reason wide">${esc(m.error)}</span></td></tr>`:`<tr><td>${esc(m.mode)}</td><td>${f(m.lat1_ms)}</td><td>${f(m.lat2_ms)}</td><td>${f(m.lat2_p95_ms)}</td><td>${f(m.dec_s)}</td><td>${m.agree==null?`ref`:f(m.agree,3)}</td><td>${m.acc==null?'—':pct(m.acc)}</td><td>${f(m.load_s)}</td><td>${f(m.mem_gb,2)}</td></tr>`).join('');
@@ -1572,9 +2175,25 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog" aria-labelledby="reportTitle"><h3 id="reportTitle">${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
-$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;};
+$('#calibrationAdvanced').insertAdjacentHTML('beforeend',`<div class="manager-fields"><label class="manager-field">${t('Conformal coverage levels')}<input id="calConformal" type="text" placeholder="0.8, 0.9"><span id="calConformalReason" class="reason"></span></label><fieldset><legend>${t('Keep compared thresholds')}</legend><div class="controls">${['choice','noul','score'].map(type=>`<label><input type="checkbox" data-keep-type="${type}" disabled> ${esc(type)}</label>`).join('')}</div><span id="calKeepReason" class="reason"></span></fieldset></div>`);
+let calibrationOptions={}, keepSequence=0;
+async function refreshKeepOptions(){
+  const id=$('#calibrationModel').value, choice=$('#calCompare').value, compare=choice==='path'?$('#calComparePath').value.trim():choice, seq=++keepSequence;
+  const boxes=[...document.querySelectorAll('[data-keep-type]')];
+  boxes.forEach(x=>{x.disabled=true;x.checked=false;});
+  $('#calKeepReason').textContent=!calibrationOptions.keep_shipped?t('Installed Engine does not support keeping thresholds'):t('No compatible compared thresholds available');
+  if(!id||!calibrationOptions.keep_shipped||!compare||compare==='none')return;
+  try{
+    const data=await api(`/api/calibrations/keep-options?id=${encodeURIComponent(id)}&compare=${encodeURIComponent(compare)}`);
+    if(seq!==keepSequence)return;
+    boxes.forEach(x=>{x.disabled=!data.types[x.dataset.keepType];});
+    $('#calKeepReason').textContent=boxes.some(x=>!x.disabled)?'':t('No compatible compared thresholds available');
+  }catch(e){if(seq===keepSequence)$('#calKeepReason').textContent=e.message;}
+}
+$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;refreshKeepOptions();};
+$('#calComparePath').oninput=refreshKeepOptions;
 $('#calCompare').onchange();
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
@@ -1582,9 +2201,9 @@ $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInp
 document.querySelectorAll('#calibrationBlock input[type=checkbox]').forEach(i=>{i.setAttribute('role','switch');setChecked(i,i.checked);});
 document.body.append($('#reportDialog'));  // a modal inside a hidden view would block the page without showing
 $('#reportClose').onclick=()=>$('#reportDialog').close();
-let calibrationRunning=false, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0;
+let calibrationRunning=false, calibrationBlocked=true, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0, lastCalibrationStatus='';
 function renderCalibrationModels() {
-  const select=$('#calibrationModel'), current=select.value||localStorage.getItem('basal-ui.calibrationModel')||'', rows=modelData.filter(m=>m.downloaded);
+  const select=$('#calibrationModel'), current=select.value||localStorage.getItem('basal-ui.calibrationModel')||'', rows=modelData.filter(m=>m.downloaded||m.has_calibration_rows);
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature!==calibrationSignature){
     calibrationSignature=signature;
@@ -1592,9 +2211,9 @@ function renderCalibrationModels() {
     if(rows.some(m=>m.id===current))select.value=current;
     loadCalibrations();
   }
-  $('#runCalibration').disabled=calibrationRunning||!rows.length;
+  $('#runCalibration').disabled=calibrationRunning||calibrationBlocked||!rows.length;
 }
-$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);loadCalibrations();};
+$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);calibrationOptions={};refreshKeepOptions();loadCalibrations();};
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets})});
@@ -1604,6 +2223,9 @@ $('#cancelCalibration').onclick=()=>act(async()=>{await api('/api/calibrate',{me
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   const compare=$('#calCompare').value,advanced={strict:$('#calStrict').checked,reference:$('#calReference').value.trim()||null,min_per_type:Number($('#calMinType').value),min_blend:Number($('#calMinBlend').value),min_family:Number($('#calMinFamily').value),min_per_set:Number($('#calMinSet').value),concurrency:Number($('#calConcurrency').value),compare:compare==='path'?$('#calComparePath').value.trim():compare,save_rows:$('#calSaveRows').checked,report_only:$('#calReportOnly').checked};
+  const levels=$('#calConformal').value.trim();
+  if(levels&&!$('#calConformal').disabled){const parts=levels.split(',').map(x=>x.trim());if(parts.some(x=>!x||!Number.isFinite(Number(x))||Number(x)<=0||Number(x)>=1))throw new Error(t('Enter coverage levels between 0 and 1, separated by commas'));advanced.conformal=parts.map(Number);}
+  advanced.keep_shipped=[...document.querySelectorAll('[data-keep-type]:checked:not(:disabled)')].map(x=>x.dataset.keepType);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets,advanced})});
   toast(t('Calibration started')); await refreshStatus();
 });
@@ -1622,25 +2244,27 @@ function allThresholds(f) {
 }
 function renderCalibrationState(job) {
   const running=Boolean(job?.running);
-  $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||!$('#calibrationModel').value;
+  $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||calibrationBlocked||!$('#calibrationModel').value;
   $('#calibrationProgress').textContent=!job?'':running?`${shortName(job.model)} · ${ts(job.phase,job.phase_code,job.phase_params)}…`:job.phase==='error'?`${t('Failed: {error}',{error:job.error})}`:job.phase==='cancelled'?t('Cancelled'):['done','done_with_warnings'].includes(job.phase)?`${job.phase==='done_with_warnings'?t('Completed with warnings'):t('Completed (see report for certification)')}: ${shortName(job.result?.file||'')}${job.result?.warnings?.length?' · '+job.result.warnings.join(' · '):''}`:'';
   if(calibrationRunning&&!running)loadCalibrations();
-  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';$('#reportDialog').showModal();}
+  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';renderCalibrationReport(null);$('#reportDialog').showModal();}
   calibrationRunning=running;
 }
 async function loadCalibrations() {
   const id=$('#calibrationModel').value, sequence=++calibrationSequence, files=$('#calibrationFiles');
-  files.innerHTML='';
+  calibrationBlocked=true; $('#runCalibration').disabled=true;
   files.setAttribute('aria-busy','true');
   $('#importCalibration').disabled=true;
   if(!id){files.removeAttribute('aria-busy');return;}
   try{
     const data=await api(`/api/calibrations?id=${encodeURIComponent(id)}`);
     if(!calibrationCurrent(id,sequence))return;
-    renderCalibrationFiles(id,data);
+    calibrationOptions=data.options||{};$('#calConformal').disabled=!calibrationOptions.conformal;
+    $('#calConformalReason').textContent=calibrationOptions.conformal?'':t('Installed Engine does not support conformal levels');
+    refreshKeepOptions();renderCalibrationFiles(id,data);
   }catch(e){
     if(!calibrationCurrent(id,sequence))return;
-    files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
+    files.dataset.content=''; files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
   }finally{
     if(calibrationCurrent(id,sequence)){files.removeAttribute('aria-busy');$('#importCalibration').disabled=false;}
   }
@@ -1652,22 +2276,33 @@ function thresholdCell(thresholds) {
 }
 function renderCalibrationFiles(id, d) {
   const loaded=(statusCache?.models||[]).find(m=>m.id===id);
+  const layout=d.shipped?.context?.layout;
+  calibrationBlocked=!layout||(!d.calibrate_layout&&(layout!=='canonical'||d.default_layout&&d.default_layout!==layout));
+  $('#runCalibration').disabled=calibrationRunning||calibrationBlocked;
   const row=(f,value,label)=>{
     const fitted=f?.fitted_on&&typeof f.fitted_on==='object'?f.fitted_on:null, gates=f?.gates||{};
     const automated=Object.entries(gates.automated_at||{}).map(([k,v])=>`${(Number(k)*100).toFixed(0)}%: ${pct(v)} at ${pct(gates.automated_error?.[k])} error`).join(' · ');
     const checked=(d.selected||'')===value;
-    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<span class="reason">${esc(f.warning)}</span>`:''}${f?.error?`<span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>`<span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
+    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<div class="reason">${esc(f.warning)}</div>`:''}${f?.error?`<div class="reason">${esc(f.error)}</div>`:''}${(f?.warnings||[]).map(w=>`<div class="reason">${esc(w)}</div>`).join('')}</td><td>${esc(f?.layout||'—')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
   };
-  const ctx=d.shipped?.context||{}, context=d.shipped?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
-  const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
-  const shipped=d.shipped?row(d.shipped,'',`${t('Shipped default')} · ${shortName(d.shipped.file)}`):'';
-  $('#calibrationFiles').innerHTML=`<p class="muted">${context}<br>${selection}</p><div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
+  const ctx=d.shipped?.context, available=d.shipped?.file&&ctx, context=available?`${t('Shipped calibration')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('Active load settings'):t('Saved load settings'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:t('Shipped default unavailable');
+  const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('Shipped calibration')}`;
+  const shipped=available?row(d.shipped,'',`${t('Shipped calibration')} · ${shortName(d.shipped.file)}`):'';
+  const reason=layout&&calibrationBlocked?t('The installed Engine cannot calibrate this layout'):'';
+  const mismatch=d.layout_mismatch_code?ts('Selected calibration layout differs from the load settings; certified thresholds will not apply.',d.layout_mismatch_code):'';
+  const focused=document.activeElement, focusKey=focused?.closest('#calibrationFiles')?{name:focused.name,value:focused.value,refit:focused.dataset.refit,report:focused.dataset.report}:null;
+  const html=`<p class="muted">${context}<br>${selection}<br>${t('Fit layout')}: ${esc(layout||'—')}</p>${!available&&d.shipped?.error?`<p class="reason">${esc(d.shipped.error)}</p>`:''}${reason?`<p class="reason">${esc(reason)}</p>`:''}${mismatch?`<p class="reason">${esc(mismatch)}</p>`:''}<div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Layout')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
+  const content=JSON.stringify([id,html,d.calibrate_layout,d.default_layout,d.files,loaded?.restart_required]);
+  if($('#calibrationFiles').dataset.content===content)return;
+  $('#calibrationFiles').dataset.content=content; $('#calibrationFiles').innerHTML=html;
   for(const f of d.files||[])if(f.rows){
     const radio=[...$('#calibrationFiles').querySelectorAll('input[name=calibrationUse]')].find(x=>x.value===f.file);
     if(!radio)continue;
-    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;
-    radio.closest('tr').lastElementChild.append(' ',button);
+    const button=document.createElement('button');button.type='button';button.textContent=t('Refit');button.dataset.refit=f.rows;button.disabled=!f.layout||(!d.calibrate_layout&&f.layout!=='canonical');
+    const cell=radio.closest('tr').lastElementChild; cell.append(' ',button);
+    if(button.disabled){const reason=document.createElement('span');reason.className='reason';reason.textContent=f.layout?t('The installed Engine cannot calibrate this layout'):t('Cannot determine saved rows layout');cell.append(' ',reason);}
   }
+  if(focusKey){const controls=[...$('#calibrationFiles').querySelectorAll('input,button')]; controls.find(el=>focusKey.refit?el.dataset.refit===focusKey.refit:focusKey.report?el.dataset.report===focusKey.report:el.name===focusKey.name&&el.value===focusKey.value)?.focus();}
   $('#calibrationFiles').querySelectorAll('[data-refit]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
     await api('/api/calibrate',{method:'POST',body:JSON.stringify({id,input:b.dataset.refit,from_rows:true})});
@@ -1679,29 +2314,54 @@ function renderCalibrationFiles(id, d) {
     const sequence=++calibrationSequence, data=await api('/api/calibrations/select',{method:'POST',body:JSON.stringify({id,file:r.value||null})});
     if(!calibrationCurrent(id,sequence))return;
     renderCalibrationFiles(id,data);
-    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus();
+    toast(loaded?t('Calibration selected — restart the model to apply'):t('Calibration selected')); await refreshStatus(); await loadModels();
   }));
   $('#calibrationFiles').querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>act(async()=>{
     if(id!==$('#calibrationModel').value)return;
     const sequence=++calibrationSequence, r=await api(`/api/calibrations/report?id=${encodeURIComponent(id)}&file=${encodeURIComponent(b.dataset.report)}`);
     if(!calibrationCurrent(id,sequence))return;
-    $('#reportText').textContent=r.report; $('#reportDialog').showModal();
+    $('#reportText').textContent=r.report; renderCalibrationReport(r.details); $('#reportDialog').showModal();
   }));
+}
+function renderCalibrationReport(details){
+  const root=$('#reportDetails');root.innerHTML='';if(!details)return;
+  const fitted=details.fitted_on||{}, items=[];
+  for(const [key,label] of [['revision','Revision'],['model_files','Model files digest'],['model_content','Model content digest']])if(fitted[key]!=null)items.push(`<dt>${t(label)}</dt><dd>${esc(fitted[key])}</dd>`);
+  if(Array.isArray(fitted.kept_shipped)&&fitted.kept_shipped.length)items.push(`<dt>${t('Kept from')}</dt><dd>${esc(fitted.kept_shipped.join(', '))}: ${esc(fitted.kept_shipped_from?.file||'—')}</dd>`);
+  const rows=[];
+  for(const [target,group] of Object.entries(details.thresholds||{}))for(const [type,e] of Object.entries(group?.per_type||{})){
+    if(e&&['icc','design_effect','refuted','kept'].some(k=>e[k]!=null))rows.push(`<tr><td>${esc(target)}</td><td>${esc(type)}</td><td>${esc(e.icc??'—')}</td><td>${esc(e.design_effect??'—')}</td><td>${e.refuted!=null?`${esc(e.refuted)}: ${esc(e.reason||'')}`:''}${e.kept?` ${t('Kept from')} ${esc(fitted.kept_shipped_from?.file||'—')}`:''}</td></tr>`);
+  }
+  const conformal=[];
+  for(const [level,group] of Object.entries(details.conformal?.levels||{}))for(const [type,e] of Object.entries(group?.per_type||{}))if(e)conformal.push(`<tr><td>${esc(level)}</td><td>${esc(type)}</td><td>${esc(e.cert_coverage??'—')}</td><td>${esc(e.cert_mean_size??'—')}</td><td>${esc(e.reason||'')}</td></tr>`);
+  root.innerHTML=`${items.length?`<dl>${items.join('')}</dl>`:''}${rows.length?`<div class="table-wrap"><table><thead><tr><th>${t('Max error')}</th><th>${t('Type')}</th><th>ICC</th><th>${t('Design effect')}</th><th>${t('Refuted or kept')}</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:''}${conformal.length?`<h4>${t('Conformal results')}</h4><div class="table-wrap"><table><thead><tr><th>${t('Coverage level')}</th><th>${t('Type')}</th><th>${t('CERT coverage')}</th><th>${t('Mean set size')}</th><th>${t('Reason')}</th></tr></thead><tbody>${conformal.join('')}</tbody></table></div>`:''}`;
 }
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
 const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
 const OPTION_SECTIONS=[
-  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed']],
-  ['Determinism & orders',['deterministic','orders','auto_tau','auto_band']],
+  ['Engine',['revision','adapter','ollama_url','ollama_model','llamacpp_url','http_parallel','quant','attn','dtype','vllm_preset','gpu_memory','vllm_fast_prefill','device','eager_attn','eager_forward','ple_offload','exit_heads','mlx_packed','prepared','compile_scope','graph_memory_gb']],
+  ['MLX',['mlx_forward','mlx_compute']],
+  ['Determinism & orders',['deterministic','orders','order_average','auto_tau','auto_band']],
+  ['Readout',['reread','reread_combine','reread_max_tokens','reread_image']],
   ['Batching',['max_batch','wait_ms','batch_window_ms','soam']],
-  ['Caching',['state_cache_gb','prefix_cache']],
-  ['Scheduling',['scheduler','long_lane','long_tokens','long_share','long_slice_ms']],
+  ['Caching',['state_cache_gb','state_cache_lock','state_cache_bits','prefix_cache']],
+  ['Scheduling',['scheduler','long_lane','long_lane_gdn','long_tokens','long_share','long_slice_ms','rank_max_candidates']],
+  ['Server limits',['max_requests','request_timeout','max_body_mb','max_branches','max_prompt_mb','stall_s']],
   ['Context',['layout','context_overflow','truncate_head','max_len']],
   ['Kernels (CUDA graph engine)',['gemma_attn','merge','lean','tree','batches','readout_layer','template_prefix','fp8_accum']],
+  ['Quantization',['fp8_scaling','fp8_bf16_layers','quant_load','nvfp4_amax','nvfp4_scope']],
+  ['vLLM',['vllm_overlap']],
+  ['Gemma 4',['global_attn']],
   ['Calibration',['strict_calibration']],
   ['Experimental',['think','think_tokens','think_python','think_url','think_calibration','think_model','think_adapter','think_memory','think_max_len','think_log','early_exit']],
 ];
 const OPTION_FIELDS={
+  max_requests:{label:'Maximum requests',kind:'num',attrs:'min="1" step="1"'},
+  request_timeout:{label:'Request timeout (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_body_mb:{label:'Maximum body (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_branches:{label:'Maximum branches',kind:'num',attrs:'min="1" step="1"'},
+  max_prompt_mb:{label:'Maximum prompt (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  stall_s:{label:'Stall detection (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
   mlx_packed:{label:'MLX packed (opt-in)',kind:'bool',modes:['mlx','mlx-q8']},
   quant:{label:'Quantisation',kind:'select',values:[[null,'as the mode'],['fp8','fp8'],['nvfp4','nvfp4'],['q8','q8 (mlx)']],modes:[...GRAPH_MODES,'mlx','mlx-q8']},
   attn:{label:'Attention kernel',kind:'select',values:['auto','fa2','fa3','fa4','cudnn'],modes:GRAPH_MODES},
@@ -1721,7 +2381,7 @@ const OPTION_FIELDS={
   fp8_accum:{label:'FP8 accumulation',kind:'select',values:['fast','full'],modes:GRAPH_MODES},
   strict_calibration:{label:'Refuse a calibration fitted on another model (--strict-calibration)',kind:'bool'},
   vllm_preset:{label:'vLLM preset',kind:'select',values:['default','deterministic'],modes:['vllm']},
-  gpu_memory:{label:'GPU memory share',kind:'num',attrs:'min="0.05" max="1" step="0.05"',modes:['vllm','sglang']},
+  gpu_memory:{label:'GPU memory share',kind:'num',attrs:'min="0" max="1" step="any"',modes:['vllm','sglang']},
   device:{label:'Device',kind:'select',values:[[null,'auto'],'cuda','mps','cpu'],modes:['eager','mps']},
   ollama_url:{label:'Ollama URL',kind:'text',modes:['ollama']},
   ollama_model:{label:'Ollama model',kind:'text',placeholder:'derived from the model',modes:['ollama']},
@@ -1734,11 +2394,11 @@ const OPTION_FIELDS={
   max_batch:{label:'Max batch',kind:'num',attrs:'min="1" step="1"'},
   wait_ms:{label:'Wait (ms)',kind:'num',attrs:'min="0" step="0.5"'},
   batch_window_ms:{label:'Batch window (ms)',kind:'num',attrs:'min="0" step="0.5"'},
-  soam:{label:'SOAM (shared option attention mask)',kind:'bool'},
+  soam:{label:'SOAM (shared option attention mask)',kind:'select'},
   state_cache_gb:{label:'State cache (GB)',kind:'num',attrs:'min="0" step="0.5"'},
   prefix_cache:{label:'Prefix cache',kind:'bool'},
   scheduler:{label:'Scheduler',kind:'select',values:['auto','on','off']},
-  long_lane:{label:'Long-request lane',kind:'bool'},
+  long_lane:{label:'Long-request lane',kind:'select'},
   long_tokens:{label:'Long request from (tokens)',kind:'num',attrs:'min="1" step="1"'},
   long_share:{label:'Long lane share',kind:'num',attrs:'min="0" max="1" step="0.05"'},
   long_slice_ms:{label:'Long lane slice (ms)',kind:'num',attrs:'min="0" step="1"'},
@@ -1755,30 +2415,52 @@ const OPTION_FIELDS={
   think_calibration:{label:'Readout-2 calibration',kind:'text',placeholder:'<model>/CALIBRATION.think.json or off',think:true},
   think_model:{label:'Think weights',kind:'text',placeholder:'<model>/think/',think:true},
   think_adapter:{label:'LoRA adapter',kind:'text',placeholder:'<model>/think/adapter',think:true},
-  think_memory:{label:'vLLM GPU memory fraction',kind:'num',attrs:'min="0.05" max="1" step="0.05"',think:true},
+  think_memory:{label:'vLLM GPU memory fraction',kind:'num',attrs:'min="0" max="1" step="any"',think:true},
   think_max_len:{label:'vLLM context',kind:'num',attrs:'min="512" step="512"',think:true},
   think_log:{label:'vLLM log file',kind:'text',placeholder:'basal-think-vllm.log',think:true},
   early_exit:{label:'Early exit (default policy)',kind:'select',values:['off','0.999','0.995','0.99','0.98']},
+  prepared:{label:'Prepared kernels',kind:'text',placeholder:'auto, off or a directory',compiledGraph:true},
+  compile_scope:{label:'Compile scope',kind:'select',values:['model','layer'],graphOnly:true,compiledOnly:true},
+  graph_memory_gb:{label:'Graph memory (GiB)',kind:'num',attrs:'min="0" step="any"',placeholder:'free memory at start-up',graphOnly:true},
+  mlx_forward:{label:'MLX forward',kind:'select',values:['mlx-lm','basal'],modes:['mlx','mlx-q8']},
+  mlx_compute:{label:'MLX compute',kind:'select',values:['auto','bf16'],modes:['mlx','mlx-q8']},
+  order_average:{label:'Average K option orders',kind:'num',attrs:'min="2" step="1"',placeholder:'off'},
+  reread:{label:'Reread uncertain answers below',kind:'num',attrs:'min="0" max="1" step="any"',placeholder:'off'},
+  reread_combine:{label:'Reread combination',kind:'select',values:['mean','second']},
+  reread_max_tokens:{label:'Reread requests up to (tokens)',kind:'num',attrs:'min="1" step="1"'},
+  reread_image:{label:'Reread images at (soft tokens)',kind:'select',values:[[null,'off'],[70,'70'],[140,'140'],[280,'280'],[560,'560'],[1120,'1120']],numeric:true},
+  state_cache_lock:{label:'State cache under the launch lock',kind:'bool',graphOnly:true},
+  state_cache_bits:{label:'State cache precision',kind:'select',values:[[16,'16-bit'],[8,'8-bit (about 1.7x more states)']],numeric:true,graphOnly:true},
+  long_lane_gdn:{label:'Long-request lane on Qwen3.5 (opt-in)',kind:'bool'},
+  rank_max_candidates:{label:'Rank candidates per request',kind:'num',attrs:'min="1" step="1"'},
+  fp8_scaling:{label:'FP8 scaling',kind:'select',values:['auto','row','block'],quants:'fp8'},
+  fp8_bf16_layers:{label:'bf16 edge layers',kind:'num',attrs:'min="0" step="1"',quants:'fp8 nvfp4 int8'},
+  quant_load:{label:'Quantise from',kind:'select',values:[['gpu','GPU memory'],['cpu','host memory']],quants:'fp8 nvfp4 int8'},
+  nvfp4_amax:{label:'NVFP4 amax file',kind:'text',placeholder:'the model’s NVFP4_AMAX.json',quants:'nvfp4'},
+  nvfp4_scope:{label:'NVFP4 scope',kind:'select',values:['all','mlp'],quants:'nvfp4'},
+  vllm_overlap:{label:'Overlapping engine calls (opt-in)',kind:'bool',modes:['vllm']},
+  global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],graphOnly:true},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
-document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog"><h3>${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
+document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
 $('#deleteLoadPreset').onclick=()=>act(async()=>{const n=$('#loadPresetSelect').value;if(n)await deletePreset('load',n);});
 $('#loadPresetSelect').onchange=()=>$('#deleteLoadPreset').disabled=!$('#loadPresetSelect').value;
-let optionsState=null;
+let optionsState=null, optionsSequence=0;
 const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
   if(f.kind==='bool')return `<label><input type="checkbox" role="switch" id="${id}"${value?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(t(f.label))}</label>`;
-  const listed=(f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
+  const listed=(optionsState.data.load_choices?.[key]||f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
     :f.kind==='percent'?`<span class="controls"><input type="range" id="${id}" min="0" max="100" step="1" value="${Math.round(Number(value)*100)}"><output id="${id}-out">${Math.round(Number(value)*100)}%</output></span>`
-    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${f.attrs||''}>`;
-  return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}`;
+    :`<input type="${f.kind==='num'?'number':'text'}" id="${id}" value="${esc(optionValue(value))}" placeholder="${esc(t(f.placeholder||''))}" ${key==='adapter'?'list="ownedAdapters"':''} ${f.attrs||''}>${key==='adapter'?`<datalist id="ownedAdapters">${(optionsState.data.adapters||[]).map(path=>`<option value="${esc(path)}"></option>`).join('')}</datalist><p class="muted">${t('Choose a result or enter a custom adapter path. Saved settings apply on the next load.')}</p>`:''}`;
+  const unavailable=optionsState.data.load_choices?.[key]?.length<=1;
+  return `<label for="${f.kind==='band'?`${id}-lo`:id}">${esc(t(f.label))}</label>${input}${unavailable?`<small class="reason">${t('This option is unavailable in the installed Engine.')}</small>`:''}`;
 }
 const optionSectionOpen=new Map();  // section title → open, as the user left it (this session)
 function renderOptionsForm(values) {
@@ -1789,11 +2471,12 @@ function renderOptionsForm(values) {
   // collapsible sections: Engine and any section with a non-default value open, unless the user toggled it this session
   const changed=keys=>keys.some(k=>JSON.stringify(values[k])!==JSON.stringify(d.defaults[k]));
   const isOpen=(title,keys)=>optionSectionOpen.get(title)??(title==='Engine'||changed(keys));
-  $('#optionsForm').innerHTML=OPTION_SECTIONS.map(([title,keys])=>`<details class="option-section" data-section="${esc(title)}"${isOpen(title,keys)?' open':''}><summary>${esc(t(title))}</summary>${title==='Engine'?modes:''}<div class="option-grid">${keys.map(k=>`<div class="opt-field" data-opt="${k}"${OPTION_FIELDS[k].modes?` data-modes="${OPTION_FIELDS[k].modes.join(' ')}"`:''}>${optionInput(k,values[k])}</div>`).join('')}</div>${title==='Experimental'?experimental:title==='Caching'?`<p class="muted">${t('State cache reuses the longest cached prefix of growing or edited states, then computes the changed suffix. Its GB budget consumes GPU memory alongside weights and graphs; reduce it if memory is tight. No cache-hit counters are reported.')}</p>`:title==='Kernels (CUDA graph engine)'?`<p class="muted">${t('auto uses compact rows where supported. default uses padded graphs; fine captures more shapes and takes longer to start. compact needs supported attention kernels and more GPU memory (about 6 GB extra on measured RTX 3090 runs). Unsupported combinations show the engine’s refusal in the model row and Logs.')}</p>`:title==='Engine'?'<p class="muted" id="optPackedNote"></p>':''}</details>`).join('');
+  $('#optionsForm').innerHTML=OPTION_SECTIONS.map(([title,keys])=>`<details class="option-section" data-section="${esc(title)}"${isOpen(title,keys)?' open':''}><summary>${esc(t(title))}</summary>${title==='Engine'?modes:''}<div class="option-grid">${keys.map(k=>`<div class="opt-field" data-opt="${k}"${OPTION_FIELDS[k].modes?` data-modes="${OPTION_FIELDS[k].modes.join(' ')}"`:''}${OPTION_FIELDS[k].quants?` data-quants="${OPTION_FIELDS[k].quants}"`:''}${OPTION_FIELDS[k].graphOnly?' data-graph-only':''}${OPTION_FIELDS[k].compiledGraph?' data-compiled-graph':''}${OPTION_FIELDS[k].compiledOnly?' data-compiled-only':''}>${optionInput(k,values[k])}${d.unavailable?.[k]?`<small class="option-unavailable">${esc(t(d.unavailable[k]))}</small>`:''}</div>`).join('')}</div>${title==='Experimental'?experimental:title==='Quantization'?`<p class="muted">${t('Inactive graph and quantization settings remain saved and are not passed to the engine.')}</p>`:title==='Caching'?`<p class="muted">${t('State cache reuses the longest cached prefix of growing or edited states, then computes the changed suffix. Its GB budget consumes GPU memory alongside weights and graphs; reduce it if memory is tight. No cache-hit counters are reported.')}</p>`:title==='Kernels (CUDA graph engine)'?`<p class="muted">${t('auto uses compact rows where supported. default uses padded graphs; fine captures more shapes and takes longer to start. compact needs supported attention kernels and more GPU memory (about 6 GB extra on measured RTX 3090 runs). Unsupported combinations show the engine’s refusal in the model row and Logs.')}</p>`:title==='Engine'?'<p class="muted" id="optPackedNote"></p>':''}</details>`).join('');
   $('#optionsForm').querySelectorAll('details.option-section > summary').forEach(s=>s.onclick=()=>optionSectionOpen.set(s.parentElement.dataset.section,!s.parentElement.open));  // a user's click (or Enter / Space), not the initial open
   $('#optionsForm').querySelectorAll('input[type=range]').forEach(r=>r.oninput=()=>{$(`#${r.id}-out`).textContent=`${r.value}%`;});
   $('#optionsForm').onchange=()=>updateOptionVisibility();
   updateOptionVisibility();
+  Object.entries(d.limits_available||{}).forEach(([key,available])=>{const el=$(`#opt-${key}`);el.disabled=!available;if(!available){el.title=t('This option is not available in the installed Engine.');el.insertAdjacentHTML('afterend',`<small>${t('This option is not available in the installed Engine.')}</small>`);}});
 }
 const optionModes=()=>optionsState.media?optionsState.data.media_modes:optionsState.data.modes;
 function selectedOptionMode() { return $('#optionsForm input[name=optMode]:checked')?.value||optionModes().find(m=>m.default)?.mode; }
@@ -1804,7 +2487,12 @@ function updateOptionVisibility() {
   packed.disabled=Boolean(packedReason)||optionsState.media||!['mlx','mlx-q8'].includes(mode);
   $('#optPackedNote').textContent=mode==='mps'?t('Packed PyTorch execution: choose Device cpu for the CPU path, or mps for Apple Silicon. The CPU default remains eager.'):packedReasonText||t('MLX packed is off by default. Measured on an Apple M5 Pro (basal 2.3.1, #36): basal-2.0-4.5B 134 → 88 ms per two-order decision, mini 47 → 31 ms, the same decisions as the KV-cache path in bf16 (mlx-q8 on the 4.5B: 0.955 instead of 0.977 agreement). Compatible Llama groups with prefix plus all suffixes up to 512 tokens use packed rows; longer groups keep the KV-cache path.');
   $('#opt-device option[value=cuda]').disabled=mode==='mps';
-  $('#optionsForm').querySelectorAll('[data-modes]').forEach(x=>x.hidden=!x.dataset.modes.split(' ').includes(mode));
+  $('#optionsForm').querySelectorAll('[data-modes]').forEach(x=>x.hidden=!optionsState.data.unavailable?.[x.dataset.opt]&&!x.dataset.modes.split(' ').includes(mode));
+  const modeInfo=optionModes().find(m=>m.mode===mode), graph=modeInfo?.kind==='graph', compiled=Boolean(modeInfo?.compiled), quant=$('#opt-quant').value||mode;
+  $('#optionsForm').querySelectorAll('[data-graph-only],[data-compiled-graph],[data-quants]').forEach(x=>{
+    const applicable=x.hasAttribute('data-compiled-graph')?(compiled&&(graph||modeInfo?.kind==='exit')):graph&&(!x.hasAttribute('data-compiled-only')||compiled)&&(!x.dataset.quants||x.dataset.quants.split(' ').includes(quant));
+    x.hidden=!optionsState.data.unavailable?.[x.dataset.opt]&&!applicable;
+  });
   // thinking: basal-2.0 4.5B with vLLM (here, in another environment, or a running server); early exit: fast-exit
   const thinkBox=$('#opt-think'), exitBox=$('#opt-early_exit');
   thinkBox.disabled=!think.model; if(!think.model)setChecked(thinkBox,false);
@@ -1814,9 +2502,17 @@ function updateOptionVisibility() {
   if(!think.model)notes.push(ts(think.reason,think.reason_code,think.reason_params));
   else if(!think.vllm)notes.push(t('vLLM is not installed in basal-ui’s environment: give the Python of one that has it, or the URL of a running think server.'));
   if(mode!=='fast-exit')notes.push(t('Early exit needs --mode fast-exit (the exit heads of basal-1.0, bf16 on a CUDA GPU).'));
-  // LoRA adapters at load: only with an engine that takes --adapter (basal-ui's feature probe)
-  const adapterBox=$('#opt-adapter'), adapterReason=optionsState.data.adapter_reason;
-  if(adapterBox){adapterBox.disabled=Boolean(adapterReason); if(adapterReason){adapterBox.value='';adapterBox.title=ts(adapterReason,optionsState.data.adapter_reason_code,optionsState.data.adapter_reason_params);}else adapterBox.title='';}
+  for(const key of ['soam','long_lane']) {
+    const el=$(`#opt-${key}`), unavailable=(optionsState.data.load_choices?.[key]||[]).length<=1;
+    el.disabled=unavailable; el.title=unavailable?t('This option is unavailable in the installed Engine.'):'';
+  }
+  // engine-gated options (the adapter, the engine 2.5 switches): the installed basal-serve lacks the flag
+  for(const [key,reason] of Object.entries(optionsState.data.unavailable||{})){
+    const el=$(`#opt-${key}`);
+    if(!el)continue;
+    el.disabled=true;
+    el.title=t(reason);
+  }
   $('#optExperimentalNote').textContent=notes.join(' ');
 }
 function collectOptions() {
@@ -1825,19 +2521,29 @@ function collectOptions() {
   for(const [key,f] of Object.entries(OPTION_FIELDS)) {
     if(f.kind==='band'){const lo=$(`#opt-${key}-lo`)?.value, hi=$(`#opt-${key}-hi`)?.value;out[key]=!lo||!hi?d.defaults[key]:[Number(lo),Number(hi)];continue;}
     const el=$(`#opt-${key}`);
-    if(!el||el.closest('[hidden]')||el.disabled)continue;  // a field of another mode, or unavailable, keeps its default
+    if(!el)continue;
+    if(optionsState.data.unavailable?.[key]){out[key]=f.kind==='bool'?el.checked:f.kind==='num'?(el.value===''?d.defaults[key]:Number(el.value)):f.kind==='select'?(el.value===''?null:(f.numeric?Number(el.value):el.value)):(el.value.trim()||d.defaults[key]);continue;}
+    if((el.closest('[hidden]')&&!f.quants&&!f.graphOnly&&!f.compiledGraph)||el.disabled)continue;
     if(f.kind==='bool')out[key]=el.checked;
     else if(f.kind==='percent')out[key]=Number(el.value)===Math.round(d.defaults[key]*100)?d.defaults[key]:Number(el.value)/100;
     else if(f.kind==='num')out[key]=el.value===''?d.defaults[key]:Number(el.value);
-    else if(f.kind==='select')out[key]=el.value===''?null:el.value;
+    else if(f.kind==='select')out[key]=el.value===''?null:(f.numeric?Number(el.value):el.value);
     else out[key]=el.value.trim()||d.defaults[key];
   }
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));
 }
 async function openLoadOptions(id, media=false, action='load', initialMode=null) {
-  const data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);
+  const sequence=++optionsSequence, dialog=$('#loadOptions'), replacing=dialog.open;
+  const current=()=>sequence===optionsSequence && (!replacing||dialog.open);
+  let data;
+  try{data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);}
+  catch(e){if(current())throw e;return;}
+  if(!current())return;
+  await loadPresets(current);
+  if(!current())return;
   const loaded=(statusCache?.models||[]).find(m=>m.id===id), restart=action==='restart', save=action==='save';
-  optionsState={id,media,restart,save,data,initialMode};
+  const trigger=document.activeElement?.closest('.options-model');
+  optionsState={id,media,restart,save,data,initialMode,trigger};
   $('#optionsModel').textContent=`${id}${media?` · ${t('with media')}`:''}${restart?` · ${t('restarts the running model')}`:save?` · ${t('kept for the next load')}`:''}`;
   $('#optionsApply').textContent=restart?t('Restart'):save?t('Save'):t('Load');
   $('#optionsSetupNote').hidden=!save;
@@ -1845,21 +2551,24 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   setChecked($('#optionsRemember'),initialMode?false:data.saved);
   renderOptionsForm(restart&&loaded?{...data.defaults,...loaded.options}:{...data.options,...(initialMode?{mode:initialMode}:{})});
   $('#optionsError').hidden=true;
-  await loadPresets();renderLoadPresets();
+  renderLoadPresets();
   $('#loadPresetSelect').value='';
   $('#deleteLoadPreset').disabled=true;
-  $('#loadOptions').showModal();
+  dialog.showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
 document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
-  const {id,media,restart,save,data,initialMode}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
+  const {id,media,restart,save,data,initialMode,trigger}=optionsState, options=collectOptions(), remember=save||$('#optionsRemember').checked;
   $('#optionsApply').disabled=true;
   try{
-    if(remember||data.saved&&!initialMode)await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});
-    if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();return;}
+    const invalid=[...$('#optionsForm').querySelectorAll('input,select')].find(el=>!el.disabled&&!el.closest('[hidden]')&&(!el.checkValidity()||(['opt-reread','opt-graph_memory_gb'].includes(el.id)&&el.value!==''&&Number(el.value)<=0)));
+    if(invalid){invalid.setAttribute('aria-invalid','true');invalid.focus();throw new Error(t('Check the value of {option}.',{option:OPTION_FIELDS[invalid.id.slice(4)]?.label?t(OPTION_FIELDS[invalid.id.slice(4)].label):invalid.id}));}
+    for(const [key,reason] of Object.entries(data.unavailable||{}))if(Object.hasOwn(options,key))throw new Error(t('Load option {option}: {reason}',{option:key,reason:t(reason)}));
+    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
+    if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();const replacement=[...document.querySelectorAll('.options-model')].find(b=>b.dataset.id===id&&b.dataset.action==='save'&&b.dataset.media===String(media)&&b.getClientRects().length);(replacement|| (trigger?.isConnected?trigger:null))?.focus();return;}
     if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
     else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
     $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
@@ -1918,7 +2627,7 @@ async function loadHistory(mode='reset') {
 function renderHistory(items) {
   const flags=x=>`${x.deferred?` <span class="badge fit-too_large">${t('deferred')}</span>`:''}${x.truncated?` <span class="badge fit-tight">${t('truncated')}</span>`:''}`;
   const focused=$('#historyTable').contains(document.activeElement)?document.activeElement.closest('[data-history]')?.dataset.history:null;
-  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:`<div class="empty">${t('No decisions yet — try the Playground.')}</div>`;
+  $('#historyTable').innerHTML=items.length?`<table><thead><tr><th>${t('Time')}</th><th>${t('Model')}</th><th>${t('Source')}</th><th>${t('State')}</th><th>${t('Answers')}</th><th>${t('Latency')}</th><th>${t('Status')}</th></tr></thead><tbody>${items.map(x=>`<tr class="history-row" data-history="${esc(x.id)}"><td><button type="button" class="history-open" aria-expanded="${historyOpen.has(x.id)}" title="${esc(new Date(x.ts*1000).toISOString())}">${esc(clock(x.ts))}</button></td><td title="${esc(x.model)}">${esc(shortName(x.model))}${x.server?` · ${esc(x.server)} ${comparisonBadge()}`:''}</td><td><span class="chip">${esc(t(x.source))}</span></td><td class="muted history-state">${esc(x.state_preview)}</td><td>${Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(a.best??'—')} (${pct(a.confidence)})</span>`).join(' ')}${flags(x)}</td><td>${num(x.latency_ms,0)} ms</td><td><span class="badge ${x.status>=200&&x.status<300?'fit-fits':'fit-too_large'}">${esc(x.status)}</span></td></tr>`).join('')}</tbody></table>`:`<div class="empty">${t('No decisions yet — try the Playground.')}</div>`;
   $('#historyTable').querySelectorAll('[data-history]').forEach(row=>{
     row.onclick=()=>act(()=>toggleHistory(row));  // pointer users click anywhere on the row
     const open=$('.history-open',row);
@@ -1940,18 +2649,31 @@ function historyDetailRow(x) {
   $('.history-response',tr).textContent=JSON.stringify(x.response,null,2);
   $('.copy-request',tr).onclick=()=>copyText(JSON.stringify(x.request,null,2),t('Request copied'));
   const replay=$('.replay-request',tr), error=$('.history-replay-error',tr);
-  if(x.replay_error){replay.disabled=true;error.textContent=x.replay_error;error.hidden=false;}
+  if(x.replay_error){replay.disabled=true;error.textContent=historyReplayError(x);error.hidden=false;}
   replay.onclick=()=>replayRequest(x);
   return tr;
 }
-function replayRequest(x) {
-  if(x.replay_error||!x.replay_request){toast(x.replay_error||t('This request cannot be replayed.'),'error');return;}
+let replayIntent=0;
+const historyReplayError=x=>x.replay_error_code==='history_audio_unavailable'?t('History audio is unavailable or has expired.'):x.replay_error;
+async function replayRequest(x) {
+  const intent=++replayIntent, context=location.hash, needsAudio=Boolean(x.replay_requires_audio);
+  if(needsAudio){try{x=await api(`/api/history/${encodeURIComponent(x.id)}?replay=true`);}catch(e){if(intent===replayIntent)toast(e.message,'error');return;}if(intent!==replayIntent||context!==location.hash)return;}
+  if(x.replay_error||!x.replay_request){toast(historyReplayError(x)||t('This request cannot be replayed.'),'error');return;}
+  if(needsAudio && (!Array.isArray(x.replay_request.media) || !x.replay_request.media.some(m=>m?.type==='audio' && typeof m.data==='string' && m.data.length>0) || x.replay_request.media.some(m=>!m || !['audio','image'].includes(m.type) || typeof m.data!=='string' || !/^(?:[A-Za-z0-9+/]+={0,2}|data:[^,]+;base64,[A-Za-z0-9+/]+={0,2})$/.test(m.data)))){toast(t('History audio is unavailable or has expired.'),'error');return;}
+  if(needsAudio){try{if(!Object.hasOwn(x.replay_request,'state') || x.replay_request.state==null || !x.replay_request.questions || typeof x.replay_request.questions!=='object')throw new Error();for(const m of x.replay_request.media){if(!atob(m.data.replace(/^data:[^,]+;base64,/,'')))throw new Error();}}catch{toast(t('History audio is unavailable or has expired.'),'error');return;}}
   if(!readyModels().some(m=>m.id===x.model)){toast(t('Model {model} is not loaded',{model:x.model}),'error');return;}
-  selectedModel=x.model; localStorage.setItem('basal-ui.model',selectedModel);
+  const model=readyModels().find(m=>m.id===x.model);
+  if(model.kind==='comparison'){
+    const primary=readyModels().filter(m=>m.kind!=='comparison');
+    if(!primary.length){toast(t('Load a basal model before replaying a Comparison.'),'error');return;}
+    if(!primary.some(m=>m.id===selectedModel))selectedModel=primary[0].id;
+  }else selectedModel=x.model;
+  localStorage.setItem('basal-ui.model',selectedModel);
   $('#playgroundModel').value=selectedModel; setPlaygroundMedia(readyModels().find(m=>m.id===selectedModel)?.media||[]);
   $('#results').innerHTML='';$('#rawDetails').hidden=true;$('#decideError').hidden=true;
-  setRequest(x.replay_request);
+  setRequest(model.kind==='comparison'?{...x.replay_request,model:selectedModel}:x.replay_request,[],true);
   showView('playground',true);
+  if(model.kind==='comparison')DecisionTools.selectComparison(model.id);
 }
 function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
@@ -1960,7 +2682,7 @@ $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.tog
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
 $('#clearHistory').onclick=()=>act(async()=>{
-  if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded decision (playground, API and MCP) is deleted.'),confirmLabel:t('Clear history'),destructive:true}))return;
+  if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted, including scheduled Batch.'),confirmLabel:t('Clear history'),destructive:true}))return;
   const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
 });
 async function loadLogs() {
@@ -2001,9 +2723,33 @@ function answerBest(a) {
   if(typeof a.noul==='number')return a.noul>=0.5?'true':'false';
   return a.type||null;
 }
-let batchRowsLoaded=0, batchRunning=false, batchResult=null;
+let batchRowsLoaded=0, batchRunning=false, batchResult=null, batchProgressMarkup=null;
+let batchPresetAvailable=false;
+async function loadBatchPresets() {
+  const select=$('#batchPreset'), lang=$('#batchLang'), reason=$('#batchPresetReason');
+  try {
+    const data=await api('/api/batch/presets');
+    batchPresetAvailable=data.available;
+    if(data.available)select.innerHTML=`<option value="">${t('None')}</option>`+data.presets.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('');
+    select.disabled=lang.disabled=!data.available;
+    reason.hidden=data.available;
+    if(!data.available)reason.textContent=t('Presets need Engine 2.5. Installed Engine: {version}',{version:data.version||t('unknown')});
+  } catch(error) {
+    batchPresetAvailable=false; select.disabled=lang.disabled=true; reason.hidden=false; reason.textContent=error.message;
+  }
+}
+loadBatchPresets();
 $('#batchInput').value=localStorage.getItem('basal-ui.batchInput')||'';
 $('#batchInput').oninput=()=>localStorage.setItem('basal-ui.batchInput',$('#batchInput').value);
+api('/api/batch/capabilities').then(c=>{const input=$('#batchStopAfter'); input.disabled=!c.stop_after; $('#batchStopHelp').textContent=c.stop_after?t('Stop after consecutive unanswered lines; 0 records per-line errors.'):t('Requires an Engine with Batch stop support');}).catch(()=>{});
+function chooseBatch() {
+  return new Promise(resolve=>{
+    const dialog=$('#batchChoiceDialog');
+    const finish=value=>{dialog.removeEventListener('click',clicked);dialog.removeEventListener('close',closed);if(dialog.open)dialog.close();resolve(value);};
+    const clicked=e=>{if(e.target.value)finish(e.target.value);}, closed=()=>finish('cancel');
+    dialog.addEventListener('click',clicked);dialog.addEventListener('close',closed);dialog.showModal();
+  });
+}
 function renderBatchState(job, ready) {
   const select=$('#batchModel'), current=select.value, allowed=ready.filter(m=>m.kind!=='cascade'||(m.cascade_kind==='escalate'&&!m.cascade_has_fallback)), ids=allowed.map(m=>m.id);
   if(JSON.stringify([...select.options].map(o=>o.value))!==JSON.stringify(ids))select.innerHTML=allowed.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}${m.kind==='cascade'?` · ${t('Cascade')}`:''}</option>`).join('')||`<option value="">${t('Load a model first')}</option>`;
@@ -2013,13 +2759,24 @@ function renderBatchState(job, ready) {
   ee.hidden=!levels.length;
   const running=Boolean(job?.running);
   $('#runBatch').disabled=running||!ids.length; $('#cancelBatch').hidden=!running;
-  $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  const progressMarkup=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='stopped_resumable'?`<div class="error-box">${t('Stopped, resumable.')} ${job.done} / ${job.total}<br>${esc(job.error)}${job.result?`<br><button type="button" class="btn destructive" id="restartStoppedBatch">${t('Restart')}</button>`:''}</div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  if(progressMarkup!==batchProgressMarkup){$('#batchProgress').innerHTML=progressMarkup;batchProgressMarkup=progressMarkup;}
+  if(job?.phase==='stopped_resumable'&&job.result)$('#restartStoppedBatch').onclick=()=>act(async()=>{
+    const body={...job.result,choice:'restart'};
+    if(!await confirmDialog({title:t('Restart Batch'),description:t('Discard partial answers for {output} and restart this Batch?',{output:body.output}),confirmLabel:t('Restart'),destructive:true}))return;
+    await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+    toast(t('Batch started')); await refreshStatus();
+  });
   if(!running&&job?.phase==='done'&&(batchRunning||!batchResult))showBatchResult(job.result);
   batchRunning=running;
 }
+const batchAccuracy=new Map();
 function showBatchResult(r) {
   batchResult=r;
-  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
+  const model=(statusCache?.models||[]).find(m=>m.id===r.model), label=model?modelLabel(model):r.model, comparison=r.model.startsWith('comparison:');
+  if(r.accuracy!=null)batchAccuracy.set(`${r.input}\n${r.model}`,{input:r.input,label,comparison,accuracy:r.accuracy});
+  $('#batchAccuracy').innerHTML=[...batchAccuracy.values()].map(x=>`<div>${esc(x.label)} ${x.comparison?comparisonBadge():''} · ${esc(x.input)} · ${t('accuracy')} ${pct(x.accuracy)}</div>`).join('');
+  $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${esc(label)}</span>${comparison?comparisonBadge():''}<span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
   $('#downloadBatch').hidden=$('#copyBatchPath').hidden=false;
   batchRowsLoaded=0; $('#batchRows').innerHTML=''; loadBatchRows();
 }
@@ -2035,7 +2792,15 @@ $('#runBatch').onclick=()=>act(async()=>{
   const body={id:$('#batchModel').value,input:$('#batchInput').value.trim(),concurrency:Number($('#batchConcurrency').value)||16};
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
-  await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+  if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
+  if(!$('#batchStopAfter').disabled){if(!$('#batchStopAfter').reportValidity())return; body.stop_after=Number($('#batchStopAfter').value);}
+  try { await api('/api/batch',{method:'POST',body:JSON.stringify(body)}); }
+  catch(e) {
+    if(e.code!=='batch_choice')throw e;
+    body.choice=await chooseBatch(); if(body.choice==='cancel')return;
+    await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+  }
+  batchRunning=true;
   $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
   toast(t('Batch started')); await refreshStatus();
 });
@@ -2050,7 +2815,7 @@ function renderInspectModels() {
   const signature=JSON.stringify(rows.map(m=>m.id));
   if(signature===inspectSignature)return;
   inspectSignature=signature;
-  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(m.inspect_reason)}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
+  select.innerHTML=rows.map(m=>`<option value="${esc(m.id)}"${inspectableModel(m)?'':` disabled title="${esc(t(m.inspect_reason))}"`}>${esc(m.id)}${inspectableModel(m)?'':` — ${t('basal-viz cannot read this variant here')}`}</option>`).join('')||`<option value="">${t('Download a bf16 model first')}</option>`;
   const ok=rows.filter(inspectableModel).map(m=>m.id);
   select.value=ok.includes(current)?current:ok[0]||'';
   loadInspectCalibrations();
@@ -2082,13 +2847,14 @@ function renderInspectState(state, job) {
 // What the inspector would explain of a Playground decision: the request it can explain and how that differs from
 // the served one, or why it cannot (another model, media, nothing but task questions).
 function inspectHandoff(request) {
+  const reason=inspectBlockedReason(request.model);if(reason)return {blocked:reason};
   const st=statusCache?.inspect||{}, served=(statusCache?.models||[]).find(m=>m.id===request.model);
   const variant=id=>modelData.find(m=>m.id===id), sv=variant(request.model), iv=variant(st.model);
   if(request.media)return {blocked:t('basal-viz reads text only; remove the media to inspect this request')};
   if(st.model!==request.model&&!(sv&&iv&&sv.family===iv.family&&sv.tier===iv.tier))
     return {blocked:t('the inspector runs {inspector}, this decision came from {model}: start the inspector with the bf16 weights of {weights}',{inspector:st.model,model:request.model,weights:sv?`${sv.family} ${sv.tier}`:request.model})};
-  const body=structuredClone(request), notes=[];
-  for(const key of ['model','think','think_text','early_exit'])delete body[key];
+  const body=stripMcpMetadata(request), notes=[];
+  for(const key of ['model','think','think_text','early_exit','source_url'])delete body[key];
   const tasks=Object.entries(body.questions||{}).filter(([,q])=>TASK_TYPES.includes(q?.type)).map(([n])=>n);
   tasks.forEach(n=>delete body.questions[n]);
   if(!Object.keys(body.questions||{}).length)return {blocked:t('basal-viz explains decision questions; this request has only task questions')};
@@ -2104,6 +2870,7 @@ function inspectHandoff(request) {
   return {body,notes};
 }
 function inspectDecision(request) {
+  const reason=inspectBlockedReason(request.model);if(reason){toast(reason,'error');return;}
   if(statusCache?.inspect?.state!=='ready'){toast(t('Start the inspector for {model} first',{model:request.model||t('a model')}),'error');showView('inspect',true);return;}
   const handoff=inspectHandoff(request), notice=$('#inspectNotice');
   if(handoff.blocked){toast(handoff.blocked,'error');return;}
@@ -2115,13 +2882,21 @@ function inspectDecision(request) {
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
 const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, and MCP.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],settings:['12 / SETTINGS','Settings','Manage memory, storage, defaults, and appearance.']};
+let currentView=null;
+$('.skip-link').onclick=event=>{event.preventDefault();$('#main-content').focus();};
 function showView(hash, updateHash=false) {
+  replayIntent++;
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
+  if(name!=='playground'){if($('#fetchDialog').open)closeFetch();else cancelFetch();}
   const wasDashboard=!$('#dashboard').hidden;
+  if(name!=='playground' && !$('#playground').hidden)cancelRecording();
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
+  const changed=currentView!==null&&currentView!==name; currentView=name;
+  document.title=`${t(title)} | basal`;
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
   document.querySelectorAll('.view').forEach(v=>v.hidden=v.dataset.page!==name);
+  if(changed)$('#pageTitle').focus();
   document.querySelectorAll('.side-nav [data-view]').forEach(b=>{const active=b.dataset.view===name;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   const secondary=Boolean(document.querySelector(`.nav-tools [data-view="${name}"]`));
   $('.nav-tools').classList.toggle('active',secondary);
@@ -2144,7 +2919,7 @@ function showView(hash, updateHash=false) {
     loadLogs();
   }
 }
-const route=()=>{if(location.hash!==shownHash)showView(location.hash);};
+const route=()=>{if(location.hash!==shownHash){const previous=currentView;showView(location.hash);if(previous!==currentView){const target=currentView;setTimeout(()=>{if(currentView===target)$('#pageTitle').focus();},0);}}};
 document.querySelectorAll('.side-nav [data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 window.addEventListener('hashchange',route); window.addEventListener('popstate',route);
 function selectManagerTab(tab) {
@@ -2168,12 +2943,22 @@ managerTabs.forEach((button,index)=>{
   };
 });
 selectManagerTab(new URLSearchParams(location.search).get('managerTab')||localStorage.getItem('basal-ui.managerTab')||'library');
-function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
-$('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
+function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));b.tabIndex=x===tab?0:-1;}localStorage.setItem('basal-ui.tab',tab);}
+const modelTabs=[$('#suggestedTab'),$('#allModelsTab')];
+modelTabs.forEach((button,index)=>{
+  button.onclick=()=>selectModelsTab(index?'all':'suggested');
+  button.onkeydown=event=>{
+    if(event.altKey||event.ctrlKey||event.metaKey||!['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    const target=event.key==='Home'?0:event.key==='End'?1:(index+1)%modelTabs.length;
+    selectModelsTab(target?'all':'suggested');modelTabs[target].focus();
+  };
+});
 selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
 async function loadMemorySettings(){
   try{
     const d=await api('/api/memory'), budget=$('input#memoryBudget');
+    $('#idleUnload').value=d.settings.idle_unload_minutes??'';
     budget.placeholder=t('Hardware budget: {size} GiB',{size:(d.hardware_budget_bytes/2**30).toFixed(1)});
     for(const [input,bytes] of [[budget,d.settings.budget_bytes],[$('#memoryReserve'),d.settings.reserve_bytes]]){
       input.value=bytes==null?'':String(Number((bytes/2**30).toFixed(3)));
@@ -2184,7 +2969,9 @@ async function loadMemorySettings(){
 $('#saveMemory').onclick=async()=>{
   const bytesOf=input=>{const value=input.value.trim();if(value===input.dataset.shown&&input.dataset.bytes!==undefined)return input.dataset.bytes===''?null:Number(input.dataset.bytes);return value===''?null:Math.round(Number(value)*2**30);};
   try{
-    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0})});
+    const input=$('#idleUnload'), value=input.value.trim(), number=Number(value);
+    if(!input.validity.valid || (value && (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number<1))) throw new Error(t('Enter whole minutes from 1 to 9,007,199,254,740,991, or leave empty to turn off.'));
+    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0,idle_unload_minutes:value?number:null})});
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };

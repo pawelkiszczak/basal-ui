@@ -219,22 +219,30 @@ def test_loaded_models_keep_load_order_update_media_and_migrate_the_single_model
 
 def test_memory_settings_validate_budget_and_reserve(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
-    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 2 * 1024**3}
+    assert settings.memory_settings() == {
+        "budget_bytes": None,
+        "reserve_bytes": 2 * 1024**3,
+        "idle_unload_minutes": None,
+    }
     for patch in (
         {"budget_bytes": 1024**3 - 1},
         {"budget_bytes": "8G"},
         {"reserve_bytes": -1},
         {"reserve_bytes": 1.5},
         {"swap": 1},
+        *({"idle_unload_minutes": v} for v in (0, -1, 1.5, "1", True, 2**53, 10**309)),
     ):
         with pytest.raises(ValueError):
             settings.update_memory(patch)
     assert settings.update_memory({"budget_bytes": 1024**3, "reserve_bytes": 0}) == {
         "budget_bytes": 1024**3,
         "reserve_bytes": 0,
+        "idle_unload_minutes": None,
     }
     assert settings.update_memory({"budget_bytes": None})["budget_bytes"] is None
-    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0}
+    assert settings.memory_settings() == {"budget_bytes": None, "reserve_bytes": 0, "idle_unload_minutes": None}
+    settings.save({"memory": {"idle_unload_minutes": 2**53}})
+    assert settings.memory_settings()["idle_unload_minutes"] is None
 
 
 def test_cross_process_settings_updates_do_not_lose_keys(tmp_path, monkeypatch):
@@ -304,6 +312,50 @@ def test_the_first_catalog_check_reports_no_new_models_then_only_new_ones(tmp_pa
     assert settings.update_seen_ids(["a", "b", "c"]) == ["c"]
     settings.mark_models_seen(["c"])
     assert settings.update_seen_ids(["a", "b", "c"]) == []
+
+
+def test_load_option_migration_is_atomic_and_covers_legacy_and_presets(tmp_path, monkeypatch):
+    from basal_ui import engine, options
+
+    monkeypatch.setattr(engine, "serve_option", lambda _: (("auto", "on", "off"), "auto"))
+    monkeypatch.setitem(options.DEFAULTS, "long_lane", "auto")
+    monkeypatch.setitem(options.CHOICES, "long_lane", ("auto", "on", "off"))
+    config = tmp_path / "settings.json"
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    config.write_text(
+        json.dumps(
+            {
+                "load_options": {
+                    "on": {"long_lane": True, "soam": True},
+                    "off": {"long_lane": False, "soam": False},
+                    "empty": {},
+                },
+                "presets": {"load": {"old": {"long_lane": False, "soam": False}, "empty": {}}, "request": {}},
+                "last_model": {"id": "old", "options": {"long_lane": True, "soam": True}},
+            }
+        )
+    )
+    data = settings.load()
+    assert data["load_options"] == {
+        "on": {"long_lane": "on", "soam": "auto"},
+        "off": {"soam": "off"},
+        "empty": {},
+    }
+    assert data["presets"]["load"]["old"] == {"soam": "off"}
+    assert data["last_models"][0]["options"] == {"long_lane": "on", "soam": "auto"}
+    persisted = json.loads(config.read_text())
+    assert persisted["last_model"]["options"] == {"long_lane": "on", "soam": "auto"}
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert settings.load() == data
+    assert options.validate({"long_lane": False})["long_lane"] == "auto"
+    assert options.validate(settings.load_options("off"))["long_lane"] == "auto"
+    assert "--long-lane" not in options.args(settings.load_options("off"))
+    assert options.args({"long_lane": "off"}) == ["--long-lane", "off"]
+
+    monkeypatch.setitem(options.DEFAULTS, "long_lane", "off")
+    monkeypatch.setitem(options.CHOICES, "long_lane", ("on", "off"))
+    assert options.validate(settings.load_options("off"))["long_lane"] == "off"
+    assert options.validate({"long_lane": "auto"})["long_lane"] == "off"
 
 
 def test_cascades_validate_shape_and_store_secrets_owner_only(tmp_path, monkeypatch):

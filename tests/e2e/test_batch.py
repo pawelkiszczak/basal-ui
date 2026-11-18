@@ -47,3 +47,38 @@ def test_a_batch_can_be_cancelled_and_bad_files_are_refused(ui, text_model, tmp_
     assert "cannot write" in ui.detail(
         "POST", "/api/batch", {"id": model_id, "input": str(QUESTIONS), "output": "/nonexistent/dir/a.jsonl"}, 400
     )
+
+
+def test_cancel_then_resume_batch(ui, text_model, tmp_path):
+    import time
+
+    import pytest
+
+    if not ui.get("/api/batch/capabilities")["restart"]:
+        pytest.skip("installed Engine does not support Batch resume")
+    model_id = text_model["id"]
+    ui.load(model_id)
+    source = tmp_path / "resume.jsonl"
+    source.write_text(QUESTIONS.read_text() * 6)
+    out = tmp_path / "resume.out.jsonl"
+    part = tmp_path / "resume.out.jsonl.part"
+    body = {"id": model_id, "input": str(source), "output": str(out), "concurrency": 1}
+    ui.post("/api/batch", body)
+    deadline = time.monotonic() + 600
+    while (not part.exists() or part.stat().st_size == 0) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert part.exists() and part.stat().st_size > 0
+    ui.delete("/api/batch")
+    assert ui.wait_job("batch")["phase"] == "cancelled"
+    prefix = part.read_bytes()
+    assert prefix and prefix.endswith(b"\n")
+    assert all(isinstance(json.loads(line), dict) for line in prefix.splitlines())
+    assert ui.post("/api/batch", body, expect=(409,))["code"] == "batch_choice"
+    result = ui.run_job("/api/batch", {**body, "choice": "resume", "concurrency": 4}, "batch")
+    assert result["phase"] == "done"
+    assert out.read_bytes().startswith(prefix)
+    print(
+        f"Retained {len(prefix.splitlines())} complete checkpoint lines ({len(prefix)} bytes); output prefix preserved"
+    )
+    assert len(out.read_text().splitlines()) == len(source.read_text().splitlines())
+    assert not part.exists()

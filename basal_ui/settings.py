@@ -11,8 +11,10 @@ import math
 import os
 import re
 import secrets
+import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -96,8 +98,57 @@ def set_check_updates(enabled: bool) -> bool:
     return enabled
 
 
-def presets() -> dict:
-    value = load().get("presets")
+class HistoryAudioPolicyError(OSError):
+    """The saved audio policy cannot be read or changed safely."""
+
+
+def _audio_policy_data():
+    try:
+        value = json.loads(_settings_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise HistoryAudioPolicyError("History audio policy unavailable") from exc
+    if not isinstance(value, dict) or (
+        "keep_history_audio" in value and not isinstance(value["keep_history_audio"], bool)
+    ):
+        raise HistoryAudioPolicyError("History audio policy unavailable")
+    return value
+
+
+def keep_history_audio() -> bool:
+    from . import history_audio
+
+    if not history_audio.supported():
+        return False
+    try:
+        return _locked(lambda: _audio_policy_data().get("keep_history_audio", False))()
+    except OSError as exc:
+        raise HistoryAudioPolicyError("History audio policy unavailable") from exc
+
+
+def set_keep_history_audio(enabled: bool) -> bool:
+    from . import history_audio
+
+    if not isinstance(enabled, bool):
+        raise ValueError("keep_history_audio must be a boolean")
+    if enabled and not history_audio.supported():
+        raise ValueError("History audio retention is unavailable on this platform")
+
+    def update():
+        data = _audio_policy_data()
+        data["keep_history_audio"] = enabled
+        save(data)
+        return enabled
+
+    try:
+        return _locked(update)()
+    except (OSError, CorruptSettings) as exc:
+        raise HistoryAudioPolicyError("History audio policy unavailable") from exc
+
+
+def presets(*, strict=False, require_file=False) -> dict:
+    value = load(strict=strict, require_file=require_file).get("presets")
     value = value if isinstance(value, dict) else {}
     return {kind: value.get(kind) if isinstance(value.get(kind), dict) else {} for kind in ("load", "request")}
 
@@ -156,13 +207,62 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
-def load() -> dict:
+def _read(*, strict=False, require_file=False) -> dict:
     try:
         value = json.loads(_settings_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        if strict and require_file:
+            raise
+        return {}
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise OSError("Could not read settings.") from exc
         return {}
     if not isinstance(value, dict):
+        if strict:
+            raise OSError("Settings are not an object.")
         return {}
+    return value
+
+
+def _migrate_options(value):
+    groups = [
+        value.get("load_options"),
+        (value.get("presets") or {}).get("load") if isinstance(value.get("presets"), dict) else None,
+    ]
+    entries = [item for group in groups if isinstance(group, dict) for item in group.values() if isinstance(item, dict)]
+    models = value.get("last_models") if isinstance(value.get("last_models"), list) else []
+    if isinstance(value.get("last_model"), dict):
+        models = [*models, value["last_model"]]
+    entries += [item["options"] for item in models if isinstance(item, dict) and isinstance(item.get("options"), dict)]
+    changed = False
+    for item in entries:
+        if isinstance(item.get("long_lane"), bool):
+            if item["long_lane"]:
+                item["long_lane"] = "on"
+            else:
+                item.pop("long_lane")  # inherit the installed Engine's default
+            changed = True
+        if isinstance(item.get("soam"), bool):
+            item["soam"] = "auto" if item["soam"] else "off"
+            changed = True
+    return changed
+
+
+@_locked
+def _migrate_saved_options(*, strict=False, require_file=False):
+    value = _read(strict=strict, require_file=require_file)
+    if _migrate_options(value):
+        save(value)
+    return value
+
+
+def load(*, strict=False, require_file=False) -> dict:
+    value = _read(strict=strict, require_file=require_file)
+    if _migrate_options(value):
+        value = _migrate_saved_options(
+            strict=strict, require_file=require_file
+        )  # re-read under the lock to preserve concurrent writes
     legacy = value.pop("last_model", None)  # one model before basal-ui loaded several
     if isinstance(legacy, dict) and "last_models" not in value:
         value["last_models"] = [legacy]
@@ -320,6 +420,7 @@ def last_models(data: dict | None = None) -> list[dict]:
 
 
 DEFAULT_RESERVE = 2 * 1024**3
+MAX_IDLE_UNLOAD_MINUTES = 2**53 - 1
 
 
 def memory_settings() -> dict:
@@ -329,23 +430,42 @@ def memory_settings() -> dict:
     return {
         "budget_bytes": budget if type(budget) is int else None,
         "reserve_bytes": reserve if type(reserve) is int and reserve >= 0 else DEFAULT_RESERVE,
+        "idle_unload_minutes": value.get("idle_unload_minutes")
+        if type(value.get("idle_unload_minutes")) is int
+        and 1 <= value["idle_unload_minutes"] <= MAX_IDLE_UNLOAD_MINUTES
+        else None,
     }
+
+
+@_locked
+def with_idle_unload_state(callback):
+    data = load()
+    revision = data.get("_idle_unload_revision", 0)
+    revision = revision if type(revision) is int and revision >= 0 else 0
+    return callback(memory_settings()["idle_unload_minutes"], revision)
 
 
 @_locked
 def update_memory(patch: dict) -> dict:
     """budget_bytes: null (the hardware budget) or at least 1 GiB; reserve_bytes: kept free, >= 0."""
-    unknown = set(patch) - {"budget_bytes", "reserve_bytes"}
+    unknown = set(patch) - {"budget_bytes", "reserve_bytes", "idle_unload_minutes"}
     if unknown:
         raise ValueError(f"unknown memory setting: {min(unknown)}")
-    value = {**memory_settings(), **patch}
+    previous = memory_settings()
+    value = {**previous, **patch}
     if value["budget_bytes"] is not None and (
         type(value["budget_bytes"]) is not int or value["budget_bytes"] < 1024**3
     ):
         raise ValueError("budget_bytes must be null or at least 1 GiB")
     if type(value["reserve_bytes"]) is not int or value["reserve_bytes"] < 0:
         raise ValueError("reserve_bytes must be a non-negative integer")
+    idle = value["idle_unload_minutes"]
+    if idle is not None and (type(idle) is not int or not 1 <= idle <= MAX_IDLE_UNLOAD_MINUTES):
+        raise ValueError(f"idle_unload_minutes must be null or an integer from 1 to {MAX_IDLE_UNLOAD_MINUTES}")
     data = load()
+    if idle != previous["idle_unload_minutes"]:
+        revision = data.get("_idle_unload_revision", 0)
+        data["_idle_unload_revision"] = (revision if type(revision) is int and revision >= 0 else 0) + 1
     data["memory"] = value
     save(data)
     return value
@@ -386,6 +506,15 @@ def decision_secret(server_id: str) -> str | None:
 def cascades() -> list[dict]:
     value = load().get("cascades", [])
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def cascade_launch(name: str) -> tuple[dict, str | None]:
+    spec = next((row for row in cascades() if row["name"] == name), None)
+    if spec is None:
+        raise KeyError(name)
+    key = decision_secret(f"cascade:{name}") if spec.get("fallback") else None
+    return spec, key
 
 
 @_locked
@@ -454,11 +583,15 @@ def set_cascade(spec: dict, replace: bool = False) -> dict:
                 or not parts.hostname
                 or parts.username is not None
                 or parts.password is not None
+                or parts.query
+                or parts.fragment
             ):
                 raise ValueError("fallback.url must be an http(s) URL without credentials")
             _ = parts.port
         except ValueError as exc:
-            raise ValueError("fallback.url must be an http(s) URL without credentials and with a valid port") from exc
+            raise ValueError(
+                "fallback.url must be an http(s) URL without credentials, query or fragment and with a valid port"
+            ) from exc
         if not isinstance(fallback.get("model"), str) or not fallback["model"].strip():
             raise ValueError("fallback.model must be a non-empty string")
         for field, default in (("below", 0.5), ("timeout", 60)):
@@ -527,6 +660,72 @@ def delete_cascade(name: str) -> None:
         raise
 
 
+def decision_servers() -> list[dict]:
+    value = load().get("decision_servers", [])
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def add_decision_server(name: str, url: str, consent: bool, key: str | None = None) -> dict:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be a non-empty string")
+    if not isinstance(url, str):
+        raise ValueError("url must be an http(s) URL")
+    parsed = urlsplit(url.strip())
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("url must be an http(s) URL without credentials, query or fragment")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("url must have a valid port") from exc
+    if not isinstance(consent, bool):
+        raise ValueError("consent must be a boolean")
+    if key is not None and (not isinstance(key, str) or not key.strip()):
+        raise ValueError("key must be a non-empty string")
+    record = {"id": uuid.uuid4().hex, "name": name.strip(), "url": url.strip().rstrip("/"), "consent": consent}
+    data = load()
+    data["decision_servers"] = [*decision_servers(), record]
+    secrets = _decision_secrets()
+    if key:
+        _write_private(_sibling("decision-secrets.json"), json.dumps({**secrets, record["id"]: key}, indent=2))
+    try:
+        save(data)
+    except BaseException:
+        if key:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(secrets, indent=2))
+        raise
+    return record
+
+
+@_locked
+def remove_decision_server(server_id: str) -> bool:
+    data = load()
+    servers = decision_servers()
+    if not any(x.get("id") == server_id for x in servers):
+        return False
+    secrets = _decision_secrets()
+    if server_id in secrets:
+        _write_private(
+            _sibling("decision-secrets.json"),
+            json.dumps({k: v for k, v in secrets.items() if k != server_id}, indent=2),
+        )
+    data["decision_servers"] = [x for x in servers if x.get("id") != server_id]
+    try:
+        save(data)
+    except BaseException:
+        if server_id in secrets:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(secrets, indent=2))
+        raise
+    return True
+
+
 def calibrations_dir(model_id: str) -> Path:
     """Where basal-ui writes the calibration files it fits for a model."""
 
@@ -537,6 +736,69 @@ def calibration_selection() -> dict:
     """{model id: calibration file basal-serve is started with}; a model without an entry uses its shipped file."""
     value = load().get("calibration")
     return {k: v for k, v in value.items() if isinstance(v, str)} if isinstance(value, dict) else {}
+
+
+def attached_models() -> list[dict]:
+    value = load().get("attached", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+def finetune_results() -> list[dict]:
+    value = load().get("finetune", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def put_finetune(record: dict) -> None:
+    data = load()
+    records = data.get("finetune", [])
+    if not isinstance(records, list):
+        raise ValueError("fine-tune registry is corrupt")
+    key = (record["id"], record["name"])
+    data["finetune"] = [r for r in records if not isinstance(r, dict) or (r.get("id"), r.get("name")) != key] + [record]
+    save(data)
+
+
+@_locked
+def remove_finetune(model_id: str, name: str) -> None:
+    data = load()
+    records = data.get("finetune", [])
+    if not isinstance(records, list):
+        raise ValueError("fine-tune registry is corrupt")
+    data["finetune"] = [
+        r for r in records if not isinstance(r, dict) or (r.get("id"), r.get("name")) != (model_id, name)
+    ]
+    save(data)
+
+
+@_locked
+def add_attached(record: dict) -> None:
+    required = ("id", "base", "revision", "out_dir", "format", "created")
+    if not isinstance(record, dict) or any(key not in record for key in required):
+        raise ValueError("attached model record is incomplete")
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    if any(item.get("id") == record["id"] for item in attached if isinstance(item, dict)):
+        raise ValueError(f"attached model {record['id']!r} already exists")
+    data["attached"] = [*attached, record]
+    save(data)
+
+
+@_locked
+def remove_attached(model_id: str) -> dict:
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    record = next((item for item in attached if isinstance(item, dict) and item.get("id") == model_id), None)
+    if record is None:
+        raise ValueError(f"unknown attached model {model_id!r}")
+    data["attached"] = [item for item in attached if item is not record]
+    selection = data.get("calibration")
+    if isinstance(selection, dict):
+        selection.pop(model_id, None)
+    save(data)
+    return record
 
 
 @_locked
@@ -606,11 +868,32 @@ def _user_records(data: dict) -> list[dict]:
 
 
 def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not handle:
+                return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process
+            try:
+                return kernel.WaitForSingleObject(handle, 0) != 0  # WAIT_OBJECT_0: process exited
+            finally:
+                kernel.CloseHandle(handle)
+        except (AttributeError, OSError):
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
+    except OSError:
         return True
     return True
 
@@ -654,3 +937,248 @@ def keys_file(internal_sha256: str) -> Path:
 def remove_keys_file() -> None:
     """Called when basal-ui exits: its API server is gone, so is its key file."""
     _keys_path().unlink(missing_ok=True)
+
+
+def _schedule_settings() -> dict:
+    """Read scheduling state without treating unreadable or corrupt settings as absent."""
+    path = _settings_path()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if path.is_symlink():
+            raise CorruptSettings(f"{path} points to a missing settings file") from None
+        return {}
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise CorruptSettings(f"{path} is not valid JSON (a settings object)") from exc
+    if not isinstance(value, dict):
+        raise CorruptSettings(f"{path} is not valid JSON (a settings object)")
+    return value
+
+
+@_locked
+def schedules() -> list[dict]:
+    value = _schedule_settings().get("schedules", [])
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise ValueError("invalid schedules in settings")
+    return value
+
+
+@_locked
+def update_schedules(change, reset_state_id=None):
+    data = _schedule_settings()
+    rows = data.get("schedules", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("invalid schedules in settings")
+    before = {row.get("id") for row in rows}
+    result = change(rows)
+    data["schedules"] = rows
+    states = data.get("schedule_state")
+    if isinstance(states, dict):
+        for schedule_id in before - {row.get("id") for row in rows}:
+            states.pop(schedule_id, None)
+        if reset_state_id is not None:
+            states.setdefault(reset_state_id, {})["failures"] = 0
+            states[reset_state_id].pop("scan", None)
+    save(data)
+    return result
+
+
+@_locked
+def reserve_schedule(spec, start):
+    """Reserve a job only while its persisted definition still matches."""
+    rows = _schedule_settings().get("schedules", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("invalid schedules in settings")
+    if not any(row == spec for row in rows):
+        return None
+    return start()
+
+
+@_locked
+def complete_schedule_scan(spec, scan):
+    data = _schedule_settings()
+    if spec not in data.get("schedules", []):
+        return
+    state = data.get("schedule_state", {}).get(spec["id"], {})
+    if state.get("scan") == scan:
+        state["last_scan"] = scan["at"]
+        state.pop("scan")
+        save(data)
+
+
+def schedule_history_path() -> Path:
+    path = _settings_path()
+    return path.with_name(f"{path.stem}.schedules.jsonl")
+
+
+@_locked
+def _schedule_history() -> list[dict]:
+    path = schedule_history_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError(f"invalid schedule history: {path}")
+    return rows
+
+
+def _write_schedule_history(rows):
+    encoded = [json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n" for item in rows]
+    if encoded and len(encoded[-1].encode("utf-8")) > 1024 * 1024:
+        raise ValueError("schedule history record exceeds the rotation limit")
+    size, kept = 0, []
+    for line in reversed(encoded):
+        size += len(line.encode("utf-8"))
+        if size > 1024 * 1024:
+            break
+        kept.append(line)
+    _write_private(schedule_history_path(), "".join(reversed(kept)))
+
+
+@_locked
+def schedule_history() -> list[dict]:
+    rows = _schedule_history()
+    data = _schedule_settings()
+    pending = data.get("schedule_history_pending")
+    if pending is not None:
+        if not isinstance(pending, dict) or not isinstance(pending.get("run_id"), str):
+            raise ValueError("invalid pending schedule history")
+        if not any(row.get("run_id") == pending["run_id"] for row in rows):
+            _write_schedule_history([*rows, pending])
+            rows = _schedule_history()
+        data.pop("schedule_history_pending")
+        save(data)
+    return rows
+
+
+@_locked
+def schedule_runs(schedule_id: str, cursor: int = 0) -> dict:
+    rows = [row for row in reversed(schedule_history()) if row.get("schedule") == schedule_id]
+    return {"runs": rows[cursor : cursor + 100], "next_cursor": cursor + 100 if cursor + 100 < len(rows) else None}
+
+
+@_locked
+def schedule_state(schedule_id: str) -> dict:
+    states = _schedule_settings().get("schedule_state", {})
+    if not isinstance(states, dict) or not isinstance(states.get(schedule_id, {}), dict):
+        raise ValueError("invalid schedule state in settings")
+    return states.get(schedule_id, {})
+
+
+@_locked
+def update_schedule_state(schedule_id: str, change, expected_spec=None) -> bool:
+    data = _schedule_settings()
+    if expected_spec is not None and expected_spec not in data.get("schedules", []):
+        return False
+    states = data.get("schedule_state", {})
+    if not isinstance(states, dict) or not isinstance(states.get(schedule_id, {}), dict):
+        raise ValueError("invalid schedule state in settings")
+    state = states.setdefault(schedule_id, {})
+    change(state)
+    data["schedule_state"] = states
+    save(data)
+    return True
+
+
+@_locked
+def append_schedule_run(row: dict, spec: dict, checkpoint: bool = False) -> None:
+    row = dict(row)
+    matched = row.pop("_matched", None)
+    if len((json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")) > 1024 * 1024:
+        raise ValueError("schedule history record exceeds the rotation limit")
+    current = schedule_history()
+    if any(item.get("run_id") == row["run_id"] for item in current):
+        data = _schedule_settings()
+        publications = data.get("schedule_publications")
+        if isinstance(publications, dict) and row["run_id"] in publications:
+            publications.pop(row["run_id"])
+            save(data)
+        return
+    data = _schedule_settings()
+    definitions = data.get("schedules", [])
+    live = next((item for item in definitions if item.get("id") == spec["id"]), None)
+    if live is not None and live.get("_token") == spec.get("_token"):
+        states = data.setdefault("schedule_state", {})
+        state = states.setdefault(spec["id"], {})
+        scan = state.get("scan")
+        if live == spec and isinstance(scan, dict) and scan.get("spec") == spec and matched in scan.get("items", []):
+            scan["items"].remove(matched)
+        if checkpoint:
+            state.setdefault("processed", {})[row["file"]] = [row["size"], row["mtime"]]
+        if row.get("error") and live == spec:
+            state["failures"] = state.get("failures", 0) + 1
+            if state["failures"] >= 3:
+                live.update(paused=True, paused_reason="paused after three consecutive failed runs")
+        elif live == spec and not row.get("skipped") and not row.get("cancelled"):
+            state["failures"] = 0
+    publications = data.get("schedule_publications")
+    if isinstance(publications, dict):
+        publications.pop(row["run_id"], None)
+    data["schedule_history_pending"] = row
+    save(data)
+    _write_schedule_history([*current, row])
+    data.pop("schedule_history_pending")
+    save(data)
+
+
+@_locked
+def begin_schedule_publication(spec: dict, row: dict, temporary: Path) -> None:
+    stat = temporary.stat()
+    data = _schedule_settings()
+    publications = data.setdefault("schedule_publications", {})
+    if not isinstance(publications, dict):
+        raise ValueError("invalid schedule publication state")
+    publications[row["run_id"]] = {
+        "spec": spec,
+        "row": row,
+        "temporary": str(temporary),
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "owner_pid": os.getpid(),
+    }
+    save(data)
+
+
+@_locked
+def recover_schedule_publications() -> None:
+    data = _schedule_settings()
+    publications = data.get("schedule_publications", {})
+    if not isinstance(publications, dict):
+        raise ValueError("invalid schedule publication state")
+    for run_id, intent in list(publications.items()):
+        if (
+            not isinstance(intent, dict)
+            or not isinstance(intent.get("row"), dict)
+            or not isinstance(intent.get("spec"), dict)
+        ):
+            raise ValueError("invalid schedule publication state")
+        row, spec = intent["row"], intent["spec"]
+        owner = intent.get("owner_pid")
+        if type(owner) is not int or owner <= 0:
+            raise ValueError("invalid schedule publication owner")
+        if _alive(owner):
+            continue
+        temporary = Path(intent["temporary"])
+        output = Path(row["output"])
+        if temporary.parent != output.parent or not temporary.name.startswith(".basal-ui-schedule-"):
+            raise ValueError("invalid schedule publication temporary path")
+        try:
+            output_stat = output.stat()
+            published = (output_stat.st_dev, output_stat.st_ino) == (intent["device"], intent["inode"])
+        except FileNotFoundError:
+            published = False
+        if published:
+            recovered = {**row, "duration": None, "reason": "recovered after interruption"}
+            append_schedule_run(recovered, spec, checkpoint=True)
+        else:
+            data = _schedule_settings()
+            data["schedule_publications"].pop(run_id, None)
+            save(data)
+        try:
+            stat = temporary.stat()
+            if (stat.st_dev, stat.st_ino) == (intent["device"], intent["inode"]):
+                temporary.unlink()
+        except FileNotFoundError:
+            pass

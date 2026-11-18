@@ -10,7 +10,7 @@ They are skipped unless `BASAL_E2E=1`, so `pytest` stays fast.
 
 ```bash
 uv sync --group dev --extra mcp --extra e2e      # the dev group pins the engine release basal-ui is tested with
-uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.5.1.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
+uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.8.0.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
 uv run --no-sync playwright install chromium     # once: the page tests drive Chromium
 BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what this machine skipped and why
 ```
@@ -30,13 +30,14 @@ or another Engine backend. Keep subsequent test commands `--no-sync` so the prep
 | `bf16_model` | bf16 PyTorch weights of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_BF16_MODEL`) | Inspect, mode comparison |
 | `mlx_model` | an MLX port of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_MLX_MODEL`) | Inspect with basal-viz `--mode mlx` (engine 2.5.0, Apple Silicon) |
 | `pico_model` | basal-omni-pico in bf16 (`BASAL_E2E_PICO_MODEL`) | basal-omni-pico with `--mode mlx` (engine 2.5.0, Apple Silicon) |
+| Audio-capable model | a downloaded model with an available media Backend (`BASAL_E2E_MEDIA_MODEL`, e.g. `Remek/basal-omni-1.0-max`) | Playground microphone capture and real audio inference with the Engine media extra |
 
 A fixture with no model on disk skips its tests; `BASAL_E2E_DOWNLOAD=1` downloads `Remek/basal-2.0-mini` (bf16,
 3.2 GB: runnable on CUDA, Apple Silicon and the CPU) through basal-ui's Download button instead. Other variables:
 `BASAL_E2E_MODELS_DIR` (the models directory to use; default: basal-ui's default, the Hugging Face cache) and
 `BASAL_E2E_LOAD_TIMEOUT` (seconds for a model start or a job; default 1800, since `--mode fast` compiles for minutes).
-On a fresh Apple Silicon machine, `Remek/basal-2.0-mini-MLX-8bit` and `Remek/basal-2.0-mini` cover every test that
-the hardware allows.
+On Apple Silicon, `Remek/basal-2.0-mini-MLX-8bit` and `Remek/basal-2.0-mini` cover the common text fixtures.
+For the recording test, install the Engine media extra and make an audio-capable model available in the same cache.
 
 ## What is tested
 
@@ -48,11 +49,12 @@ the hardware allows.
 | `test_question_types.py` | every question type | each `advanced.jsonl` request (multi, act, tool, classify, verify, compress, extract) answers in its own shape: keys, sets, costs, verdicts, kept units and their offsets, extracted values and their spans; per-type statistics; `facts` and `lang`; evidence spans or its refusal |
 | `test_calibration.py` | custom calibration | task questions (classify) fitted with the engine in basal-ui's process and its memory released; a file of another model imported with basal-serve's warning and its report; a fit against a temporary uncalibrated child, its report and listing, the child's memory released; selecting the file: Restart to apply, `--calibration`, no calibration warning; back to the shipped file; cancel; refused inputs (with the problem line) |
 | `test_engine_features.py` | 2.3.1 integration | real CPU packed and MLX packed loads, inference and restart; child health idle counters; Chromium with explicitly simulated 422/503/500 responses, missing/unreachable counters, warning rendering, packed and cache help |
-| `test_load_options.py` | load options | every mode of `MODE_ORDER` with reasons for the unavailable ones and the default available; options in the command; `--context-overflow refuse` returning 422; invalid / unavailable options refused; basal-serve's own refusal (prefix cache with `--deterministic`) on the model's row; remembered options used by a plain load |
+| `test_load_options.py` | load options | every mode of `MODE_ORDER` with reasons for the unavailable ones and the default available; options in the command; `--context-overflow refuse` returning 422; invalid / unavailable options refused; the Engine's refusal of prefix cache with `--deterministic`, before restart when the parser supports preflight or on the model's row after start; remembered options used by a plain load |
 | `test_backends.py` | the backend manager | an explicit inference test of a downloaded model on an installed backend in an isolated app; browser navigation, filtering and dialogs ([BACKENDS.md](BACKENDS.md#verification)) |
+| `test_recording.py` | audio Decisions | Chromium captures a synthetic microphone clip, submits mono 16 kHz PCM WAV, and a real audio-capable Engine returns a Decision with audio token usage |
 | `test_batch.py` | batch | every line answered in order, the summary, paging, the download; not counted in the statistics; cancel without an output file; refused files |
 | `test_measurements.py` | benchmarks | the preset (44 items), a load test (questions per request), a determinism check on a model loaded with `deterministic` (identical answers), two engine modes in process agreeing on 90% or more with the memory released |
-| `test_inspect.py` | Inspect | basal-viz at `/viz` for a bf16 model: info, an explanation that matches basal-serve's probabilities, memory counted then released; other ports refused |
+| `test_inspect.py` | Inspect | basal-viz at `/viz` for a bf16 model: info, an explanation that matches basal-serve's probabilities, memory counted then released |
 | `test_experimental.py` | thinking, early exit | refused where they cannot run; with basal-2.0 4.5B and vLLM: forced reasoning with its text, and `think: off`; with basal-1.0 bf16 on CUDA: every early-exit level |
 | `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Model manager section order and the two Models tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs, including real-model recording, browser Replay and resubmission preserving structured state and choice descriptions named `data`; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons (including unavailable older families), suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
 | `test_pages.py::test_cascade_router_keyboard_focus_protocol_and_attribution` | Cascades (two native models and Chromium) | real router lifecycle, polling focus, gateway request shapes and MCP where available, History/Usage/traffic, and a controlled loopback fallback |
@@ -63,6 +65,16 @@ the hardware allows.
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Focused Engine 2.8 load-options check, 2026-11-18
+
+On macOS Apple Silicon with Engine 2.8.0 and MLX, an offline cached `Remek/basal-2.0-mini` ran
+`tests/e2e/test_load_options.py`: 6 passed and the pico-only test skipped because pico was not downloaded.
+The browser load-options and synthetic calibration-warning row checks each passed in Chromium; the load-options
+screenshot was captured from that real model. A separate load used copied metadata with a synthetic foreign
+calibration and read the shared weights through a symlink: Engine 2.8 emitted its origin warning and the model row
+showed it. Settings and auxiliary caches were isolated. This is not the complete release E2E gate; CUDA and other
+hardware remain untested.
 
 ## Stage gate, engine 2.5.1, 2026-11-02
 

@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from basal_ui.jobs import Jobs, LogBuffer, terminate
+from basal_ui.jobs import Job, Jobs, LogBuffer, run_tool, terminate
 
 
 def wait_done(jobs, kind, timeout=3):
@@ -130,3 +130,31 @@ def test_terminate_kills_a_group_member_that_survives_sigterm():
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
         proc.stdout.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+def test_run_tool_stops_helper_after_leader_exits(tmp_path):
+    package = tmp_path / "basal"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    ready, stopped = tmp_path / "ready", tmp_path / "stopped"
+    helper = (
+        "import os,pathlib,signal,time; "
+        f"ready=pathlib.Path({str(ready)!r}); stopped=pathlib.Path({str(stopped)!r}); "
+        "signal.signal(signal.SIGTERM,lambda *args:(stopped.write_text('stopped'),exit(0))); "
+        "ready.write_text(str(os.getpid())); time.sleep(60)"
+    )
+    (package / "detached.py").write_text(
+        "import pathlib,subprocess,sys,time\n"
+        f"subprocess.Popen([sys.executable,'-c',{helper!r}],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        f"ready=pathlib.Path({str(ready)!r})\n"
+        "while not ready.exists(): time.sleep(0.01)\n"
+    )
+    env = dict(os.environ, PYTHONPATH=str(tmp_path))
+    try:
+        run_tool(Job("detached", "model", "test", LogBuffer()), "detached", [], env=env)
+        assert stopped.read_text() == "stopped"
+    finally:
+        if ready.exists() and not stopped.exists():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(ready.read_text()), signal.SIGKILL)
