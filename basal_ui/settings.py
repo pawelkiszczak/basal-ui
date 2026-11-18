@@ -12,7 +12,9 @@ import re
 import secrets
 import threading
 import time
+import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from huggingface_hub.constants import HF_HUB_CACHE
 
@@ -94,8 +96,8 @@ def set_check_updates(enabled: bool) -> bool:
     return enabled
 
 
-def presets() -> dict:
-    value = load().get("presets")
+def presets(*, strict=False, require_file=False) -> dict:
+    value = load(strict=strict, require_file=require_file).get("presets")
     value = value if isinstance(value, dict) else {}
     return {kind: value.get(kind) if isinstance(value.get(kind), dict) else {} for kind in ("load", "request")}
 
@@ -154,12 +156,22 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
-def _read() -> dict:
+def _read(*, strict=False, require_file=False) -> dict:
     try:
         value = json.loads(_settings_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        if strict and require_file:
+            raise
         return {}
-    return value if isinstance(value, dict) else {}
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise OSError("Could not read settings.") from exc
+        return {}
+    if not isinstance(value, dict):
+        if strict:
+            raise OSError("Settings are not an object.")
+        return {}
+    return value
 
 
 def _migrate_options(value):
@@ -187,17 +199,19 @@ def _migrate_options(value):
 
 
 @_locked
-def _migrate_saved_options():
-    value = _read()
+def _migrate_saved_options(*, strict=False, require_file=False):
+    value = _read(strict=strict, require_file=require_file)
     if _migrate_options(value):
         save(value)
     return value
 
 
-def load() -> dict:
-    value = _read()
+def load(*, strict=False, require_file=False) -> dict:
+    value = _read(strict=strict, require_file=require_file)
     if _migrate_options(value):
-        value = _migrate_saved_options()  # re-read under the lock to preserve concurrent writes
+        value = _migrate_saved_options(
+            strict=strict, require_file=require_file
+        )  # re-read under the lock to preserve concurrent writes
     legacy = value.pop("last_model", None)  # one model before basal-ui loaded several
     if isinstance(legacy, dict) and "last_models" not in value:
         value["last_models"] = [legacy]
@@ -355,6 +369,7 @@ def last_models(data: dict | None = None) -> list[dict]:
 
 
 DEFAULT_RESERVE = 2 * 1024**3
+MAX_IDLE_UNLOAD_MINUTES = 2**53 - 1
 
 
 def memory_settings() -> dict:
@@ -364,23 +379,42 @@ def memory_settings() -> dict:
     return {
         "budget_bytes": budget if type(budget) is int else None,
         "reserve_bytes": reserve if type(reserve) is int and reserve >= 0 else DEFAULT_RESERVE,
+        "idle_unload_minutes": value.get("idle_unload_minutes")
+        if type(value.get("idle_unload_minutes")) is int
+        and 1 <= value["idle_unload_minutes"] <= MAX_IDLE_UNLOAD_MINUTES
+        else None,
     }
+
+
+@_locked
+def with_idle_unload_state(callback):
+    data = load()
+    revision = data.get("_idle_unload_revision", 0)
+    revision = revision if type(revision) is int and revision >= 0 else 0
+    return callback(memory_settings()["idle_unload_minutes"], revision)
 
 
 @_locked
 def update_memory(patch: dict) -> dict:
     """budget_bytes: null (the hardware budget) or at least 1 GiB; reserve_bytes: kept free, >= 0."""
-    unknown = set(patch) - {"budget_bytes", "reserve_bytes"}
+    unknown = set(patch) - {"budget_bytes", "reserve_bytes", "idle_unload_minutes"}
     if unknown:
         raise ValueError(f"unknown memory setting: {min(unknown)}")
-    value = {**memory_settings(), **patch}
+    previous = memory_settings()
+    value = {**previous, **patch}
     if value["budget_bytes"] is not None and (
         type(value["budget_bytes"]) is not int or value["budget_bytes"] < 1024**3
     ):
         raise ValueError("budget_bytes must be null or at least 1 GiB")
     if type(value["reserve_bytes"]) is not int or value["reserve_bytes"] < 0:
         raise ValueError("reserve_bytes must be a non-negative integer")
+    idle = value["idle_unload_minutes"]
+    if idle is not None and (type(idle) is not int or not 1 <= idle <= MAX_IDLE_UNLOAD_MINUTES):
+        raise ValueError(f"idle_unload_minutes must be null or an integer from 1 to {MAX_IDLE_UNLOAD_MINUTES}")
     data = load()
+    if idle != previous["idle_unload_minutes"]:
+        revision = data.get("_idle_unload_revision", 0)
+        data["_idle_unload_revision"] = (revision if type(revision) is int and revision >= 0 else 0) + 1
     data["memory"] = value
     save(data)
     return value
@@ -399,6 +433,88 @@ def history_path() -> Path:
     return _sibling("history.jsonl")
 
 
+def decision_servers() -> list[dict]:
+    value = load().get("decision_servers", [])
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+def _decision_secrets() -> dict:
+    path = _sibling("decision-secrets.json")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} is not a JSON object")
+    return value
+
+
+@_locked
+def decision_secret(server_id: str) -> str | None:
+    return _decision_secrets().get(server_id)
+
+
+@_locked
+def add_decision_server(name: str, url: str, consent: bool, key: str | None = None) -> dict:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name must be a non-empty string")
+    if not isinstance(url, str):
+        raise ValueError("url must be an http(s) URL")
+    parsed = urlsplit(url.strip())
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("url must be an http(s) URL without credentials, query or fragment")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("url must have a valid port") from exc
+    if not isinstance(consent, bool):
+        raise ValueError("consent must be a boolean")
+    if key is not None and (not isinstance(key, str) or not key.strip()):
+        raise ValueError("key must be a non-empty string")
+    record = {"id": uuid.uuid4().hex, "name": name.strip(), "url": url.strip().rstrip("/"), "consent": consent}
+    data = load()
+    data["decision_servers"] = [*decision_servers(), record]
+    secrets = _decision_secrets()
+    if key:
+        _write_private(_sibling("decision-secrets.json"), json.dumps({**secrets, record["id"]: key}, indent=2))
+    try:
+        save(data)
+    except BaseException:
+        if key:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(secrets, indent=2))
+        raise
+    return record
+
+
+@_locked
+def remove_decision_server(server_id: str) -> bool:
+    data = load()
+    servers = decision_servers()
+    if not any(x.get("id") == server_id for x in servers):
+        return False
+    secrets = _decision_secrets()
+    if server_id in secrets:
+        _write_private(
+            _sibling("decision-secrets.json"),
+            json.dumps({k: v for k, v in secrets.items() if k != server_id}, indent=2),
+        )
+    data["decision_servers"] = [x for x in servers if x.get("id") != server_id]
+    try:
+        save(data)
+    except BaseException:
+        if server_id in secrets:
+            _write_private(_sibling("decision-secrets.json"), json.dumps(secrets, indent=2))
+        raise
+    return True
+
+
 def calibrations_dir(model_id: str) -> Path:
     """Where basal-ui writes the calibration files it fits for a model: <settings dir>/calibrations/<org>--<name>/."""
     return _settings_path().parent / "calibrations" / model_id.replace("/", "--")
@@ -408,6 +524,69 @@ def calibration_selection() -> dict:
     """{model id: calibration file basal-serve is started with}; a model without an entry uses its shipped file."""
     value = load().get("calibration")
     return {k: v for k, v in value.items() if isinstance(v, str)} if isinstance(value, dict) else {}
+
+
+def attached_models() -> list[dict]:
+    value = load().get("attached", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+def finetune_results() -> list[dict]:
+    value = load().get("finetune", [])
+    return [record for record in value if isinstance(record, dict)] if isinstance(value, list) else []
+
+
+@_locked
+def put_finetune(record: dict) -> None:
+    data = load()
+    records = data.get("finetune", [])
+    if not isinstance(records, list):
+        raise ValueError("fine-tune registry is corrupt")
+    key = (record["id"], record["name"])
+    data["finetune"] = [r for r in records if not isinstance(r, dict) or (r.get("id"), r.get("name")) != key] + [record]
+    save(data)
+
+
+@_locked
+def remove_finetune(model_id: str, name: str) -> None:
+    data = load()
+    records = data.get("finetune", [])
+    if not isinstance(records, list):
+        raise ValueError("fine-tune registry is corrupt")
+    data["finetune"] = [
+        r for r in records if not isinstance(r, dict) or (r.get("id"), r.get("name")) != (model_id, name)
+    ]
+    save(data)
+
+
+@_locked
+def add_attached(record: dict) -> None:
+    required = ("id", "base", "revision", "out_dir", "format", "created")
+    if not isinstance(record, dict) or any(key not in record for key in required):
+        raise ValueError("attached model record is incomplete")
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    if any(item.get("id") == record["id"] for item in attached if isinstance(item, dict)):
+        raise ValueError(f"attached model {record['id']!r} already exists")
+    data["attached"] = [*attached, record]
+    save(data)
+
+
+@_locked
+def remove_attached(model_id: str) -> dict:
+    data = load()
+    attached = data.get("attached")
+    attached = attached if isinstance(attached, list) else []
+    record = next((item for item in attached if isinstance(item, dict) and item.get("id") == model_id), None)
+    if record is None:
+        raise ValueError(f"unknown attached model {model_id!r}")
+    data["attached"] = [item for item in attached if item is not record]
+    selection = data.get("calibration")
+    if isinstance(selection, dict):
+        selection.pop(model_id, None)
+    save(data)
+    return record
 
 
 @_locked

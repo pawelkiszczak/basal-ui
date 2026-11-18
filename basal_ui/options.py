@@ -4,6 +4,7 @@ eager forward, calibration strictness, thinking, early exit). DEFAULTS are basal
 emits only the options that differ from them. Incompatible combinations are not re-checked here: the child refuses
 them with basal-serve's own message, shown on the model's row and in its log."""
 
+import math
 import re
 from types import SimpleNamespace
 
@@ -12,13 +13,25 @@ from basal.gdn_graph import refused as gdn_refused
 from basal.prompt import LAYOUTS
 from basal.server import MODES, lean_arg, lean_tree, refuse_layout_caches, validate_quant
 
-from .catalog import _cuda_graph, _quantized_hardware_reason
+from .catalog import ATTACHED_MODE_REASON, _cuda_graph, _quantized_hardware_reason
 from .engine import feature, serve_option
 
 # basal-omni-pico and other Qwen3.5 models (Variant.recurrent): basal-serve's own rules (engine.recurrent_refused,
 # gdn_graph.refused; 2.5.0 lifted the 2.4 refusals of the caches, compact rows and --lean), MLX from 2.5.0 ("mlx_recurrent")
 
+LIMIT_DEFAULTS = {
+    "max_requests": 1024,
+    "request_timeout": None,
+    "max_body_mb": 256.0,
+    "max_branches": 4096,
+    "max_prompt_mb": 512,
+    "stall_s": None,
+}
 DEFAULTS = {
+    **{
+        key: (option[1] if (option := serve_option("--" + key.replace("_", "-"))) else default)
+        for key, default in LIMIT_DEFAULTS.items()
+    },
     "mode": None,
     "quant": None,
     "revision": None,
@@ -113,6 +126,7 @@ BOOLS = (
 )
 # key: (minimum, maximum, integer, minimum excluded)
 NUMBERS = {
+    **{key: (0, None, key in ("max_requests", "max_branches"), True) for key in LIMIT_DEFAULTS},
     "auto_tau": (0, 1, False, False),
     "max_batch": (1, None, True, False),
     "wait_ms": (0, None, False, False),
@@ -168,7 +182,13 @@ MODE_ORDER = (
 
 def _number(key, value):
     lo, hi, integer, open_lo = NUMBERS[key]
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or (integer and int(value) != value):
+    valid = not isinstance(value, bool) and isinstance(value, (int, float))
+    if valid and (not integer or isinstance(value, float) or key in ("max_requests", "max_branches")):
+        try:
+            valid = math.isfinite(value)
+        except OverflowError:
+            valid = False
+    if not valid or (integer and int(value) != value):
         raise ValueError(f"load option {key} must be {'an integer' if integer else 'a number'}")
     if (value <= lo if open_lo else value < lo) or (hi is not None and value > hi):
         raise ValueError(
@@ -206,7 +226,10 @@ def validate(options: dict | None, default_mode: str | None = None) -> dict:
             if not isinstance(value, bool):
                 raise ValueError(f"load option {key} must be true or false")
         elif key in NUMBERS:
-            value = _number(key, value)
+            if value is not None or key not in ("request_timeout", "stall_s"):
+                value = _number(key, value)
+            if key in LIMIT_DEFAULTS and value != DEFAULTS[key] and not serve_option("--" + key.replace("_", "-")):
+                raise ValueError(f"load option {key} is not available in the installed Engine")
         elif key == "revision":
             value = (value.strip() or None) if isinstance(value, str) else value
             if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9A-Za-z._/-]{1,64}", value)):
@@ -371,6 +394,10 @@ def available_modes(v, hw, assessment) -> list[dict]:
         for mode in MODE_ORDER:
             if mode not in ("ollama", "llamacpp"):
                 reasons[mode] = reasons[mode] or hardware_reason
+    if v.family == "attached":
+        for mode in MODE_ORDER:
+            if mode not in ("eager", "mps", "mlx", "mlx-q8", "fast"):
+                reasons[mode] = ATTACHED_MODE_REASON
     return [
         {
             "mode": m,
@@ -445,6 +472,7 @@ OPTION_TEMPLATES = {
     "mode_architecture": "Strix and TPU require a Llama-architecture model",
     "mode_mlx_q8": "{port} weights are quantised already (mlx-q8 quantises at load)",
     "mode_fp8_hardware": "FP8 matrix multiplies need compute capability 8.9+ (Ada, Hopper, Blackwell); use fast (bf16) on this GPU",
+    "mode_attached": "attached models serve in eager, mps, mlx, mlx-q8 or fast",
     "mode_vllm_media": "vLLM media serving needs an NVIDIA GPU with basal[vllm] (docs/OMNI.md)",
     "reason_recurrent": "recurrent-state layers (Gated DeltaNet, Qwen3.5): fast-exit and mps keep attention keys and values only and would answer wrongly; basal-serve refuses them. Use fast (CUDA), eager, vllm or gguf",
     "reason_mlx_recurrent": "MLX serves recurrent-state models (Qwen3.5) from basal engine 2.5.0 on; use eager on this engine",
@@ -547,6 +575,12 @@ def check_combination(v, hw, options, default_mode, media=False):
             raise ValueError(str(exc)) from None
     kind, mode_quant, compiled = MODES[mode]
     quant = options["quant"] or mode_quant
+    if options["adapter"]:
+        from basal.server import adapter_refused, adapter_refused_kind
+
+        refusal = adapter_refused_kind(kind, quant)
+        if refusal:
+            raise ValueError(adapter_refused(options["adapter"], f"--mode {mode}", refusal))
     if v.recurrent and kind == "graph":  # basal-serve 2.4: Qwen3.5 in the graph engine runs bf16 plain/branched rows
         lean, tree = lean_tree(options["lean"], options["tree"], kind, compiled, quant)
         reason = gdn_refused(

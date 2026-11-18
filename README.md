@@ -3,8 +3,7 @@
 **A local browser app for [basal](https://github.com/rkinas/basal) decision models: pick a model your machine can
 run, load it, ask typed questions with calibrated confidence, and serve it to your own apps.**
 
-[![CI](https://github.com/pawelkiszczak/basal-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/pawelkiszczak/basal-ui/actions/workflows/ci.yml)
-[![Nightly](https://github.com/pawelkiszczak/basal-ui/actions/workflows/nightly.yml/badge.svg)](https://github.com/pawelkiszczak/basal-ui/actions/workflows/nightly.yml)
+[![Release CI](https://github.com/pawelkiszczak/basal-ui/actions/workflows/release-ci.yml/badge.svg?branch=stage)](https://github.com/pawelkiszczak/basal-ui/actions/workflows/release-ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/basal-ui)](https://pypi.org/project/basal-ui/)
 [![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)](https://pypi.org/project/basal-ui/)
 [![Engine](https://img.shields.io/badge/engine-basal%20%3E%3D2.4.1%2C%3C2.9-6b5b95)](https://github.com/rkinas/basal)
@@ -33,7 +32,7 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
   request on two loaded models, or copy System One curl, Python, OpenAI curl and MCP examples without silently
   dropping unsupported fields. Images and voice clips support basal-omni, with numbered elements marked on a screenshot.
 
-  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground: a choice question answered with calibrated confidence">
+  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground request editor with a source URL and estimated State context">
 
 - a **Model manager** with separate **Library**, **Usage by model**, **Benchmarks** and **Calibration** tabs.
   Loaded models, memory and on-disk variants stay in Library; measurement and tuning controls no longer crowd it.
