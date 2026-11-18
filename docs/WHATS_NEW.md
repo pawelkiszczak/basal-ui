@@ -1,5 +1,6 @@
 # Unreleased
 
+- On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
 - Dialogs announce their purpose to screen readers using translated names.
 
 - Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full

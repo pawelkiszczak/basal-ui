@@ -29,7 +29,7 @@ still work.
 filter; arrows navigate matching actions, Enter runs one and Escape closes the rail. It opens the downloaded-model
 loader, Playground, current-request API examples, Settings, Batch or Model manager; opening a view does not run
 inference. The header toggle closes it when more workspace is wanted. On smaller screens it is an inline panel
-above the view rather than an overlay covering its controls.
+after the view, matching keyboard navigation order. [Mobile example](images/quick-actions-mobile.png).
 
 **Dashboard** shows recorded Decision throughput, latency, errors, endpoint traffic and loaded-model activity.
 [Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
