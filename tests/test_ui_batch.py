@@ -1,4 +1,5 @@
 import json
+import os
 import time
 
 import pytest
@@ -227,7 +228,8 @@ def test_checkpoint_collision_refused(client, tmp_path, monkeypatch, suffix, ali
         else:
             source.hardlink_to(artifact)
     response = client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(out)})
-    assert response.status_code == 400 and "must be distinct" in response.json()["detail"]
+    assert response.status_code == 400
+    assert "must be distinct" in response.json()["detail"] or "hard links" in response.json()["detail"]
     assert artifact.read_text() == '{"question":"q","options":["a","b"]}\n'
 
 
@@ -319,3 +321,26 @@ def test_dangling_checkpoint_symlink_refused(client, tmp_path, monkeypatch):
     response = client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(tmp_path / "answers")})
     assert response.status_code == 400
     assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize("kind", ["cycle", "fifo"])
+def test_non_regular_checkpoint_refused_without_opening(client, tmp_path, monkeypatch, kind):
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    if kind == "fifo" and not hasattr(os, "mkfifo"):
+        pytest.skip("named pipes are unavailable")
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out, part = tmp_path / "answers", tmp_path / "answers.part"
+    if kind == "cycle":
+        part.symlink_to(part.name)
+    else:
+        os.mkfifo(part)
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(out)})
+    assert response.status_code == 400
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1"))
+    with pytest.raises(ValueError, match="Batch checkpoint files"):
+        batch.run_batch(None, fleet, "mini", source, out, restart_supported=True)

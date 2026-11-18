@@ -38,13 +38,6 @@ def unfinished(output_path):
 def validate_paths(source, output):
     part = Path(str(output) + ".part")
     artifacts = (part, Path(str(part) + ".json"), Path(str(part) + ".json.tmp"))
-    for left, right in combinations((source, output, *artifacts), 2):
-        try:
-            same = os.path.samefile(left, right)
-        except OSError:
-            same = False
-        if same or Path(left).resolve() == Path(right).resolve():
-            raise ValueError("input, output and Batch checkpoint files must be distinct")
     for artifact in artifacts:
         try:
             info = artifact.lstat()
@@ -52,6 +45,15 @@ def validate_paths(source, output):
             continue
         if stat.S_ISLNK(info.st_mode) or info.st_nlink > 1:
             raise ValueError("Batch checkpoint files must not be symbolic links or hard links")
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Batch checkpoint files must be regular files")
+    for left, right in combinations((source, output, *artifacts), 2):
+        try:
+            same = os.path.samefile(left, right)
+        except OSError:
+            same = False
+        if same or Path(left).resolve() == Path(right).resolve():
+            raise ValueError("input, output and Batch checkpoint files must be distinct")
 
 
 def run_batch(

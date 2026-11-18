@@ -278,9 +278,10 @@ counted in the statistics or the history. One batch runs at a time; its log is *
 When the installed `basal-run` supports resume, an unfinished output (`.part` or `.part.json`) requires an explicit
 **Resume** or **Restart** choice. Restart discards the partial answers. Resume requires the same input, request
 options and server identity; concurrency may change. If the Engine refuses the record, its reason is shown and
-Restart is offered directly on the stopped job, with the original output path and explicit confirmation. A stopped run with a partial output shows the retained line count and
-reason. **Stop after** sets the number of consecutive unanswered lines before stopping (default 16; 0 writes
-per-line errors instead). Batch refuses checkpoint files that are symbolic links or have multiple hard links.
+Restart is offered directly on the stopped job, with the original output path and explicit confirmation. A stopped
+run with a partial output shows the retained line count and reason. **Stop after** sets the number of consecutive
+unanswered lines before stopping (default 16; 0 writes per-line errors instead). Batch requires regular checkpoint
+files and refuses symbolic links and files with multiple hard links.
 Unsupported controls are disabled on older Engines. External changes to these files while a job starts are not
 coordinated by basal-ui.
 
