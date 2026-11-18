@@ -192,6 +192,7 @@ class Runner:
         self.est_memory_bytes, self.models_entry, self.ready_at = None, None, None
         self.last_used = None
         self.loaded_path = None
+        self.model_path = None
         self.serve_snapshot = None  # the child settings the running basal-serve was started with
         self.extra_args, self.temporary, self.options = (), False, {}
         self.local_only, self.remember, self.snapshot_override = False, True, None
@@ -296,6 +297,7 @@ class Runner:
         local_only=False,
         snapshot=None,
         remember=True,
+        model_path=None,
     ):
         """options: load options (basal_ui/options.py; their mode replaces the assessment's, except with media);
         temporary: a private child for a job (basal-calibrate): no API key (it is reached on loopback without one),
@@ -314,7 +316,12 @@ class Runner:
             self.media_requested, self.media = media, []
             self.est_memory_bytes = assessment.est_memory_bytes
             self.extra_args, self.temporary, self.options = tuple(extra_args), temporary, options
-            self.local_only, self.snapshot_override, self.remember = local_only, snapshot, remember
+            self.local_only, self.snapshot_override, self.remember, self.model_path = (
+                local_only,
+                snapshot,
+                remember,
+                model_path,
+            )
             gen = self.gen
             cache_dir = self.models_dir_fn()
             serve = {**self.settings_mod.serve_settings(), **(snapshot or {})}
@@ -347,7 +354,7 @@ class Runner:
             return self.snapshot_override.get("calibration")
         return None if self.temporary else self.settings_mod.calibration_selection().get(v.id)
 
-    def _build_command(self, v, path, assessment, media, port, serve):
+    def _build_command(self, v, path, assessment, media, port, serve, calibration=None):
         """The child is private: loopback and a free port only basal-ui knows."""
         command = [
             sys.executable,
@@ -363,8 +370,10 @@ class Runner:
             "--port",
             str(port),
         ]
-        if self._calibration(v):
-            command += ["--calibration", self._calibration(v)]
+        if calibration is None:
+            calibration = self._calibration(v)
+        if calibration:
+            command += ["--calibration", calibration]
         if serve["log_decisions"] and not self.temporary:
             command += ["--log-decisions", serve["log_decisions"]]
         if assessment.mode in ("vllm", "sglang") and self.options.get("max_len") is None:
@@ -396,7 +405,11 @@ class Runner:
         serve = serve or self.settings_mod.serve_settings()
         try:
             revision = self.options.get("revision")
-            path = catalog.is_downloaded(v, cache_dir, revision=revision)
+            path = (
+                Path(self.model_path)
+                if self.model_path is not None
+                else catalog.is_downloaded(v, cache_dir, revision=revision)
+            )
             if path is None and (self.local_only or v.local_dir is not None):
                 raise RuntimeError("downloaded model files are missing; this operation never downloads")
             path = path or self._download(v, gen, cache_dir, revision)
@@ -405,7 +418,8 @@ class Runner:
             with socket.socket() as s:
                 s.bind(("127.0.0.1", 0))
                 port = s.getsockname()[1]
-            command = self._build_command(v, path, assessment, media, port, serve)
+            calibration = self._calibration(v)
+            command = self._build_command(v, path, assessment, media, port, serve, calibration or False)
             options = (
                 {"start_new_session": True}
                 if os.name == "posix"
@@ -417,7 +431,7 @@ class Runner:
                 self.loaded_path = str(path)
                 self.state, self.progress, self.command = "starting", None, command
                 self.base_url = f"http://127.0.0.1:{port}"
-                self.serve_snapshot = _child_settings(serve, self._calibration(v))
+                self.serve_snapshot = _child_settings(serve, calibration)
                 self.process = proc = subprocess.Popen(
                     command,
                     stdin=subprocess.DEVNULL,
@@ -449,9 +463,7 @@ class Runner:
 
                             entry = {
                                 **entry,
-                                "certified": served_certified(
-                                    entry, path, assessment.mode, self.options, self._calibration(v)
-                                ),
+                                "certified": served_certified(entry, path, assessment.mode, self.options, calibration),
                             }
                         if entry is not None and "context" not in entry:
                             from basal.server import parser
@@ -898,7 +910,7 @@ class Fleet:
         )
 
     def start_temporary(
-        self, kind, assessment, log, options=None, extra_args=(), local_only=False, reservation=None
+        self, kind, assessment, log, options=None, extra_args=(), local_only=False, reservation=None, model_path=None
     ) -> Runner:
         """A private, unremembered child for a job (its memory counted in the budget); stop_temporary ends it."""
         with self.lock:
@@ -921,6 +933,7 @@ class Fleet:
                 options=options,
                 extra_args=extra_args,
                 temporary=True,
+                **({"model_path": model_path} if model_path is not None else {}),
                 **({"local_only": True} if local_only else {}),
             )
         self.event("info", f"{kind}: temporary basal-serve for {assessment.variant.id}")
