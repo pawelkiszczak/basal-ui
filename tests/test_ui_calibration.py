@@ -452,3 +452,14 @@ def test_a_file_fitted_on_a_cache_snapshot_belongs_to_the_served_repo(tmp_path):
     path.write_text(json.dumps({"fitted_on": {"model": str(local)}}))
     calibration.name_snapshot(path, local)
     assert json.loads(path.read_text())["fitted_on"] == {"model": str(local)}
+
+
+@pytest.mark.parametrize("field", ["revision", "model_files", "model_content"])
+def test_snapshot_rewrite_preserves_engine_recorded_identity(tmp_path, field):
+    snapshot = tmp_path / "models--Remek--basal-2.0-mini" / "snapshots" / "local-revision"
+    snapshot.mkdir(parents=True)
+    fitted = {"model": str(snapshot), field: "engine-value"}
+    path = tmp_path / "fitted.json"
+    path.write_text(json.dumps({"fitted_on": fitted}))
+    calibration.name_snapshot(path, snapshot)
+    assert json.loads(path.read_text())["fitted_on"] == fitted

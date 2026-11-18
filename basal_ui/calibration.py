@@ -255,7 +255,11 @@ def name_snapshot(path, local_dir):
     itself, rkinas/basal#71: the file then no longer names the local path and is left as written)."""
     cal = json.loads(Path(path).read_text(encoding="utf-8"))
     fitted = cal.get("fitted_on")
-    if not isinstance(fitted, dict) or fitted.get("model") != str(local_dir):
+    if (
+        not isinstance(fitted, dict)
+        or fitted.get("model") != str(local_dir)
+        or any(key in fitted for key in ("revision", "model_files", "model_content"))
+    ):
         return
     model, revision = model_identity(str(local_dir), Path(local_dir))
     if revision is None:  # not a cache snapshot: the path is the model's name
