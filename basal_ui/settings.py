@@ -113,6 +113,10 @@ def _audio_policy_data():
 
 
 def keep_history_audio() -> bool:
+    from . import history_audio
+
+    if not history_audio.supported():
+        return False
     try:
         return _locked(lambda: _audio_policy_data().get("keep_history_audio", False))()
     except OSError as exc:
@@ -120,8 +124,12 @@ def keep_history_audio() -> bool:
 
 
 def set_keep_history_audio(enabled: bool) -> bool:
+    from . import history_audio
+
     if not isinstance(enabled, bool):
         raise ValueError("keep_history_audio must be a boolean")
+    if enabled and not history_audio.supported():
+        raise ValueError("History audio retention is unavailable on this platform")
 
     def update():
         data = _audio_policy_data()

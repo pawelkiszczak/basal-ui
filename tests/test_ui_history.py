@@ -349,6 +349,20 @@ def test_audio_mixed_media_and_corrupt_or_hostile_references(tmp_path):
     assert history.detail(row["id"], True)["replay_request"] is None
 
 
+def test_audio_without_eviction_appends_in_place(tmp_path):
+    path = tmp_path / "h.jsonl"
+    history = History(path)
+    body = {"media": [{"type": "audio", "data": "QUJD"}]}
+    old = make_record("m", "api", body, 200, {}, 1)
+    history.append(old, body=body, keep_audio=True)
+    snapshot, inode = path.read_bytes(), path.stat().st_ino
+    new = make_record("m", "api", body, 200, {}, 1)
+    history.append(new, body=body, keep_audio=True)
+    assert path.read_bytes().startswith(snapshot) and path.stat().st_ino == inode
+    assert history.detail(old["id"], True)["replay_request"] == body
+    assert history.detail(new["id"], True)["replay_request"] == body
+
+
 def test_audio_write_failure_keeps_rows_and_does_not_claim_new_clip(tmp_path, monkeypatch):
     from basal_ui import settings
 

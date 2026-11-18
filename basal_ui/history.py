@@ -222,6 +222,7 @@ class History:
         def write():
             capture_audio = (
                 body is not None
+                and history_audio.supported()
                 and (keep_audio() if callable(keep_audio) else keep_audio)
                 and any(history_audio.audio_paths(body))
             )
@@ -247,7 +248,7 @@ class History:
                         old = {k: v for k, v in old.items() if k != "_audio"}
                         old["_audio_expired"] = True
                     candidate.append(old)
-                self._append_record(record, candidate, existing, evicted, bool(reservation))
+                self._append_record(record, candidate, existing, evicted)
                 committed = True
                 self._stamp = None
                 self.records.append(record)
@@ -261,7 +262,7 @@ class History:
         with self.lock:
             settings._locked(write)()
 
-    def _append_record(self, record, candidate, existing, evicted, atomic):
+    def _append_record(self, record, candidate, existing, evicted):
         from . import settings
 
         records = [*candidate, record]
@@ -270,7 +271,7 @@ class History:
             expired = existing[: max(0, len(existing) + 1 - self.keep)]
             records = records[-self.keep :]
         history_audio.journal_add(self.path, [*evicted, *expired])
-        if atomic or expired:
+        if evicted or expired:
             settings._write_private(self.path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
             self.lines = len(records)
         else:

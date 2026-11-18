@@ -9,6 +9,12 @@ import stat
 import uuid
 
 BUDGET = 256 * 1024 * 1024
+_SUPPORTED = (
+    hasattr(os, "getuid")
+    and hasattr(os, "O_NOFOLLOW")
+    and {os.open, os.stat, os.unlink} <= os.supports_dir_fd
+    and os.listdir in os.supports_fd
+)
 _NAME = re.compile(r"h_[0-9a-f]{32}_[0-9a-f]{32}\Z")
 
 
@@ -60,7 +66,13 @@ def storage_present(path):
     return os.path.lexists(_directory_path(path)) or os.path.lexists(_journal(path))
 
 
+def supported():
+    return _SUPPORTED
+
+
 def _directory(path):
+    if not supported():
+        raise OSError("History audio retention is unavailable on this platform")
     directory = _directory_path(path)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
@@ -195,6 +207,8 @@ def journal_add(path, records):
 
     additions = [{"id": r["id"], "_audio": r["_audio"]} for r in records if valid_ref(r, r.get("_audio"))]
     if additions:
+        if not supported():
+            raise OSError("History audio retention is unavailable on this platform")
         settings._write_private(_journal(path), json.dumps(_pending(path) + additions))
 
 

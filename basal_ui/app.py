@@ -27,7 +27,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, hardware, settings
+from . import backends, catalog, hardware, history_audio, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fleet import Fleet
@@ -479,6 +479,7 @@ def create_app(
             "check_updates": settings_mod.check_updates(),
             "keep_history_audio": settings_mod.keep_history_audio(),
             "history_audio_budget_bytes": HISTORY_AUDIO_BUDGET,
+            "history_audio_available": history_audio.supported(),
         }
 
     @app.exception_handler(settings.HistoryAudioPolicyError)
@@ -501,6 +502,14 @@ def create_app(
             raise HTTPException(400, "check_updates must be a boolean")
         if "keep_history_audio" in body and not isinstance(body["keep_history_audio"], bool):
             raise HTTPException(400, "keep_history_audio must be a boolean")
+        if body.get("keep_history_audio") and not history_audio.supported():
+            return JSONResponse(
+                {
+                    "detail": "History audio retention is unavailable on this platform.",
+                    "code": "history_audio_unsupported",
+                },
+                status_code=400,
+            )
         if models_dir is not None and not isinstance(models_dir, str):
             raise HTTPException(400, "models_dir must be a string or null")
         try:

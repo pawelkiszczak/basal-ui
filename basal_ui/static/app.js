@@ -245,7 +245,8 @@ function audioSettingsUnknown() {
 }
 function applyAudioSettings(settings) {
   if(typeof settings?.keep_history_audio!=='boolean' || !Number.isFinite(settings.history_audio_budget_bytes))return false;
-  const input=$('#keepHistoryAudio');input.indeterminate=false;setChecked(input,settings.keep_history_audio);input.disabled=false;
+  const input=$('#keepHistoryAudio');input.indeterminate=false;setChecked(input,settings.keep_history_audio);input.disabled=settings.history_audio_available===false;
+  if(input.disabled){$('#historyAudioHelp').textContent=t('History audio retention is unavailable on this platform.');return true;}
   $('#historyAudioHelp').textContent=t('Audio only; images are not retained. Oldest clips expire when the {size} MiB budget is full, while History rows remain. Turning this off stops new retention but keeps existing audio. Clear History deletes retained audio.',{size:settings.history_audio_budget_bytes/1048576});
   return true;
 }

@@ -450,6 +450,8 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 
 ## History audio retention
 
+The settings response reports support as `history_audio_available`. Unsupported platforms keep ordinary History and reject attempts to enable audio retention.
+
 `GET /api/settings` returns `keep_history_audio` (default `false`) and the read-only `history_audio_budget_bytes` (268435456). `PUT /api/settings` accepts the boolean `keep_history_audio`; disabling it preserves existing retained audio. The oldest audio expires when the budget is needed, while History rows remain. Images are not retained and clearing History deletes retained audio. If the saved policy cannot be read or safely changed, either route returns HTTP 503 with `code: history_audio_policy_unavailable` and `Cache-Control: no-store`; clients must treat the state as unknown rather than off.
 
 History commits new retention and eviction metadata before deleting old audio and filling the reserved new file. A precommit failure preserves previously retained audio; after the metadata commit, a storage failure can leave the new row with unavailable audio and previously selected clips expired. Cleanup uses recorded app-owned file identity; experimental prototype blobs without identity are not trusted for replay or automatic deletion. These guarantees do not establish power-loss rollback or protection against a concurrently hostile process with the same OS user.

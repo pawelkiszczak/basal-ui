@@ -4,6 +4,8 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "History audio retention is unavailable on this platform.": "Zapisywanie dźwięku w Historii jest niedostępne na tej platformie.",
+  "code:history_audio_unsupported": "Zapisywanie dźwięku w Historii jest niedostępne na tej platformie.",
   "History audio setting is unknown. Reload the page to check it.": "Stan zapisywania dźwięku w historii jest nieznany. Odśwież stronę, aby go sprawdzić.",
   "The save response failed. The current History audio setting has been reloaded.": "Nie udało się odebrać odpowiedzi na zapis. Ponownie odczytano aktualne ustawienie dźwięku w historii.",
   "Record audio": "Nagraj dźwięk",

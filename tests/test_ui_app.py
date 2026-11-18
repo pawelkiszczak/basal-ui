@@ -1180,6 +1180,24 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
 
 
+def test_unavailable_audio_storage_preserves_ordinary_history(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    settings.save({"keep_history_audio": True})
+    monkeypatch.setattr(history_audio, "supported", lambda: False)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        prefs = client.get("/api/settings").json()
+        assert prefs["history_audio_available"] is False and prefs["keep_history_audio"] is False
+        refusal = client.put("/api/settings", json={"keep_history_audio": True})
+        assert refusal.status_code == 400 and refusal.json()["code"] == "history_audio_unsupported"
+        request = {"state": "synthetic", "media": [{"type": "audio", "data": "QUJD"}]}
+        fleet._record(MINI.id, request, "/v1/systemone", "playground", 200, {}, 1)
+        record = fleet.history.list()[0]
+        assert fleet.history.detail(record["id"], True)["replay_request"] is None
+        assert not history_audio.storage_present(fleet.history.path)
+
+
 def test_history_audio_settings_and_explicit_replay(tmp_path):
     app, fleet = app_for(tmp_path, [])
     body = {"state": "business", "audio": ["data:audio/wav;base64,QUJD"]}
