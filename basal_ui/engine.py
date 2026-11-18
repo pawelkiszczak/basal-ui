@@ -1,5 +1,6 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import ast
 import functools
 import importlib.metadata
 import importlib.util
@@ -12,8 +13,8 @@ from packaging.version import InvalidVersion, Version
 
 ENGINE_REPO = "rkinas/basal"
 # every release basal-ui is tested with; CI runs each; the last is the pin
-TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1")
-SUPPORTED_RANGE = ">=2.4.1,<2.6"  # bump with TESTED_RELEASES
+TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1", "2.6.0", "2.8.0")
+SUPPORTED_RANGE = ">=2.4.1,<2.9"  # bump with TESTED_RELEASES
 SUPPORTED = SpecifierSet(SUPPORTED_RANGE)
 UNCHECKED_ENV = "BASAL_UI_ENGINE_UNCHECKED"
 PINNED_RELEASE = TESTED_RELEASES[-1]
@@ -89,6 +90,10 @@ def _parameter(module, attribute, name):
 
 
 FEATURES = {
+    "answer_sets": lambda: (
+        _parameter("basal.server", "limits", "q") and _parameter("basal.server", "plain_limits", "cal")
+    ),
+    "conditional_questions": lambda: _parameter("basal.server", "ask_gates", "questions"),
     "adapter": lambda: _spec("basal.adapter") is not None,  # --adapter (rkinas/basal#52, 2.5.0)
     # basal-viz reads Gemma 4 basal-omni (rkinas/basal#75); basal_ui.inspect imports basal.viz anyway
     "viz_gemma4": lambda: hasattr(importlib.import_module("basal.viz"), "is_gemma4"),
@@ -146,3 +151,20 @@ def serve_option(flag):
     """Choices and default declared for a basal-serve flag, or None."""
     parser = importlib.import_module("basal.server").parser()
     return next(((tuple(a.choices or ()), a.default) for a in parser._actions if flag in a.option_strings), None)
+
+
+@functools.cache
+def bench_flags():
+    """Long options declared by the installed basal-bench parser."""
+    try:
+        source = inspect.getsource(importlib.import_module("basal.bench").main)
+        tree = ast.parse(source)
+    except (ImportError, AttributeError, OSError, TypeError, SyntaxError):
+        return frozenset()
+    return frozenset(
+        arg.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
+        for arg in node.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("--")
+    )

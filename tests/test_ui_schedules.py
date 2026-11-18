@@ -276,6 +276,7 @@ def test_cancel_does_not_replace_output(client, child, tmp_path, monkeypatch):
     job.thread.join(30)
     assert not job.thread.is_alive()
     scheduler.run_due(1001)
+    assert list(outputs.iterdir()) == [destination]
     assert destination.read_text() == "prior answers"
     assert client.get("/api/schedules/nightly/runs").json()["runs"][0]["cancelled"]
 

@@ -312,3 +312,47 @@ def test_the_first_catalog_check_reports_no_new_models_then_only_new_ones(tmp_pa
     assert settings.update_seen_ids(["a", "b", "c"]) == ["c"]
     settings.mark_models_seen(["c"])
     assert settings.update_seen_ids(["a", "b", "c"]) == []
+
+
+def test_load_option_migration_is_atomic_and_covers_legacy_and_presets(tmp_path, monkeypatch):
+    from basal_ui import engine, options
+
+    monkeypatch.setattr(engine, "serve_option", lambda _: (("auto", "on", "off"), "auto"))
+    monkeypatch.setitem(options.DEFAULTS, "long_lane", "auto")
+    monkeypatch.setitem(options.CHOICES, "long_lane", ("auto", "on", "off"))
+    config = tmp_path / "settings.json"
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
+    config.write_text(
+        json.dumps(
+            {
+                "load_options": {
+                    "on": {"long_lane": True, "soam": True},
+                    "off": {"long_lane": False, "soam": False},
+                    "empty": {},
+                },
+                "presets": {"load": {"old": {"long_lane": False, "soam": False}, "empty": {}}, "request": {}},
+                "last_model": {"id": "old", "options": {"long_lane": True, "soam": True}},
+            }
+        )
+    )
+    data = settings.load()
+    assert data["load_options"] == {
+        "on": {"long_lane": "on", "soam": "auto"},
+        "off": {"soam": "off"},
+        "empty": {},
+    }
+    assert data["presets"]["load"]["old"] == {"soam": "off"}
+    assert data["last_models"][0]["options"] == {"long_lane": "on", "soam": "auto"}
+    persisted = json.loads(config.read_text())
+    assert persisted["last_model"]["options"] == {"long_lane": "on", "soam": "auto"}
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert settings.load() == data
+    assert options.validate({"long_lane": False})["long_lane"] == "auto"
+    assert options.validate(settings.load_options("off"))["long_lane"] == "auto"
+    assert "--long-lane" not in options.args(settings.load_options("off"))
+    assert options.args({"long_lane": "off"}) == ["--long-lane", "off"]
+
+    monkeypatch.setitem(options.DEFAULTS, "long_lane", "off")
+    monkeypatch.setitem(options.CHOICES, "long_lane", ("on", "off"))
+    assert options.validate(settings.load_options("off"))["long_lane"] == "off"
+    assert options.validate({"long_lane": "auto"})["long_lane"] == "off"

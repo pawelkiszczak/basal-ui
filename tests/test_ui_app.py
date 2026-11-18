@@ -1132,6 +1132,17 @@ def test_presets_validate_and_strip_request_model(tmp_path):
         assert client.get("/api/presets").json() == {"load": {}, "request": {}}
         result = client.put("/api/presets", json={"kind": "load", "name": "cpu", "value": {"mode": "eager"}})
         assert result.status_code == 200 and result.json()["load"]["cpu"] == {"mode": "eager"}  # the non-default ones
+        from basal_ui import engine
+
+        if "--reread" in engine.serve_flags():
+            values = {"reread": 0.7, "reread_image": 280, "order_average": 3, "prepared": "off"}
+            saved = client.put("/api/presets", json={"kind": "load", "name": "new", "value": values})
+            assert saved.json()["load"]["new"] == values
+            assert client.get("/api/presets").json()["load"]["new"] == values
+        result = client.put(
+            "/api/presets", json={"kind": "load", "name": "old", "value": {"long_lane": True, "soam": False}}
+        )
+        assert result.status_code == 200 and result.json()["load"]["old"] == {"long_lane": "on", "soam": "off"}
         result = client.put(
             "/api/presets",
             json={
@@ -2477,3 +2488,22 @@ def test_attached_partial_cleanup_reports_retained_staging(tmp_path, monkeypatch
         assert stage.parent == out.parent and (stage / out.name / "keep").read_text() == "recover me"
         assert (stage / out.name / "weight").is_symlink() and target.read_text() == "shared"
         assert not settings.attached_models()
+
+
+def test_runner_calibration_origin_warning_is_process_scoped():
+    from types import SimpleNamespace
+
+    warning = "basal: warning: CALIBRATION.json: copied; its temperatures and certified thresholds may not hold for this model"
+    runner = Runner()
+    old = SimpleNamespace(stdout=[warning + "\n"])
+    runner.process = old
+    with runner.lock:
+        reader = threading.Thread(target=runner._read_logs, args=(old,))
+        reader.start()
+        reader.join(timeout=1)
+        assert not reader.is_alive()  # PR #103 may join the reader while holding the Runner lock
+    assert runner.status()["calibration_origin_warning"] == warning
+    assert runner.status()["calibration_origin_warning_code"] == "calibration_origin"
+    runner.process = SimpleNamespace(stdout=[])
+    runner._read_logs(old)
+    assert runner.status()["calibration_origin_warning"] is None

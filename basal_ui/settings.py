@@ -157,7 +157,7 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
-def load(*, strict=False, require_file=False) -> dict:
+def _read(*, strict=False, require_file=False) -> dict:
     try:
         value = json.loads(_settings_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -172,6 +172,47 @@ def load(*, strict=False, require_file=False) -> dict:
         if strict:
             raise OSError("Settings are not an object.")
         return {}
+    return value
+
+
+def _migrate_options(value):
+    groups = [
+        value.get("load_options"),
+        (value.get("presets") or {}).get("load") if isinstance(value.get("presets"), dict) else None,
+    ]
+    entries = [item for group in groups if isinstance(group, dict) for item in group.values() if isinstance(item, dict)]
+    models = value.get("last_models") if isinstance(value.get("last_models"), list) else []
+    if isinstance(value.get("last_model"), dict):
+        models = [*models, value["last_model"]]
+    entries += [item["options"] for item in models if isinstance(item, dict) and isinstance(item.get("options"), dict)]
+    changed = False
+    for item in entries:
+        if isinstance(item.get("long_lane"), bool):
+            if item["long_lane"]:
+                item["long_lane"] = "on"
+            else:
+                item.pop("long_lane")  # inherit the installed Engine's default
+            changed = True
+        if isinstance(item.get("soam"), bool):
+            item["soam"] = "auto" if item["soam"] else "off"
+            changed = True
+    return changed
+
+
+@_locked
+def _migrate_saved_options(*, strict=False, require_file=False):
+    value = _read(strict=strict, require_file=require_file)
+    if _migrate_options(value):
+        save(value)
+    return value
+
+
+def load(*, strict=False, require_file=False) -> dict:
+    value = _read(strict=strict, require_file=require_file)
+    if _migrate_options(value):
+        value = _migrate_saved_options(
+            strict=strict, require_file=require_file
+        )  # re-read under the lock to preserve concurrent writes
     legacy = value.pop("last_model", None)  # one model before basal-ui loaded several
     if isinstance(legacy, dict) and "last_models" not in value:
         value["last_models"] = [legacy]
