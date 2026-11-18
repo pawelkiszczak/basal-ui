@@ -63,6 +63,10 @@
   basal-2.0-mini since 2 November) is no longer reported as not downloaded when its local copy lacks them. A download
   takes them along: basal-ui passes basal-serve the model's directory, where `--prepared auto` looks for them (the
   engine fetches them itself only for a Hugging Face id). Without them basal-serve compiles as on a cold start.
+- Model manager → Benchmarks can run Engine's Identity gate (fp32 or bf16) on the fast path and, with Engine 2.5,
+  the option-order check. Results and per-path probability deltas are saved with the other benchmark results. Batch
+  also offers Engine question presets with `auto`, Polish or English wording, including state-only input previews.
+  [USAGE.md](USAGE.md#batch), [API.md](API.md#batch-presets)
 - Add Engine capability probes for router, attach, fine-tuning, presets, order checking, and the declared serve and
   calibrate options and serve modes. These probes provide a foundation for later features; they do not expose them yet.
 - For an Engine that does not report context metadata, show the parsed child overflow policy and truncation share; the

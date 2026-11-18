@@ -72,12 +72,24 @@ external gateway and model API do not define this UI-only metadata as a request 
 `POST /api/finetune` accepts `id`, `input`, `out_name`, `epochs`, `lr`, `rank`, `alpha`, `holdout`, `max_len`, `grad_checkpointing` and optional `max_steps`; it returns 202 and the `finetune` job state with preflight counts. Input is semantically checked and copied privately before admission. The job uses local weights offline, reserves twice the estimated memory until its child exits, writes a private output without `--force`, and logs to `job:finetune`. `DELETE /api/finetune` requests cancellation.
 
 `POST /api/finetune/delete` takes a server-known `id` and `name`, never a client path. It rejects active adapter users and jobs; a successful response reports `removed_bytes` as logical regular-file bytes removed, not physical disk reclaimed. Before cleanup, a `cleanup_pending` record is persisted with the existing ownership information. Incomplete cleanup reports zero and a server-derived `retained_path`; the pending result remains visible after reload and can be deleted again by its ID and name. Registry errors retain recoverable ownership, including when the files are already gone. `GET /api/models/options` includes ready, base-associated `adapters` while retaining the custom adapter field. Saved options take effect on the next load; a running child retains its Active settings. Errors carry specific `finetune_*` message codes and diagnostic parameters.
+
+### Batch presets
+
+`GET /api/batch/presets` returns the Engine's ready question names and supported language values:
+`{"available":true,"presets":["..."],"langs":["auto","pl","en"]}`. On Engine 2.4.1 it returns
+`available: false`, empty lists, a `reason`, `reason_code` and installed `version`; it does not import the 2.5-only preset module.
+
+`POST /api/batch` accepts optional `preset` (one of those names) and `lang` (`auto`, `pl` or `en`). `auto` is the
+default and is inferred by the Engine from each state's language; explicit `pl` or `en` passes `--lang`. With a
+preset selected, JSONL lines with neither `questions` nor `question` are expanded with the Engine's preset questions
+into a private temporary input for basal-run. The original input is unchanged.
+Unknown presets or unsupported language values return HTTP 400.
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:
 
 ```json
-{"path":"/Users/me/requests.jsonl","kind":"jsonl"}
+{"path":"/Users/me/requests.jsonl","kind":"jsonl","preset":"triage"}
 ```
 
 `kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
@@ -89,11 +101,23 @@ inspects the first non-empty row for request/label shape, question types and a p
 every request in the file. Scanning stops at 100,000 non-empty rows or 64 MiB; the first row must fit within 1 MiB.
 A blank prefix exhausting the scan limit is not reported as an empty file. Preview text is limited to 300 characters
 plus an ellipsis when truncated.
+When the selected Batch preset is included as `preset`, a state-only first row is previewed as a request using that
+preset's questions. Without it, the same row is unsuitable.
 
 For output, the response reports parent-directory existence, writability and whether an existing file would be
 overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
 Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
 as the other management routes; it is not a filesystem sandbox.
+
+### Benchmarks
+
+`POST /api/benchmark` accepts `{"id":"<downloaded model id>","kind":"identity","dtype":"bf16"}` or
+`{"id":"<downloaded model id>","kind":"order_check"}`. Identity `dtype` is `fp32` or `bf16` (required) and
+requires the fast execution mode to be available for that model and host. `order_check` requires Engine 2.5's
+`order_check` feature probe; otherwise the request returns HTTP 400. Both start the shared `benchmark` job, reserve
+memory while running, write logs under `job:benchmark`, and save results with `GET /api/benchmarks`. Identity keeps
+per-path outcomes, deltas and Engine identity; Order check stores the Native report in `report`. The accepted
+benchmark kinds are `benchmark`, `loadtest`, `determinism`, `modes`, `identity` and `order_check`.
 
 ## Several models behind basal-ui
 
