@@ -94,8 +94,8 @@ def set_check_updates(enabled: bool) -> bool:
     return enabled
 
 
-def presets() -> dict:
-    value = load().get("presets")
+def presets(*, strict=False, require_file=False) -> dict:
+    value = load(strict=strict, require_file=require_file).get("presets")
     value = value if isinstance(value, dict) else {}
     return {kind: value.get(kind) if isinstance(value.get(kind), dict) else {} for kind in ("load", "request")}
 
@@ -154,12 +154,20 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
-def load() -> dict:
+def load(*, strict=False, require_file=False) -> dict:
     try:
         value = json.loads(_settings_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        if strict and require_file:
+            raise
+        return {}
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise OSError("Could not read settings.") from exc
         return {}
     if not isinstance(value, dict):
+        if strict:
+            raise OSError("Settings are not an object.")
         return {}
     legacy = value.pop("last_model", None)  # one model before basal-ui loaded several
     if isinstance(legacy, dict) and "last_models" not in value:

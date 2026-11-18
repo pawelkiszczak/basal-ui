@@ -438,8 +438,8 @@ const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','v
 const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['act','tool','classify','verify','extract'];
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
-let presetData={load:{},request:{}},presetTarget='load';
-async function loadPresets(current=()=>true) {try{const data=await api('/api/presets');if(!current())return;presetData=data;renderRequestPresets();renderLoadPresets();}catch{}}
+let presetData={load:{},request:{}},presetTarget='load',presetGeneration=0;
+async function loadPresets(current=()=>true) {const generation=++presetGeneration;try{const data=await api('/api/presets');if(generation!==presetGeneration||!current())return;presetData=data;renderRequestPresets();renderLoadPresets();}catch{}}
 function renderRequestPresets() {
   const select=$('#examples'), current=select.value;
   const saved=Object.keys(presetData.request||{});
@@ -460,7 +460,8 @@ $('#presetNameSave').onclick=()=>act(async()=>{
   let value;
   try { value=presetTarget==='load'?collectOptions():$('#editJsonToggle').checked?JSON.parse($('#requestJson').value):buildRequest(); if(presetTarget==='request')value._elements=elementPresetData(); }
   catch(e) { toast(e.message,'error');$('.q-name:invalid')?.reportValidity();return; }
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind:presetTarget,name,value})});
+  ++presetGeneration;presetData=data;
   $('#presetNameDialog').close(); renderLoadPresets();renderRequestPresets();toast(t('Preset saved'));
 });
 $('#examples').addEventListener('change',e=>{
@@ -475,7 +476,8 @@ $('#examples').addEventListener('change',e=>{
   }else if(item)setRequest({state:item.state,questions:item.questions});
 });
 async function deletePreset(kind,name) {
-  presetData=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  const data=await api('/api/presets',{method:'PUT',body:JSON.stringify({kind,name,value:null})});
+  ++presetGeneration;presetData=data;
   renderLoadPresets();renderRequestPresets();toast(t('Preset deleted'));
 }
 $('#exportPresets').onclick=()=>act(async()=>{
@@ -483,6 +485,13 @@ $('#exportPresets').onclick=()=>act(async()=>{
   a.href=url;a.download='presets.json';a.click();URL.revokeObjectURL(url);
 });
 $('#importPresetsButton').onclick=()=>$('#importPresets').click();
+$('#importPresetsUrl').onclick=()=>act(async()=>{
+  const url=prompt(t('Enter the presets URL'));if(url===null)return;
+  const button=$('#importPresetsUrl');button.disabled=true;button.textContent=t('Importing…');
+  try {const result=await api('/api/presets/import-url',{method:'POST',body:JSON.stringify({url})});await loadPresets();toast(t('Imported {count} presets',{count:result.count}));}
+  catch(e){await loadPresets();throw e;}
+  finally {button.disabled=false;button.textContent=t('Import from URL');}
+});
 $('#importPresets').onchange=()=>act(async()=>{
   const file=$('#importPresets').files[0];if(!file)return;
   const data=JSON.parse(await file.text());let count=0;

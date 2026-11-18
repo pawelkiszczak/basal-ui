@@ -564,3 +564,11 @@ metadata. Old reports without those fields retain the original response shape.
 (default empty), and optional numeric `max_error` strictly between 0 and 1. It returns the Engine's questions unchanged;
 Auto delegates language guessing to the Engine. An unknown name returns 404, invalid inputs 400, and both routes return
 503 when the Engine lacks question sets.
+
+## Preset URL import
+
+`POST /api/presets/import-url` accepts `{"url": "https://example.com/presets.json"}` and returns
+`{"presets": {"load": {}, "request": {}}, "count": 0}` with the resulting presets and processed entry count.
+Only public HTTP(S) addresses and `application/json` responses up to 1 MiB are accepted; redirects are checked too.
+Entries use the same validation, replacement and deletion rules as `PUT /api/presets`, in load then request order.
+A failed entry can leave earlier entries saved. Request preset root `model` is removed.

@@ -111,6 +111,7 @@ def create_app(
     addons=None,
     fetch_manager=None,
     finetune=None,
+    preset_fetch_manager=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -128,6 +129,7 @@ def create_app(
     from .finetune import FineTune
 
     finetune_manager = finetune or FineTune(fleet, settings_mod, hardware_fn, addon_manager)
+    preset_fetch_manager = preset_fetch_manager or FetchManager(presets=True)
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -240,6 +242,7 @@ def create_app(
         await asyncio.to_thread(gateway.start)
         fleet.start_idle_timer()
         yield
+        await preset_fetch_manager.close()
         await fetch_manager.close()
         await asyncio.to_thread(fleet.stop_idle_timer)
         with auto_load_lock:
@@ -861,12 +864,14 @@ def create_app(
             ],
         }
 
+    def preset_snapshot(data):
+        return {"load": data.get("load", {}), "request": data.get("request", {})}
+
     @app.get("/api/presets")
     def get_presets():
-        return {"load": settings_mod.presets().get("load", {}), "request": settings_mod.presets().get("request", {})}
+        return preset_snapshot(settings_mod.presets())
 
-    @app.put("/api/presets")
-    def put_preset(body: dict = Body(...)):
+    def update_preset(body):
         kind, name, value = body.get("kind"), body.get("name"), body.get("value")
         try:
             if kind == "load" and value is not None:
@@ -882,7 +887,51 @@ def create_app(
             settings_mod.set_preset(kind, name, value)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.put("/api/presets")
+    def put_preset(body: dict = Body(...)):
+        update_preset(body)
         return get_presets()
+
+    @app.post("/api/presets/import-url")
+    def import_presets_url(request: Request, body: dict = Body(...)):
+        try:
+            result = anyio.from_thread.run(preset_fetch_manager.run, body.get("url"), request)
+        except FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
+        pack = result["state"]
+        if (
+            not isinstance(pack, dict)
+            or not any(k in pack for k in ("load", "request"))
+            or any(k in pack and not isinstance(pack[k], dict) for k in ("load", "request"))
+        ):
+            return JSONResponse({"detail": "Invalid presets pack.", "code": "presets_invalid_pack"}, status_code=400)
+        count = 0
+        try:
+            for kind in ("load", "request"):
+                for name, value in pack.get(kind, {}).items():
+                    update_preset({"kind": kind, "name": name, "value": value})
+                    count += 1
+            return {
+                "presets": preset_snapshot(settings_mod.presets(strict=True, require_file=count > 0)),
+                "count": count,
+            }
+        except HTTPException as exc:
+            return JSONResponse(
+                {
+                    "detail": f"Import stopped; earlier presets may have been saved: {exc.detail}",
+                    "code": "presets_partial_import",
+                },
+                status_code=400,
+            )
+        except OSError:
+            return JSONResponse(
+                {
+                    "detail": "Import stopped; earlier presets may have been saved. Check storage and retry.",
+                    "code": "presets_partial_import",
+                },
+                status_code=500,
+            )
 
     @app.get("/api/models/card")
     def get_model_card(id: str):

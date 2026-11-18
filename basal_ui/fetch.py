@@ -168,7 +168,7 @@ class _ReadableHTML(HTMLParser):
             (self.title if self.in_title else self.parts).append(data)
 
 
-def _content(data, content_type):
+def _content(data, content_type, *, presets=False):
     from email.message import Message
 
     message = Message()
@@ -176,8 +176,12 @@ def _content(data, content_type):
     kind = message.get_content_type().lower()
     try:
         encoding = codecs.lookup(message.get_content_charset() or "utf-8").name
-    except LookupError:
+    except LookupError as exc:
+        if presets:
+            raise FetchError("Unsupported JSON charset.", "fetch_unsupported_encoding", 415) from exc
         encoding = "utf-8"
+    if presets and kind != "application/json":
+        raise FetchError("Presets require application/json.", "fetch_unsupported_type", 415)
     if kind == "application/json" or kind.endswith("+json"):
 
         def reject_constant(value):
@@ -204,7 +208,7 @@ def _content(data, content_type):
             raise
         except (ValueError, UnicodeError, RecursionError, InvalidOperation) as exc:
             raise FetchError(f"Invalid JSON response: {exc}", "fetch_invalid_json", 502) from exc
-        if len(rendered) > MAX_TEXT_CHARS:
+        if not presets and len(rendered) > MAX_TEXT_CHARS:
             raise FetchError("JSON response exceeds the state limit.", "fetch_too_large", 413)
         return value, False
     if kind in {"text/html", "application/xhtml+xml"}:
@@ -220,7 +224,7 @@ def _content(data, content_type):
     return value[:MAX_TEXT_CHARS], len(value) > MAX_TEXT_CHARS
 
 
-def fetch(url):
+def fetch(url, *, presets=False):
     """Run inside the owned child; the parent enforces its absolute deadline."""
     current = url
     for redirect in range(MAX_REDIRECTS + 1):
@@ -246,11 +250,14 @@ def fetch(url):
             encoding = response.getheader("Content-Encoding", "identity").strip().lower()
             if encoding not in {"", "identity"}:
                 raise FetchError(f"Unsupported content encoding: {encoding}", "fetch_unsupported_encoding", 415)
-            data = response.read(MAX_BYTES + 1)
-            if len(data) > MAX_BYTES:
-                raise FetchError("Response exceeds the 4 MiB limit.", "fetch_too_large", 413)
+            limit = 1024 * 1024 if presets else MAX_BYTES
+            data = response.read(limit + 1)
+            if len(data) > limit:
+                raise FetchError(f"Response exceeds the {1 if presets else 4} MiB limit.", "fetch_too_large", 413)
+            if presets and getattr(response, "length", None) not in (None, 0):
+                raise FetchError("Response body was incomplete.", "fetch_failed")
             content_type = response.getheader("Content-Type", "application/octet-stream")
-            state, truncated = _content(data, content_type)
+            state, truncated = _content(data, content_type, presets=presets)
             return {
                 "url": url,
                 "final_url": current,
@@ -271,7 +278,8 @@ def fetch(url):
 class FetchManager:
     """Own subprocesses until their request finishes, disconnects, times out, or the app stops."""
 
-    def __init__(self):
+    def __init__(self, *, presets=False):
+        self.presets = presets
         self.tasks = set()
         self.stopping = False
 
@@ -290,7 +298,7 @@ class FetchManager:
                     asyncio.create_subprocess_exec(
                         sys.executable,
                         "-m",
-                        "basal_ui.fetch",
+                        "basal_ui.preset_fetch" if self.presets else "basal_ui.fetch",
                         stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
