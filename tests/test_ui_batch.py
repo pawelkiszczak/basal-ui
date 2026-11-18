@@ -170,6 +170,14 @@ def test_batch_failed_run_preserves_partial(client, tmp_path, monkeypatch, parti
     assert job["phase"] == phase and "server unavailable" in job["error"]
     if partial:
         assert job["done"] == 1 and part.exists()
+        assert job["result"] == {
+            "id": "mini",
+            "input": str(source),
+            "output": str(out),
+            "concurrency": 16,
+            "early_exit": None,
+            "stop_after": 16,
+        }
 
 
 def test_installed_engine_resumes_after_cancel(client, child, tmp_path):
@@ -247,3 +255,27 @@ def test_job_rechecks_stale_restart(tmp_path):
         batch.run_batch(
             None, fleet, "mini", tmp_path / "input", tmp_path / "output", choice="restart", restart_supported=True
         )
+
+
+@pytest.mark.parametrize(
+    "first,second", [(".part", ".part.json"), (".part", ".part.json.tmp"), (".part.json", ".part.json.tmp")]
+)
+@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+def test_checkpoint_artifacts_must_not_alias(client, tmp_path, monkeypatch, first, second, link):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out = tmp_path / "answers"
+    target, alias = tmp_path / ("answers" + first), tmp_path / ("answers" + second)
+    target.write_text("preserve")
+    if link == "symlink":
+        alias.symlink_to(target)
+    else:
+        alias.hardlink_to(target)
+    response = client.post(
+        "/api/batch", json={"id": "mini", "input": str(source), "output": str(out), "choice": "restart"}
+    )
+    assert response.status_code == 400
+    assert target.read_text() == "preserve"

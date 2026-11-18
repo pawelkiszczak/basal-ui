@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from functools import lru_cache
+from itertools import combinations
 from pathlib import Path
 
 from .jobs import run_tool
@@ -36,7 +37,7 @@ def unfinished(output_path):
 def validate_paths(source, output):
     part = Path(str(output) + ".part")
     artifacts = (part, Path(str(part) + ".json"), Path(str(part) + ".json.tmp"))
-    for left, right in [(source, output), *((path, artifact) for path in (source, output) for artifact in artifacts)]:
+    for left, right in combinations((source, output, *artifacts), 2):
         try:
             same = os.path.samefile(left, right)
         except OSError:
@@ -94,7 +95,17 @@ def run_batch(
 
             done = sum(1 for line in part.read_bytes().splitlines() if line.strip())
             job.progress("stopped_resumable", done, total)
-            raise Resumable(str(exc)) from exc
+            raise Resumable(
+                str(exc),
+                {
+                    "id": model_id,
+                    "input": str(input_path),
+                    "output": str(output_path),
+                    "concurrency": concurrency,
+                    "early_exit": early_exit,
+                    "stop_after": stop_after,
+                },
+            ) from exc
         raise
     if summary is None:
         raise RuntimeError("basal-run printed no summary")

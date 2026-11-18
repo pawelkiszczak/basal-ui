@@ -50,7 +50,7 @@ These privileged local routes retain the UI's Host/Origin protections; loopback 
 `code: batch_choice` unless a choice is supplied. An orphan sidecar cannot be resumed; Restart explicitly replaces
 it. Resume is checked by the Engine against input, request options and server identity. A nonzero exit retaining a
 `.part` reports `phase: stopped_resumable`, `done`, `total` and the Engine's error in the Batch job in
-`GET /api/status`. Otherwise failure remains `error`. Older Engines retain their previous Batch behavior.
+`GET /api/status`; its `result` retains the original Batch request for an explicitly confirmed Restart. Otherwise failure remains `error`. Older Engines retain their previous Batch behavior.
 
 ### Batch path inspection
 

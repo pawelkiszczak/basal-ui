@@ -1957,7 +1957,13 @@ function renderBatchState(job, ready) {
   ee.hidden=!levels.length;
   const running=Boolean(job?.running);
   $('#runBatch').disabled=running||!ids.length; $('#cancelBatch').hidden=!running;
-  $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='stopped_resumable'?`<div class="error-box">${t('Stopped, resumable.')} ${job.done} / ${job.total}<br>${esc(job.error)}</div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  $('#batchProgress').innerHTML=!job?'':running?`<div class="progress-wrap"><div class="progress"><span style="width:${job.total?job.done/job.total*100:0}%"></span></div><small>${job.done} / ${job.total}</small></div>`:job.phase==='stopped_resumable'?`<div class="error-box">${t('Stopped, resumable.')} ${job.done} / ${job.total}<br>${esc(job.error)}${job.result?`<br><button type="button" class="btn destructive" id="restartStoppedBatch">${t('Restart')}</button>`:''}</div>`:job.phase==='error'?`<div class="error-box">${esc(job.error)}</div>`:job.phase==='cancelled'?`<p class="muted">${t('Cancelled.')}</p>`:'';
+  if(job?.phase==='stopped_resumable'&&job.result)$('#restartStoppedBatch').onclick=()=>act(async()=>{
+    const body={...job.result,choice:'restart'};
+    if(!await confirmDialog({title:t('Restart Batch'),description:t('Discard partial answers for {output} and restart this Batch?',{output:body.output}),confirmLabel:t('Restart'),destructive:true}))return;
+    await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
+    toast(t('Batch started')); await refreshStatus();
+  });
   if(!running&&job?.phase==='done'&&(batchRunning||!batchResult))showBatchResult(job.result);
   batchRunning=running;
 }

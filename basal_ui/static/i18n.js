@@ -11,6 +11,8 @@ const PL = {
   "Resume the unfinished Batch or restart and discard its partial answers?": "Wznowić niedokończone zadanie czy rozpocząć od nowa i odrzucić częściowe odpowiedzi?",
   "Resume": "Wznów",
   "Restart": "Rozpocznij od nowa",
+  "Restart Batch": "Rozpocznij zadanie wsadowe od nowa",
+  "Discard partial answers for {output} and restart this Batch?": "Odrzucić częściowe odpowiedzi dla {output} i rozpocząć zadanie od nowa?",
   "Stopped, resumable.": "Zatrzymano; można wznowić.",
   "code:phase_stopped_resumable": "zatrzymano; można wznowić",
   " Options": " Opcje",
