@@ -1,5 +1,7 @@
 # Unreleased
 
+- The Playground supports experimental rank questions on Engines that provide them, with candidate screening and a best-first ranking.
+
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)

@@ -369,6 +369,8 @@ def test_visible_ui_text_meets_wcag_contrast_in_both_themes(page, skin):
 
 @pytest.mark.parametrize("request_", advanced_requests(), ids=lambda r: r["id"])
 def test_the_playground_builds_sends_and_renders_each_question_type(page, text_model, request_):
+    if request_["id"] == "rank-passages" and not feature("rank"):
+        pytest.skip("Engine lacks rank questions")
     view(page, "playground")
     page.select_option("#playgroundModel", text_model["id"])
     index = page.evaluate("id => examples.findIndex(e => e.file === 'advanced' && e.id === id)", request_["id"])
@@ -387,6 +389,8 @@ def test_the_playground_builds_sends_and_renders_each_question_type(page, text_m
         sync_api.expect(page.locator("#results .source-view mark").first).to_be_visible()
     if q_type == "verify":
         sync_api.expect(articles.first.locator("tbody tr")).to_have_count(3)
+    if q_type == "rank":
+        sync_api.expect(articles.first.locator("tbody tr")).to_have_count(2)
 
 
 def test_playground_request_names_media_and_history_replay_are_lossless_until_send(page, text_model):
@@ -1775,3 +1779,39 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+def test_rank_invalid_instructions_show_engine_error_on_card(page, text_model):
+    if not feature("rank"):
+        pytest.skip("Engine lacks rank questions")
+    view(page, "playground")
+    index = page.evaluate("() => examples.findIndex(e => e.id === 'rank-passages')")
+    page.select_option("#examples", str(index))
+    page.locator(".q-instructions-input").fill("Is this relevant?")
+    page.click("#sendButton")
+    sync_api.expect(page.locator(".question .q-error")).to_contain_text("{candidate}")
+
+
+def test_rank_builder_pastes_candidates_and_preserves_groups(page, ui):
+    if not ui.get("/api/status")["features"]["rank"]:
+        pytest.skip("Engine lacks rank questions")
+    view(page, "playground")
+    page.locator(".q-type").select_option("rank")
+    page.locator(".q-instructions-input").fill("Does {candidate} match?")
+    page.locator('[data-f="candidates"]').fill("a: first\nsecond")
+    page.locator('[data-f="groups"]').fill('{"a":"g"}')
+    page.locator('[data-f="prior"]').fill('{"a":1.5}')
+    page.locator('[data-f="top"]').fill("2")
+    q = next(iter(page.evaluate("() => buildRequest().questions").values()))
+    assert q == {
+        "type": "rank",
+        "instructions": "Does {candidate} match?",
+        "candidates": [{"key": "a", "text": "first", "group": "g"}, {"key": "1", "text": "second"}],
+        "prior": {"a": 1.5},
+        "top": 2,
+        "choice_context": "auto",
+        "order": "state_first",
+    }
+    page.evaluate("q => setRequest({state:'s',questions:{q}})", q)
+    page.locator('[data-f="chunk"]').fill("5")
+    assert page.evaluate("() => buildRequest().questions.q.candidates") == q["candidates"]

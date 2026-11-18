@@ -160,6 +160,8 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   because they refer to spans in the state's text; the raw JSON request still rejects evidence with media. Inspect's
   example list leaves the media examples out (the lens reads text only).
 
+Experimental rank questions accept candidates one per line, optionally as `key: text`. Groups and priors are JSON objects keyed by candidate key. Instructions must contain `{candidate}`. The result lists the Engine ranking in its returned order, including scores and optional choice and yes values. Rank is unavailable when the installed Engine lacks the feature. [Rank editor screenshot](images/playground-rank.png).
+
 ## Playground comparison, API examples and calibration evidence
 
 **Compare loaded models** runs the current request against two different ready models. Both receive the same

@@ -286,7 +286,14 @@ def create_app(
         return variant
 
     def full_status():
-        return {**fleet.status(), "serving": gateway.status(), "inspect": inspector.state()}
+        from .engine import feature
+
+        return {
+            **fleet.status(),
+            "serving": gateway.status(),
+            "inspect": inspector.state(),
+            "features": {"rank": feature("rank")},
+        }
 
     def serve_response():
         config = settings_mod.serve_settings()

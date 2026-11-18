@@ -168,3 +168,16 @@ def test_logs_clear_old_lines_when_source_buffer_generation_changes(page):
     page.evaluate("() => loadLogs()")
     page.wait_for_function("() => document.querySelector('#logOutput').textContent.includes('new buffer line')")
     assert "old buffer line" not in page.locator("#logOutput").inner_text()
+
+
+def test_rank_feature_gate_matches_installed_engine(page, ui):
+    supported = ui.get("/api/status")["features"]["rank"]
+    test_pages.view(page, "playground")
+    option = page.locator('.q-type option[value="rank"]').first
+    assert option.evaluate("element => element.disabled") is not supported
+    if not supported:
+        page.evaluate(
+            "() => setRequest({state:'s',questions:{q:{type:'rank',instructions:'Does {candidate} match?',candidates:['a']}}})"
+        )
+        assert page.locator(".rank-unavailable").is_visible()
+        assert page.locator('[data-f="candidates"]').is_disabled()

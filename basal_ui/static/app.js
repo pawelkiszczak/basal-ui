@@ -4,7 +4,7 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
-let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
+let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, rankAvailable=false;
 function httpFailure(status,message) {
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
@@ -18,7 +18,7 @@ async function api(path, options={}) {
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    const error=new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`); error.status=response.status; error.detail=message; throw error;
   }
   return data;
 }
@@ -389,7 +389,7 @@ async function loadExamples() {
 }
 // Question builder: one card per question, a type-specific fieldset; fields the builder does not own stay on the card
 // (card._extra) and are merged back, so Edit JSON → builder → JSON keeps them.
-const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract'];
+const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract','rank'];
 const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['act','tool','classify','verify','extract'];
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
@@ -450,7 +450,7 @@ $('#deleteRequestPreset').onclick=()=>act(async()=>{const v=$('#examples').value
 const OWNED={choice:['criteria','levels','option_keys'],noul:['criteria','option_keys'],score:['criteria','levels','option_keys'],
   multi:['criteria','option_keys',...SET_KEYS],act:['criteria','base','costs','defer_action','option_keys'],
   tool:['tools','extra','rank','multi','description_chars',...SET_KEYS],classify:['labels','criteria','multi_label','none','threshold','min','max','objective'],
-  verify:['claims','binary'],compress:['unit','threshold','keep_ratio','min_keep'],extract:['schema']};
+  verify:['claims','binary'],compress:['unit','threshold','keep_ratio','min_keep'],extract:['schema'],rank:['candidates','top','chunk','prior','choice_context','order']};
 const KEYED=/^([^\s:]{1,40}):\s*(\S.*)$/;  // "key: description"; a plain option text may contain colons too
 const textOf=v=>typeof v==='string'?v:JSON.stringify(v);
 const splitLines=text=>String(text||'').split('\n').map(x=>x.trim()).filter(Boolean);
@@ -524,13 +524,21 @@ function renderTypeFields(card, type, q) {
   else if(type==='classify')html=qField('Labels',qArea('labels',labelsText(q.labels??q.criteria),'key: description, or one label per line'))+qSwitch('multi_label',q.multi_label,'Several labels (multi-label)')+' '+qSwitch('none',q.none,'Add a "none" label','single-only')+`<div class="multi-only">${setFields(q,false)}</div>`;
   else if(type==='verify')html=qField('Claims',qArea('claims',keyedText(q.claims),'key: claim text, or one claim per line'))+qSwitch('binary',q.binary,'Binary (supported / not supported)');
   else if(type==='compress')html=`<div class="qf-row">${qField('Unit',qSelect('unit',[['sentence','sentence'],['line','line'],['paragraph','paragraph']],q.unit||'sentence'))}${qField('Threshold',qNum('threshold',q.threshold,'min="0" max="1" step="0.05" placeholder="0.5"'))}${qField('Keep ratio',qNum('keep_ratio',q.keep_ratio,'min="0" max="1" step="0.05" placeholder="off"'),'share of the characters kept (overrides threshold)')}${qField('Min keep',qNum('min_keep',q.min_keep,'min="0" step="1" placeholder="1"'))}</div>`;
+  else if(type==='rank'){
+    const candidates=Array.isArray(q.candidates)?q.candidates.map((c,i)=>typeof c==='object'&&c!==null?`${c.key??i}: ${textOf(c.text)}`:String(c)).join('\n'):keyedText(q.candidates);
+    const groups=Array.isArray(q.candidates)?Object.fromEntries(q.candidates.flatMap((c,i)=>c&&typeof c==='object'&&c.group!=null?[[String(c.key??i),c.group]]:[])):{};
+    html=`<span class="badge experimental">${t('experimental')}</span><p class="rank-unavailable reason" hidden>${t('This Engine does not support rank questions.')}</p>`+qField('Candidates',qArea('candidates',candidates,'key: text, or one candidate per line'),'Use one candidate per line; keys default to line numbers.')
+      +qField('Groups (JSON object)',qArea('groups',Object.keys(groups).length?JSON.stringify(groups,null,2):'','{"key": "group"}','json'),'Map candidate keys to optional groups.')
+      +qField('Priors (JSON object)',qArea('prior',q.prior?JSON.stringify(q.prior,null,2):'','{"key": 1.0}','json'),'Map candidate keys to non-negative weights.')
+      +`<div class="qf-row">${qField('Top',qNum('top',q.top,'step="1" placeholder="20"'))}${qField('Chunk',qNum('chunk',q.chunk,'step="1" placeholder="50"'))}${qField('Choice context',qSelect('choice_context',[['auto','auto'],['screen','screen'],['shortlist','shortlist']],q.choice_context||'auto'))}${qField('Order',qSelect('order',[['state_first','state_first'],['candidates_first','candidates_first']],q.order||'state_first'))}</div>`;
+  }
   else if(type==='extract')html=qField('Schema (JSON)',qArea('schema',q.schema?JSON.stringify(q.schema,null,2):'','{"type": "object", "properties": {"total": {"type": "number"}}}','json'),'string, number, integer, boolean, enum and arrays of enums; nested objects as dotted paths.');
   const me=q.max_error, preset=me==null||Array.isArray(me)?'':[0.01,0.05].includes(Number(me))?String(Number(me)):'custom', maxErrorId=`question-field-${++questionFieldId}`;
   html+=`<div class="qf-row common-fields">${qSwitch('evidence',q.evidence===true,'Evidence spans','evidence-only')}<div class="qf max-error-only"><label for="${maxErrorId}">max_error</label><div class="controls">${qSelect('max_error',[['','none'],['0.01','0.01'],['0.05','0.05'],['custom','custom…']],preset).replace('<select ',`<select id="${maxErrorId}" `)}${qNum('max_error_custom',preset==='custom'?me:'','min="0" max="1" step="0.001"')}</div></div></div><div class="q-error reason wide" role="alert" hidden></div>`;
   $('.q-fields',card).innerHTML=html;
   delete card._choiceEditor;
   ChoiceEditor.mount(card,type,q);
-  $('.q-instructions-input',card).placeholder=['tool',...TASK_TYPES].includes(type)?t('optional'):t('What should the model decide?');
+  $('.q-instructions-input',card).placeholder=type==='rank'?t('Does {candidate} match?'):['tool',...TASK_TYPES].includes(type)?t('optional'):t('What should the model decide?');
   if(type==='act')renderCostMatrix(card);
   updateCardVisibility(card);
 }
@@ -565,6 +573,10 @@ function setCostMode(card, mode) {
 function updateCardVisibility(card) {
   const type=$('.q-type',card).value, on=f=>Boolean($(`[data-f="${f}"]`,card)?.checked), show=(sel,visible)=>card.querySelectorAll(sel).forEach(x=>x.hidden=!visible);
   const multiTool=type==='tool'&&on('multi');
+  const unavailable=type==='rank'&&!rankAvailable;
+  card.querySelectorAll('.q-instructions-input,.q-fields input,.q-fields textarea,.q-fields select').forEach(input=>input.disabled=unavailable);
+  const reason=$('.rank-unavailable',card);if(reason)reason.hidden=!unavailable;
+  show('.q-shared',type!=='rank');
   show('.evidence-only',EVIDENCE_TYPES.includes(type)&&!multiTool);
   show('.max-error-only',MAX_ERROR_TYPES.includes(type)&&!multiTool);
   const custom=$('[data-f="max_error_custom"]',card); if(custom)custom.hidden=$('[data-f="max_error"]',card).value!=='custom';
@@ -588,7 +600,7 @@ function rememberOriginal(card, type, q) {
   const value=f=>$(`[data-f="${f}"]`,card)?.value;
   card._orig={type,q:structuredClone(q),snapshot:cardSnapshot(card),
     lines:{criteria:value('criteria'),labels:value('labels'),claims:value('claims'),yesno:$('[data-f="yesno"]',card)?.checked,
-           instructions:$('.q-instructions-input',card).value}};
+           instructions:$('.q-instructions-input',card).value,candidates:value('candidates'),groups:value('groups')}};
 }
 const labelObjects=v=>Array.isArray(v)&&v.length>0&&v.every(x=>x&&typeof x==='object'&&!Array.isArray(x)&&'name' in x);
 function labelsText(v) {  // classify labels: {key: rubric}, [keys] or [{"name", "rubric" | "description"}]
@@ -668,6 +680,14 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     if(num('threshold')!==undefined&&num('threshold')!==0.5)q.threshold=num('threshold');
     set('keep_ratio',num('keep_ratio')); if(num('min_keep')!==undefined&&num('min_keep')!==1)q.min_keep=num('min_keep');
   }
+  else if(type==='rank'){
+    const object=v=>v&&typeof v==='object'&&!Array.isArray(v);
+    const groups=str('groups')?json('groups',object,'groups must be a JSON object'):{};
+    if(unedited('candidates')&&unedited('groups'))keep('candidates');
+    else q.candidates=splitLines(str('candidates')).map((line,i)=>{const m=line.match(KEYED),key=m?m[1]:String(i),candidate={key,text:m?m[2]:line};if(groups&&Object.hasOwn(groups,key))candidate.group=groups[key];return candidate;});
+    if(str('prior'))set('prior',json('prior',object,'prior must be a JSON object'));
+    set('top',num('top'));set('chunk',num('chunk'));set('choice_context',str('choice_context'));set('order',str('order'));
+  }
   else if(type==='extract')set('schema',json('schema',v=>v&&typeof v==='object'&&!Array.isArray(v)&&v.properties&&typeof v.properties==='object','schema must be a JSON object with properties'));
   const multiTool=type==='tool'&&q.multi;
   if(EVIDENCE_TYPES.includes(type)&&!multiTool&&on('evidence'))q.evidence=true;
@@ -744,7 +764,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   const card=document.createElement('div'); card.className='question'; const fieldId=`question-card-${++questionFieldId}`;
   const type=QUESTION_TYPES.includes(q.type)?q.type:'choice';
   card._extra=extraOf(q,type); card._type=type;
-  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}">${type}</option>`).join('')}</select></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div>`;
+  card.innerHTML=`<div class="q-head"><div><label for="${fieldId}-name">${t('Name')}</label><input id="${fieldId}-name" class="input q-name" type="text" value="${esc(name)}"></div><div><label for="${fieldId}-type">${t('Type')}</label><select id="${fieldId}-type" class="select q-type">${QUESTION_TYPES.map(type=>`<option value="${type}"${type==='rank'&&!rankAvailable?` disabled title="${t('This Engine does not support rank questions.')}"`:""}>${type==='rank'?t('rank (experimental)'):type}</option>`).join('')}</select><small class="rank-gate-reason reason"${rankAvailable?' hidden':''}>${t('This Engine does not support rank questions.')}</small></div><button type="button" class="remove-question">${t('Remove')}</button></div><div class="q-instructions"><label for="${fieldId}-instructions">${t('Instructions')}</label><textarea id="${fieldId}-instructions" class="textarea q-instructions-input" placeholder="${t('What should the model decide?')}">${esc(typeof q.instructions==='string'?q.instructions:q.instructions==null?'':JSON.stringify(q.instructions))}</textarea></div><div class="q-fields"></div>`;
   $('.q-type',card).value=type;
   renderTypeFields(card,type,q); rememberOriginal(card,type,q);
   card.addEventListener('input',e=>{
@@ -755,7 +775,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
     if(e.target.matches('.q-type')){
       if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
-      card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
+      card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)&&!(next==='rank'&&['coverage','max_error','evidence','ask_if','depends_on','media'].includes(k))));
       renderTypeFields(card,next,{...current,type:next});
     } else {
       if(e.target.matches('[data-f="yesno"]')){
@@ -973,6 +993,10 @@ const confidenceLine=answer=>metaLine(`${t('Confidence')}: ${answer.confidence==
 const chipList=(items,empty)=>items.length?`<div class="chips">${items.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}</div>`:`<div class="muted">${esc(t(empty))}</div>`;
 const headlineDiv=text=>`<div class="headline">${text}</div>`;
 const RESULT_VIEWS={
+  rank(a){
+    const rows=(a.ranking||[]).map((r,i)=>`<tr><td>${i+1}</td><td><code>${esc(r.key)}</code></td><td>${r.score==null?'—':num(r.score,4)}</td><td>${r.choice==null?'—':num(r.choice,4)}</td><td>${r.yes==null?'—':num(r.yes,4)}</td></tr>`).join('');
+    return metaLine(`${t('Top')}: ${esc(a.top)} · ${t('Candidates')}: ${esc(a.candidates)} · ${t('Requests')}: ${esc(a.requests)}`)+`<div class="table-wrap"><table class="mini-table"><thead><tr><th>${t('Rank')}</th><th>${t('Key')}</th><th>${t('Score')}</th><th>${t('Choice')}</th><th>${t('Yes')}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  },
   multi(a,q){
     const sel=a.selected||[], objective=a.objective&&a.objective!=='threshold';
     const constraints=Object.entries(a.constraints_applied||{}).map(([k,v])=>`<span class="chip muted">${esc(k)}: ${esc(textOf(v))}</span>`).join('');
@@ -1095,7 +1119,10 @@ async function sendDecision() {
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot); }
-  catch(e) { showDecideError(e.message); toast(e.message,'error'); }
+  catch(e) {
+    if(e.status===422&&!jsonMode)document.querySelectorAll('.question').forEach(card=>{const name=$('.q-name',card).value; if(e.detail?.includes(`question '${name}'`)||e.detail?.includes(`question "${name}"`)){const box=$('.q-error',card);box.textContent=e.detail;box.hidden=false;}});
+    showDecideError(e.message); toast(e.message,'error');
+  }
   finally { $('#sendButton').disabled=false; }
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
@@ -1322,6 +1349,7 @@ function renderStatus(s) {
   renderLoadedRows(models);
   renderManagerSummary();
   if($('#modelLoaderDialog').open)renderModelLoader();
+  rankAvailable=Boolean(s.features?.rank); document.querySelectorAll('.q-type option[value=rank]').forEach(option=>{option.disabled=!rankAvailable;option.title=rankAvailable?'':t('This Engine does not support rank questions.');}); document.querySelectorAll('.question').forEach(card=>{card.querySelector('.rank-gate-reason').hidden=rankAvailable;updateCardVisibility(card);});
   renderInference(s);
   renderPlaygroundModels(ready);
   renderBenchmarkState(s.jobs?.benchmark,ready); renderCalibrationState(s.jobs?.calibrate); renderBatchState(s.jobs?.batch,ready);
