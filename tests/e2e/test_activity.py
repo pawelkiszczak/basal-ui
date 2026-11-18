@@ -197,6 +197,11 @@ def test_rank_error_routing_and_status_refresh_preserve_other_controls(page, ui)
     }
     page.evaluate("r => setRequest(r)", request)
     cards = page.locator(".question")
+    cards.first.locator(".q-name").evaluate(
+        "(input, name) => { input.value = name; input.dispatchEvent(new Event('input', {bubbles:true})); }",
+        '  it\'s "quoted"  ',
+    )
+    assert list(page.evaluate("() => Object.keys(buildRequest().questions)")) == list(request["questions"])
     page.evaluate(
         "() => { const x=$('.question:last-child .q-instructions-input'); x.disabled=true; renderStatus(statusCache); }"
     )
@@ -227,3 +232,6 @@ def test_rank_error_routing_and_status_refresh_preserve_other_controls(page, ui)
             [message, request],
         )
         assert [cards.nth(i).locator(".q-error").is_visible() for i in range(3)] == expected
+    cards.nth(1).locator(".q-name").evaluate("(input, name) => { input.value = name; }", 'it\'s "quoted"')
+    page.evaluate("() => { try { buildRequest(); } catch {} }")
+    assert cards.nth(1).locator(".q-name").get_attribute("aria-invalid") == "true"

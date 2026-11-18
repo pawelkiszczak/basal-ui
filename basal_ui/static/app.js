@@ -734,7 +734,7 @@ function setPlaygroundExperimental(model) {
 function buildRequest() {
   const questions=Object.create(null), names=new Set();
   for(const card of document.querySelectorAll('.question')) {
-    const input=$('.q-name',card), name=input.value, duplicate=names.has(name), invalid=!name.trim()||duplicate;
+    const input=$('.q-name',card), name=input.value.trim(), duplicate=names.has(name), invalid=!name||duplicate;
     input.setCustomValidity(!name.trim()?t('Enter a question name.'):duplicate?t('Question names must be unique.'):'');
     if(invalid)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
     names.add(name);
@@ -1119,7 +1119,7 @@ function engineName(name) {
 function showQuestionErrors(detail, request) {
   const rankError=detail==='rank questions do not take media'||/^\d+ rank candidates in this request, more than the \d+ this server takes per request \(basal-serve --rank-max-candidates\)$/.test(detail)||detail==='a rank request is longer than the context (--context-overflow truncate would cut its list); lower chunk';
   document.querySelectorAll('.question').forEach(card=>{
-    const name=$('.q-name',card).value, named=detail.startsWith(`question ${engineName(name)}:`);
+    const name=$('.q-name',card).value.trim(), named=detail.startsWith(`question ${engineName(name)}:`);
     if(named||(rankError&&request.questions?.[name]?.type==='rank')){const box=$('.q-error',card);box.textContent=detail;box.hidden=false;}
   });
 }
