@@ -24,6 +24,21 @@ def test_card_surfaces_and_navigation(ui):
             for selector, radius in (("#models .suggestion-card", "10px"), ("#models .card", "16px")):
                 surface = page.locator(selector).first.evaluate(style)
                 assert surface["radius"] == radius and surface["shadow"] == "none" and surface["border"] != "0px"
+            tools = page.locator(".nav-tools>summary")
+            page.mouse.move(0, 0)
+            page.wait_for_timeout(250)
+            tools_normal = tools.evaluate(style)
+            tools.hover()
+            page.wait_for_timeout(250)
+            assert tools.evaluate(style)["background"] != tools_normal["background"]
+            assert tools_normal["duration"] == "0.15s" and tools_normal["property"] == "all"
+            tools.click()
+            page.locator('[data-view="manager"]').click()
+            page.mouse.move(0, 0)
+            page.wait_for_timeout(250)
+            assert "active" in page.locator(".nav-tools").get_attribute("class")
+            assert tools.evaluate(style)["background"] != tools_normal["background"]
+            page.locator('[data-view="models"]').click()
             nav = page.locator('[data-view="dashboard"]')
             page.wait_for_timeout(250)
             normal = nav.evaluate(style)
@@ -45,5 +60,18 @@ def test_card_surfaces_and_navigation(ui):
             assert question["radius"] == "9px" and question["shadow"] == "none" and question["border"] == "1px"
         page.emulate_media(reduced_motion="reduce")
         assert page.locator('[data-view="dashboard"]').evaluate(style)["duration"] == "1e-05s"
+        tools = page.locator(".nav-tools>summary")
+        assert tools.evaluate(style)["duration"] == "1e-05s"
+        page.mouse.move(0, 0)
+        tools_normal = tools.evaluate(style)
+        tools.hover()
+        page.wait_for_timeout(50)
+        assert tools.evaluate(style)["background"] != tools_normal["background"]
+        tools.click()
+        page.locator('[data-view="manager"]').click()
+        page.mouse.move(0, 0)
+        page.wait_for_timeout(50)
+        assert "active" in page.locator(".nav-tools").get_attribute("class")
+        assert tools.evaluate(style)["background"] != tools_normal["background"]
         context.close()
         browser.close()
