@@ -94,6 +94,7 @@ FEATURES = {
         _parameter("basal.server", "limits", "q") and _parameter("basal.server", "plain_limits", "cal")
     ),
     "conditional_questions": lambda: _parameter("basal.server", "ask_gates", "questions"),
+    "rank": lambda: _spec("basal.rank") is not None,
     "calibrate_layout": lambda: any(
         "--layout" in a.option_strings for a in importlib.import_module("basal.calibrate").parser()._actions
     ),
