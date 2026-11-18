@@ -140,11 +140,15 @@ def test_form_control_borders_across_themes(page):
       return [...document.querySelectorAll(selector)].map(e => {
         const s=getComputedStyle(e); let parent=e.parentElement;
         while(parent && getComputedStyle(parent).backgroundColor==='rgba(0, 0, 0, 0)') parent=parent.parentElement;
-        return {name:e.id || e.className, border:s.borderTopColor, opacity:s.opacity,
+        return {name:e.id || e.className, border:s.borderTopColor, style:s.borderTopStyle,
+          width:parseFloat(s.borderTopWidth), opacity:s.opacity,
           fill:contrast(s.borderTopColor,s.backgroundColor),
           surrounding:contrast(s.borderTopColor,getComputedStyle(parent).backgroundColor)};
-      }).filter(x => x.opacity !== '1' || x.fill < 3 || x.surrounding < 3);
+      }).filter(x => ['none','hidden'].includes(x.style) || x.width <= 0 || x.opacity !== '1' || x.fill < 3 || x.surrounding < 3);
     }"""
+    page.locator("#stateInput").evaluate("e => e.style.borderWidth = '0'")
+    assert any(item["name"] == "stateInput" for item in page.evaluate(audit))
+    page.locator("#stateInput").evaluate("e => e.style.removeProperty('border-width')")
     for theme in ("light", "dark"):
         for skin in ("green", "orange"):
             page.evaluate(
