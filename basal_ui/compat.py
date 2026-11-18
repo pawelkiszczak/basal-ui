@@ -69,7 +69,10 @@ def child_request(path, body):
                 status, message, code = _child_error(response)
                 headers = {"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else {}
                 return httpx.Response(status, json=openai_error_body(status, message, code), headers=headers)
-            return httpx.Response(200, json=decision_response(response.json(), spec, values))
+            try:
+                return httpx.Response(200, json=decision_response(response.json(), spec, values))
+            except (AttributeError, KeyError, TypeError, ValueError):
+                return httpx.Response(502, json=openai_error_body(502, "invalid decision response", "UPSTREAM_ERROR"))
 
         return internal, decisions_reply
     try:
@@ -296,11 +299,26 @@ def decision_response(result, spec, values):
         if typ == "predicate":
             answers.append({"type": typ, "name": name, "probability": ans["noul"]})
         elif typ == "choice":
-            probs = [
-                {"value": v, "probability": ans["probabilities"][str(v).lower() if isinstance(v, bool) else str(v)]}
-                for v in values[key]
-            ]
-            chosen = max(probs, key=lambda p: p["probability"])["value"]
+            probabilities = ans["probabilities"]
+            fallback = ans.get("answered_by") == "fallback"
+            if fallback and ans.get("calibrated") is not False:
+                raise ValueError("fallback answer must be uncalibrated")
+            choices = {str(v).lower() if isinstance(v, bool) else str(v): v for v in values[key]}
+            if probabilities is None:
+                if not fallback or ans["confidence"] is not None:
+                    raise ValueError("missing choice probabilities")
+                probs = None
+            else:
+                probs = [
+                    {"value": v, "probability": probabilities[str(v).lower() if isinstance(v, bool) else str(v)]}
+                    for v in values[key]
+                ]
+            if fallback:
+                if ans.get("choice") not in choices:
+                    raise ValueError("choice is not in the request")
+                chosen = choices[ans["choice"]]
+            else:
+                chosen = max(probs, key=lambda p: p["probability"])["value"]
             answers.append(
                 {"type": typ, "name": name, "choice": chosen, "probabilities": probs, "confidence": ans["confidence"]}
             )
@@ -318,6 +336,9 @@ def decision_response(result, spec, values):
                     "confidence": ans["confidence"],
                 }
             )
+        answers[-1].update(
+            {field: ans[field] for field in ("answered_by", "level", "model", "calibrated") if field in ans}
+        )
     usage = result.get("usage", {})
     total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
     return {

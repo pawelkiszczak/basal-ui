@@ -1,5 +1,7 @@
 # Unreleased
 
+
+- Define escalation and Blend Cascades over ready local models, with an optional private fallback endpoint.
 - Schedule Batch runs over changed JSONL files, with local-time intervals, protected outputs and run history.
 - Attach external Decision servers in Model manager → Library to compare their reported models in Playground or Batch. Comparison Decisions are recorded with server provenance and have no basal calibration or automation certificate; external models are excluded from the API server and basal-only tools.
 

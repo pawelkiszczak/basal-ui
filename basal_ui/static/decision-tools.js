@@ -114,7 +114,7 @@
       const choices = index === 0 ? primary : ready;
       const signature = JSON.stringify(choices.map(model => [model.id, model.kind]));
       if (select.dataset.modelSignature !== signature) {
-        select.innerHTML = choices.map(model => `<option value="${esc(model.id)}">${esc(modelLabel(model))}${model.kind === 'comparison' ? ` · ${t('Comparison')}` : ''}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
+        select.innerHTML = choices.map(model => `<option value="${esc(model.id)}">${esc(modelLabel(model))}${model.kind === 'comparison' ? ` · ${t('Comparison')}` : model.kind === 'cascade' ? ` · ${t('Cascade')}` : ''}</option>`).join('') || `<option value="">${t('No model loaded')}</option>`;
         select.dataset.modelSignature = signature;
       }
       const next = index === 0 ? first : choices.some(model => model.id === old[index] && old[index] !== first) ? old[index] : choices.find(model => model.id !== first)?.id || '';

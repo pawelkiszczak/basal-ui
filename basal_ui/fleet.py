@@ -577,6 +577,200 @@ class Runner:
         return response
 
 
+class CascadeRunner:
+    """A basal-router process exposing loaded model members as one decision model."""
+
+    def __init__(self, spec, settings_mod, event):
+        self.model = self.id = spec["name"]
+        self.spec, self.settings_mod, self.event = spec, settings_mod, event
+        self.state, self.error, self.process = "starting", None, None
+        self.est_memory_bytes, self.temporary, self.media, self.options, self.rss_bytes = 0, False, [], {}, None
+        self.ready_at, self.last_used = None, time.monotonic()
+        self.log = LogBuffer()
+        self.lock = threading.RLock()
+        self.gen = 0
+        self.base_url = None
+        self.command = []
+        self.levels = [dict(x) for x in spec["levels"]]
+        self.models_entry = {"name": self.model, "kind": "cascade", "levels": self.levels}
+
+    def start(self, members, key=None):
+        with self.lock:
+            gen = self.gen
+            if self.state != "starting":
+                raise RuntimeError("cascade start cancelled")
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        base_url = f"http://127.0.0.1:{port}"
+        argv = [
+            sys.executable,
+            "-m",
+            "basal.router",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--replicas",
+            members[self.levels[0]["model"]],
+        ]
+        if self.spec["kind"] == "escalate":
+            for i, level in enumerate(self.levels[1:], 1):
+                argv += ["--escalate", members[level["model"]], "--escalate-below", str(self.levels[i - 1]["below"])]
+        else:
+            for level in self.levels[1:]:
+                argv += ["--blend", members[level["model"]]]
+            argv += ["--blend-weights", *map(str, self.spec["weights"])]
+        fallback = self.spec.get("fallback")
+        env = os.environ.copy()
+        env.pop("BASAL_FALLBACK_API_KEY", None)
+        if fallback:
+            argv += [
+                "--fallback",
+                fallback["url"],
+                "--fallback-model",
+                fallback["model"],
+                "--fallback-below",
+                str(fallback.get("below", 0.5)),
+                "--fallback-timeout",
+                str(fallback.get("timeout", 60)),
+                "--fallback-max-tokens",
+                str(fallback.get("max_tokens", 8192)),
+            ]
+            if key:
+                env["BASAL_FALLBACK_API_KEY"] = key
+        try:
+            with self.lock:
+                if gen != self.gen:
+                    raise RuntimeError("cascade start cancelled")
+                self.command, self.base_url = argv, base_url
+                self.process = proc = subprocess.Popen(
+                    argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, start_new_session=True
+                )
+            threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
+            deadline = time.monotonic() + START_TIMEOUT_S
+            while time.monotonic() < deadline:
+                with self.lock:
+                    if gen != self.gen:
+                        raise RuntimeError("cascade start cancelled")
+                if proc.poll() is not None:
+                    raise RuntimeError(f"basal-router exited ({proc.returncode}): {self.log.last() or ''}")
+                try:
+                    if httpx.get(base_url + "/health", timeout=0.5).status_code == 200:
+                        with self.lock:
+                            if gen != self.gen:
+                                raise RuntimeError("cascade start cancelled")
+                            self.state, self.ready_at = "ready", time.time()
+                        return self
+                except httpx.HTTPError:
+                    pass
+                time.sleep(0.2)
+            raise RuntimeError(f"basal-router did not become healthy within {START_TIMEOUT_S} s")
+        except Exception as exc:
+            proc = None
+            with self.lock:
+                if gen == self.gen:
+                    proc, self.process = self.process, None
+                    self.gen += 1
+                    self.error, self.state = str(exc), "error"
+            Runner._terminate(proc)
+            raise
+
+    def _read_logs(self, proc):
+        for line in proc.stdout:
+            self.log.append(line.rstrip())
+
+    @property
+    def pid(self):
+        return self.process.pid if self.process else None
+
+    def status(self):
+        with self.lock:
+            if self.state == "ready" and self.process and self.process.poll() is not None:
+                self.state, self.error = "error", f"basal-router exited ({self.process.returncode})"
+            return {
+                "id": self.model,
+                "model": self.model,
+                "state": self.state,
+                "error": self.error,
+                "kind": "cascade",
+                "entry": self.models_entry,
+                "models_entry": self.models_entry,
+                "base_url": self.base_url,
+                "pid": self.process.pid if self.process else None,
+                "ready_at": self.ready_at,
+                "est_memory_bytes": 0,
+                "temporary": False,
+                "cascade_kind": self.spec["kind"],
+                "cascade_has_fallback": bool(self.spec.get("fallback")),
+                "media": [],
+                "options": {},
+                "health": {"reachable": self.state == "ready"},
+                "rss_bytes": self.rss_bytes,
+            }
+
+    _url = Runner._url
+    read_timeout = Runner.read_timeout
+
+    def _reply(self, response, reply):
+        if response.status_code == 200 and (self.spec["kind"] == "blend" or self.spec.get("fallback")):
+            try:
+                data = response.json()
+                for answer in data["answers"].values():
+                    if answer is None:
+                        continue
+                    if self.spec["kind"] == "blend":
+                        answer["calibrated"] = False
+                        answer.pop("automated", None)
+                    elif (
+                        len(self.levels) == 2
+                        and answer.get("answered_by") == "fallback"
+                        and isinstance(answer.get("basal"), dict)
+                        and answer["basal"].get("model") == data.get("model")
+                    ):
+                        # Two-member Engine replies omit the native answer's model before fallback.
+                        answer["basal"]["model"] = self.levels[1]["model"]
+                headers = {k: v for k, v in response.headers.items() if k not in ("content-length", "content-encoding")}
+                response = httpx.Response(200, json=data, headers=headers)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                response = httpx.Response(502, json={"error": "invalid Cascade response", "code": "UPSTREAM_ERROR"})
+        result = reply(response)
+        result.extensions["basal.inference"] = True
+        return result
+
+    def decide(self, body, path="/v1/systemone"):
+        child_body, reply = child_request(path, body)
+        if child_body is None:
+            return reply
+        timeout = httpx.Timeout(120, read=self.read_timeout())
+        return self._reply(httpx.post(self._url("/v1/systemone"), json=child_body, timeout=timeout), reply)
+
+    async def adecide(self, client, body, path="/v1/systemone", timeout=None):
+        child_body, reply = child_request(path, body)
+        if child_body is None:
+            return reply
+        timeout = httpx.Timeout(120, read=self.read_timeout()) if timeout is None else httpx.Timeout(timeout)
+        try:
+            response = await client.post(self._url("/v1/systemone"), json=child_body, timeout=timeout)
+        except httpx.ReadTimeout as exc:
+            exc.basal_read_timeout = timeout.read
+            raise
+        return self._reply(response, reply)
+
+    def stop(self):
+        proc, _ = self.detach()
+        Runner._terminate(proc)
+
+    def detach(self):
+        with self.lock:
+            self.gen += 1
+            proc, self.process = self.process, None
+            self.state = "idle"
+            return proc, 0
+
+    unload = stop
+
+
 class ComparisonRunner:
     """A model served by an external Decision server, with no locally owned process."""
 
@@ -991,13 +1185,16 @@ class Fleet:
                 if reserved is None:
                     raise RuntimeError("restart memory reservation was lost")
                 self.reserved.pop(_reservation)
+            runner = self._runner(LogBuffer())
+            runner.load(assessment, media=media, options=options, **runner_options)
+            stopped = self._detach_cascades(model_id, "replaced") if existing is not None else []
             self.idle_unloads.pop(model_id, None)
             self.logs.pop(model_id, None)
-            self.logs[model_id] = log = LogBuffer()  # most recent last; a reload starts a fresh log
-            runner = self._runner(log)
+            self.logs[model_id] = runner.log  # most recent last; a reload starts a fresh log
             self.runners[model_id] = runner
             self._prune_logs()
-            runner.load(assessment, media=media, options=options, **runner_options)
+        for name, dependent, proc in stopped:
+            self._finish_unload(name, dependent, proc)
         if existing is not None:
             existing.unload()
         self.event("info", f"load requested: {model_id}{' with media' if media else ''}")
@@ -1010,11 +1207,61 @@ class Fleet:
         for key in unloaded[: max(0, len(self.logs) - 1 - MODEL_LOGS_KEPT)]:
             del self.logs[key]
 
-    def unload(self, model_id=None, forget=True):
-        """Unload one model (KeyError when it is not loaded) or every model; forget=False keeps it for auto-load."""
+    def start_cascade(self, name):
+        from .engine import feature
+
+        if not feature("router"):
+            raise RuntimeError("Cascades need engine 2.5")
         with self.lock:
             self._check_addon_maintenance()
-            if model_id is not None and model_id not in self.runners:
+            if self.stopping or name in self.draining or name in self.runners:
+                raise RuntimeError("model is unavailable during maintenance or already loaded")
+            self.draining.add(name)
+        try:
+            spec, key = self.settings_mod.cascade_launch(name)
+            if spec.get("kind") == "blend" and spec.get("fallback") is not None:
+                raise RuntimeError("Blend cannot use an LLM fallback")
+            with self.lock:
+                if self.stopping:
+                    raise RuntimeError("model is unavailable during maintenance")
+                members = {}
+                for level in spec["levels"]:
+                    member = self.runners.get(level["model"])
+                    if member is None or member.status()["state"] != "ready" or level["model"] in self.draining:
+                        raise RuntimeError(f"cascade member {level['model']} is not loaded")
+                    if not isinstance(member, Runner):
+                        raise RuntimeError(f"cascade member {level['model']} must be a native model")
+                    members[level["model"]] = member.base_url
+                runner = CascadeRunner(spec, self.settings_mod, self.event)
+                self.runners[name] = runner
+                self.logs[name] = runner.log
+        finally:
+            with self.lock:
+                self.draining.discard(name)
+        try:
+            runner.start(members, key)
+        except Exception:
+            with self.lock:
+                if self.runners.get(name) is runner:
+                    self.runners.pop(name)
+            raise
+        self.event("info", f"cascade ready: {name}")
+        return self.status()
+
+    def stop_cascade(self, name):
+        with self.lock:
+            runner = self.runners.get(name)
+            if not isinstance(runner, CascadeRunner):
+                raise KeyError(name)
+        return self.unload(name, _expected=runner)
+
+    def unload(self, model_id=None, forget=True, _expected=None):
+        """Unload one model and stop any cascades whose members are being removed."""
+        with self.lock:
+            self._check_addon_maintenance()
+            if model_id is not None and (
+                model_id not in self.runners or (_expected is not None and self.runners[model_id] is not _expected)
+            ):
                 raise KeyError(model_id)
             if model_id is not None and isinstance(self.runners[model_id], ComparisonRunner):
                 raise RuntimeError("Comparison models are removed by detaching their Decision server")
@@ -1023,28 +1270,56 @@ class Fleet:
                 if model_id is not None
                 else [name for name, runner in self.runners.items() if not isinstance(runner, ComparisonRunner)]
             )
+            dependents = self._dependent_cascades(model_id) if model_id is not None else []
+            ids = dependents + ids
             if not self.stopping and any(i in self.draining for i in ids):
                 raise RuntimeError("model is unavailable during maintenance")
+            for name in dependents:
+                self.event("info", f"cascade {name} stopped because member {model_id} was unloaded")
             retiring = []
             for i in ids:
-                retiring.append(self._detach_runner(i, forget))
+                retiring.append(self._detach_runner(i))
+            forgetting = [
+                i
+                for i, (runner, _) in zip(ids, retiring, strict=True)
+                if forget and not isinstance(runner, CascadeRunner)
+            ]
+            self.draining.update(forgetting)
             self._prune_logs()
-        for i, (runner, proc) in zip(ids, retiring, strict=True):
-            self._finish_unload(i, runner, proc)
-        if model_id is None:  # every model: the private children of jobs too (their job then fails)
+        try:
+            for i in forgetting:
+                self.settings_mod.forget_loaded(i)
+        finally:
+            with self.lock:
+                self.draining.difference_update(forgetting)
+            for i, (runner, proc) in zip(ids, retiring, strict=True):
+                self._finish_unload(i, runner, proc)
+        if model_id is None:  # every model: the private children of jobs too
             with self.lock:
                 temporary = list(self.temporary)
             for kind in temporary:
                 self.stop_temporary(kind)
         return self.status()
 
-    def _detach_runner(self, model_id, forget):
+    def _dependent_cascades(self, model_id):
+        return [
+            name
+            for name, runner in self.runners.items()
+            if isinstance(runner, CascadeRunner) and any(level["model"] == model_id for level in runner.levels)
+        ]
+
+    def _detach_cascades(self, model_id, reason):
+        stopped = []
+        for name in self._dependent_cascades(model_id):
+            stopped.append((name, *self._detach_runner(name)))
+            self.event("info", f"cascade {name} stopped because member {model_id} was {reason}")
+        return stopped
+
+    def _detach_runner(self, model_id):
         # Caller holds the fleet lock; retiring memory stays reserved until termination finishes.
         runner = self.runners.pop(model_id)
         proc, est = runner.detach()
         self.retiring[runner] = est
-        if forget:
-            self.settings_mod.forget_loaded(model_id)
         return runner, proc
 
     def _finish_unload(self, model_id, runner, proc):
@@ -1150,14 +1425,17 @@ class Fleet:
                     message = f"unloaded after {timeout} idle minutes"
                     runner.log.append(message)
                     self.idle_unloads[model_id] = {"code": "idle_unload", "minutes": timeout, "at": time.time()}
-                    detached, proc = self._detach_runner(model_id, forget=False)
+                    stopped = self._detach_cascades(model_id, "unloaded")
+                    detached, proc = self._detach_runner(model_id)
                     self._prune_logs()
-                    return detached, proc, message
+                    return stopped, detached, proc, message
 
                 result = self.settings_mod.with_idle_unload_state(detach_if_current)
                 if result is None:
                     continue
-                detached, proc, message = result
+                stopped, detached, proc, message = result
+            for name, dependent, child in stopped:
+                self._finish_unload(name, dependent, child)
             self._finish_unload(model_id, detached, proc)
             self.event("info", f"{model_id}: {message}")
 
@@ -1178,6 +1456,7 @@ class Fleet:
                 raise RuntimeError("Comparison models cannot be restarted")
             if options is None:
                 options = current.options
+            stopped = self._detach_cascades(model_id, "restarted")
             proc, est = current.detach()
             self.runners.pop(model_id)
             self.retiring[current] = est
@@ -1186,6 +1465,8 @@ class Fleet:
         self.event("info", f"restart: {model_id}")
         reservation = f"restart:{model_id}"
         try:
+            for name, dependent, child in stopped:
+                self._finish_unload(name, dependent, child)
             Runner._terminate(proc)
             with self.lock:
                 self.retiring.pop(current, None)
@@ -1223,7 +1504,7 @@ class Fleet:
             models.append(runner.status())
         now = time.monotonic()
         with self.lock:
-            memory = self._memory(sum(m["rss_bytes"] or 0 for m in models))
+            memory = self._memory(sum(m["rss_bytes"] or 0 for m in models if m.get("kind") != "cascade"))
             inflight = list(self.inflight.values())
             idle_unloads = dict(self.idle_unloads)
         for m in models:  # what basal-ui is waiting on (Playground, API server, MCP, benchmark), oldest first
@@ -1303,7 +1584,8 @@ class Fleet:
         loading model comes from it."""
         with self.lock:
             return self.downloads.alive(repo) or any(
-                r.model_repo == repo and r.state != "idle" for r in [*self.runners.values(), *self.temporary.values()]
+                not isinstance(r, CascadeRunner) and r.model_repo == repo and r.state != "idle"
+                for r in [*self.runners.values(), *self.temporary.values()]
             )
 
     def while_idle(self, fn):
@@ -1376,16 +1658,26 @@ class Fleet:
     def lease(self, model_id):
         with self.lock:
             runner = self.ready(model_id)
-            self.leases[runner] = self.leases.get(runner, 0) + 1
+            members = (
+                [self.ready(model) for model in dict.fromkeys(level["model"] for level in runner.levels)]
+                if isinstance(runner, CascadeRunner)
+                else []
+            )
+            leased = [runner, *members]
+            for model in leased:
+                self.leases[model] = self.leases.get(model, 0) + 1
         try:
             yield runner
         finally:
             with self.lock:
-                count = self.leases.get(runner, 1) - 1
-                if count:
-                    self.leases[runner] = count
-                else:
-                    self.leases.pop(runner, None)
+                for model in members:
+                    model.last_used = time.monotonic()
+                for model in leased:
+                    count = self.leases[model] - 1
+                    if count:
+                        self.leases[model] = count
+                    else:
+                        self.leases.pop(model)
 
     def start_model_job(self, kind, model_id, label, target, *args, runner_expected=None):
         # Acquire before scheduling: a queued job already owns its model.

@@ -664,6 +664,22 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+## Cascades
+
+![A running escalation Cascade in Model manager](images/cascades.png)
+
+With Engine 2.5, a Cascade combines ready basal models behind one name. In Model manager → Library, create an
+escalation Cascade to retry uncertain decisions at the next loaded model, or a Blend to average probabilities using
+positive weights. An escalation Cascade may optionally send remaining uncertain choice questions to an OpenAI-compatible chat
+endpoint; the Engine router does not support combining Blend with fallback. Its fallback API key is stored in the owner-only `settings.decision-secrets.json` sidecar (named from the configured settings file) and is not returned by the API.
+
+Start and stop Cascades from the loaded-model list. They do not load their members, count against the memory budget,
+or start automatically after a restart; every member must already be ready. Unloading a member stops any Cascade
+that uses it. The Playground reports which level/model answered. Blend and fallback results are marked uncalibrated
+and must not be treated as automatable. Cascades are excluded from Calibration, Inspect, and Benchmarks; only
+escalation Cascades without fallback are available to Batch. Editing or deleting a running Cascade requires stopping it first.
+A settings and secret update uses separate atomic file replacements; a crash between them can leave them out of sync.
+Engine 2.4.1 lacks the router and shows an unavailable reason.
 ## Server limits
 
 Load options include request concurrency, request timeout, body size, branch count, prompt size and stall detection limits when the installed Engine declares them. Empty request timeout and stall detection fields leave them unset. The Dashboard shows a stalled Engine call's age and main and long lane counts when the Engine reports them. A stalled call may still be running; unloading the model is a separate operation.
