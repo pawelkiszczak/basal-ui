@@ -4,7 +4,7 @@ budget, statistics, history, logs, restart and unload."""
 import httpx
 import pytest
 
-from basal_ui.engine import feature
+from basal_ui import engine
 from tests.e2e.support import CHOICE, free_port
 
 
@@ -40,7 +40,7 @@ def test_two_models_answer_behind_one_api_port_with_a_key(ui, text_model, second
     unload_after += [a, b]
     ui.load(a)
     ui.load(b)
-    api, key, serve = api_server
+    api, key, _ = api_server
     listing = api.get("/v1/models").json()
     assert {m["id"] for m in listing["data"]} >= {a, b} and len(listing["models"]) == len(listing["data"])
     assert httpx.post(f"{api.base_url}/v1/systemone", json={"model": a, **CHOICE}).status_code == 401  # no key
@@ -81,52 +81,59 @@ def test_two_models_answer_behind_one_api_port_with_a_key(ui, text_model, second
     assert record["request"]["model"] == a and "answers" in record["response"]
     assert any(k["name"] == "e2e" and k["last_used"] for k in ui.get("/api/serve")["keys"])
 
-    if serve["settings"]["mcp"]:
-        mcp = {"Accept": "application/json, text/event-stream", "Authorization": f"Bearer {key}"}
 
-        def rpc(method, params):
-            r = api.post("/mcp", headers=mcp, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-            assert r.status_code == 200, r.text
-            return r.json()["result"]
+def test_mcp_routes_real_loaded_models(ui, text_model, second_model, api_server, unload_after):
+    pytest.importorskip("mcp.server.mcpserver", reason="MCP dependency is not installed")
+    a, b = text_model["id"], second_model["id"]
+    unload_after += [a, b]
+    ui.load(a)
+    ui.load(b)
+    api, key, serve = api_server
+    assert serve["mcp_available"] and serve["settings"]["mcp"], "MCP was not enabled"
+    print("MCP enabled:", serve["settings"]["mcp"])
+    mcp = {"Accept": "application/json, text/event-stream", "Authorization": f"Bearer {key}"}
 
-        # without `model` the API server answers with the first loaded model (2.4.1 and 2.5.0)
-        answer = rpc(
-            "tools/call",
-            {
-                "name": "decide",
-                "arguments": {"state": CHOICE["state"], "type": "noul", "question": "Czy klient prosi o odblokowanie?"},
-            },
-        )
-        assert not answer.get("isError") and answer["structuredContent"]["model"] == ui.status()["models"][0]["id"], (
-            answer
-        )
-        assert 0 <= answer["structuredContent"]["noul"] <= 1
-        assert any(
-            r["source"] == "mcp"
-            for r in ui.get("/api/history", params={"model": answer["structuredContent"]["model"]})["items"]
-        )
-        tools = {t["name"]: t for t in rpc("tools/list", {})["tools"]}
-        if not feature("mcp_models"):  # engine 2.4.1: no model argument, no list_models
-            assert "list_models" not in tools
-            return
-        assert "model" in tools["decide"]["inputSchema"]["properties"]
-        listed = rpc("tools/call", {"name": "list_models", "arguments": {}})["structuredContent"]["models"]
-        assert set(listed) == {a, b}
-        other = next(m for m in (a, b) if m != answer["structuredContent"]["model"])
-        routed = rpc(
-            "tools/call",
-            {
-                "name": "decide",
-                "arguments": {
-                    "state": CHOICE["state"],
-                    "type": "noul",
-                    "question": "Czy to reklamacja?",
-                    "model": other,
-                },
-            },
-        )
-        assert not routed.get("isError") and routed["structuredContent"]["model"] == other, routed
-        assert any(r["source"] == "mcp" for r in ui.get("/api/history", params={"model": other})["items"])
+    def rpc(method, params):
+        r = api.post("/mcp", headers=mcp, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        assert r.status_code == 200, r.text
+        return r.json()["result"]
+
+    answer = rpc(
+        "tools/call",
+        {
+            "name": "decide",
+            "arguments": {"state": CHOICE["state"], "type": "noul", "question": "Czy klient prosi o odblokowanie?"},
+        },
+    )
+    default = answer["structuredContent"]["model"]
+    assert not answer.get("isError") and default == ui.status()["models"][0]["id"], answer
+    assert 0 <= answer["structuredContent"]["noul"] <= 1
+    assert any(r["source"] == "mcp" for r in ui.get("/api/history", params={"model": default})["items"])
+    tools = {t["name"]: t for t in rpc("tools/list", {})["tools"]}
+    version, _ = engine.installed()
+    if version == "2.4.1":
+        assert "list_models" not in tools and "model" not in tools["decide"]["inputSchema"]["properties"]
+        print("MCP default:", default, "legacy tools without model selection")
+        return
+    assert "model" in tools["decide"]["inputSchema"]["properties"]
+    listed = rpc("tools/call", {"name": "list_models", "arguments": {}})["structuredContent"]["models"]
+    assert set(listed) == {a, b}
+    other = next(m for m in (a, b) if m != default)
+    routed = rpc(
+        "tools/call",
+        {
+            "name": "decide",
+            "arguments": {"state": CHOICE["state"], "type": "noul", "question": "Czy to reklamacja?", "model": other},
+        },
+    )
+    assert not routed.get("isError") and routed["structuredContent"]["model"] == other, routed
+    assert any(r["source"] == "mcp" for r in ui.get("/api/history", params={"model": other})["items"])
+    missing = rpc(
+        "tools/call",
+        {"name": "decide", "arguments": {"state": "s", "question": "?", "model": "Remek/not-loaded"}},
+    )
+    assert missing["isError"] and "not loaded" in missing["content"][0]["text"]
+    print("MCP default:", default, "explicit:", other, "listed:", listed, "unloaded refused:", missing["isError"])
 
 
 def test_memory_budget_refuses_a_load_that_does_not_fit(ui, text_model, second_model, hardware):
