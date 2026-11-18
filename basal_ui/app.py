@@ -32,13 +32,14 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, engine, hardware, settings
+from . import backends, catalog, engine, hardware, history_audio, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fetch import FetchError, FetchManager
 from .fleet import Fleet
 from .gateway import Gateway
-from .history import History, replay_fields
+from .history import History
+from .history_audio import BUDGET as HISTORY_AUDIO_BUDGET
 from .mcp_import import shortlist
 from .stats import Stats
 
@@ -957,7 +958,18 @@ def create_app(
             "default_models_dir": str(default),
             "is_default": models == default,
             "check_updates": settings_mod.check_updates(),
+            "keep_history_audio": settings_mod.keep_history_audio(),
+            "history_audio_budget_bytes": HISTORY_AUDIO_BUDGET,
+            "history_audio_available": history_audio.supported(),
         }
+
+    @app.exception_handler(settings.HistoryAudioPolicyError)
+    async def history_audio_policy_error(_request: Request, _exc: settings.HistoryAudioPolicyError):
+        return JSONResponse(
+            {"detail": "History audio setting is unavailable.", "code": "history_audio_policy_unavailable"},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/settings")
     def get_settings():
@@ -969,6 +981,16 @@ def create_app(
         check_updates = body.get("check_updates")
         if "check_updates" in body and not isinstance(check_updates, bool):
             raise HTTPException(400, "check_updates must be a boolean")
+        if "keep_history_audio" in body and not isinstance(body["keep_history_audio"], bool):
+            raise HTTPException(400, "keep_history_audio must be a boolean")
+        if body.get("keep_history_audio") and not history_audio.supported():
+            return JSONResponse(
+                {
+                    "detail": "History audio retention is unavailable on this platform.",
+                    "code": "history_audio_unsupported",
+                },
+                status_code=400,
+            )
         if models_dir is not None and not isinstance(models_dir, str):
             raise HTTPException(400, "models_dir must be a string or null")
         try:
@@ -976,6 +998,8 @@ def create_app(
                 fleet.while_idle(lambda: settings_mod.set_models_dir(models_dir))
             if "check_updates" in body:
                 settings_mod.set_check_updates(check_updates)
+            if "keep_history_audio" in body:
+                settings_mod.set_keep_history_audio(body["keep_history_audio"])
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
@@ -2604,11 +2628,11 @@ def create_app(
         return {"items": items, "models": history.models()}
 
     @app.get("/api/history/{record_id}")
-    def get_history_record(record_id: str):
-        record = history.get(record_id)
+    def get_history_record(record_id: str, replay: bool = False):
+        record = history.detail(record_id, replay=replay)
         if record is None:
             raise HTTPException(404, f"unknown history record {record_id!r}")
-        return {**record, **replay_fields(record.get("request", {}))}
+        return JSONResponse(record, headers={"Cache-Control": "no-store"})
 
     @app.delete("/api/history")
     def clear_history():

@@ -641,3 +641,13 @@ Load options use the installed Engine parser's `long_lane` choices and default. 
 `GET /api/models/options?id=...` includes Native `kind` and `compiled` on mode rows, and returns `unavailable`, a map of option keys to reasons when the installed Engine lacks support. Saved values remain visible; submitting an unavailable non-default value is refused. `PUT /api/models/options` saves validated non-default values. Existing load presets and their import/export carry these option values.
 
 The `/api/status` response includes `features.rank`, a capability probe for experimental rank questions. `POST /api/decide` forwards rank questions to the Engine; its validation errors and results are returned unchanged.
+
+## History audio retention
+
+The settings response reports support as `history_audio_available`. Unsupported platforms keep ordinary History and reject attempts to enable audio retention.
+
+`GET /api/settings` returns `keep_history_audio` (default `false`) and the read-only `history_audio_budget_bytes` (268435456). `PUT /api/settings` accepts the boolean `keep_history_audio`; disabling it preserves existing retained audio. The oldest audio expires when the budget is needed, while History rows remain. Images are not retained and clearing History deletes retained audio. If the saved policy cannot be read or safely changed, either route returns HTTP 503 with `code: history_audio_policy_unavailable` and `Cache-Control: no-store`; clients must treat the state as unknown rather than off.
+
+History commits new retention and eviction metadata before deleting old audio and filling the reserved new file. A precommit failure preserves previously retained audio; after the metadata commit, a storage failure can leave the new row with unavailable audio and previously selected clips expired. Cleanup uses recorded app-owned file identity; experimental prototype blobs without identity are not trusted for replay or automatic deletion. These guarantees do not establish power-loss rollback or protection against a concurrently hostile process with the same OS user.
+
+History lists and ordinary `GET /api/history/{id}` remain redacted. A detail can indicate `replay_requires_audio: true`; only an explicit `GET /api/history/{id}?replay=true` requests the complete replay payload. If retained audio is unavailable, `replay_error_code` is `history_audio_unavailable`; missing images can also prevent Replay. No audio bytes are loaded by routine History polling.

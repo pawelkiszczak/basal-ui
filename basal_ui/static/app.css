@@ -257,3 +257,4 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 .comparison-model .model-row-main strong, #decisionServerList .disk-info { min-width: 0; overflow-wrap: anywhere; }
 #decisionServerList .disk-info { display: block; }
 #decisionServerList .disk-info > div { margin-top: .3rem; }
+@media(max-width:520px){.history-replay-error{max-width:calc(100vw - 90px);white-space:normal}}
