@@ -25,21 +25,16 @@
   align numeric table columns with their headings.
 - Inspect follows the saved English or Polish language preference.
 - Inspect history supports keyboard activation, and question editor controls have accessible labels.
-
 - Route app component colors and Mark elements annotations through semantic tokens; side navigation now follows the current theme.
-
 - Form controls have more visible borders in light and dark themes, including the Inspect view.
-
 - Match good and active status indicators to the orange skin in light and dark themes, while retaining status labels.
-
 - The API server exposes admin-gated Prometheus metrics at `/metrics`, including available per-model Engine metrics grouped by metric family. Set `BASAL_UI_ADMIN_KEY` before startup to authenticate an external scraper.
 - On narrow screens, open Quick actions follow the main content, matching keyboard navigation order.
 - Dialogs announce their purpose to screen readers using translated names.
-
 - Model processes start with detached stdin, and load or later exit errors include a bounded log excerpt while the full
   per-model log remains available in Logs.
-
 - Load options keeps the latest selected model and action when earlier responses arrive late.
+- Use logical layout properties throughout the app and Inspect to prepare for right-to-left layouts.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
   [README](../README.md#supported-engine-range)

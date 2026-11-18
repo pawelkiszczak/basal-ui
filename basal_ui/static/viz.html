@@ -42,8 +42,9 @@
 body { margin: 0; background: var(--page); color: var(--ink); font: .875rem/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-header .chip { margin-left: 4px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+header .chip { margin-inline-start: 4px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 header .spacer { flex: 1; }
+@media (max-width: 600px) { header { flex-wrap: wrap; } header .chip { white-space: normal; overflow-wrap: anywhere; max-width: 100%; } }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; white-space: nowrap; }
 button, select, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
@@ -80,20 +81,20 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 .rhead { padding: 18px 20px; display: grid; grid-template-columns: 1fr auto; gap: 12px 20px; border-bottom: 1px solid var(--border); }
 .rhead .qname { color: var(--muted); font-size: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rhead .qtext { font-size: 16px; font-weight: 600; margin-top: 4px; }
-.hero { text-align: right; }
+.hero { text-align: end; }
 .hero .v { font-size: 44px; font-weight: 600; line-height: 1; }
 .hero .l { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
 .answer { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .answer .opt-text { font-size: 18px; font-weight: 600; }
-.status { display: inline-flex; gap: 6px; align-items: center; padding: 3px 10px 3px 6px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink); }
+.status { display: inline-flex; gap: 6px; align-items: center; padding-block: 3px; padding-inline: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink); }
 .status .ic { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; color: var(--status-icon-foreground); font-size: 11px; font-weight: 700; }
 .step { padding: 18px 20px; border-bottom: 1px solid var(--border); }
 .step:last-child { border-bottom: 0; }
 .step h3 { margin: 0 0 2px; font-size: 14px; display: flex; gap: 10px; align-items: center; }
 .step h3 .n { width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2); color: var(--ink-2); display: inline-grid; place-items: center; font-size: 12px; font-weight: 700; flex: none; }
-.step .sub { color: var(--ink-2); margin: 0 0 12px 32px; font-size: 13px; }
-.step .body { margin-left: 32px; }
-@media (max-width: 600px) { .step .body, .step .sub { margin-left: 0; } .hero .v { font-size: 34px; } }
+.step .sub { color: var(--ink-2); margin: 0 0 12px; margin-inline-start: 32px; font-size: 13px; }
+.step .body { margin-inline-start: 32px; }
+@media (max-width: 600px) { .step .body, .step .sub { margin-inline-start: 0; } .hero .v { font-size: 34px; } }
 .tabs { display: inline-flex; background: var(--surface-2); border-radius: 8px; padding: 2px; gap: 2px; margin-bottom: 8px; }
 .tabs button { border: 0; background: transparent; padding: 4px 10px; border-radius: 6px; font-size: 12px; color: var(--ink-2); }
 .tabs button.on { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--border); }
@@ -113,7 +114,7 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 @media (max-width: 760px) { .pack { grid-template-columns: 1fr; } }
 .packrow { margin-bottom: 14px; }
 .packrow .lbl { font-size: 12px; color: var(--ink-2); margin-bottom: 4px; display: flex; justify-content: space-between; }
-.packrow .bar { display: flex; gap: 2px; height: 22px; }
+.packrow .bar { direction: ltr; display: flex; gap: 2px; height: 22px; }
 .packrow .bar div { border-radius: 4px; min-width: 2px; }
 .packrow .bar .gap { width: 10px; background: transparent; }
 .bignum { font-size: 22px; font-weight: 600; }
@@ -139,24 +140,25 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .hbars .txt { overflow-wrap: anywhere; min-width: 0; color: var(--ink); }
 .hbars .track { height: 12px; position: relative; }
 .hbars .track div { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; min-width: 1px; }
-.hbars .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.hbars .val { text-align: end; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .hbars .win .txt, .hbars .win.val { font-weight: 600; }
 .toptok { margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 .toptok code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 .cmp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) 60px; gap: 4px 10px; align-items: center; font-size: 12px; }
 .cmp .txt { overflow-wrap: anywhere; min-width: 0; }
-.cmp .pair { display: grid; gap: 2px; }
+.cmp .pair { direction: ltr; display: grid; gap: 2px; }
 .cmp .pair div { height: 8px; border-radius: 0 4px 4px 0; min-width: 1px; }
-.cmp .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.cmp .val { text-align: end; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .cmp .hdr { color: var(--muted); font-size: 11px; }
 .meter { position: relative; height: 56px; margin: 6px 0 4px; }
-.meter .track { position: absolute; left: 0; right: 0; top: 22px; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+.meter .track { position: absolute; inset-inline: 0; top: 22px; height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
 .meter .zone { position: absolute; top: 0; bottom: 0; }
-.meter .fill { position: absolute; top: 22px; left: 0; height: 10px; border-radius: 5px; }
-.meter .tick { position: absolute; top: 14px; height: 26px; width: 0; border-left: 1px solid var(--ink-2); }
-.meter .tick span { position: absolute; top: 28px; transform: translateX(-50%); font-size: 11px; color: var(--ink-2); white-space: nowrap; }
+.meter .fill { position: absolute; top: 22px; inset-inline-start: 0; height: 10px; border-radius: 5px; }
+.meter .tick { position: absolute; top: 14px; height: 26px; width: 0; border-inline-start: 1px solid var(--ink-2); }
+.meter .tick span { position: absolute; top: 28px; inset-inline-start: 0; transform: translateX(-50%); font-size: 11px; color: var(--ink-2); white-space: nowrap; }
 .meter .mk { position: absolute; top: 0; transform: translateX(-50%); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .meter .dot { position: absolute; top: 19px; width: 16px; height: 16px; border-radius: 50%; transform: translateX(-50%); border: 2px solid var(--surface); }
+[dir="rtl"] .meter :is(.tick span, .mk, .dot) { transform: translateX(50%); }
 .foot { color: var(--muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
 .err { color: var(--critical); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 16px; }
 .loading { display: flex; gap: 10px; align-items: center; color: var(--ink-2); padding: 12px 4px; }
@@ -169,7 +171,7 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 @media (forced-colors: active) {
   .tabs button.on { border: 2px solid ButtonText; }
 }
-.scale { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 12px; }
+.scale { direction: ltr; display: flex; flex-wrap: wrap; gap: 2px; margin-top: 12px; }
 .scale div { flex: 1 1 8em; min-width: 0; text-align: center; font-size: 11px; color: var(--ink-2); padding: 6px 4px; background: var(--surface-2); border-radius: 4px; overflow-wrap: anywhere; }
 .scale div.on { outline: 2px solid var(--ink); outline-offset: -2px; color: var(--ink); font-weight: 600; }
 </style>
@@ -611,7 +613,7 @@ function readoutView(q) {
 
 function averageView(q) {
   const k = q.options.length;
-  const g = h("div", { class: "cmp" }, h("span", { class: "hdr" }, tr("option")), h("span", { class: "hdr" }, tr("order 1 · order 2 → average")), h("span", { class: "hdr", style: { textAlign: "right" } }, tr("average")));
+  const g = h("div", { class: "cmp" }, h("span", { class: "hdr" }, tr("option")), h("span", { class: "hdr" }, tr("order 1 · order 2 → average")), h("span", { class: "hdr", style: { textAlign: "end" } }, tr("average")));
   for (let j = 0; j < k; j++) {
     const a = q.orders[0].canon[j], b = q.orders[1]?.canon[j] ?? a;
     g.append(h("span", { class: "txt", title: q.options[j] }, q.options[j]),
@@ -624,7 +626,7 @@ function averageView(q) {
       h("span", { class: "val" }, pct(q.mean[j])));
   }
   const gap = Math.max(...q.options.map((_, j) => Math.abs(q.orders[0].canon[j] - (q.orders[1]?.canon[j] ?? q.orders[0].canon[j]))));
-  const c = h("div", { class: "cmp", style: { marginTop: "18px" } }, h("span", { class: "hdr" }, tr("option")), h("span", { class: "hdr" }, q.orders.length > 1 ? tr("average → calibrated") : tr("raw → calibrated")), h("span", { class: "hdr", style: { textAlign: "right" } }, tr("final")));
+  const c = h("div", { class: "cmp", style: { marginTop: "18px" } }, h("span", { class: "hdr" }, tr("option")), h("span", { class: "hdr" }, q.orders.length > 1 ? tr("average → calibrated") : tr("raw → calibrated")), h("span", { class: "hdr", style: { textAlign: "end" } }, tr("final")));
   for (let j = 0; j < k; j++) {
     const win = j === q.answer.index;
     c.append(h("span", { class: "txt", style: { fontWeight: win ? 600 : 400 }, title: q.options[j] }, q.options[j]),
@@ -647,10 +649,10 @@ function decisionView(q, v) {
   const X = p => ((p - lo) / (1 - lo) * 100).toFixed(2) + "%";
   const m = h("div", { class: "meter", role: "img", "aria-label": tr("confidence {confidence}; thresholds {t5} and {t1}", {confidence: pct(conf), t5, t1}) },
     h("div", { class: "track" }), h("div", { class: "fill", style: { width: X(conf), background: v.color, opacity: .35 } }),
-    t5 != null ? h("div", { class: "tick", style: { left: X(t5) } }, h("span", {}, tr("5% error · {value}", {value: t5.toFixed(2)}))) : null,
-    t1 != null ? h("div", { class: "tick", style: { left: X(t1) } }, h("span", {}, tr("1% error · {value}", {value: t1.toFixed(2)}))) : null,
-    h("div", { class: "dot", style: { left: X(conf), background: v.color } }),
-    h("div", { class: "mk", style: { left: X(conf) } }, pct(conf)));
+    t5 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t5) } }, h("span", {}, tr("5% error · {value}", {value: t5.toFixed(2)}))) : null,
+    t1 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t1) } }, h("span", {}, tr("1% error · {value}", {value: t1.toFixed(2)}))) : null,
+    h("div", { class: "dot", style: { insetInlineStart: X(conf), background: v.color } }),
+    h("div", { class: "mk", style: { insetInlineStart: X(conf) } }, pct(conf)));
   const body = [h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--muted)" } },
     h("span", {}, tr("{value} (pure guess among {count})", {value: pct(lo, 0), count: q.options.length})), h("span", {}, "100%")), m,
     h("p", { style: { margin: "22px 0 0", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, statusChip(v), h("span", { class: "hint" }, v.why + "."))];
