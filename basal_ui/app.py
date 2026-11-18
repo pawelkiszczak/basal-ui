@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import anyio
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -31,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from . import backends, catalog, engine, hardware, settings
 from . import options as load_options
 from .addons import AddonManager
+from .fetch import FetchError, FetchManager
 from .fleet import Fleet
 from .gateway import Gateway
 from .history import History, replay_fields
@@ -107,6 +109,7 @@ def create_app(
     stats=None,
     history=None,
     addons=None,
+    fetch_manager=None,
     finetune=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
@@ -121,6 +124,7 @@ def create_app(
     )
     gateway = gateway or Gateway(fleet, settings_mod, stats)
     addon_manager = addons or AddonManager(fleet, hardware_fn)
+    fetch_manager = fetch_manager or FetchManager()
     from .finetune import FineTune
 
     finetune_manager = finetune or FineTune(fleet, settings_mod, hardware_fn, addon_manager)
@@ -234,7 +238,10 @@ def create_app(
             auto_load_thread.start()
         inspector.bind(asyncio.get_running_loop())  # the explainer's batching loop runs on this one
         await asyncio.to_thread(gateway.start)
+        fleet.start_idle_timer()
         yield
+        await fetch_manager.close()
+        await asyncio.to_thread(fleet.stop_idle_timer)
         with auto_load_lock:
             auto_load_stop.set()
         if auto_load_thread is not None:
@@ -545,7 +552,9 @@ def create_app(
     @app.put("/api/memory")
     def put_memory(body: dict = Body(...)):
         try:
-            settings_mod.update_memory(body)
+            with fleet.lock:
+                settings_mod.update_memory(body)
+                fleet.refresh_idle_settings()
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return get_memory()
@@ -1046,6 +1055,10 @@ def create_app(
             "mlx_packed_reason": packed_reason,
             "mlx_packed_reason_code": packed_code,
             "mlx_packed_reason_params": packed_params,
+            "limits_available": {
+                key: bool(load_options.serve_option("--" + key.replace("_", "-")))
+                for key in load_options.LIMIT_DEFAULTS
+            },
             "adapter_reason": adapter_reason,
             "adapter_reason_code": adapter_code,
             "adapter_reason_params": adapter_params,
@@ -1143,6 +1156,38 @@ def create_app(
     def status():
         return full_status()
 
+    @app.get("/api/question-sets")
+    def question_sets():
+        if not engine.feature("presets"):
+            raise HTTPException(503, "Question sets are unavailable in this Engine.")
+        from basal import presets
+
+        return [
+            {
+                "name": name,
+                "languages": list(presets.PRESETS[name]),
+                "question_count": len(presets.questions(name, lang="en")),
+            }
+            for name in presets.names()
+        ]
+
+    @app.post("/api/question-sets/{name}")
+    def question_set(name: str, body: dict = Body(...)):
+        if not engine.feature("presets"):
+            raise HTTPException(503, "Question sets are unavailable in this Engine.")
+        from basal import presets
+
+        if name not in presets.names():
+            raise HTTPException(404, "Unknown question set.")
+        lang, state, max_error = body.get("lang", "auto"), body.get("state", ""), body.get("max_error")
+        if lang not in ("auto", "pl", "en") or not isinstance(state, str):
+            raise HTTPException(400, "lang must be auto, pl or en and state must be a string.")
+        if max_error is not None and (
+            isinstance(max_error, bool) or not isinstance(max_error, (int, float)) or not 0 < max_error < 1
+        ):
+            raise HTTPException(400, "max_error must be a number between 0 and 1 (exclusive).")
+        return presets.questions(name, lang=None if lang == "auto" else lang, state=state, max_error=max_error)
+
     @app.get("/api/examples")
     def get_examples():
         return examples()
@@ -1151,10 +1196,13 @@ def create_app(
     def decide(body: dict = Body(...)):  # sync: runs in the threadpool, a slow decision does not block the UI
         body = dict(body)
         model_id = body.pop("model", None)
+        source_url = body.pop("source_url", None)
+        if source_url is not None and not isinstance(source_url, str):
+            raise HTTPException(400, "source_url must be a string")
         if not isinstance(model_id, str) or not model_id:
             raise HTTPException(400, f"model is required; loaded: {fleet.loaded_ids()}")
         try:
-            r = fleet.decide(model_id, body, source="playground")
+            r = fleet.decide(model_id, body, source="playground", source_url=source_url)
         except KeyError as exc:
             raise HTTPException(404, f"model {model_id!r} is not loaded") from exc
         except RuntimeError as exc:
@@ -1368,6 +1416,17 @@ def create_app(
             raise HTTPException(400, f"download {variant.id} first")
         return Path(local_dir)
 
+    def calibration_fit_settings(variant):
+        with fleet.lock:
+            runner = fleet.runners.get(variant.id)
+            if runner is not None:
+                with runner.lock:
+                    if runner.state == "ready" and (runner.process is None or runner.process.poll() is None):
+                        options = dict(runner.options)
+                        options["mode"] = runner.mode
+                        return options, Path(runner.loaded_path) if runner.loaded_path else downloaded(variant)
+        return settings_mod.load_options(variant.id), downloaded(variant)
+
     @app.get("/api/finetune")
     def get_finetune(id: str | None = None):
         available, code, reason = finetune_manager.availability()
@@ -1409,7 +1468,7 @@ def create_app(
         from . import calibration
 
         variant = find_variant(body.get("id"))
-        local_dir = downloaded(variant)
+        selected_options, local_dir = calibration_fit_settings(variant)
         source = body.get("input")
         if not isinstance(source, str) or not source.strip():
             raise HTTPException(400, "input must be the path of a labelled JSONL file (docs/CALIBRATION.md)")
@@ -1433,9 +1492,22 @@ def create_app(
             "compare",
             "save_rows",
             "report_only",
+            "conformal",
+            "keep_shipped",
         }
         if set(advanced) - allowed:
             raise HTTPException(400, f"unknown advanced calibration option: {min(set(advanced) - allowed)}")
+        for key, flag in (("conformal", "--conformal"), ("keep_shipped", "--keep-shipped")):
+            value = advanced.get(key, [])
+            if not isinstance(value, list):
+                raise HTTPException(400, f"{key} must be a list")
+            if value and flag not in engine.calibrate_flags():
+                raise HTTPException(400, f"the installed Engine does not support {flag}")
+        if not all(type(x) in (int, float) and 0 < x < 1 for x in advanced.get("conformal", [])):
+            raise HTTPException(400, "conformal levels must be numbers between 0 and 1")
+        keep = advanced.get("keep_shipped", [])
+        if any(not isinstance(x, str) or x not in ("choice", "noul", "score") for x in keep):
+            raise HTTPException(400, "keep_shipped types must be choice, noul or score")
         for key in ("strict", "save_rows", "report_only"):
             if key in advanced and not isinstance(advanced[key], bool):
                 raise HTTPException(400, f"{key} must be a boolean")
@@ -1460,7 +1532,10 @@ def create_app(
             raise HTTPException(400, "compare must be shipped, none, or a calibration path")
         for key, value, names in (("reference", reference, ("basal-1.5",)), ("compare", compare, ("shipped", "none"))):
             if value and value not in names:
-                path = Path(value).expanduser()
+                try:
+                    path = Path(value).expanduser()
+                except RuntimeError:
+                    raise HTTPException(400, f"{key}: {value} is not a readable file") from None
                 if not path.is_file():
                     raise HTTPException(400, f"{key}: {value} is not a readable file")
                 advanced[key] = str(path)
@@ -1485,9 +1560,21 @@ def create_app(
             assessment, options = catalog.assess(variant, hw()), {}
         else:
             try:
-                assessment, options = prepare(variant, False, settings_mod.load_options(variant.id))
+                assessment, options = prepare(variant, False, selected_options)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+        if keep:
+            available = calibration.keep_options(
+                local_dir,
+                assessment.mode or "eager",
+                options,
+                advanced.get("compare", "shipped"),
+                source if from_rows else None,
+            )
+            if any(t not in available for t in keep):
+                raise HTTPException(400, "keep_shipped requires compatible compared thresholds for each type")
+            if not from_rows and advanced.get("compare", "shipped") == "shipped":
+                advanced["keep_source"] = available[keep[0]]
         out = settings_mod.calibrations_dir(variant.id) / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
         label = f"{variant.id} on {source.name}" + (" (engine in process: task questions)" if in_process else "")
         reserve = in_process and not from_rows
@@ -1573,7 +1660,30 @@ def create_app(
             "selected": settings_mod.calibration_selection().get(variant.id),
             "files": files,
             "shipped": shipped,
+            "options": {
+                "conformal": "--conformal" in engine.calibrate_flags(),
+                "keep_shipped": "--keep-shipped" in engine.calibrate_flags(),
+            },
         }
+
+    @app.get("/api/calibrations/keep-options")
+    def calibration_keep_options(id: str, compare: str = "shipped"):
+        from . import calibration
+
+        variant = find_variant(id)
+        selected_options, local_dir = calibration_fit_settings(variant)
+        if "--keep-shipped" not in engine.calibrate_flags():
+            return {"types": {}}
+        if compare not in ("shipped", "none"):
+            try:
+                compare = str(Path(compare).expanduser())
+            except RuntimeError:
+                return {"types": {}}
+        try:
+            assessment, options = prepare(variant, False, selected_options)
+            return {"types": calibration.keep_options(local_dir, assessment.mode or "eager", options, compare)}
+        except (OSError, ValueError):
+            return {"types": {}}
 
     @app.post("/api/calibrations/import")
     def import_calibration(body: dict = Body(...)):
@@ -1621,7 +1731,37 @@ def create_app(
         if file not in {f["file"] for f in calibration.listing(variant.id, settings_mod)}:
             raise HTTPException(404, f"{file!r} is not one of the calibrations of {variant.id} in basal-ui")
         try:
-            return {"report": Path(file).with_suffix(".report.txt").read_text(encoding="utf-8")}
+            report = Path(file).with_suffix(".report.txt").read_text(encoding="utf-8")
+            try:
+                cal = calibration.load(file)
+            except ValueError:
+                return {"report": report}
+            fitted = cal.get("fitted_on")
+            fitted = fitted if isinstance(fitted, dict) else {}
+            thresholds = cal.get("thresholds")
+            thresholds = thresholds if isinstance(thresholds, dict) else {}
+            details = {
+                "fitted_on": {
+                    k: fitted[k]
+                    for k in ("revision", "model_files", "model_content", "kept_shipped", "kept_shipped_from")
+                    if k in fitted
+                },
+                "conformal": cal.get("conformal"),
+                "thresholds": thresholds,
+            }
+            has_details = (
+                details["fitted_on"]
+                or details["conformal"]
+                or any(
+                    any(
+                        isinstance(entry, dict) and any(k in entry for k in ("icc", "design_effect", "refuted", "kept"))
+                        for entry in (target.get("per_type") or {}).values()
+                    )
+                    for target in (details["thresholds"] or {}).values()
+                    if isinstance(target, dict) and isinstance(target.get("per_type", {}), dict)
+                )
+            )
+            return {"report": report, **({"details": details} if has_details else {})}
         except OSError as exc:
             raise HTTPException(404, f"no report for {file}") from exc
 
@@ -1685,6 +1825,13 @@ def create_app(
             return paths.check(body.get("path"), body.get("kind"))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/fetch")
+    def fetch_url(request: Request, body: dict = Body(...)):
+        try:
+            return anyio.from_thread.run(fetch_manager.run, body.get("url"), request)
+        except FetchError as exc:
+            return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
 
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):

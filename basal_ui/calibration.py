@@ -240,9 +240,9 @@ def labelled(input_path):
 def engine_flags(flags) -> list[str]:
     """The basal-serve flags basal-calibrate's engine takes (add_engine_args), of a flag list such as
     catalog.serve_args + options.args; basal-serve's own (thinking, --strict-calibration) and --model are dropped."""
-    from basal import calibrate
+    from .engine import calibrate_flags
 
-    known = {s for a in calibrate.parser()._actions for s in a.option_strings}
+    known = calibrate_flags()
     out, keep = [], False
     for token in flags:
         if token.startswith("--"):
@@ -250,6 +250,84 @@ def engine_flags(flags) -> list[str]:
         if keep:
             out.append(token)
     return out
+
+
+def keep_options(local_dir, mode, options, compare="shipped", rows=None):
+    """Types the Engine can keep from the calibration it would compare for this fit."""
+    from basal import calibrate
+
+    if compare == "none":
+        return {}
+    if rows is not None:
+        try:
+            with Path(rows).open(encoding="utf-8") as stream:
+                head = json.loads(stream.readline())
+            if head.get("basal_calibrate_rows") != 1:
+                return {}
+            path = Path(compare if compare != "shipped" else head.get("baseline") or "")
+            if not path.is_file():
+                return {}
+            baseline = calibrate.as_served(load(path), path, head.get("fmt"))
+            identity = (
+                head.get("model"),
+                head.get("revision"),
+                head.get("adapter"),
+                None,
+                head.get("kind"),
+                head.get("model_files"),
+                head.get("model_content"),
+            )
+            why = calibrate.validate_baseline(baseline, path.name, head.get("orders"), head.get("layout"), identity)
+            if why or (compare == "shipped" and head.get("baseline_why")):
+                return {}
+            kind, quant, preset = head["kind"], head["quant"], head.get("vllm_preset")
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return {}
+    else:
+        from basal.prompt import model_format, model_layout
+        from basal.server import default_orders
+
+        try:
+            kind, default_quant = MODES[mode][:2]
+            quant, preset = options.get("quant") or default_quant, options.get("vllm_preset")
+            fmt = model_format(Path(local_dir))
+            layout = options.get("layout") or model_layout(Path(local_dir))
+            orders = default_orders(options.get("orders"), fmt)
+            adapter = None
+            if options.get("adapter"):
+                from basal import adapter as adapter_mod
+
+                adapter = adapter_mod.read(options["adapter"])
+            model, revision = model_identity(str(local_dir), Path(local_dir))
+            baseline, path, why = calibrate.compared(
+                Path(local_dir),
+                kind,
+                None if compare == "shipped" else compare,
+                quant,
+                orders,
+                False,
+                preset,
+                layout,
+                adapter,
+                (model, revision, adapter.identity if adapter else None),
+                fmt,
+            )
+            if why or path is None:
+                return {}
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, SystemExit):
+            return {}
+    if not hasattr(calibrate, "file_engine") or calibrate.file_engine(baseline, path) is None:
+        return {}
+    available = {}
+    for question_type in ("choice", "noul", "score"):
+        try:
+            calibrate.check_keep_engine(
+                calibrate.check_keep([question_type], baseline), baseline, path, kind, quant, preset
+            )
+        except (SystemExit, ValueError, TypeError, KeyError):
+            continue
+        available[question_type] = str(path)
+    return available
 
 
 def _basal_calibrate(job, argv, writer):
@@ -281,7 +359,11 @@ def name_snapshot(path, local_dir):
     itself, rkinas/basal#71: the file then no longer names the local path and is left as written)."""
     cal = json.loads(Path(path).read_text(encoding="utf-8"))
     fitted = cal.get("fitted_on")
-    if not isinstance(fitted, dict) or fitted.get("model") != str(local_dir):
+    if (
+        not isinstance(fitted, dict)
+        or fitted.get("model") != str(local_dir)
+        or any(key in fitted for key in ("revision", "model_files", "model_content"))
+    ):
         return
     model, revision = model_identity(str(local_dir), Path(local_dir))
     if revision is None:  # not a cache snapshot: the path is the model's name
@@ -320,7 +402,10 @@ def run_calibration(
     reference = advanced.get("reference")
     if reference:
         common += ["--reference", str(reference)]
-    compare = advanced.get("compare", "shipped")
+    for key, flag in (("conformal", "--conformal"), ("keep_shipped", "--keep-shipped")):
+        if advanced.get(key):
+            common += [flag, ",".join(map(str, advanced[key]))]
+    compare = advanced.get("keep_source") or advanced.get("compare", "shipped")
     if compare == "none":
         common.append("--no-calibration")
     elif isinstance(compare, str) and compare != "shipped":

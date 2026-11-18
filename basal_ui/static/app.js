@@ -4,7 +4,10 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
-let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false;
+let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
+let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
+let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
+let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 function httpFailure(status,message) {
   const hint={422:t('Invalid request: revise the input.'),503:t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
   return `${status?`HTTP ${status}. `:''}${hint?hint+' ':''}${message}`;
@@ -18,13 +21,26 @@ async function api(path, options={}) {
     const raw=detail||data?.error?.message||(typeof data==='string'?data:JSON.stringify(data,null,2))||response.statusText;
     const message=data?.code?ts(raw,data.code,data.params):raw;
     const id=response.headers.get('x-request-id');
-    throw new Error(`${httpFailure(response.status,message)}${id?` [request ${id}]`:''}`);
+    throw new Error(`${httpFailure(response.status,message,data?.code||data?.error?.code)}${id?` [request ${id}]`:''}`);
   }
   return data;
 }
 function toast(message, type='success') {
   const node=document.createElement('div'); node.className=`toast ${type}`; node.textContent=message;
-  $('#toastStack').append(node); setTimeout(()=>node.remove(),4000);
+  if(type==='error') {
+    const close=document.createElement('button'); close.type='button'; close.textContent='×'; close.setAttribute('aria-label',t('Dismiss')); close.onclick=()=>node.remove(); node.append(close);
+  } else {
+    node.tabIndex=0;
+    let remaining=4000, started, timer=null, hovered=false, focused=false;
+    const pause=()=>{if(timer!==null){clearTimeout(timer);remaining-=performance.now()-started;timer=null;}};
+    const resume=()=>{if(!hovered&&!focused&&timer===null){started=performance.now();timer=setTimeout(()=>node.remove(),remaining);}};
+    node.addEventListener('mouseenter',()=>{hovered=true;pause();});
+    node.addEventListener('mouseleave',()=>{hovered=false;resume();});
+    node.addEventListener('focusin',()=>{focused=true;pause();});
+    node.addEventListener('focusout',e=>{focused=node.contains(e.relatedTarget);resume();});
+    $('#toastStack').append(node); hovered=node.matches(':hover'); resume(); return;
+  }
+  $('#toastStack').append(node);
 }
 function confirmDialog({title,description,confirmLabel=t('Confirm'),destructive=false}) {
   return new Promise(resolve=>{
@@ -41,7 +57,6 @@ function applyTheme(theme) {
   const value=['light','dark','system'].includes(theme)?theme:'system';
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
   document.documentElement.classList.toggle('dark',document.documentElement.dataset.theme==='dark');
-  document.querySelectorAll('.side-nav button').forEach(b=>{if(document.documentElement.dataset.theme==='dark')b.style.setProperty('color','#edf0e9','important');else b.style.removeProperty('color');});
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
@@ -51,7 +66,8 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((lo
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
-  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden){e.preventDefault();$('#sendButton').click();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&$('#fetchDialog').open){e.preventDefault();}
+  else if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden){e.preventDefault();$('#sendButton').click();}
   else if(!typing&&e.key==='?'&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();$('#shortcutsDialog').showModal();}
   else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
@@ -201,11 +217,13 @@ function renderDiskModels() {
   }
   $('#diskModels').innerHTML=rows.length?[...groups].sort(([a],[b])=>familyOrder(b)-familyOrder(a)||a.localeCompare(b)).map(([type,models])=>{
     const bytes=models.reduce((sum,m)=>sum+(Number(m.downloaded_bytes)||0),0);
-    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
+    return `<section class="disk-group"><div class="disk-group-heading"><h4>${esc(t(type))}</h4><span class="muted">${tp(models.length,'{n} model','{n} models',{n:models.length})} · ${gb(bytes)}</span></div>${models.map(m => `<div class="disk-row"><div class="disk-info"><strong>${esc(m.tier)} · ${esc(m.label)}</strong>${m.community?`<span class="chip">${t('community')}</span>`:''}<span class="muted">${gb(m.downloaded_bytes)}</span>${idleUnloadText(statusCache?.idle_unloads?.[m.id])}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button></div><div class="disk-actions">${diskActions(m)}</div></div>`).join('')}</section>`;  // the family is the group's heading
   }).join(''):`<div class="empty">${t('Nothing downloaded yet')}</div>`;
   $('#diskTotal').textContent = t('Total: {size} in {models}',{size:gb(total),models:tp(rows.length,'{n} model','{n} models',{n:rows.length})});
   renderManagerSummary();
 }
+function idleUnloadText(reason){return reason?.code==='idle_unload'?`<span class="muted">${esc(idleUnloadMessage(reason))}</span>`:'';}
+function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} idle minute at {time}','Unloaded after {n} idle minutes at {time}',{time:new Date(reason.at*1000).toLocaleString()});}
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
@@ -278,7 +296,7 @@ async function loadModel(id, media=false, mode=null) {
   if(mode)return openLoadOptions(id,media,'load',mode);
   statusSequence++;
   try { await api('/api/load', {method:'POST', body:JSON.stringify({id,...(media?{media:true}:{})})}); toast(t('Model load started')); await refreshStatus(); }
-  catch (e) { showStatusError(e.message); toast(e.message,'error'); }
+  catch (e) { showStatusError(e.message); }
 }
 function showStatusError(text) { if(text)toast(text,'error'); }
 function mediaTitle(kinds) { return kinds.map(kind => kind === 'image' ? t('images') : kind === 'audio' ? t('audio') : kind).join(` ${t('and')} `); }
@@ -376,9 +394,9 @@ async function refreshStatus() {
   const sequence = ++statusSequence;
   try {
     const status = await api('/api/status');
-    if (sequence === statusSequence) { renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; showStatusError(e.message); trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {
@@ -388,6 +406,32 @@ async function loadExamples() {
     renderRequestPresets();
   } catch { examples=[];renderRequestPresets(); }
 }
+// Engine question sets are added to the current request, including in Edit JSON mode.
+$('#examples').insertAdjacentHTML('afterend', `<details id="questionSets"><summary>${t('Insert question set')}</summary><div class="controls"><label>${t('Question set')} <select id="questionSet" disabled></select></label><label>${t('Language')} <select id="questionSetLang" disabled><option value="auto">${t('Auto')}</option><option value="pl">${t('Polish')}</option><option value="en">${t('English')}</option></select></label><label>${t('Max error (optional)')} <input id="questionSetError" type="number" disabled min="0" max="1" step="any"></label><button type="button" id="insertQuestionSet" disabled>${t('Insert questions')}</button></div><p id="questionSetHint" class="muted" role="status">${t('Loading question sets…')}</p></details>`);
+async function loadQuestionSets() {
+  try {
+    const sets=await api('/api/question-sets');
+    $('#questionSet').innerHTML=sets.map(set=>`<option value="${esc(set.name)}">${esc(set.name)} (${set.question_count})</option>`).join('');
+    for(const selector of ['#questionSet','#questionSetLang','#questionSetError','#insertQuestionSet'])$(selector).disabled=!sets.length;
+    $('#questionSetHint').textContent=sets.length?'':t('No question sets are available.');
+  } catch { $('#questionSetHint').textContent=t('Question sets are unavailable in this Engine.'); }
+}
+$('#insertQuestionSet').onclick=()=>act(async()=>{
+  const jsonMode=$('#editJsonToggle').checked;
+  const request=jsonMode?JSON.parse($('#requestJson').value):buildRequest();
+  if(!request||typeof request!=='object'||Array.isArray(request)||!request.questions||typeof request.questions!=='object'||Array.isArray(request.questions))throw new Error(t('Request must contain a questions object.'));
+  const field=$('#questionSetError');if(!field.checkValidity()){field.reportValidity();return;}
+  const state=typeof request.state==='string'?request.state:JSON.stringify(request.state??'');
+  const questions=await api(`/api/question-sets/${encodeURIComponent($('#questionSet').value)}`,{method:'POST',body:JSON.stringify({lang:$('#questionSetLang').value,state,max_error:field.value===''?null:Number(field.value)})});
+  if(jsonMode!==$('#editJsonToggle').checked||JSON.stringify(request)!==JSON.stringify(jsonMode?JSON.parse($('#requestJson').value):buildRequest()))throw new Error(t('Request changed while loading questions. Try again.'));
+  const names=new Set(Object.keys(request.questions));
+  for(const [base,q] of Object.entries(questions)){
+    let name=base;for(let i=2;names.has(name);i++)name=`${base}_${i}`;names.add(name);
+    if(jsonMode)request.questions[name]=q;else addQuestion(name,q);
+  }
+  if(jsonMode){$('#requestJson').value=JSON.stringify(request,null,2);window.RequestCode.invalidate();}else syncRequest();
+});
+loadQuestionSets();
 // Question builder: one card per question, a type-specific fieldset; fields the builder does not own stay on the card
 // (card._extra) and are merged back, so Edit JSON → builder → JSON keeps them.
 const QUESTION_TYPES=['choice','noul','score','multi','act','tool','classify','verify','compress','extract'];
@@ -395,7 +439,7 @@ const EVIDENCE_TYPES=['choice','noul','score','act','tool'], MAX_ERROR_TYPES=['a
 const TASK_TYPES=['classify','verify','compress','extract'], TOOL_EXTRAS=['answer_directly','ask_user','none'];
 const SET_KEYS=['objective','threshold','min','max','fallback','fallback_threshold','exclusive'];
 let presetData={load:{},request:{}},presetTarget='load';
-async function loadPresets() {try{presetData=await api('/api/presets');renderRequestPresets();renderLoadPresets();}catch{}}
+async function loadPresets(current=()=>true) {try{const data=await api('/api/presets');if(!current())return;presetData=data;renderRequestPresets();renderLoadPresets();}catch{}}
 function renderRequestPresets() {
   const select=$('#examples'), current=select.value;
   const saved=Object.keys(presetData.request||{});
@@ -679,7 +723,7 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
 }
 function extraOf(q, type) {
   const owned=new Set(['type','instructions','evidence',...OWNED[type]]);
-  if(!Array.isArray(q.max_error))owned.add('max_error');  // a list of targets (tasks) is kept as given
+  if(MAX_ERROR_TYPES.includes(type)&&!Array.isArray(q.max_error))owned.add('max_error');  // uneditable targets stay as given
   return Object.fromEntries(Object.entries(q||{}).filter(([k])=>!owned.has(k)));
 }
 function mediaRequestFields() {
@@ -699,6 +743,83 @@ function requestOptionFields() {
   return fields;
 }
 const REQUEST_OPTION_KEYS=['facts','lang','think','think_text','early_exit'];
+function renderFetchProvenance() {
+  const note=$('#fetchProvenance');
+  $('#openFetchDialog').hidden=replayLocked;
+  note.hidden=sourceUrl===null;
+  if(sourceUrl===null){note.textContent='';return;}
+  note.textContent=replayLocked?t('Recorded source: {url}',{url:sourceUrl}):t('Source: {url}',{url:sourceUrl});
+  if(fetchInfo&&fetchInfo.final_url===sourceUrl)note.textContent+='\n'+t('Original: {url}',{url:fetchInfo.url})+'\n'+
+    t('Final: {url}',{url:fetchInfo.final_url})+'\n'+t('Type: {type} · {bytes} bytes · {truncation}',{
+      type:fetchInfo.content_type,bytes:fetchInfo.bytes,truncation:fetchInfo.truncated?t('Text truncated to 200,000 characters'):t('Text not truncated')});
+}
+function renderStateEstimate() {
+  let state;
+  try {
+    if($('#editJsonToggle').checked)state=JSON.parse($('#requestJson').value).state;
+    else {const input=$('#stateInput');state=input._requestState&&input.value===input._requestState.text?input._requestState.value:parseStructuredText(input.value);}
+    if(state===undefined)throw new Error();
+    const text=typeof state==='string'?state:JSON.stringify(state);
+    const tokens=Math.ceil(new TextEncoder().encode(text).length/4);
+    const context=(statusCache?.models||[]).find(model=>model.id===selectedModel)?.entry?.context;
+    $('#stateEstimate').textContent=t('Estimated State tokens: {tokens} · Active context limit: {limit} · policy: {policy}',{
+      tokens,limit:context?.limit??t('unknown'),policy:context?.overflow??t('unknown')});
+  } catch {$('#stateEstimate').textContent=t('State estimate unavailable until request JSON is valid.');}
+}
+function cancelFetch() {
+  fetchGeneration++;
+  if(fetchOperation)fetchOperation.abort();
+  fetchOperation=null;
+  $('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';
+}
+function closeFetch() {
+  cancelFetch();
+  if($('#fetchDialog').open)$('#fetchDialog').close();
+  if(!$('#openFetchDialog').hidden)$('#openFetchDialog').focus();
+}
+$('#openFetchDialog').addEventListener('click',()=>{
+  if(replayLocked)return;
+  cancelFetch();$('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');
+  $('#fetchDialog').showModal();$('#fetchUrl').focus();
+});
+$('#fetchCancel').addEventListener('click',closeFetch);
+$('#fetchDialog').addEventListener('cancel',event=>{event.preventDefault();closeFetch();});
+$('#fetchForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(fetchOperation||replayLocked)return;
+  let jsonRequest;
+  if($('#editJsonToggle').checked){
+    try {jsonRequest=JSON.parse($('#requestJson').value);if(!jsonRequest||typeof jsonRequest!=='object'||Array.isArray(jsonRequest))throw new Error();}
+    catch {$('#fetchError').textContent=t('Fix the request JSON before fetching.');$('#fetchError').hidden=false;return;}
+  }
+  const controller=new AbortController(), generation=++fetchGeneration;
+  fetchOperation=controller;$('#fetchSubmit').disabled=true;$('#fetchUrl').disabled=true;
+  $('#fetchError').hidden=true;$('#fetchUrl').removeAttribute('aria-invalid');$('#fetchStatus').textContent=t('Fetching…');
+  try {
+    const result=await api('/api/fetch',{method:'POST',body:JSON.stringify({url:$('#fetchUrl').value}),signal:controller.signal});
+    if(generation!==fetchGeneration||fetchOperation!==controller)return;
+    sourceUrl=result.final_url;fetchInfo={url:result.url,final_url:result.final_url,content_type:result.content_type,bytes:result.bytes,truncated:result.truncated};renderFetchProvenance();
+    applyingFetch=true;
+    try {
+      if(jsonRequest){jsonRequest.state=result.state;jsonRequest.source_url=sourceUrl;$('#requestJson').value=JSON.stringify(jsonRequest,null,2);$('#requestJson').dispatchEvent(new Event('input',{bubbles:true}));renderStateEstimate();}
+      else {const input=$('#stateInput');input.value=typeof result.state==='string'?result.state:JSON.stringify(result.state,null,2);input._requestState={text:input.value,value:structuredClone(result.state)};input.dispatchEvent(new Event('input',{bubbles:true}));}
+    } finally {applyingFetch=false;}
+    closeFetch();
+  } catch(error) {
+    if(generation!==fetchGeneration||fetchOperation!==controller||error.name==='AbortError')return;
+    $('#fetchError').textContent=error.message;$('#fetchError').hidden=false;$('#fetchUrl').setAttribute('aria-invalid','true');
+  } finally {
+    if(generation===fetchGeneration&&fetchOperation===controller){fetchOperation=null;$('#fetchSubmit').disabled=false;$('#fetchUrl').disabled=false;$('#fetchStatus').textContent='';}
+  }
+});
+['input','change'].forEach(type=>$('#playground').addEventListener(type,event=>{
+  if(applyingFetch)return;
+  cancelFetch();
+  if(event.target.id==='requestJson'){
+    try {const request=JSON.parse(event.target.value);const next=typeof request?.source_url==='string'?request.source_url:null;if(next!==sourceUrl)fetchInfo=null;sourceUrl=next;renderFetchProvenance();}catch{}
+  }
+  if(event.target.id==='requestJson')renderStateEstimate();
+},true));
 // think / early_exit appear for a model loaded with Thinking / with early-exit levels (--mode fast-exit)
 function setPlaygroundExperimental(model) {
   const think=Boolean(model?.options?.think), levels=model?.entry?.early_exit||[], select=$('#earlyExitSelect');
@@ -720,9 +841,10 @@ function buildRequest() {
   }
   if([...document.querySelectorAll('.q-name')].some(input=>!input.checkValidity()))throw new Error(t('Question names must be non-blank and unique.'));
   const stateInput=$('#stateInput'), state=stateInput._requestState;
-  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields()};
+  return {state:state!==undefined&&stateInput.value===state.text?state.value:parseStructuredText(stateInput.value),questions,...requestOptionFields(),...mediaRequestFields(),...(sourceUrl!==null?{source_url:sourceUrl}:{})};
 }
 function syncRequest(force=false, keys=['media','detail']) {
+  if(fetchOperation&&!applyingFetch)cancelFetch();
   window.RequestCode.invalidate();
   const textarea = $('#requestJson');
   if ($('#editJsonToggle').checked && !force) {
@@ -739,6 +861,7 @@ function syncRequest(force=false, keys=['media','detail']) {
     try { textarea.value = JSON.stringify(buildRequest(), null, 2); }
     catch (e) { showMediaError(e.message); }
   }
+  renderStateEstimate();
 }
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
@@ -779,21 +902,25 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   });
   $('#questions').append(card); updateMediaEvidence(); syncRequest();
 }
-function setRequest(req, names=[]) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+function setRequest(req, names=[], replay=false) {  // names: file names of req.media (bundled examples); otherwise replay.<ext>
+  cancelFetch();
+  sourceUrl=typeof req?.source_url==='string'?req.source_url:null;
+  fetchInfo=null; replayLocked=replay; renderFetchProvenance();
   clearSelectedMedia();
   const preserveJson=()=>{
     $('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;
     $('#requestJson').value=JSON.stringify(req,null,2);
+    renderStateEstimate();
     showMediaError(t('This request contains fields or values the Playground builder cannot edit. It remains in Edit JSON mode.'));
     return false;
   };
-  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||req.state==null||
+  if(!req||typeof req!=='object'||Array.isArray(req)||!Object.hasOwn(req,'state')||
      !Object.hasOwn(req,'questions')||!req.questions||typeof req.questions!=='object'||Array.isArray(req.questions))return preserveJson();
-  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model']);
+  const known=new Set(['state','questions','facts','lang','think','think_text','early_exit','media','detail','model','source_url']);
   const media=Array.isArray(req.media)?req.media:[];
   let restored=[];
   try {
-    if(Object.keys(req).some(key=>!known.has(key))||
+    if(Object.keys(req).some(key=>!known.has(key))||(Object.hasOwn(req,'source_url')&&typeof req.source_url!=='string')||
        Object.values(req.questions).some(q=>!q||typeof q!=='object'||Array.isArray(q)||!QUESTION_TYPES.includes(q.type))||
        (Object.hasOwn(req,'media')&&!Array.isArray(req.media))||
        media.some(item=>!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(k=>!['type','data'].includes(k))||
@@ -819,8 +946,8 @@ function setRequest(req, names=[]) {  // names: file names of req.media (bundled
     const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);
   }
   const stateInput=$('#stateInput');
-  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state??'',null,2);
-  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state??'')};
+  stateInput.value=typeof req.state==='string'?req.state:JSON.stringify(req.state,null,2);
+  stateInput._requestState={text:stateInput.value,value:structuredClone(req.state)};
   setChecked($('#factsToggle'),req.facts==='auto'); $('#langSelect').value=['pl','en'].includes(req.lang)?req.lang:'auto';
   $('#thinkSelect').value=['off','force'].includes(req.think)?req.think:''; setChecked($('#thinkTextToggle'),req.think_text===true);
   if([...$('#earlyExitSelect').options].some(o=>o.value===req.early_exit))$('#earlyExitSelect').value=req.early_exit; else $('#earlyExitSelect').value='';
@@ -836,13 +963,13 @@ window.preparePlaygroundLanguageSwitch=()=>{
   if($('#editJsonToggle').checked){
     let text=$('#requestJson').value;
     try {const request=JSON.parse(text);if(request&&typeof request==='object'&&!Array.isArray(request)){hadMedia=hadMedia||(Array.isArray(request.media)&&request.media.length>0);if('media' in request||'_elements' in request){delete request.media;delete request._elements;text=JSON.stringify(request,null,2);}}} catch {}
-    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia}));
+    sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({json:true,text,hadMedia,replayLocked,fetchInfo}));
     return;
   }
   const cards=[...document.querySelectorAll('#questions .question')];
   const stateInput=$('#stateInput'), state=stateInput._requestState&&stateInput.value===stateInput._requestState.text
     ?stateInput._requestState.value:parseStructuredText(stateInput.value);
-  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default'};
+  const request={state,questions:{},...requestOptionFields(),detail:$('#mediaDetail').value||'default',...(sourceUrl!==null?{source_url:sourceUrl}:{})};
   const names=cards.map(card=>$('.q-name',card).value);
   const controls=cards.map(card=>[...card.querySelectorAll('input,select,textarea')].filter(el=>!el.closest('.choice-editor')).map(el=>el.type==='checkbox'?{checked:el.checked}:{value:el.value}));
   const choiceRows=cards.map(card=>ChoiceEditor.snapshot(card));
@@ -851,16 +978,16 @@ window.preparePlaygroundLanguageSwitch=()=>{
   cards.forEach((card,i)=>{request.questions[`__language_draft_${i}`]=parseQuestionCard(card)[1];});
   const model=selectedModel||$('#playgroundModel').value;
   if(model)request.model=model;
-  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows}));
+  sessionStorage.setItem(PLAYGROUND_DRAFT,JSON.stringify({request,hadMedia,names,controls,costModes,costRows,choiceRows,replayLocked,fetchInfo}));
 };
 function restorePlaygroundLanguageDraft(){
   const saved=sessionStorage.getItem(PLAYGROUND_DRAFT);if(!saved)return;
   sessionStorage.removeItem(PLAYGROUND_DRAFT);
   try{
     const draft=JSON.parse(saved);
-    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;}
+    if(draft.json){$('#editJsonToggle').checked=true;$('#editJsonArea').hidden=false;$('#builder').hidden=true;$('#requestJson').value=draft.text;try{const request=JSON.parse(draft.text);sourceUrl=typeof request?.source_url==='string'?request.source_url:null;}catch{sourceUrl=null;}replayLocked=Boolean(draft.replayLocked);}
     else if(draft.request){
-      setRequest(draft.request);
+      setRequest(draft.request,[],Boolean(draft.replayLocked));
       const cards=[...document.querySelectorAll('#questions .question')];
       cards.forEach((card,i)=>{
         ChoiceEditor.restore(card,draft.choiceRows?.[i]);
@@ -880,6 +1007,7 @@ function restorePlaygroundLanguageDraft(){
       });
       syncRequest(true);
     }
+    fetchInfo=draft.fetchInfo||null;renderFetchProvenance();
     if(draft.hadMedia)showMediaError(t('Media must be attached again after changing language.'));
   }catch{}
 }
@@ -1128,7 +1256,7 @@ function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===
 $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
 $('#addQuestion').addEventListener('click',()=>addQuestion());
-$('#stateInput').addEventListener('input',()=>{$('#stateInput')._requestState=undefined;syncRequest();});
+$('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
   if($('#editJsonToggle').checked){
     try {$('#requestJson').value=JSON.stringify(buildRequest(),null,2);showMediaError();}
@@ -1143,10 +1271,11 @@ $('#editJsonToggle').addEventListener('change',()=>{
     const meta=elementPresetData(),media=Array.isArray(request.media)?request.media:[];
     const names=media.map(item=>selectedMedia.find(current=>current.data===item?.data)?.file.name);
     const marks=meta.marked.flatMap(record=>{const index=media.findIndex(item=>item?.data===record.markedData);return index<0?[]:[{...record,index}];});
-    if(!setRequest(request,names))restorePresetMediaFallback(request,names);
+    if(!setRequest(request,names,replayLocked))restorePresetMediaFallback(request,names);
     restoreElementMarks(marks);
   }
   $('#editJsonArea').hidden=!$('#editJsonToggle').checked;$('#builder').hidden=$('#editJsonToggle').checked;
+  renderStateEstimate();
 });
 $('#mediaInput').addEventListener('change',event=>selectMedia(Array.from(event.target.files||[])));
 $('#mediaDetail').addEventListener('change',()=>syncRequest());
@@ -1158,7 +1287,6 @@ $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox
 window.addEventListener('beforeunload',()=>selectedMedia.forEach(item=>URL.revokeObjectURL(item.url)));
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 function connectionEndpoint() {
   const settings=serveData.settings, serving=statusCache?.serving;
   if (serving?.url) return serving.url;
@@ -1300,7 +1428,6 @@ async function copyText(text, success=t('Copied to clipboard')) {
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
-let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
 const historyOpen=new Map(), HISTORY_LIVE_MAX=500;  // rows the live History view keeps while it polls
@@ -1324,15 +1451,16 @@ function renderStatus(s) {
   renderDashboard();
   const models=s.models||[], ready=readyModels(), downloads=s.downloads||{}, repos=new Set(Object.keys(downloads));
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
-  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads]);
+  const signature=JSON.stringify([models.map(m=>[m.id,m.state]),downloads,s.idle_unloads||{}]);
   if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   rowsSignature=signature;
-  if(!ready.some(m=>m.id===selectedModel)&&ready.length)selectedModel=ready[0].id;
+  if(!ready.some(m=>m.id===selectedModel)&&ready.length){cancelFetch();selectedModel=ready[0].id;}
   if(selectedModel)localStorage.setItem('basal-ui.model',selectedModel);
   const busy=models.some(m=>['starting','downloading'].includes(m.state));
   const live=models.filter(answering).length;
-  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
-  $('#footerDot').className=`status-dot${ready.length?' ready':models.some(m=>m.state==='error')?' error':''}${live?' active':''}`;
+  const failed=models.some(m=>m.state==='error');
+  $('#footerState').textContent=ready.length?`${ready.length} ${t('ready')}${live?` · ${t('{n} answering',{n:live})}`:''}${busy?` · ${t('loading…')}`:''}`:failed?`${t('error')}${busy?` · ${t('loading…')}`:''}`:busy?t('loading…'):t('idle');
+  $('#footerDot').className=`status-dot${ready.length?' ready':failed?' error':''}${live?' active':''}`;
   $('#footerModel').textContent=models.map(m=>shortName(m.id)).join(', ')||t('No model loaded');
   $('#footerModel').title=models.map(m=>m.id).join(', ')||t('No model loaded');
   $('#footerUrl').textContent=s.serving?.url||''; $('#footerUrl').hidden=!s.serving?.url;
@@ -1377,7 +1505,8 @@ function renderInference(s) {
   for(const [kind,j] of Object.entries(s.jobs||{})){
     if(!j.running||!INFERENCE_JOBS[kind])continue;
     const share=j.total?Math.min(100,j.done/j.total*100):null;
-    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong><span class="muted">${esc([j.model,ts(j.phase,j.phase_code,j.phase_params),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
+    const phase=ts(j.phase,j.phase_code,j.phase_params);
+    rows.push(`<div class="inference-row"><span class="status-dot ready active"></span><strong>${esc(t(INFERENCE_JOBS[kind]))}</strong><span class="muted">${esc([j.model,phase||t('running'),j.total?`${j.done} / ${j.total}`:''].filter(Boolean).join(' · '))}</span>${share==null?'':`<div class="progress"><span style="width:${share}%"></span></div>`}</div>`);
   }
   const last=Math.max(0,...Object.values(statsData.models||{}).map(x=>Number(x.last_used)||0));
   const idle=last?t('Idle · last decision {ago} ago',{ago:ago(Date.now()/1000-last)}):t('Idle');
@@ -1392,7 +1521,7 @@ function renderLoadedRows(models) {
     const warning=m.entry?.calibration_warning?`<div class="reason wide">${esc(m.entry.calibration_warning)}</div>`:'';
     const actions=`<button type="button" data-restart="${esc(m.id)}"${['ready','error'].includes(m.state)?'':' disabled'}>${t('Restart')}</button>${['ready','error'].includes(m.state)?optionsButton(m.id,m.media_requested,'restart'):''}<a class="dashboard-link" href="#logs/${esc(encodeURIComponent(m.id))}">${t('Logs')}</a><button type="button" data-unload="${esc(m.id)}">${t('Unload')}</button>`;
     const optionChips=Object.entries(m.options||{}).filter(([k])=>k!=='mode').map(([k,v])=>`<span class="chip" title="${t('load option')}">${esc(v===true?k:v===false?t('no {option}',{option:k}):`${k} ${Array.isArray(v)?v.join('–'):v}`)}</span>`).join('');
-    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
+    return `<div class="model-row"><div class="model-row-main"><span class="status-dot${m.state==='ready'?' ready':m.state==='error'?' error':''}${answering(m)?' active':''}"></span><span class="state-pill">${esc(t(m.state))}${answering(m)?` · ${esc(t("running"))}`:""}</span><strong>${esc(m.id)}</strong>${chips}${optionChips}<button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><span class="chip model-load">${esc(load)}</span></div><div class="muted model-row-meta">${stats?t('{estimated} estimated → {resident} resident · {requests} · avg prob {prob}',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes),requests:tp(stats.requests,'{n} requests','{n} requests'),prob:pct(stats.avg_best_prob)}):t('{estimated} estimated → {resident} resident',{estimated:m.est_memory_bytes==null?t('unknown'):gb(m.est_memory_bytes),resident:m.rss_bytes==null?'—':gb(m.rss_bytes)})}</div>${progress}${warning}${m.error?`<div class="reason">${esc(m.error)}</div>`:''}<div class="model-row-actions">${actions}</div></div>`;
   }).join(''):`<div class="empty">${t('No model loaded · {link}',{link:`<a href="#manager/library">${t('Load a model')}</a>`})}</div>`;
   $('#loadedModels').querySelectorAll('[data-restart]').forEach(b=>b.onclick=()=>act(()=>restartOne(b.dataset.restart)));
   $('#loadedModels').querySelectorAll('[data-unload]').forEach(b=>b.onclick=()=>act(()=>unloadOne(b.dataset.unload)));
@@ -1408,13 +1537,14 @@ function renderPlaygroundModels(ready) {
   setPlaygroundMedia(ready.find(m=>m.id===selectedModel)?.media||[]);
   setPlaygroundExperimental(ready.find(m=>m.id===selectedModel));
   DecisionTools.refreshModels(ready);
+  renderStateEstimate();
 }
 function setPlaygroundMedia(kinds) {
   if(JSON.stringify(kinds)===JSON.stringify(loadedMedia))return;
   loadedMedia=kinds; renderSelectedMedia(); syncRequest();
   $('#mediaInput').accept=[kinds.includes('image')?'image/*':'',kinds.includes('audio')?'audio/*':''].filter(Boolean).join(',');
 }
-$('#playgroundModel').addEventListener('change',e=>{selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
+$('#playgroundModel').addEventListener('change',e=>{cancelFetch();selectedModel=e.target.value;localStorage.setItem('basal-ui.model',selectedModel);const model=readyModels().find(m=>m.id===selectedModel);setPlaygroundMedia(model?.media||[]);setPlaygroundExperimental(model);syncRequest(false,REQUEST_OPTION_KEYS);if(serveData)renderConnect();});
 async function unloadOne(id){await api('/api/unload',{method:'POST',body:JSON.stringify({id})});await refreshStatus();}
 async function restartOne(id){await api('/api/restart',{method:'POST',body:JSON.stringify({id})});toast(`${t('Restarting {model}',{model:shortName(id)})}`);await refreshStatus();}
 $('#footerUnload').onclick=()=>act(async()=>{
@@ -1526,9 +1656,25 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog" aria-labelledby="reportTitle"><h3 id="reportTitle">${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
-$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;};
+$('#calibrationAdvanced').insertAdjacentHTML('beforeend',`<div class="manager-fields"><label class="manager-field">${t('Conformal coverage levels')}<input id="calConformal" type="text" placeholder="0.8, 0.9"><span id="calConformalReason" class="reason"></span></label><fieldset><legend>${t('Keep compared thresholds')}</legend><div class="controls">${['choice','noul','score'].map(type=>`<label><input type="checkbox" data-keep-type="${type}" disabled> ${esc(type)}</label>`).join('')}</div><span id="calKeepReason" class="reason"></span></fieldset></div>`);
+let calibrationOptions={}, keepSequence=0;
+async function refreshKeepOptions(){
+  const id=$('#calibrationModel').value, choice=$('#calCompare').value, compare=choice==='path'?$('#calComparePath').value.trim():choice, seq=++keepSequence;
+  const boxes=[...document.querySelectorAll('[data-keep-type]')];
+  boxes.forEach(x=>{x.disabled=true;x.checked=false;});
+  $('#calKeepReason').textContent=!calibrationOptions.keep_shipped?t('Installed Engine does not support keeping thresholds'):t('No compatible compared thresholds available');
+  if(!id||!calibrationOptions.keep_shipped||!compare||compare==='none')return;
+  try{
+    const data=await api(`/api/calibrations/keep-options?id=${encodeURIComponent(id)}&compare=${encodeURIComponent(compare)}`);
+    if(seq!==keepSequence)return;
+    boxes.forEach(x=>{x.disabled=!data.types[x.dataset.keepType];});
+    $('#calKeepReason').textContent=boxes.some(x=>!x.disabled)?'':t('No compatible compared thresholds available');
+  }catch(e){if(seq===keepSequence)$('#calKeepReason').textContent=e.message;}
+}
+$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;refreshKeepOptions();};
+$('#calComparePath').oninput=refreshKeepOptions;
 $('#calCompare').onchange();
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
@@ -1548,7 +1694,7 @@ function renderCalibrationModels() {
   }
   $('#runCalibration').disabled=calibrationRunning||!rows.length;
 }
-$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);loadCalibrations();};
+$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);calibrationOptions={};refreshKeepOptions();loadCalibrations();};
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets})});
@@ -1558,6 +1704,9 @@ $('#cancelCalibration').onclick=()=>act(async()=>{await api('/api/calibrate',{me
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   const compare=$('#calCompare').value,advanced={strict:$('#calStrict').checked,reference:$('#calReference').value.trim()||null,min_per_type:Number($('#calMinType').value),min_blend:Number($('#calMinBlend').value),min_family:Number($('#calMinFamily').value),min_per_set:Number($('#calMinSet').value),concurrency:Number($('#calConcurrency').value),compare:compare==='path'?$('#calComparePath').value.trim():compare,save_rows:$('#calSaveRows').checked,report_only:$('#calReportOnly').checked};
+  const levels=$('#calConformal').value.trim();
+  if(levels&&!$('#calConformal').disabled){const parts=levels.split(',').map(x=>x.trim());if(parts.some(x=>!x||!Number.isFinite(Number(x))||Number(x)<=0||Number(x)>=1))throw new Error(t('Enter coverage levels between 0 and 1, separated by commas'));advanced.conformal=parts.map(Number);}
+  advanced.keep_shipped=[...document.querySelectorAll('[data-keep-type]:checked:not(:disabled)')].map(x=>x.dataset.keepType);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets,advanced})});
   toast(t('Calibration started')); await refreshStatus();
 });
@@ -1579,7 +1728,7 @@ function renderCalibrationState(job) {
   $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||!$('#calibrationModel').value;
   $('#calibrationProgress').textContent=!job?'':running?`${shortName(job.model)} · ${ts(job.phase,job.phase_code,job.phase_params)}…`:job.phase==='error'?`${t('Failed: {error}',{error:job.error})}`:job.phase==='cancelled'?t('Cancelled'):['done','done_with_warnings'].includes(job.phase)?`${job.phase==='done_with_warnings'?t('Completed with warnings'):t('Completed (see report for certification)')}: ${shortName(job.result?.file||'')}${job.result?.warnings?.length?' · '+job.result.warnings.join(' · '):''}`:'';
   if(calibrationRunning&&!running)loadCalibrations();
-  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';$('#reportDialog').showModal();}
+  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';renderCalibrationReport(null);$('#reportDialog').showModal();}
   calibrationRunning=running;
 }
 async function loadCalibrations() {
@@ -1591,7 +1740,9 @@ async function loadCalibrations() {
   try{
     const data=await api(`/api/calibrations?id=${encodeURIComponent(id)}`);
     if(!calibrationCurrent(id,sequence))return;
-    renderCalibrationFiles(id,data);
+    calibrationOptions=data.options||{};$('#calConformal').disabled=!calibrationOptions.conformal;
+    $('#calConformalReason').textContent=calibrationOptions.conformal?'':t('Installed Engine does not support conformal levels');
+    refreshKeepOptions();renderCalibrationFiles(id,data);
   }catch(e){
     if(!calibrationCurrent(id,sequence))return;
     files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
@@ -1610,7 +1761,7 @@ function renderCalibrationFiles(id, d) {
     const fitted=f?.fitted_on&&typeof f.fitted_on==='object'?f.fitted_on:null, gates=f?.gates||{};
     const automated=Object.entries(gates.automated_at||{}).map(([k,v])=>`${(Number(k)*100).toFixed(0)}%: ${pct(v)} at ${pct(gates.automated_error?.[k])} error`).join(' · ');
     const checked=(d.selected||'')===value;
-    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?` <span class="reason">${esc(f.warning)}</span>`:''}${f?.error?` <span class="reason">${esc(f.error)}</span>`:''}${(f?.warnings||[]).map(w=>` <span class="reason">${esc(w)}</span>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
+    return `<tr><td><label><input type="radio" name="calibrationUse" value="${esc(value)}"${checked?' checked':''}> ${esc(label)}</label>${f?.imported?` <span class="chip">${t('imported')}</span>`:''}${checked&&loaded?.restart_required?` <span class="badge fit-tight">${t('Restart to apply')}</span>`:''}${f?.warning?`<div class="reason">${esc(f.warning)}</div>`:''}${f?.error?`<div class="reason">${esc(f.error)}</div>`:''}${(f?.warnings||[]).map(w=>`<div class="reason">${esc(w)}</div>`).join('')}</td><td>${fitted?`${esc(fitted.data??'')} · ${esc(fitted.decisions??'—')} ${t('decisions')}`:esc(typeof f?.fitted_on==='string'?f.fitted_on:'—')}</td><td>${fitted?Object.entries(fitted.per_type||{}).map(([t,n])=>`<span class="chip">${esc(t)} ${esc(n)}</span>`).join(' '):''}</td><td>${thresholdCell(allThresholds(f))}</td><td>${esc(automated||'—')}</td><td>${value&&f?.has_report?`<button type="button" data-report="${esc(value)}">${t('Report')}</button>`:''}</td></tr>`;
   };
   const ctx=d.shipped?.context||{}, context=d.shipped?.file?`${t('Shipped default')}: ${esc(shortName(d.shipped.file))} · ${esc(ctx.active?t('running settings'):t('saved settings for next start'))} · ${esc(ctx.mode)}${ctx.quant?` · ${esc(ctx.quant)}`:''}${ctx.preset?` · ${esc(ctx.preset)}`:''} · ${esc(ctx.layout)}${ctx.adapter?` · adapter ${esc(shortName(ctx.adapter))}`:''}`:`${t('Shipped default unavailable')}${d.shipped?.error?`: ${esc(d.shipped.error)}`:''}`;
   const selection=d.selected?`${t('Selected custom calibration for next start')}: ${esc(shortName(d.selected))}`:`${t('Selected calibration')}: ${t('shipped default')}`;
@@ -1639,8 +1790,21 @@ function renderCalibrationFiles(id, d) {
     if(id!==$('#calibrationModel').value)return;
     const sequence=++calibrationSequence, r=await api(`/api/calibrations/report?id=${encodeURIComponent(id)}&file=${encodeURIComponent(b.dataset.report)}`);
     if(!calibrationCurrent(id,sequence))return;
-    $('#reportText').textContent=r.report; $('#reportDialog').showModal();
+    $('#reportText').textContent=r.report; renderCalibrationReport(r.details); $('#reportDialog').showModal();
   }));
+}
+function renderCalibrationReport(details){
+  const root=$('#reportDetails');root.innerHTML='';if(!details)return;
+  const fitted=details.fitted_on||{}, items=[];
+  for(const [key,label] of [['revision','Revision'],['model_files','Model files digest'],['model_content','Model content digest']])if(fitted[key]!=null)items.push(`<dt>${t(label)}</dt><dd>${esc(fitted[key])}</dd>`);
+  if(Array.isArray(fitted.kept_shipped)&&fitted.kept_shipped.length)items.push(`<dt>${t('Kept from')}</dt><dd>${esc(fitted.kept_shipped.join(', '))}: ${esc(fitted.kept_shipped_from?.file||'—')}</dd>`);
+  const rows=[];
+  for(const [target,group] of Object.entries(details.thresholds||{}))for(const [type,e] of Object.entries(group?.per_type||{})){
+    if(e&&['icc','design_effect','refuted','kept'].some(k=>e[k]!=null))rows.push(`<tr><td>${esc(target)}</td><td>${esc(type)}</td><td>${esc(e.icc??'—')}</td><td>${esc(e.design_effect??'—')}</td><td>${e.refuted!=null?`${esc(e.refuted)}: ${esc(e.reason||'')}`:''}${e.kept?` ${t('Kept from')} ${esc(fitted.kept_shipped_from?.file||'—')}`:''}</td></tr>`);
+  }
+  const conformal=[];
+  for(const [level,group] of Object.entries(details.conformal?.levels||{}))for(const [type,e] of Object.entries(group?.per_type||{}))if(e)conformal.push(`<tr><td>${esc(level)}</td><td>${esc(type)}</td><td>${esc(e.cert_coverage??'—')}</td><td>${esc(e.cert_mean_size??'—')}</td><td>${esc(e.reason||'')}</td></tr>`);
+  root.innerHTML=`${items.length?`<dl>${items.join('')}</dl>`:''}${rows.length?`<div class="table-wrap"><table><thead><tr><th>${t('Max error')}</th><th>${t('Type')}</th><th>ICC</th><th>${t('Design effect')}</th><th>${t('Refuted or kept')}</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:''}${conformal.length?`<h4>${t('Conformal results')}</h4><div class="table-wrap"><table><thead><tr><th>${t('Coverage level')}</th><th>${t('Type')}</th><th>${t('CERT coverage')}</th><th>${t('Mean set size')}</th><th>${t('Reason')}</th></tr></thead><tbody>${conformal.join('')}</tbody></table></div>`:''}`;
 }
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
 const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];
@@ -1650,12 +1814,19 @@ const OPTION_SECTIONS=[
   ['Batching',['max_batch','wait_ms','batch_window_ms','soam']],
   ['Caching',['state_cache_gb','prefix_cache']],
   ['Scheduling',['scheduler','long_lane','long_tokens','long_share','long_slice_ms']],
+  ['Server limits',['max_requests','request_timeout','max_body_mb','max_branches','max_prompt_mb','stall_s']],
   ['Context',['layout','context_overflow','truncate_head','max_len']],
   ['Kernels (CUDA graph engine)',['gemma_attn','merge','lean','tree','batches','readout_layer','template_prefix','fp8_accum']],
   ['Calibration',['strict_calibration']],
   ['Experimental',['think','think_tokens','think_python','think_url','think_calibration','think_model','think_adapter','think_memory','think_max_len','think_log','early_exit']],
 ];
 const OPTION_FIELDS={
+  max_requests:{label:'Maximum requests',kind:'num',attrs:'min="1" step="1"'},
+  request_timeout:{label:'Request timeout (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_body_mb:{label:'Maximum body (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  max_branches:{label:'Maximum branches',kind:'num',attrs:'min="1" step="1"'},
+  max_prompt_mb:{label:'Maximum prompt (MB)',kind:'num',attrs:'min="0.001" step="any"'},
+  stall_s:{label:'Stall detection (seconds)',kind:'num',attrs:'min="0.001" step="any"'},
   mlx_packed:{label:'MLX packed (opt-in)',kind:'bool',modes:['mlx','mlx-q8']},
   quant:{label:'Quantisation',kind:'select',values:[[null,'as the mode'],['fp8','fp8'],['nvfp4','nvfp4'],['q8','q8 (mlx)']],modes:[...GRAPH_MODES,'mlx','mlx-q8']},
   attn:{label:'Attention kernel',kind:'select',values:['auto','fa2','fa3','fa4','cudnn'],modes:GRAPH_MODES},
@@ -1716,13 +1887,13 @@ const OPTION_FIELDS={
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
-document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog"><h3>${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
+document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
 $('#deleteLoadPreset').onclick=()=>act(async()=>{const n=$('#loadPresetSelect').value;if(n)await deletePreset('load',n);});
 $('#loadPresetSelect').onchange=()=>$('#deleteLoadPreset').disabled=!$('#loadPresetSelect').value;
-let optionsState=null;
+let optionsState=null, optionsSequence=0;
 const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
@@ -1748,6 +1919,7 @@ function renderOptionsForm(values) {
   $('#optionsForm').querySelectorAll('input[type=range]').forEach(r=>r.oninput=()=>{$(`#${r.id}-out`).textContent=`${r.value}%`;});
   $('#optionsForm').onchange=()=>updateOptionVisibility();
   updateOptionVisibility();
+  Object.entries(d.limits_available||{}).forEach(([key,available])=>{const el=$(`#opt-${key}`);el.disabled=!available;if(!available){el.title=t('This option is not available in the installed Engine.');el.insertAdjacentHTML('afterend',`<small>${t('This option is not available in the installed Engine.')}</small>`);}});
 }
 const optionModes=()=>optionsState.media?optionsState.data.media_modes:optionsState.data.modes;
 function selectedOptionMode() { return $('#optionsForm input[name=optMode]:checked')?.value||optionModes().find(m=>m.default)?.mode; }
@@ -1789,7 +1961,13 @@ function collectOptions() {
   return Object.fromEntries(Object.entries(out).filter(([k,v])=>JSON.stringify(v)!==JSON.stringify(d.defaults[k])));
 }
 async function openLoadOptions(id, media=false, action='load', initialMode=null) {
-  const data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);
+  const sequence=++optionsSequence;
+  let data;
+  try{data=await api(`/api/models/options?id=${encodeURIComponent(id)}`);}
+  catch(e){if(sequence===optionsSequence)throw e;return;}
+  if(sequence!==optionsSequence)return;
+  await loadPresets(()=>sequence===optionsSequence);
+  if(sequence!==optionsSequence)return;
   const loaded=(statusCache?.models||[]).find(m=>m.id===id), restart=action==='restart', save=action==='save';
   optionsState={id,media,restart,save,data,initialMode};
   $('#optionsModel').textContent=`${id}${media?` · ${t('with media')}`:''}${restart?` · ${t('restarts the running model')}`:save?` · ${t('kept for the next load')}`:''}`;
@@ -1799,13 +1977,14 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   setChecked($('#optionsRemember'),initialMode?false:data.saved);
   renderOptionsForm(restart&&loaded?{...data.defaults,...loaded.options}:{...data.options,...(initialMode?{mode:initialMode}:{})});
   $('#optionsError').hidden=true;
-  await loadPresets();renderLoadPresets();
+  renderLoadPresets();
   $('#loadPresetSelect').value='';
   $('#deleteLoadPreset').disabled=true;
   $('#loadOptions').showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
 document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
+$('#loadOptions').addEventListener('close',()=>{optionsSequence++;});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
@@ -1904,7 +2083,7 @@ function replayRequest(x) {
   selectedModel=x.model; localStorage.setItem('basal-ui.model',selectedModel);
   $('#playgroundModel').value=selectedModel; setPlaygroundMedia(readyModels().find(m=>m.id===selectedModel)?.media||[]);
   $('#results').innerHTML='';$('#rawDetails').hidden=true;$('#decideError').hidden=true;
-  setRequest(x.replay_request);
+  setRequest(x.replay_request,[],true);
   showView('playground',true);
 }
 function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
@@ -2042,7 +2221,7 @@ function inspectHandoff(request) {
   if(st.model!==request.model&&!(sv&&iv&&sv.family===iv.family&&sv.tier===iv.tier))
     return {blocked:t('the inspector runs {inspector}, this decision came from {model}: start the inspector with the bf16 weights of {weights}',{inspector:st.model,model:request.model,weights:sv?`${sv.family} ${sv.tier}`:request.model})};
   const body=structuredClone(request), notes=[];
-  for(const key of ['model','think','think_text','early_exit'])delete body[key];
+  for(const key of ['model','think','think_text','early_exit','source_url'])delete body[key];
   const tasks=Object.entries(body.questions||{}).filter(([,q])=>TASK_TYPES.includes(q?.type)).map(([n])=>n);
   tasks.forEach(n=>delete body.questions[n]);
   if(!Object.keys(body.questions||{}).length)return {blocked:t('basal-viz explains decision questions; this request has only task questions')};
@@ -2069,13 +2248,19 @@ function inspectDecision(request) {
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
 const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, and MCP.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],settings:['12 / SETTINGS','Settings','Manage memory, storage, defaults, and appearance.']};
+let currentView=null;
+$('.skip-link').onclick=event=>{event.preventDefault();$('#main-content').focus();};
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
+  if(name!=='playground'){if($('#fetchDialog').open)closeFetch();else cancelFetch();}
   const wasDashboard=!$('#dashboard').hidden;
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
+  const changed=currentView!==null&&currentView!==name; currentView=name;
+  document.title=`${t(title)} | basal`;
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
   document.querySelectorAll('.view').forEach(v=>v.hidden=v.dataset.page!==name);
+  if(changed)$('#pageTitle').focus();
   document.querySelectorAll('.side-nav [data-view]').forEach(b=>{const active=b.dataset.view===name;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   const secondary=Boolean(document.querySelector(`.nav-tools [data-view="${name}"]`));
   $('.nav-tools').classList.toggle('active',secondary);
@@ -2098,7 +2283,7 @@ function showView(hash, updateHash=false) {
     loadLogs();
   }
 }
-const route=()=>{if(location.hash!==shownHash)showView(location.hash);};
+const route=()=>{if(location.hash!==shownHash){const previous=currentView;showView(location.hash);if(previous!==currentView){const target=currentView;setTimeout(()=>{if(currentView===target)$('#pageTitle').focus();},0);}}};
 document.querySelectorAll('.side-nav [data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 window.addEventListener('hashchange',route); window.addEventListener('popstate',route);
 function selectManagerTab(tab) {
@@ -2122,12 +2307,22 @@ managerTabs.forEach((button,index)=>{
   };
 });
 selectManagerTab(new URLSearchParams(location.search).get('managerTab')||localStorage.getItem('basal-ui.managerTab')||'library');
-function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
-$('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
+function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));b.tabIndex=x===tab?0:-1;}localStorage.setItem('basal-ui.tab',tab);}
+const modelTabs=[$('#suggestedTab'),$('#allModelsTab')];
+modelTabs.forEach((button,index)=>{
+  button.onclick=()=>selectModelsTab(index?'all':'suggested');
+  button.onkeydown=event=>{
+    if(event.altKey||event.ctrlKey||event.metaKey||!['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    const target=event.key==='Home'?0:event.key==='End'?1:(index+1)%modelTabs.length;
+    selectModelsTab(target?'all':'suggested');modelTabs[target].focus();
+  };
+});
 selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
 async function loadMemorySettings(){
   try{
     const d=await api('/api/memory'), budget=$('input#memoryBudget');
+    $('#idleUnload').value=d.settings.idle_unload_minutes??'';
     budget.placeholder=t('Hardware budget: {size} GiB',{size:(d.hardware_budget_bytes/2**30).toFixed(1)});
     for(const [input,bytes] of [[budget,d.settings.budget_bytes],[$('#memoryReserve'),d.settings.reserve_bytes]]){
       input.value=bytes==null?'':String(Number((bytes/2**30).toFixed(3)));
@@ -2138,7 +2333,9 @@ async function loadMemorySettings(){
 $('#saveMemory').onclick=async()=>{
   const bytesOf=input=>{const value=input.value.trim();if(value===input.dataset.shown&&input.dataset.bytes!==undefined)return input.dataset.bytes===''?null:Number(input.dataset.bytes);return value===''?null:Math.round(Number(value)*2**30);};
   try{
-    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0})});
+    const input=$('#idleUnload'), value=input.value.trim(), number=Number(value);
+    if(!input.validity.valid || (value && (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number<1))) throw new Error(t('Enter whole minutes from 1 to 9,007,199,254,740,991, or leave empty to turn off.'));
+    await api('/api/memory',{method:'PUT',body:JSON.stringify({budget_bytes:bytesOf($('input#memoryBudget')),reserve_bytes:bytesOf($('#memoryReserve'))??0,idle_unload_minutes:value?number:null})});
     $('#memoryError').hidden=true; toast(t('Memory settings saved')); await Promise.all([loadMemorySettings(),refreshStatus()]);
   }catch(e){$('#memoryError').textContent=e.message;$('#memoryError').hidden=false;toast(e.message,'error');}
 };
