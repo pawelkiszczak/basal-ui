@@ -248,15 +248,34 @@ def test_persistence_rotation_and_clear(tmp_path):
     assert len(path.read_text().splitlines()) == 9  # the 504th append rewrote the file with the last 3, then 6 more
     assert [r["state_preview"] for r in History(path, keep=3).list()] == ["s509", "s508", "s507"]
     assert path.stat().st_mode & 0o777 == 0o600
-    with path.open("a") as f:
-        f.write("{broken\n")
-    assert len(History(path, keep=3).list()) == 3
-    with pytest.raises(OSError):
-        history.clear()
-    assert path.read_text().endswith("{broken\n")
-    path.write_text(path.read_text().removesuffix("{broken\n"))
-    assert history.clear() == 3
-    assert history.list() == [] and History(path).list() == []
+    with path.open("ab") as stream:
+        stream.write(b"{broken")
+    reloaded = History(path, keep=3)
+    assert len(reloaded.list()) == 3
+    newest = record(state="after malformed row")
+    reloaded.append(newest)
+    assert path.read_bytes().splitlines()[-2] == b"{broken"
+    assert History(path, keep=3).get(newest["id"])["state_preview"] == "after malformed row"
+    assert reloaded.clear() == 3
+    assert reloaded.list() == [] and History(path).list() == []
+
+
+def test_ordinary_append_does_not_reread_unchanged_history(tmp_path, monkeypatch):
+    path = tmp_path / "history.jsonl"
+    first, second = History(path), History(path)
+    first.append(record(state="initial"))
+    other = record(state="external append")
+    second.append(other)
+    assert first.get(other["id"]) is not None
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("an ordinary append should not reread unchanged history")
+
+    monkeypatch.setattr(first, "_read_file", unexpected_read)
+    new = record(state="local append")
+    first.append(new)
+    assert first.get(new["id"]) is not None
+    assert History(path).get(new["id"]) is not None
 
 
 def test_audio_policy_replay_reload_eviction_and_clear(tmp_path, monkeypatch):

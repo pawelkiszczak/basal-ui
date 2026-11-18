@@ -412,13 +412,22 @@ def test_async_gateway_retains_audio_only_when_enabled(fleet):
     assert "QUJD" not in str(fleet.history.detail(rows[1]["id"]))
 
 
-def test_invalid_history_utf8_does_not_fail_async_gateway_decision(fleet):
+@pytest.mark.parametrize("audio_storage", [False, True])
+def test_invalid_history_utf8_does_not_fail_async_gateway_decision(audio_storage, fleet):
+    if audio_storage:
+        history_path = fleet.history.path
+        history_path.with_name(history_path.name + ".audio").mkdir(mode=0o700)
     fleet.history.path.write_bytes(b"\xff")
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         reply = client.post("/v1/systemone", json={"model": "b/two", "state": "s", "questions": {}})
     assert reply.status_code == 200
-    assert fleet.history.path.read_bytes() == b"\xff"
-    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    if audio_storage:
+        assert fleet.history.path.read_bytes() == b"\xff"
+        assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    else:
+        assert fleet.history.path.read_bytes().splitlines()[0] == b"\xff"
+        assert len(fleet.history.list()) == 1
+        assert "decision not recorded" not in (fleet.logs.get("basal-ui").text() if "basal-ui" in fleet.logs else "")
 
 
 def test_gateway_audio_alias_replay_is_canonical_and_preserves_falsey_state(tmp_path, monkeypatch):

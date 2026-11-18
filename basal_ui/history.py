@@ -1,6 +1,7 @@
 """The decisions basal-ui answered (playground, API, MCP) with their requests and responses, newest kept: a JSONL file
 <settings stem>.history.jsonl next to the settings file (0600; media bytes are replaced by their size)."""
 
+import contextlib
 import json
 import os
 import re
@@ -167,58 +168,76 @@ class History:
         self.lock = threading.Lock()
         self.records: deque = deque(maxlen=keep)
         self.lines = 0
+        self._stamp = None
         for record in self._read_file():
             self.records.append(record)
 
+    def _file_stamp(self):
+        try:
+            info = self.path.stat()
+        except FileNotFoundError:
+            return ()
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
     def _read_file(self, strict=False) -> list:
-        """Read valid rows; mutations require a complete, undamaged file."""
+        """Read valid rows, failing closed on corrupt metadata when audio ownership is involved."""
         out = []
         seen = set()
-        self.lines = 0
+        lines = 0
+        protect_audio = strict and history_audio.storage_present(self.path)
         try:
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                self.lines += 1
-                try:
-                    record = json.loads(line)
-                except ValueError as exc:
-                    if strict:
-                        raise OSError("History metadata is invalid") from exc
-                    continue
-                if not isinstance(record, dict) or not isinstance(record.get("id"), str) or not record["id"]:
-                    if strict:
-                        raise OSError("History metadata is invalid")
-                    continue
-                if strict and (
-                    record["id"] in seen
-                    or ("_audio" in record and not history_audio.valid_ref(record, record["_audio"]))
-                ):
-                    raise OSError("History metadata is invalid")
-                seen.add(record["id"])
-                out.append(record)
+            with self.path.open("rb") as stream:
+                for line in stream:
+                    lines += 1
+                    try:
+                        record = json.loads(line)
+                    except ValueError as exc:
+                        if protect_audio:
+                            raise OSError("History metadata is invalid") from exc
+                        continue
+                    if not isinstance(record, dict) or not isinstance(record.get("id"), str) or not record["id"]:
+                        if protect_audio:
+                            raise OSError("History metadata is invalid")
+                        continue
+                    if strict and (
+                        record["id"] in seen
+                        or ("_audio" in record and not history_audio.valid_ref(record, record["_audio"]))
+                    ):
+                        if protect_audio:
+                            raise OSError("History metadata is invalid")
+                        continue
+                    seen.add(record["id"])
+                    out.append(record)
         except FileNotFoundError:
             pass
-        except UnicodeError as exc:
-            if strict:
-                raise OSError("History metadata is invalid") from exc
         except OSError:
             if strict:
                 raise
+        self.lines = lines
         return out
 
     def append(self, record: dict, body=None, keep_audio=False) -> None:
         from . import settings
 
         def write():
+            capture_audio = (
+                body is not None
+                and (keep_audio() if callable(keep_audio) else keep_audio)
+                and any(history_audio.audio_paths(body))
+            )
+            if not capture_audio and not history_audio._pending(self.path):
+                self._refresh_locked()
+                if self.lines < self.keep + 500:
+                    self._append_line(record)
+                    self.records.append(record)
+                    self._stamp = self._file_stamp()
+                    return
             existing = self._read_file(strict=True)
             history_audio.cleanup(self.path, existing)
             reservation = None
             committed = False
             try:
-                if (
-                    body is not None
-                    and (keep_audio() if callable(keep_audio) else keep_audio)
-                    and any(history_audio.audio_paths(body))
-                ):
+                if capture_audio:
                     reservation = history_audio.reserve(self.path, record, body, existing)
                 evicted = reservation[2] if reservation else []
                 candidate = []
@@ -230,12 +249,11 @@ class History:
                     candidate.append(old)
                 self._append_record(record, candidate, existing, evicted, bool(reservation))
                 committed = True
+                self._stamp = None
                 self.records.append(record)
+                history_audio.cleanup(self.path, self._read_file(strict=True))
                 if reservation:
-                    history_audio.cleanup(self.path, self._read_file(strict=True))
                     history_audio.fill(self.path, record, reservation)
-                else:
-                    history_audio.cleanup(self.path, self._read_file(strict=True))
             finally:
                 if reservation:
                     history_audio.close_reservation(self.path, record, reservation, committed)
@@ -256,11 +274,19 @@ class History:
             settings._write_private(self.path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
             self.lines = len(records)
         else:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            self.lines += 1
+            self._append_line(record)
+
+    def _append_line(self, record):
+        line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a+b") as stream:
+            if stream.seek(0, os.SEEK_END):
+                stream.seek(-1, os.SEEK_END)
+                if stream.read(1) != b"\n":
+                    line = b"\n" + line
+            stream.write(line)
+        self.lines += 1
 
     def detail(self, record_id, replay=False):
         from . import settings
@@ -313,14 +339,17 @@ class History:
         with self.lock:
             return settings._locked(read)()
 
+    def _refresh_locked(self):
+        stamp = self._file_stamp()
+        if stamp != self._stamp:
+            self.records = deque(self._read_file(strict=True), maxlen=self.keep)
+            self._stamp = stamp
+
     def _refresh(self):
         from . import settings
 
-        try:
-            records = settings._locked(lambda: self._read_file(strict=True))()
-        except OSError:
-            return
-        self.records = deque(records, maxlen=self.keep)
+        with contextlib.suppress(OSError):
+            settings._locked(self._refresh_locked)()
 
     def list(self, model=None, source=None, q=None, limit=100, before=None, after=None, order="desc") -> list[dict]:
         with self.lock:
@@ -366,6 +395,7 @@ class History:
             settings._write_private(self.path, "")
             self.records.clear()
             self.lines = 0
+            self._stamp = None
             history_audio.cleanup(self.path, [])
             return min(len(records), self.keep)
 

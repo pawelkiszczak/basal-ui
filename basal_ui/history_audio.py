@@ -52,8 +52,16 @@ def audio_paths(value, context=None, path=()):
                 yield from audio_paths(item, next_context, (*path, i))
 
 
+def _directory_path(path):
+    return path.with_name(path.name + ".audio")
+
+
+def storage_present(path):
+    return os.path.lexists(_directory_path(path)) or os.path.lexists(_journal(path))
+
+
 def _directory(path):
-    directory = path.with_name(path.name + ".audio")
+    directory = _directory_path(path)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
     if not stat.S_ISDIR(os.fstat(fd).st_mode) or os.fstat(fd).st_mode & 0o077:

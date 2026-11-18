@@ -1294,16 +1294,25 @@ def test_audio_policy_corruption_never_reports_false_or_overwrites(tmp_path, dam
     assert path.read_bytes() == damage
 
 
-def test_invalid_history_utf8_does_not_fail_sync_decision(tmp_path, monkeypatch):
+@pytest.mark.parametrize("audio_storage", [False, True])
+def test_invalid_history_utf8_does_not_fail_sync_decision(audio_storage, tmp_path, monkeypatch):
     fleet = make_fleet(tmp_path)
     runner = Runner()
     runner.state, runner.model = "ready", "mini"
     fleet.runners["mini"] = runner
     monkeypatch.setattr(Runner, "decide", lambda *_: httpx.Response(200, json={"answers": {}}))
+    if audio_storage:
+        history_path = fleet.history.path
+        history_path.with_name(history_path.name + ".audio").mkdir(mode=0o700)
     fleet.history.path.write_bytes(b"\xff")
     assert fleet.decide("mini", {"state": "ordinary"}).status_code == 200
-    assert fleet.history.path.read_bytes() == b"\xff"
-    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    if audio_storage:
+        assert fleet.history.path.read_bytes() == b"\xff"
+        assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    else:
+        assert fleet.history.path.read_bytes().splitlines()[0] == b"\xff"
+        assert len(fleet.history.list()) == 1
+        assert "decision not recorded" not in (fleet.logs.get("basal-ui").text() if "basal-ui" in fleet.logs else "")
 
 
 def test_audio_policy_one_shot_read_failure_keeps_other_settings(tmp_path, monkeypatch):
