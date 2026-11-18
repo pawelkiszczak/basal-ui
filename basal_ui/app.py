@@ -517,9 +517,15 @@ def create_app(
                 return dataclasses.replace(
                     baseline_assessment, mode=mode, est_memory_bytes=None, fit="unknown", fit_now="unknown"
                 )
-            needed = int(variant.weights_bytes * 1.2) + (
-                catalog.GRAPH_ENGINE_OVERHEAD if mode in catalog.GRAPH_ENGINE_MODES else catalog.GIB
-            )
+            overhead = catalog.GIB
+            if mode in catalog.GRAPH_ENGINE_MODES:
+                graph_memory = saved_options.get(variant.id, {}).get("graph_memory_gb")
+                overhead = (
+                    catalog.graph_memory_bytes(graph_memory)
+                    if graph_memory and catalog.is_graph_backend(mode)
+                    else catalog.GRAPH_ENGINE_OVERHEAD
+                )
+            needed = int(variant.weights_bytes * 1.2) + overhead
             if mode in ("vllm", "sglang"):
                 needed = max(needed, int(current_hw.memory_bytes * load_options.DEFAULTS["gpu_memory"]))
             return dataclasses.replace(
@@ -545,7 +551,20 @@ def create_app(
             raise HTTPException(400, f"unknown or unavailable recommendation backend {backend!r}")
         variants, source = catalog_fn(refresh=refresh, cache_dir=cache_dir)
         baseline = [catalog.assess(v, current_hw) for v in variants]
-        recommended = baseline
+        saved = settings_mod.load().get("load_options")  # once, not load_options() per row
+        revisions = (
+            {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
+        )
+        saved_estimates, saved_options = {}, {}
+        for item in baseline:
+            try:
+                chosen = load_options.validate((saved or {}).get(item.variant.id), item.mode)
+                estimate = catalog.assess(item.variant, current_hw, chosen)
+                saved_estimates[item.variant.id] = dataclasses.replace(estimate, mode=chosen["mode"] or item.mode)
+                saved_options[item.variant.id] = chosen
+            except (ValueError, AttributeError):
+                saved_estimates[item.variant.id] = item
+        recommended = list(saved_estimates.values())
         if backend != "automatic":
             recommended = []
             for item in baseline:
@@ -630,17 +649,6 @@ def create_app(
             "recurrent",
         )
         on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in baseline}
-        saved = settings_mod.load().get("load_options")  # once, not load_options() per row
-        revisions = (
-            {k: v.get("revision") for k, v in saved.items() if isinstance(v, dict)} if isinstance(saved, dict) else {}
-        )
-        saved_estimates = {}
-        for item in baseline:
-            try:
-                chosen = load_options.validate((saved or {}).get(item.variant.id), item.mode)
-                saved_estimates[item.variant.id] = catalog.assess(item.variant, current_hw, chosen)
-            except (ValueError, AttributeError):
-                saved_estimates[item.variant.id] = item
         return {
             "source": source,
             "recommendation_backends": installed,

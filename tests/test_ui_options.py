@@ -711,8 +711,12 @@ def test_selected_graph_memory_reaches_fleet_budget(tmp_path, monkeypatch, hide_
         assert response.json()["models"][0]["est_memory_bytes"] == 120 + 2 * catalog.GIB
         assert response.json()["memory"]["committed_bytes"] == 120 + 2 * catalog.GIB
         client.post("/api/unload", json={"id": BF16.id})
-        refused = client.post("/api/load", json={"id": BF16.id, "options": {"mode": "fast", "graph_memory_gb": 9}})
-        assert refused.status_code == 409
+        too_large = {"mode": "fast", "graph_memory_gb": 12}
+        assert client.put("/api/models/options", json={"id": BF16.id, "options": too_large}).status_code == 200
+        listing = client.get("/api/models").json()
+        assert listing["models"][0]["fit"] == "too_large"
+        assert not listing["suggestions"]
+        assert client.post("/api/load", json={"id": BF16.id}).status_code == 409
 
 
 def test_gdn_preflight_and_future_native_auto(monkeypatch):
