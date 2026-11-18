@@ -2,40 +2,28 @@
 
 - Attach external Decision servers in Model manager → Library to compare their reported models in Playground or Batch. Comparison Decisions are recorded with server provenance and have no basal calibration or automation certificate; external models are excluded from the API server and basal-only tools.
 
-
 - Import and refresh MCP tool catalogues in tool questions, with local BM25 shortlisting.
 - On Engines with Batch resume support, choose Resume or Restart for unfinished output, set the unanswered-line
   stop threshold, and see retained progress and the Engine's reason when a run stops. [USAGE](USAGE.md#batch)
-
 - Import preset packs from public URLs in Settings.
-
 - Add Fine-tune to Model manager and the declared Engine add-ons, with private labelled snapshots, cancellable training, held-out reports, base-associated adapter selection and guarded output deletion. The Engine range is unchanged. Interrupted output cleanup remains registered and can be retried.
   A local Native 2.5.1 one-step MPS run on synthetic labels with basal-2.0-mini exercised training, adapter serving and deletion; one scored held-out Decision is pipeline evidence, not a quality claim. Native Windows remains unavailable under the private-output capability gate.
-
 - Insert Engine question sets into the Playground as editable cards, with language and optional abstention target.
-
 - Fetch a public HTTP(S) page into editable Playground State, with bounded anonymous loading, provenance in History,
   and Replay that restores the recorded State without re-fetching. [Usage](USAGE.md)
-
 - Calibration offers parser-supported conformal levels and compatible kept thresholds, and shows new Engine report
   metadata while retaining older reports. [Usage](USAGE.md#custom-calibration)
-
 - Improved text spacing and navigation wrapping for readable zoomed layouts.
-
 - Use consistent bordered card surfaces and restore side-navigation state transitions, respecting reduced motion.
-
 - Hover effects appear only on hover-capable pointers, so touch taps do not leave controls looking hovered.
-
 - Inspect wraps its header and long labels on narrow screens and respects the browser's default text size.
 - Optionally unload idle models after a configured number of minutes; remembered models remain available for auto-load.
 - Error toasts stay visible until dismissed; informational toasts pause while hovered or focused.
 - Navigate views with a translated skip link, focused headings and page titles; use arrow keys to switch model tabs.
-
 - Inspect has more readable muted text, respects reduced motion and marks the selected tab in forced colors.
-
 - Keep Hardware metrics, Stats and Benchmark numbers, and Benchmark and Batch progress steady with tabular numerals;
   align numeric table columns with their headings.
-
+- Inspect follows the saved English or Polish language preference.
 - Inspect history supports keyboard activation, and question editor controls have accessible labels.
 
 - Route app component colors and Mark elements annotations through semantic tokens; side navigation now follows the current theme.
