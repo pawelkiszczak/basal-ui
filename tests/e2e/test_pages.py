@@ -1841,3 +1841,39 @@ def test_rank_media_engine_error_reaches_only_rank_cards(page, text_model):
     for index in (0, 1):
         sync_api.expect(cards.nth(index).locator(".q-error")).to_have_text("rank questions do not take media")
     sync_api.expect(cards.nth(2).locator(".q-error")).to_be_hidden()
+
+
+def test_editing_only_rank_groups_preserves_candidate_keys_and_text(browser, ui):
+    status = ui.get("/api/status")
+    status["features"]["rank"] = True
+    status["models"] = [{"id": "synthetic", "state": "ready", "media": [], "entry": {}}]
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.route("**/api/status", lambda route: route.fulfill(json=status))
+        page.goto(f"{ui.url}/#playground")
+        page.wait_for_function("statusCache?.features?.rank")
+        question = {
+            "type": "rank",
+            "instructions": "Does {candidate} match?",
+            "candidates": [
+                {"key": "north america", "text": "First\nsecond", "group": "old"},
+                {"key": "b", "text": "B"},
+            ],
+            "prior": {"north america": 1.5},
+        }
+        page.evaluate("q => setRequest({state: 'synthetic', questions: {q}})", question)
+        page.locator('[data-f="groups"]').fill('{"north america":"new"}')
+        result = page.evaluate("buildRequest().questions.q")
+        assert result["candidates"] == [
+            {"key": "north america", "text": "First\nsecond", "group": "new"},
+            {"key": "b", "text": "B"},
+        ]
+        assert result["prior"] == question["prior"]
+        page.locator('[data-f="groups"]').fill("{}")
+        assert page.evaluate("buildRequest().questions.q.candidates[0]") == {
+            "key": "north america",
+            "text": "First\nsecond",
+        }
+    finally:
+        context.close()

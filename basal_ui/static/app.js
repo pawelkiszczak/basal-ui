@@ -690,7 +690,19 @@ function parseQuestionCard(card, type=$('.q-type',card).value) {
     const object=v=>v&&typeof v==='object'&&!Array.isArray(v);
     const groups=str('groups')?json('groups',object,'groups must be a JSON object'):{};
     if(unedited('candidates')&&unedited('groups'))keep('candidates');
-    else q.candidates=splitLines(str('candidates')).map((line,i)=>{const m=line.match(KEYED),key=m?m[1]:String(i),candidate={key,text:m?m[2]:line};if(groups&&Object.hasOwn(groups,key))candidate.group=groups[key];return candidate;});
+    else {
+      const original=unedited('candidates')?orig.q.candidates:null;
+      const candidates=Array.isArray(original)?original:original&&object(original)
+        ?Object.entries(original).map(([key,text])=>({key,text}))
+        :splitLines(str('candidates')).map((line,i)=>{const m=line.match(KEYED);return {key:m?m[1]:String(i),text:m?m[2]:line};});
+      q.candidates=candidates.map((candidate,i)=>{
+        const key=candidate?.key??String(i), hasGroup=groups&&Object.hasOwn(groups,key);
+        if(!object(candidate))return hasGroup?{key,text:candidate,group:groups[key]}:candidate;
+        const updated={...candidate};
+        if(hasGroup)updated.group=groups[key];else delete updated.group;
+        return updated;
+      });
+    }
     if(str('prior'))set('prior',json('prior',object,'prior must be a JSON object'));
     set('top',num('top'));set('chunk',num('chunk'));set('choice_context',str('choice_context'));set('order',str('order'));
   }
