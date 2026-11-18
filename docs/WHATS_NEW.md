@@ -1,5 +1,7 @@
 # Unreleased
 
+- Form controls have more visible borders in light and dark themes, including the Inspect view.
+
 - Match good and active status indicators to the orange skin in light and dark themes, while retaining status labels.
 
 - The API server exposes admin-gated Prometheus metrics at `/metrics`, including available per-model Engine metrics grouped by metric family. Set `BASAL_UI_ADMIN_KEY` before startup to authenticate an external scraper.
