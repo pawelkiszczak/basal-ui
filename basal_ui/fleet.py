@@ -26,6 +26,8 @@ START_TIMEOUT_S = 1800  # --mode fast compiles for 4-17 minutes on the first sta
 MODEL_LOGS_KEPT = 10  # log buffers of unloaded models kept for the Logs view
 RSS_INTERVAL_S = 2  # `ps` runs at most this often for the resident memory of the children
 JOB_SHUTDOWN_S = 30  # shutdown waits this long for cancelled jobs before unloading the models
+READ_TIMEOUT_S = 600
+ENGINE_TIMEOUT_MARGIN_S = 30
 
 
 def _lan_ip():
@@ -152,6 +154,7 @@ class Runner:
         self.lock = threading.RLock()
         self.gen = 0
         self.process = None
+        self.log_thread = None
         self.rss_bytes = None
         self._reset()
 
@@ -160,6 +163,7 @@ class Runner:
         self.command, self.progress, self.error, self.base_url = None, None, None, None
         self.media_requested, self.media = False, []
         self.est_memory_bytes, self.models_entry, self.ready_at = None, None, None
+        self.last_used = None
         self.loaded_path = None
         self.serve_snapshot = None  # the child settings the running basal-serve was started with
         self.extra_args, self.temporary, self.options = (), False, {}
@@ -177,14 +181,26 @@ class Runner:
         health = {"reachable": False, "running": None, "queued": None}
         try:
             response = httpx.get(url + "/health", timeout=0.5)
-            response.raise_for_status()
             data = response.json()
-            health["reachable"] = isinstance(data, dict) and data.get("status") == "ok"
+            status = data.get("status") if isinstance(data, dict) else None
+            health["reachable"] = (response.status_code == 200 and status == "ok") or (
+                response.status_code == 503 and status == "stalled"
+            )
             if health["reachable"]:
+                if status == "stalled":
+                    health["status"] = status
+                    age = data.get("engine_call_s")
+                    if isinstance(age, (int, float)) and not isinstance(age, bool) and age >= 0:
+                        health["engine_call_s"] = age
                 for key in ("running", "queued"):
                     value = data.get(key)
                     if type(value) is int and value >= 0:
                         health[key] = value
+                lane = data.get("long")
+                if isinstance(lane, dict):
+                    counts = {key: lane.get(key) for key in ("running", "queued")}
+                    if all(type(value) is int and value >= 0 for value in counts.values()):
+                        health["long"] = counts
         except (httpx.HTTPError, ValueError):
             pass
         finally:
@@ -196,7 +212,7 @@ class Runner:
         with self.lock:
             if self.state == "ready" and self.process and self.process.poll() is not None:
                 self.state = "error"
-                self.error = f"basal-serve exited ({self.process.returncode}): {self.log.last() or ''}"
+                self.error = self._exit_error(self.process, self.log_thread)
                 self.event("error", f"{self.model}: {self.error}")
             if (
                 self.state == "ready"
@@ -349,7 +365,7 @@ class Runner:
         try:
             revision = self.options.get("revision")
             path = catalog.is_downloaded(v, cache_dir, revision=revision)
-            if path is None and self.local_only:
+            if path is None and (self.local_only or v.local_dir is not None):
                 raise RuntimeError("downloaded model files are missing; this operation never downloads")
             path = path or self._download(v, gen, cache_dir, revision)
             if path is None:
@@ -372,6 +388,7 @@ class Runner:
                 self.serve_snapshot = _child_settings(serve, self._calibration(v))
                 self.process = proc = subprocess.Popen(
                     command,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -384,13 +401,13 @@ class Runner:
                     },
                     **options,
                 )
+                self.log_thread = log_thread = threading.Thread(target=self._read_logs, args=(proc,), daemon=True)
+                log_thread.start()
             self.event("info", f"{v.id}: basal-serve starting on 127.0.0.1:{port}: {shlex.join(map(str, command))}")
-            threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
             deadline = time.monotonic() + START_TIMEOUT_S
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
-                    time.sleep(0.2)  # let the log reader drain the last lines
-                    raise RuntimeError(f"basal-serve exited ({proc.returncode}): {self.log.last() or 'no output'}")
+                    raise RuntimeError(self._exit_error(proc, log_thread))
                 try:
                     if httpx.get(self.base_url + "/health", timeout=1).status_code == 200:
                         entry, media_kinds = self._models_entry(media)
@@ -404,11 +421,24 @@ class Runner:
                                     entry, path, assessment.mode, self.options, self._calibration(v)
                                 ),
                             }
+                        if entry is not None and "context" not in entry:
+                            from basal.server import parser
+
+                            args, _ = parser().parse_known_args(command[3:])
+                            entry = {
+                                **entry,
+                                "context": {
+                                    "limit": None,
+                                    "overflow": args.context_overflow,
+                                    "truncate_head": args.truncate_head,
+                                },
+                            }
                         with self.lock:
                             if gen != self.gen:
                                 return
                             self.state, self.media = "ready", media_kinds
                             self.models_entry, self.ready_at = entry, time.time()
+                            self.last_used = time.monotonic()
                             if not self.temporary and self.remember:
                                 self.settings_mod.remember_loaded(v.id, media, self.options)
                         self.event("info", f"{v.id}: ready")
@@ -435,6 +465,13 @@ class Runner:
         for line in proc.stdout:
             self.log.append(line.rstrip())
 
+    def _exit_error(self, proc, log_thread):
+        # A descendant may keep stdout open after the child exits; never block status indefinitely.
+        if log_thread:
+            log_thread.join(timeout=1)
+        excerpt = self.log.text().strip()[-2000:] or "no output"
+        return f"basal-serve exited ({proc.returncode}): {excerpt}"
+
     def unload(self):
         proc, _ = self.detach()
         self._terminate(proc)
@@ -457,20 +494,39 @@ class Runner:
                 raise RuntimeError(f"model {self.model} is not ready ({self.state})")
             return self.base_url + path
 
+    def read_timeout(self):
+        deadline = self.options.get("request_timeout")
+        return max(READ_TIMEOUT_S, deadline + ENGINE_TIMEOUT_MARGIN_S) if deadline else READ_TIMEOUT_S
+
     def decide(self, body, path="/v1/systemone"):
         """basal-serve's answer to a System One or OpenAI Decisions request (path), in the path's shape."""
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(httpx.post(self._url("/v1/systemone"), json=child_body, timeout=120))
+        response = reply(
+            httpx.post(
+                self._url("/v1/systemone"), json=child_body, timeout=httpx.Timeout(120, read=self.read_timeout())
+            )
+        )
         response.extensions["basal.inference"] = True
         return response
 
-    async def adecide(self, client, body, path="/v1/systemone"):
+    async def adecide(self, client, body, path="/v1/systemone", timeout=None):
         child_body, reply = child_request(path, body)
         if child_body is None:
             return reply
-        response = reply(await client.post(self._url("/v1/systemone"), json=child_body))
+        if timeout is not None:
+            timeout = httpx.Timeout(timeout)
+            deadline = self.options.get("request_timeout")
+            if deadline and timeout.read is not None:
+                timeout.read = max(timeout.read, deadline + ENGINE_TIMEOUT_MARGIN_S)
+        response = reply(
+            await client.post(
+                self._url("/v1/systemone"),
+                json=child_body,
+                timeout=timeout if timeout is not None else httpx.Timeout(120, read=self.read_timeout()),
+            )
+        )
         response.extensions["basal.inference"] = True
         return response
 
@@ -482,7 +538,7 @@ class Fleet:
         self.models_dir_fn, self.platform_fn = models_dir_fn, platform_fn
         self.settings_mod, self.hardware_fn = settings_mod, hardware_fn
         self.stats, self.history = stats, history
-        self.internal_secret = secrets.token_urlsafe(32)
+        self.internal_secret = os.environ.get("BASAL_UI_ADMIN_KEY") or secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.runners: dict[str, Runner] = {}
         self.logs: dict[str, LogBuffer] = {"basal-ui": LogBuffer()}
@@ -490,6 +546,7 @@ class Fleet:
         self._engine_addon_job_target = None
         self.downloads = Downloads(self.event)
         self.jobs = Jobs(self.logs, self.event, start_lock=self.lock, start_guard=self._check_job_start)
+        self.jobs.model_guard = self._check_job_model
         self.draining: set[str] = set()
         self.leases: dict[Runner, int] = {}
         self.inflight: dict[object, tuple[str, str, float]] = {}  # each request being answered: (model, source, start)
@@ -499,15 +556,48 @@ class Fleet:
         self._lan_ip = None
         self.retiring: dict[Runner, int | None] = {}  # unloaded runners whose child is still being terminated
         self._rss_cache = (0.0, {})
+        self.idle_unloads = {}
+        self.idle_settings_generation = settings_mod.with_idle_unload_state(lambda _timeout, revision: revision)
+        self.idle_settings_changed = 0.0
+        self.idle_stop = threading.Event()
+        self.idle_thread = None
 
     def _check_addon_maintenance(self):
         """Reject model/process activity while uv mutates the Engine environment."""
         if self.engine_addon_installing and not self.stopping:
             raise RuntimeError("model operations are unavailable during Engine add-on installation")
 
+    def _check_finetune_delete(self):
+        if "finetune-delete" in self.reserved:
+            raise RuntimeError("model operations are unavailable during fine-tune output deletion")
+
+    def _check_pending_adapter(self, options):
+        from .finetune import _directory
+
+        for record in getattr(self.settings_mod, "finetune_results", lambda: [])():
+            try:
+                path = _directory(record)
+                quarantine = path.with_name(f".{path.name}.deleting").resolve()
+            except (ValueError, OSError):
+                continue
+            for key in ("adapter", "think_adapter"):
+                if value := (options or {}).get(key):
+                    selected = Path(value).expanduser().resolve()
+                    if selected == quarantine or quarantine in selected.parents:
+                        raise RuntimeError("fine-tune output is pending cleanup")
+
     def _check_job_start(self, kind, target):
+        self._check_finetune_delete()
         if self.engine_addon_installing and (kind != "engine-addon" or target != self._engine_addon_job_target):
             raise RuntimeError("jobs are unavailable during Engine add-on installation")
+
+    def _check_job_model(self, kind, model):
+        if (
+            isinstance(model, str)
+            and model.startswith("attached/")
+            and not any(r.get("id") == model for r in self.settings_mod.attached_models())
+        ):
+            raise RuntimeError("attached model is no longer registered")
 
     def event(self, level, message):
         self.logs["basal-ui"].append(f"{level} {message}")
@@ -567,6 +657,8 @@ class Fleet:
         """A private, unremembered child for a job (its memory counted in the budget); stop_temporary ends it."""
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
+            self._check_pending_adapter(options)
             if kind in self.temporary:
                 raise RuntimeError(f"a {kind} child is already running")
             if self.stopping:
@@ -604,6 +696,7 @@ class Fleet:
         budget); release(kind) frees them."""
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
             if kind in self.reserved:
                 raise RuntimeError(f"a {kind} job already holds memory")
             self.check_budget(needed)
@@ -618,6 +711,13 @@ class Fleet:
         model_id = assessment.variant.id
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
+            self._check_pending_adapter(options)
+            if assessment.variant.family == "attached":
+                if not any(r.get("id") == model_id for r in self.settings_mod.attached_models()):
+                    raise RuntimeError("attached model is no longer registered")
+                if not catalog.is_downloaded(assessment.variant, self.models_dir_fn()):
+                    raise RuntimeError("attached model files are missing")
             if self.stopping or (model_id in self.draining and _reservation is None):
                 raise RuntimeError("model is unavailable during maintenance")
             existing = self.runners.get(model_id)
@@ -631,6 +731,7 @@ class Fleet:
                 if reserved is None:
                     raise RuntimeError("restart memory reservation was lost")
                 self.reserved.pop(_reservation)
+            self.idle_unloads.pop(model_id, None)
             self.logs.pop(model_id, None)
             self.logs[model_id] = log = LogBuffer()  # most recent last; a reload starts a fresh log
             runner = self._runner(log)
@@ -660,20 +761,10 @@ class Fleet:
                 raise RuntimeError("model is unavailable during maintenance")
             retiring = []
             for i in ids:
-                runner = self.runners.pop(i)
-                # detach under the fleet lock: the old load can no longer reach ready and remember itself after
-                # forget_loaded; its memory stays committed until the child is gone (a new load must wait for it)
-                proc, est = runner.detach()
-                retiring.append((runner, proc))
-                self.retiring[runner] = est
-                if forget:
-                    self.settings_mod.forget_loaded(i)
+                retiring.append(self._detach_runner(i, forget))
             self._prune_logs()
         for i, (runner, proc) in zip(ids, retiring, strict=True):
-            Runner._terminate(proc)
-            with self.lock:
-                self.retiring.pop(runner, None)
-            self.event("info", f"unloaded: {i}")
+            self._finish_unload(i, runner, proc)
         if model_id is None:  # every model: the private children of jobs too (their job then fails)
             with self.lock:
                 temporary = list(self.temporary)
@@ -681,12 +772,137 @@ class Fleet:
                 self.stop_temporary(kind)
         return self.status()
 
+    def _detach_runner(self, model_id, forget):
+        # Caller holds the fleet lock; retiring memory stays reserved until termination finishes.
+        runner = self.runners.pop(model_id)
+        proc, est = runner.detach()
+        self.retiring[runner] = est
+        if forget:
+            self.settings_mod.forget_loaded(model_id)
+        return runner, proc
+
+    def _finish_unload(self, model_id, runner, proc):
+        Runner._terminate(proc)
+        with self.lock:
+            self.retiring.pop(runner, None)
+        self.event("info", f"unloaded: {model_id}")
+
+    def start_idle_timer(self):
+        with self.lock:
+            self.idle_stop.clear()
+        self.idle_thread = threading.Thread(target=self._idle_loop, daemon=True)
+        self.idle_thread.start()
+
+    def _idle_loop(self):
+        while not self.idle_stop.wait(30):
+            self.unload_idle(time.monotonic())
+
+    def stop_idle_timer(self):
+        with self.lock:
+            self.idle_stop.set()
+        if self.idle_thread is not None:
+            self.idle_thread.join()
+
+    def refresh_idle_settings(self):
+        def observe(timeout, revision):
+            if revision != self.idle_settings_generation:
+                self.idle_settings_generation = revision
+                self.idle_settings_changed = time.monotonic()
+            return timeout, revision
+
+        with self.lock:
+            return self.settings_mod.with_idle_unload_state(observe)
+
+    def unload_idle(self, now):
+        with self.lock:
+            candidates = list(self.runners.items())
+        for model_id, runner in candidates:
+            if not isinstance(runner, Runner):
+                continue
+            with self.lock, runner.lock:
+                timeout, settings_generation = self.refresh_idle_settings()
+                if (
+                    not timeout
+                    or self.idle_stop.is_set()
+                    or self.stopping
+                    or self.engine_addon_installing
+                    or self.runners.get(model_id) is not runner
+                    or model_id in self.draining
+                    or self.leases.get(runner)
+                    or runner.temporary
+                    or runner.state != "ready"
+                    or runner.last_used is None
+                    or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
+                    or not runner.base_url
+                ):
+                    continue
+                gen, url, last_used, expected_timeout = runner.gen, runner.base_url, runner.last_used, timeout
+            try:
+                response = httpx.get(url + "/health", timeout=0.5)
+                response.raise_for_status()
+                health = response.json()
+                if not isinstance(health, dict) or health.get("status") != "ok":
+                    continue
+            except (httpx.HTTPError, ValueError):
+                continue
+            with self.lock, runner.lock:
+
+                def detach_if_current(
+                    timeout,
+                    revision,
+                    model_id=model_id,
+                    runner=runner,
+                    gen=gen,
+                    last_used=last_used,
+                    expected_timeout=expected_timeout,
+                    settings_generation=settings_generation,
+                    health=health,
+                ):
+                    if revision != self.idle_settings_generation:
+                        self.idle_settings_generation = revision
+                        self.idle_settings_changed = time.monotonic()
+                    if (
+                        not timeout
+                        or timeout != expected_timeout
+                        or self.idle_stop.is_set()
+                        or self.stopping
+                        or self.engine_addon_installing
+                        or self.runners.get(model_id) is not runner
+                        or model_id in self.draining
+                        or self.leases.get(runner)
+                        or runner.gen != gen
+                        or revision != settings_generation
+                        or runner.state != "ready"
+                        or runner.last_used != last_used
+                        or now < max(runner.last_used, self.idle_settings_changed) + timeout * 60
+                        or type(health.get("running")) is not int
+                        or health["running"] != 0
+                        or type(health.get("queued")) is not int
+                        or health["queued"] != 0
+                    ):
+                        return None
+                    message = f"unloaded after {timeout} idle minutes"
+                    runner.log.append(message)
+                    self.idle_unloads[model_id] = {"code": "idle_unload", "minutes": timeout, "at": time.time()}
+                    detached, proc = self._detach_runner(model_id, forget=False)
+                    self._prune_logs()
+                    return detached, proc, message
+
+                result = self.settings_mod.with_idle_unload_state(detach_if_current)
+                if result is None:
+                    continue
+                detached, proc, message = result
+            self._finish_unload(model_id, detached, proc)
+            self.event("info", f"{model_id}: {message}")
+
     def restart(self, assessment, media=False, options=None):
         """Unload and load again; options None keeps the running child's load options. The model stays in maintenance
         (no concurrent load) until the replacement load starts, and a failed load releases the memory it reserved."""
         model_id = assessment.variant.id
         with self.lock:
             self._check_addon_maintenance()
+            self._check_finetune_delete()
+            self._check_pending_adapter(options)
             if model_id in self.draining:
                 raise RuntimeError("model is unavailable during maintenance")
             current = self.runners.get(model_id)
@@ -737,13 +953,20 @@ class Fleet:
         with self.lock:
             memory = self._memory(sum(m["rss_bytes"] or 0 for m in models))
             inflight = list(self.inflight.values())
+            idle_unloads = dict(self.idle_unloads)
         for m in models:  # what basal-ui is waiting on (Playground, API server, MCP, benchmark), oldest first
             m["inflight"] = [
                 {"source": source, "seconds": round(now - t0, 1)}
                 for model, source, t0 in sorted(inflight, key=lambda x: x[2])
                 if model == m["id"]
             ]
-        return {"models": models, "downloads": self.downloads.status(), "memory": memory, "jobs": self.jobs.states()}
+        return {
+            "models": models,
+            "idle_unloads": idle_unloads,
+            "downloads": self.downloads.status(),
+            "memory": memory,
+            "jobs": self.jobs.states(),
+        }
 
     def _rss(self):
         """rss_by_pgid() at most every RSS_INTERVAL_S: the UI polls every second while a model loads."""
@@ -770,6 +993,29 @@ class Fleet:
             runners = list(self.runners.items())
         return [model_id for model_id, runner in runners if runner.status()["state"] == "ready"]
 
+    def metrics_snapshot(self):
+        """Ready model count and native child identities without health probes or leases."""
+        with self.lock:
+            ready = []
+            for model, runner in self.runners.items():
+                if isinstance(runner, Runner):
+                    with runner.lock:
+                        if runner.state == "ready" and (runner.process is None or runner.process.poll() is None):
+                            ready.append((model, runner, runner.gen, runner.base_url))
+                elif runner.state == "ready":
+                    ready.append((model, runner, None, None))
+            return len(ready), [item for item in ready if isinstance(item[1], Runner) and item[3]]
+
+    def metrics_current(self, model, runner, generation, url):
+        with self.lock, runner.lock:
+            return (
+                self.runners.get(model) is runner
+                and runner.gen == generation
+                and runner.state == "ready"
+                and runner.base_url == url
+                and (runner.process is None or runner.process.poll() is None)
+            )
+
     def model_entries(self):
         """The ready models for GET /v1/models: id, the child's own entry, the time it became ready."""
         with self.lock:
@@ -792,7 +1038,7 @@ class Fleet:
         """fn() with no model, job child and download running, atomically with load()."""
         with self.lock:
             self._check_addon_maintenance()
-            if self.runners or self.temporary or self.downloads.any_alive():
+            if self.runners or self.temporary or self.downloads.any_alive() or self.reserved or self.jobs.running():
                 raise RuntimeError("unload every model before changing the models directory")
             return fn()
 
@@ -800,12 +1046,25 @@ class Fleet:
         """fn() while nothing uses the repository, atomically with load()."""
         with self.lock:
             self._check_addon_maintenance()
+            if "finetune" in self.reserved:
+                raise RuntimeError("wait for fine-tuning before deleting a model")
             if self.busy(repo):
                 raise RuntimeError("unload the model first")
             return fn()
 
     def _record(
-        self, model_id, body, path, source, status, data, latency_ms, endpoint=None, method="POST", record_traffic=True
+        self,
+        model_id,
+        body,
+        path,
+        source,
+        status,
+        data,
+        latency_ms,
+        endpoint=None,
+        method="POST",
+        record_traffic=True,
+        source_url=None,
     ):
         """Count and keep the decision; a failed write is logged, never turned into a failed answer."""
         if source == "benchmark":
@@ -817,6 +1076,8 @@ class Fleet:
                 self.stats.record(model_id, data, latency_ms, ok=200 <= status < 300, endpoint=endpoint, method=method)
             if self.history is not None:
                 request = {"model": model_id, **body} if path == "/v1/systemone" else body
+                if source_url is not None:
+                    request = {**request, "source_url": source_url}
                 self.history.append(make_record(model_id, source, request, status, data, latency_ms))
         except OSError as exc:
             self.event("error", f"decision not recorded: {exc}")
@@ -846,12 +1107,14 @@ class Fleet:
     def start_model_job(self, kind, model_id, label, target, *args):
         # Acquire before scheduling: a queued job already owns its model.
         lease = self.lease(model_id)
-        lease.__enter__()
+        runner = lease.__enter__()
 
         def run(job, *values):
             try:
                 return target(job, *values)
             finally:
+                with self.lock:
+                    runner.last_used = time.monotonic()
                 lease.__exit__(None, None, None)
 
         try:
@@ -861,7 +1124,7 @@ class Fleet:
             raise
 
     @contextmanager
-    def answering(self, model_id, source):
+    def answering(self, model_id, source, runner):
         token = object()
         with self.lock:
             self.inflight[token] = (model_id, source, time.monotonic())
@@ -870,9 +1133,13 @@ class Fleet:
         finally:
             with self.lock:
                 self.inflight.pop(token, None)
+                if runner is not None:
+                    runner.last_used = time.monotonic()
 
-    def decide(self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST"):
-        with self.lease(model_id) as runner, self.answering(model_id, source):
+    def decide(
+        self, model_id, body, path="/v1/systemone", source="playground", endpoint=None, method="POST", source_url=None
+    ):
+        with self.lease(model_id) as runner, self.answering(model_id, source, runner):
             t0 = time.perf_counter()
             try:
                 response = runner.decide(body, path)
@@ -887,6 +1154,7 @@ class Fleet:
                     (time.perf_counter() - t0) * 1000,
                     endpoint,
                     method,
+                    source_url=source_url,
                 )
                 raise
             inferred = bool(response.extensions.get("basal.inference"))
@@ -901,16 +1169,18 @@ class Fleet:
                 endpoint if inferred else None,
                 method,
                 inferred,
+                source_url=source_url,
             )
             return response
 
     async def adecide(
         self, model_id, body, path="/v1/systemone", source="api", client=None, endpoint=None, method="POST"
     ):
-        with self.lease(model_id) as runner, self.answering(model_id, source):
+        with self.lease(model_id) as runner, self.answering(model_id, source, runner):
             t0 = time.perf_counter()
             try:
-                response = await runner.adecide(client, body, path)
+                kwargs = {"timeout": client.timeout} if source == "benchmark" else {}
+                response = await runner.adecide(client, body, path, **kwargs)
             except httpx.HTTPError as exc:
                 await asyncio.to_thread(
                     self._record,
@@ -954,6 +1224,9 @@ class Fleet:
         left = self.jobs.join(JOB_SHUTDOWN_S)
         if left:
             self.event("warn", f"shutdown: jobs still running: {', '.join(left)}")
+        finetune = self.jobs.get("finetune")
+        if finetune and finetune.thread and finetune.thread.is_alive():
+            finetune.thread.join()
         self.unload(forget=False)
 
 

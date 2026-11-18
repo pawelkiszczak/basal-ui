@@ -7,6 +7,7 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
@@ -64,6 +65,8 @@ def run_batch(
     output_path,
     concurrency=16,
     early_exit=None,
+    preset=None,
+    lang="auto",
     choice=None,
     stop_after=16,
     restart_supported=False,
@@ -78,7 +81,11 @@ def run_batch(
         raise RuntimeError("Unfinished Batch found; choose Resume or Restart before starting.")
     if restart_supported and choice == "resume" and not Path(str(output_path) + ".part").exists():
         raise RuntimeError("No partial output to resume; choose Restart to replace the unfinished record.")
-    total = sum(1 for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip())
+    total = 0
+    with Path(input_path).open(encoding="utf-8") as source:
+        for line in source:
+            job.check()
+            total += bool(line.strip())
     job.progress("running", 0, total)
     args = [
         "--input",
@@ -97,7 +104,30 @@ def run_batch(
     if stop_after != 16:
         args += ["--stop-after", str(stop_after)]
     try:
-        summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
+        if preset:
+            args += ["--preset", preset]
+        if lang in ("pl", "en"):
+            args += ["--lang", lang]
+        if preset:
+            from basal.presets import questions
+
+            with tempfile.TemporaryDirectory(prefix="basal-ui-batch-") as directory:
+                temporary = Path(directory) / "input.jsonl"
+                with Path(input_path).open(encoding="utf-8") as source, temporary.open("w", encoding="utf-8") as target:
+                    for line in source:
+                        job.check()
+                        if not line.strip():
+                            continue
+                        item = json.loads(line)
+                        if "questions" not in item and "question" not in item:
+                            item["questions"] = questions(preset, None if lang == "auto" else lang, item["state"])
+                        target.write(json.dumps(item, ensure_ascii=False) + "\n")
+                args[1] = str(temporary)
+                job.check()
+                summary = run_tool(job, "run", args)
+        else:
+            job.check()
+            summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
     except RuntimeError as exc:
         part = Path(str(output_path) + ".part")
         if restart_supported and part.exists():
@@ -115,6 +145,7 @@ def run_batch(
                     "concurrency": concurrency,
                     "early_exit": early_exit,
                     "stop_after": stop_after,
+                    **({"preset": preset, "lang": lang} if preset else {}),
                 },
             ) from exc
         raise
