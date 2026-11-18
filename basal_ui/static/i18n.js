@@ -729,6 +729,7 @@ const PL = {
   "Stopped models:": "Zatrzymane modele:",
   "Storage location": "Lokalizacja pamięci",
   "Strict": "Rygorystycznie",
+  "Skip to main content": "Przejdź do treści głównej",
   "Suggested": "Sugerowane",
   "Suggested for this machine": "Polecane dla tego komputera",
   "Synthetic tokens": "Tokeny syntetyczne",

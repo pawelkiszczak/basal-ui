@@ -1,5 +1,7 @@
 # Unreleased
 
+- Navigate views with a translated skip link, focused headings and page titles; use arrow keys to switch model tabs.
+
 - Inspect has more readable muted text, respects reduced motion and marks the selected tab in forced colors.
 
 - Keep Hardware metrics, Stats and Benchmark numbers, and Benchmark and Batch progress steady with tabular numerals;

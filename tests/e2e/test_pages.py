@@ -1834,3 +1834,90 @@ def test_the_mcp_example_targets_the_selected_model_where_the_engine_routes_it(p
         ui.put("/api/serve", {"enabled": False, "mcp": False})
         ui.post("/api/serve/restart")
         ui.unload(second_model["id"])
+
+
+@pytest.mark.parametrize(
+    ("language", "skip", "dashboard", "models"),
+    [("en", "Skip to main content", "Dashboard", "Models"), ("pl", "Przejdź do treści głównej", "Pulpit", "Modele")],
+)
+def test_keyboard_view_navigation_and_model_tabs(browser, ui, language, skip, dashboard, models):
+    context = browser.new_context()
+    page = context.new_page()
+    page.add_init_script(f"localStorage.setItem('basal-ui.lang', '{language}')")
+    page.goto(ui.url + "/#dashboard")
+    sync_api.expect(page).to_have_title(f"{dashboard} | basal")
+    page.keyboard.press("Tab")
+    link = page.get_by_role("link", name=skip)
+    sync_api.expect(link).to_be_focused()
+    page.keyboard.press("Enter")
+    sync_api.expect(page.locator("main")).to_be_focused()
+    page.keyboard.press("Alt+2")
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    for _ in range(12):
+        if page.locator('#models [role="tab"][aria-selected="true"]').evaluate("el => el === document.activeElement"):
+            break
+        page.keyboard.press("Tab")
+    selected = page.locator('#models [role="tab"][aria-selected="true"]')
+    sync_api.expect(selected).to_be_focused()
+    for key, target in [
+        ("End", "allModelsTab"),
+        ("ArrowLeft", "suggestedTab"),
+        ("ArrowRight", "allModelsTab"),
+        ("Home", "suggestedTab"),
+    ]:
+        page.keyboard.press(key)
+        tab = page.locator(f"#{target}")
+        sync_api.expect(tab).to_be_focused()
+        sync_api.expect(tab).to_have_attribute("aria-selected", "true")
+        sync_api.expect(tab).to_have_attribute("tabindex", "0")
+        sync_api.expect(page.locator('#models [role="tab"][aria-selected="false"]')).to_have_attribute("tabindex", "-1")
+    page.evaluate("() => new Promise(resolve => document.addEventListener('app:status', resolve, {once: true}))")
+    sync_api.expect(page.locator("#suggestedTab")).to_be_focused()
+    page.keyboard.press("Alt+1")
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    page.go_back()
+    sync_api.expect(page.locator("#pageTitle")).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    page.reload()
+    page.keyboard.press("Tab")
+    sync_api.expect(link).to_be_focused()
+    sync_api.expect(page).to_have_title(f"{models} | basal")
+    context.close()
+
+
+@pytest.mark.parametrize("fragment", ["", "#dashboard", "#manager/calibration"])
+def test_initial_keyboard_focus_preserves_requested_url(browser, ui, fragment):
+    context = browser.new_context()
+    page = context.new_page()
+    page.add_init_script("""(() => {
+      window.historyWrites = [];
+      for (const method of ['pushState', 'replaceState']) {
+        const original = history[method];
+        history[method] = function(...args) { window.historyWrites.push(args[2]); return original.apply(this, args); };
+      }
+    })()""")
+    seen = []
+
+    def check_url(route):
+        seen.append(page.evaluate("location.hash"))
+        route.continue_()
+
+    page.route("**/static/app.js", check_url)
+    page.goto(ui.url + "/" + fragment)
+    assert seen == [fragment]
+    if fragment:
+        assert page.evaluate("location.hash") == fragment
+        assert page.evaluate("window.historyWrites") == []
+    page.keyboard.press("Tab")
+    sync_api.expect(page.locator(".skip-link")).to_be_focused()
+    context.close()
+
+
+def test_failed_script_preserves_deep_link(browser, ui):
+    context = browser.new_context()
+    page = context.new_page()
+    page.route("**/static/app.js", lambda route: route.abort())
+    page.goto(ui.url + "/#manager/calibration")
+    assert page.evaluate("location.hash") == "#manager/calibration"
+    context.close()

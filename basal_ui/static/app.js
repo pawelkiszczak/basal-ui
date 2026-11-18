@@ -2058,13 +2058,18 @@ function inspectDecision(request) {
   if(frame.dataset.loaded==='1')send(); else frame.addEventListener('load',send,{once:true});
 }
 const PAGES={dashboard:['01 / DASHBOARD','Dashboard','Live activity, model status, and recent traffic.'],models:['02 / MODELS','Models','Browse suggested and all basal variants.'],playground:['03 / PLAYGROUND','Playground','Ask typed questions of a loaded model.'],history:['04 / HISTORY','History','Every decision this app answered: playground, API and MCP.'],manager:['05 / MODEL MANAGER','Model manager','Load and organize models. Usage and tuning stay out of the way.'],overview:['06 / HARDWARE','Hardware','Hardware, host limits, and updates.'],batch:['07 / BATCH','Batch','Run a JSONL file of requests through a loaded model and export the answers.'],inspect:['08 / INSPECT','Inspect','basal-viz: the prompt, the tokens, every layer and the calibrated decision.'],backends:['09 / BACKENDS','Backends','Local inference engines, compatibility, setup and explicit verification.'],api:['10 / API SERVER','API server','One port for every loaded model, keys, and MCP.'],logs:['11 / LOGS','Logs','Output of each basal-serve and basal-ui’s own events.'],settings:['12 / SETTINGS','Settings','Manage memory, storage, defaults, and appearance.']};
+let currentView=null;
+$('.skip-link').onclick=event=>{event.preventDefault();$('#main-content').focus();};
 function showView(hash, updateHash=false) {
   const raw=String(hash||'').replace(/^#/,''), slash=raw.indexOf('/');
   const view=slash<0?raw:raw.slice(0,slash), arg=slash<0?'':raw.slice(slash+1), name=PAGES[view]?view:'dashboard';
   const wasDashboard=!$('#dashboard').hidden;
   const [eyebrow,title,description]=PAGES[name], number=eyebrow.split(' / ')[0];
+  const changed=currentView!==null&&currentView!==name; currentView=name;
+  document.title=`${t(title)} | basal`;
   $('#pageEyebrow').textContent=LANG==='en'?eyebrow:`${number} / ${t(title).toLocaleUpperCase(LANG)}`; $('#pageTitle').textContent=t(title); $('#pageDescription').textContent=t(description);
   document.querySelectorAll('.view').forEach(v=>v.hidden=v.dataset.page!==name);
+  if(changed)$('#pageTitle').focus();
   document.querySelectorAll('.side-nav [data-view]').forEach(b=>{const active=b.dataset.view===name;b.classList.toggle('active',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   const secondary=Boolean(document.querySelector(`.nav-tools [data-view="${name}"]`));
   $('.nav-tools').classList.toggle('active',secondary);
@@ -2087,7 +2092,7 @@ function showView(hash, updateHash=false) {
     loadLogs();
   }
 }
-const route=()=>{if(location.hash!==shownHash)showView(location.hash);};
+const route=()=>{if(location.hash!==shownHash){const previous=currentView;showView(location.hash);if(previous!==currentView){const target=currentView;setTimeout(()=>{if(currentView===target)$('#pageTitle').focus();},0);}}};
 document.querySelectorAll('.side-nav [data-view]').forEach(b=>b.onclick=()=>showView(b.dataset.view,true));
 window.addEventListener('hashchange',route); window.addEventListener('popstate',route);
 function selectManagerTab(tab) {
@@ -2111,8 +2116,17 @@ managerTabs.forEach((button,index)=>{
   };
 });
 selectManagerTab(new URLSearchParams(location.search).get('managerTab')||localStorage.getItem('basal-ui.managerTab')||'library');
-function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));}localStorage.setItem('basal-ui.tab',tab);}
-$('#suggestedTab').onclick=()=>selectModelsTab('suggested');$('#allModelsTab').onclick=()=>selectModelsTab('all');
+function selectModelsTab(tab){for(const x of ['suggested','all']){$(`#${x==='all'?'allModels':x}`).hidden=x!==tab;const b=$(`#${x==='all'?'allModelsTab':'suggestedTab'}`);b.classList.toggle('active',x===tab);b.setAttribute('aria-selected',String(x===tab));b.tabIndex=x===tab?0:-1;}localStorage.setItem('basal-ui.tab',tab);}
+const modelTabs=[$('#suggestedTab'),$('#allModelsTab')];
+modelTabs.forEach((button,index)=>{
+  button.onclick=()=>selectModelsTab(index?'all':'suggested');
+  button.onkeydown=event=>{
+    if(event.altKey||event.ctrlKey||event.metaKey||!['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'].includes(event.key))return;
+    event.preventDefault();
+    const target=event.key==='Home'?0:event.key==='End'?1:(index+1)%modelTabs.length;
+    selectModelsTab(target?'all':'suggested');modelTabs[target].focus();
+  };
+});
 selectModelsTab(localStorage.getItem('basal-ui.tab')==='all'?'all':'suggested');
 async function loadMemorySettings(){
   try{

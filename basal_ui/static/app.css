@@ -232,3 +232,6 @@ dialog[open]{position:fixed;inset:0;margin:auto}
 @media(max-width:720px){.page-header{padding-right:0}.page-header>#openModelLoader{position:static;margin-top:18px}}
 
 #calibrationFiles td .reason{margin-top:8px;max-width:45ch;overflow-wrap:anywhere;line-height:1.5}
+
+.skip-link{position:fixed;z-index:100;top:8px;left:8px;padding:10px 14px;background:var(--white);color:var(--ink);border:2px solid var(--accent);transform:translateY(-150%)}
+.skip-link:focus{transform:none}
