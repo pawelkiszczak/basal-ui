@@ -44,7 +44,7 @@ header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; bord
 header h1 { font-size: 16px; margin: 0; font-weight: 600; }
 header .chip { margin-inline-start: 4px; }
 header .spacer { flex: 1; }
-@media (max-width: 600px) { html[dir="rtl"] header { flex-wrap: wrap; } html[dir="rtl"] header .chip { white-space: normal; overflow-wrap: anywhere; max-width: 100%; } }
+@media (max-width: 600px) { header { flex-wrap: wrap; } header .chip { white-space: normal; overflow-wrap: anywhere; max-width: 100%; } }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; white-space: nowrap; }
 button, select, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
@@ -590,7 +590,7 @@ function readoutView(q) {
 
 function averageView(q) {
   const k = q.options.length;
-  const g = h("div", { class: "cmp" }, h("span", { class: "hdr" }, "option"), h("span", { class: "hdr" }, "order 1 · order 2 → average"), h("span", { class: "hdr", style: { textAlign: "right" } }, "average"));
+  const g = h("div", { class: "cmp" }, h("span", { class: "hdr" }, "option"), h("span", { class: "hdr" }, "order 1 · order 2 → average"), h("span", { class: "hdr", style: { textAlign: "end" } }, "average"));
   for (let j = 0; j < k; j++) {
     const a = q.orders[0].canon[j], b = q.orders[1]?.canon[j] ?? a;
     g.append(h("span", { class: "txt", title: q.options[j] }, q.options[j]),
@@ -603,7 +603,7 @@ function averageView(q) {
       h("span", { class: "val" }, pct(q.mean[j])));
   }
   const gap = Math.max(...q.options.map((_, j) => Math.abs(q.orders[0].canon[j] - (q.orders[1]?.canon[j] ?? q.orders[0].canon[j]))));
-  const c = h("div", { class: "cmp", style: { marginTop: "18px" } }, h("span", { class: "hdr" }, "option"), h("span", { class: "hdr" }, q.orders.length > 1 ? "average → calibrated" : "raw → calibrated"), h("span", { class: "hdr", style: { textAlign: "right" } }, "final"));
+  const c = h("div", { class: "cmp", style: { marginTop: "18px" } }, h("span", { class: "hdr" }, "option"), h("span", { class: "hdr" }, q.orders.length > 1 ? "average → calibrated" : "raw → calibrated"), h("span", { class: "hdr", style: { textAlign: "end" } }, "final"));
   for (let j = 0; j < k; j++) {
     const win = j === q.answer.index;
     c.append(h("span", { class: "txt", style: { fontWeight: win ? 600 : 400 }, title: q.options[j] }, q.options[j]),
