@@ -84,6 +84,9 @@ MLX_NEEDS_ENGINE = (
     "weights"
 )
 MLX_NEEDS_MAC = "basal-viz reads MLX ports on Apple Silicon with basal[mlx]"
+ATTACHED_NOT_INSPECTABLE = "attached models cannot be inspected"
+
+
 LLAMA_FAMILIES = ("basal-1.0", "basal-1.5", "basal-2.0")  # basal/viz.py: MLX modes read Llama-architecture layers
 
 
@@ -91,6 +94,8 @@ def inspectable(variant, hw) -> str | None:
     """None when basal-viz can read the variant on this machine, else why not: bf16 PyTorch weights (Gemma 4
     basal-omni only with an engine whose basal-viz reads it), MLX ports of the Llama families on Apple Silicon with an
     engine whose basal-viz has the MLX modes (2.5.0); never the recurrent basal-omni-pico or other ports."""
+    if variant.family == "attached":
+        return ATTACHED_NOT_INSPECTABLE
     if variant.recurrent:
         return NOT_INSPECTABLE
     if variant.port.startswith("MLX"):

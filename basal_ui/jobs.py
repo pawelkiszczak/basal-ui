@@ -63,6 +63,7 @@ PHASE_TEMPLATES = {
     "phase_done_warnings": "done_with_warnings",
     "phase_cancelled": "cancelled",
     "phase_error": "error",
+    "phase_stopped_resumable": "stopped_resumable",
 }
 
 
@@ -119,7 +120,7 @@ def _group_alive(pgid) -> bool:
     return True
 
 
-def run_tool(job, module, argv, out_path=None, on_json=None):
+def run_tool(job, module, argv, out_path=None, on_json=None, env=None):
     """`python -m basal.<module> argv` (an engine tool: basal-loadtest, basal-bench, basal-run) for a job: its output
     lines go to the job's log (each JSON object line also to on_json), a cancel stops it and everything it started.
     -> the JSON it wrote to out_path, else the last JSON line it printed (None without one); RuntimeError with its last
@@ -131,6 +132,7 @@ def run_tool(job, module, argv, out_path=None, on_json=None):
         if os.name == "posix"
         else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     )
+    job.check()
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -139,6 +141,7 @@ def run_tool(job, module, argv, out_path=None, on_json=None):
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env=env,
         **options,
     )
     finished = threading.Event()
@@ -149,7 +152,8 @@ def run_tool(job, module, argv, out_path=None, on_json=None):
                 terminate(proc)
                 return
 
-    threading.Thread(target=stop_on_cancel, name=f"basal-ui-{module}-cancel", daemon=True).start()
+    watcher = threading.Thread(target=stop_on_cancel, name=f"basal-ui-{module}-cancel", daemon=True)
+    watcher.start()
     last_json = None
     try:
         for line in proc.stdout:
@@ -165,6 +169,9 @@ def run_tool(job, module, argv, out_path=None, on_json=None):
         proc.wait()
     finally:
         finished.set()
+        watcher.join()
+        if proc.poll() is None or (os.name == "posix" and _group_alive(proc.pid)):
+            terminate(proc)
     if job.cancel.is_set():
         raise Cancelled()
     if proc.returncode:
@@ -172,6 +179,14 @@ def run_tool(job, module, argv, out_path=None, on_json=None):
     if out_path is not None:
         return json.loads(Path(out_path).read_text(encoding="utf-8"))
     return last_json
+
+
+class Resumable(Exception):
+    """A Batch stopped with partial output available."""
+
+    def __init__(self, message, request):
+        super().__init__(message)
+        self.request = request
 
 
 class Cancelled(Exception):
@@ -237,6 +252,7 @@ class Jobs:
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
         self.start_lock, self.start_guard = start_lock, start_guard
+        self.model_guard = None
 
     def start(self, kind, model, label, target, *args) -> dict:
         """Run target(job, *args) in a daemon thread; its return value is the job's result. RuntimeError when a job of
@@ -249,6 +265,8 @@ class Jobs:
     def _start(self, kind, model, label, target, *args) -> dict:
         if self.start_guard is not None:
             self.start_guard(kind, target)
+        if self.model_guard is not None:
+            self.model_guard(kind, model)
         with self.lock:
             current = self.jobs.get(kind)
             if current is not None and current.running:
@@ -265,6 +283,9 @@ class Jobs:
                     result=result,
                 )
                 self.event("info", f"{kind} finished: {label}")
+            except Resumable as exc:
+                job.finish("stopped_resumable", result=exc.request, error=str(exc))
+                self.event("error", f"{kind} stopped with partial output: {label}: {exc}")
             except Cancelled:
                 job.finish("cancelled")
                 self.event("info", f"{kind} cancelled: {label}")

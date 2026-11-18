@@ -103,7 +103,7 @@ def test_attach_decide_accounting_gateway_and_detach(app_client, child, tmp_path
     answer = response.json()["answers"]["q"]
     assert answer["calibrated"] is False and "calibration" not in answer and "automated" not in answer
     assert child.seen[-1][1]["model"] == "provider/model"
-    assert child.headers[-1]["Authorization"] == "Bearer secret-for-test"
+    assert child.request_headers[-1]["Authorization"] == "Bearer secret-for-test"
     stats = client.get("/api/stats").json()["models"][model_id]
     assert stats["requests"] == 1 and stats["questions"] == 1
     traffic = client.get("/api/traffic").json()
@@ -184,7 +184,7 @@ def test_batch_real_subprocess_preflight_and_accounting(app_client, child, tmp_p
     log = fleet.logs["job:batch"].text()
     assert "basal.run" in log and "--url" in log and "secret-for-test" not in log
     assert len(child.seen) == 2 and all(x[1]["model"] == "provider/model" for x in child.seen)
-    assert all(h["Authorization"] == "Bearer secret-for-test" for h in child.headers)
+    assert all(h["Authorization"] == "Bearer secret-for-test" for h in child.request_headers)
     assert fleet.stats.snapshot()["models"][model_id]["requests"] == 2
     assert fleet.stats.traffic_snapshot(15)["requests"] == 2
     assert [(r["source"], r["server"]) for r in fleet.history.list()] == [("batch", "Local")] * 2
@@ -471,7 +471,7 @@ def test_mcp_filters_comparison_for_listing_default_and_explicit_selection(app_c
             assert listed["structuredContent"]["models"] == ["basal"]
         result = rpc(gateway, "decide", {"state": "synthetic", "question": "Pick"})
         assert not result.get("isError")
-        assert child.headers[-1].get("Authorization") is None
+        assert child.request_headers[-1].get("Authorization") is None
         if engine.feature("mcp_models"):
             rejected = rpc(gateway, "decide", {"state": "synthetic", "question": "Pick", "model": model["id"]})
             assert rejected["isError"] and "not loaded" in rejected["content"][0]["text"]
@@ -521,7 +521,7 @@ def test_servers_and_keys_restore_after_restart(app_client, child, tmp_path):
         )
         assert ready["entry"]["server"] == saved["id"]
         assert restarted.post("/api/decide", json={**BODY, "model": model["id"]}).status_code == 200
-        assert child.headers[-1]["Authorization"] == "Bearer secret-for-test"
+        assert child.request_headers[-1]["Authorization"] == "Bearer secret-for-test"
 
 
 def test_short_key_preserves_discovery_and_answer_identifiers(app_client, child):
@@ -672,10 +672,16 @@ def test_comparison_batch_snapshot_is_removed_on_rejected_start_and_failure(app_
 
 
 def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path, monkeypatch):
+    import threading
+
+    from basal_ui import batch, jobs
+
     client, fleet = app_client
     _, model = attach(client, child)
     source = tmp_path / "input.jsonl"
     source.write_text(json.dumps({"state": "validated", "question": "Pick", "options": ["a", "b"]}) + "\n")
+    output = tmp_path / "output.jsonl"
+    body = {"id": model["id"], "input": str(source), "output": str(output), "concurrency": 1}
     child.gate.clear()
     original, snapshots = fleet.start_model_job, []
 
@@ -683,11 +689,20 @@ def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path
         snapshots.append(args[-1])
         return original(*args, **kwargs)
 
+    stopped = threading.Event()
+    terminate = jobs.terminate
+
+    def stop_process(proc):
+        terminate(proc)
+        stopped.set()
+
+    monkeypatch.setattr(jobs, "terminate", stop_process)
     monkeypatch.setattr(fleet, "start_model_job", capture)
     try:
-        assert client.post("/api/batch", json={"id": model["id"], "input": str(source)}).status_code == 202
+        assert client.post("/api/batch", json=body).status_code == 202
         wait_for(lambda: bool(child.seen), 30)
         assert client.delete("/api/batch").status_code == 200
+        assert stopped.wait(10)
         child.gate.set()
         job = wait_for(
             lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
@@ -695,6 +710,15 @@ def test_comparison_batch_snapshot_removed_on_cancel(app_client, child, tmp_path
         assert job["phase"] == "cancelled" and not snapshots[0].exists()
     finally:
         child.gate.set()
+
+    if batch.capabilities()["restart"]:
+        assert client.post("/api/batch", json=body).status_code == 409
+        assert client.post("/api/batch", json={**body, "choice": "resume"}).status_code == 202
+        job = wait_for(
+            lambda: j if (j := client.get("/api/status").json()["jobs"].get("batch")) and not j["running"] else None, 30
+        )
+        assert job["phase"] == "done" and len(output.read_text().splitlines()) == 1
+        assert not snapshots[1].exists()
 
 
 def test_comparison_projects_metadata_and_success_without_losing_answer(app_client, child):
