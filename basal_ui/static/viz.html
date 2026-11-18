@@ -9,19 +9,19 @@
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ee;
   --ink: #0b0b0b; --ink-2: #52514e; --muted: #66645f;
-  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --control-border: #676e68;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
   --neutral-mark: #c3c2b7;
   --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
   --w-state: rgba(27,175,122,0.14); --w-question: rgba(237,161,0,0.18); --w-option: rgba(74,58,167,0.10); --w-prefill: rgba(232,123,164,0.22);
-  --accent: #2a78d6;
+  --accent: #2a78d6; --primary-foreground: #fff; --status-icon-foreground: #fff; --tip-shadow: rgba(0,0,0,.12);
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
     --ink: #ffffff; --ink-2: #c3c2b7; --muted: #a3a19b;
-    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --neutral-mark: #5b5a55; --good-text: #0ca30c;
     --w-state: rgba(25,158,112,0.22); --w-question: rgba(201,133,0,0.26); --w-option: rgba(144,133,233,0.18); --w-prefill: rgba(213,81,129,0.28);
@@ -32,7 +32,7 @@
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
   --ink: #ffffff; --ink-2: #c3c2b7; --muted: #a3a19b;
-  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
   --neutral-mark: #5b5a55; --good-text: #0ca30c;
   --w-state: rgba(25,158,112,0.22); --w-question: rgba(201,133,0,0.26); --w-option: rgba(144,133,233,0.18); --w-prefill: rgba(213,81,129,0.28);
@@ -48,12 +48,12 @@ header .spacer { flex: 1; }
 button, select, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
 button:hover { background: var(--surface-2); }
-button.primary { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; padding: 8px 16px; }
+button.primary { background: var(--accent); color: var(--primary-foreground); border-color: transparent; font-weight: 600; padding: 8px 16px; }
 button.primary:hover { filter: brightness(1.08); }
 button.primary:disabled { opacity: .55; cursor: progress; }
 button.ghost { border-color: transparent; background: transparent; color: var(--ink-2); padding: 4px 8px; }
 button.ghost:hover { background: var(--surface-2); }
-select, input, textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; width: 100%; }
+select, input, textarea { background: var(--surface); border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 8px; width: 100%; }
 textarea { resize: vertical; min-height: 90px; }
 label.f { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 4px; }
 main { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); gap: 20px; padding: 20px; align-items: start; }
@@ -62,14 +62,15 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
 .card + .card { margin-top: 16px; }
 .qedit { border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-top: 10px; background: var(--page); }
-.qedit .row { display: flex; gap: 8px; align-items: center; }
+.qedit .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.qedit label { min-width: 0; }
+.qedit label.f { margin: 0; }
 .opt { display: grid; grid-template-columns: 90px 1fr 28px; gap: 6px; margin-top: 6px; }
 .opt.nokey { grid-template-columns: 1fr 28px; }
 .hint { color: var(--muted); font-size: 12px; }
 .actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
 .hist { list-style: none; margin: 0; padding: 0; }
-.hist li { padding: 8px; border-radius: 8px; cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
-.hist li:hover { background: var(--surface-2); }
+.hist button { width: 100%; text-align: left; padding: 8px; border: 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
 .hist .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hist .a { color: var(--ink-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { color: var(--muted); text-align: center; padding: 60px 20px; }
@@ -85,7 +86,7 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 .answer { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .answer .opt-text { font-size: 18px; font-weight: 600; }
 .status { display: inline-flex; gap: 6px; align-items: center; padding: 3px 10px 3px 6px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink); }
-.status .ic { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
+.status .ic { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; color: var(--status-icon-foreground); font-size: 11px; font-weight: 700; }
 .step { padding: 18px 20px; border-bottom: 1px solid var(--border); }
 .step:last-child { border-bottom: 0; }
 .step h3 { margin: 0 0 2px; font-size: 14px; display: flex; gap: 10px; align-items: center; }
@@ -122,7 +123,7 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .chart svg { display: block; width: 100%; overflow: visible; }
 .chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart .dl { fill: var(--ink-2); font-size: 12px; }
-.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 12px; min-width: 160px; display: none; z-index: 3; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 16px var(--tip-shadow); font-size: 12px; min-width: 160px; display: none; z-index: 3; }
 .tip .t { color: var(--muted); margin-bottom: 4px; }
 .tip .r { display: grid; grid-template-columns: 14px auto 1fr; gap: 6px; align-items: center; }
 .tip .r b { font-variant-numeric: tabular-nums; }
@@ -211,6 +212,7 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
   </section>
 </main>
 <div class="tip" id="tip"></div>
+<script src="/static/i18n.js" data-dynamic-only></script>
 <script>
 "use strict";
 const $ = (s, r = document) => r.querySelector(s);
@@ -271,17 +273,18 @@ function questionEditor(name, q) {
   if (!EDITABLE.includes(q.type || "choice")) return rawEditor(name, q);
   const type = h("select", {}, ...EDITABLE.map(t => h("option", { value: t }, t)));
   type.value = q.type || "choice";
-  const nm = h("input", { value: name, placeholder: "name", style: { width: "110px" }, "aria-label": "Question name" });
+  const nm = h("input", { value: name, placeholder: "name", style: { width: "110px" } });
   const instr = h("textarea", { rows: 2, placeholder: "Question, e.g. Do którego działu skierować zgłoszenie?" });
   instr.value = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions ?? "");
   const keys = h("select", { title: "Show option keys to the model?" }, h("option", { value: "show" }, "keys shown"), h("option", { value: "hide" }, "keys hidden"));
   keys.value = q.option_keys || "show";
+  const field = (label, control) => h("label", { class: "f" }, t(label), control);
   const opts = h("div");
   const addOpt = (k, v) => {
     const row = h("div", { class: "opt" });
-    const kk = h("input", { value: k ?? "", placeholder: "key", "aria-label": "Option key" });
-    const vv = h("input", { value: v == null ? "" : (typeof v === "string" ? v : JSON.stringify(v)), placeholder: "description", "aria-label": "Option description" });
-    row.append(kk, vv, h("button", { class: "ghost", title: "Remove option", onclick: () => row.remove() }, "×"));
+    const kk = h("input", { value: k ?? "", placeholder: "key" });
+    const vv = h("input", { value: v == null ? "" : (typeof v === "string" ? v : JSON.stringify(v)), placeholder: "description" });
+    row.append(field("Option key", kk), field("Option description", vv), h("button", { class: "ghost", "aria-label": t("Remove option"), onclick: () => row.remove() }, "×"));
     opts.append(row);
   };
   let crit = q.criteria ?? q.levels;
@@ -293,23 +296,22 @@ function questionEditor(name, q) {
   const addBtn = h("button", { class: "ghost", onclick: () => addOpt("", "") }, "+ option");
   const sync = () => {
     const noul = type.value === "noul";
-    addBtn.style.display = noul ? "none" : ""; keys.style.display = ["noul", "multi"].includes(type.value) ? "none" : "";
+    addBtn.style.display = noul ? "none" : ""; keys.parentElement.style.display = ["noul", "multi"].includes(type.value) ? "none" : "";
     if (noul) {
       const rows = [...opts.children];
       while (rows.length > 2) rows.pop().remove();
       while (opts.children.length < 2) addOpt("", "");
-      const [a, b] = opts.children; a.children[0].value = "true"; b.children[0].value = "false";
-      a.children[0].disabled = b.children[0].disabled = true;
-    } else [...opts.children].forEach(r => r.children[0].disabled = false);
+      const [a, b] = opts.children; a.querySelector("input").value = "true"; b.querySelector("input").value = "false";
+    }
+    [...opts.children].forEach(r => { r.querySelector("input").disabled = noul; r.querySelector("button").disabled = noul; });
   };
   type.onchange = sync;
   box.append(
-    h("div", { class: "row" }, nm, type, keys, h("button", { class: "ghost", title: "Remove question", onclick: () => box.remove() }, "×")),
-    h("label", { class: "f" }, "Question"), instr,
-    h("label", { class: "f" }, "Options ", h("span", { class: "hint" }, "key · description (noul: yes / no text, optional)")), opts, addBtn);
+    h("div", { class: "row" }, field("Question name", nm), field("Question type", type), field("Option keys", keys), h("button", { class: "ghost", "aria-label": t("Remove question"), onclick: () => box.remove() }, "×")),
+    field("Question", instr), opts, addBtn);
   sync();
   box.read = () => {
-    const t = type.value, rows = [...opts.children].map(r => [r.children[0].value.trim(), r.children[1].value.trim()]);
+    const t = type.value, rows = [...opts.children].map(r => [...r.querySelectorAll("input")].map(input => input.value.trim()));
     const out = { type: t, instructions: instr.value.trim() };
     if (t === "noul") { const c = {}; if (rows[0][1]) c.true = rows[0][1]; if (rows[1][1]) c.false = rows[1][1]; if (Object.keys(c).length) out.criteria = c; }
     else {
@@ -322,11 +324,11 @@ function questionEditor(name, q) {
 }
 function rawEditor(name, q) {  // a question type the form does not edit: its JSON, sent as written
   const box = h("div", { class: "qedit" });
-  const nm = h("input", { value: name, placeholder: "name", style: { width: "110px" }, "aria-label": "Question name" });
-  const js = h("textarea", { rows: 6, "aria-label": "Question JSON" });
+  const nm = h("input", { value: name, placeholder: "name", style: { width: "110px" } });
+  const js = h("textarea", { rows: 6 });
   js.value = JSON.stringify(q, null, 2);
-  box.append(h("div", { class: "row" }, nm, h("span", { class: "chip" }, q.type), h("button", { class: "ghost", title: "Remove question", onclick: () => box.remove() }, "×")),
-    h("label", { class: "f" }, "Question ", h("span", { class: "hint" }, "JSON, as in the API")), js);
+  box.append(h("div", { class: "row" }, h("label", { class: "f" }, t("Question name"), nm), h("span", { class: "chip" }, q.type), h("button", { class: "ghost", "aria-label": t("Remove question"), onclick: () => box.remove() }, "×")),
+    h("label", { class: "f" }, t("Question JSON"), js));
   box.read = () => [nm.value.trim() || "q", JSON.parse(js.value)];
   return box;
 }
@@ -346,10 +348,12 @@ function readRequest() {
 // ---- history ----------------------------------------------------------------------------------------------------
 function renderHistory() {
   const items = store.get("basal-viz-history", []);
-  $("#hist").replaceChildren(...(items.length ? items.map(it => h("li", { onclick: () => { loadRequest(it.req); decide(it.gold); } },
+  const restoreFocus = $("#hist").contains(document.activeElement);
+  $("#hist").replaceChildren(...(items.length ? items.map(it => h("li", {}, h("button", { type: "button", onclick: () => { loadRequest(it.req); decide(it.gold); } },
     h("span", { class: "q" }, it.q), h("span", { class: "chip" }, pct(it.conf, 1)),
-    h("span", { class: "a" }, "→ " + it.a), h("span", { class: "a" }, new Date(it.t).toLocaleTimeString()))) :
-    [h("li", { style: { cursor: "default" } }, h("span", { class: "hint" }, "Decisions you make appear here."))]));
+    h("span", { class: "a" }, "→ " + it.a), h("span", { class: "a" }, new Date(it.t).toLocaleTimeString())))) :
+    [h("li", {}, h("span", { class: "hint" }, "Decisions you make appear here."))]));
+  if (restoreFocus) ($("#hist button") || $("#clearh")).focus();
 }
 function pushHistory(req, res, gold) {
   const q = res.questions[0]; if (!q) return;
