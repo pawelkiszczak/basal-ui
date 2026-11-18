@@ -1,10 +1,14 @@
 import json
+import os
+import sys
 import time
+from pathlib import Path
+from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
 
-from basal_ui import settings
+from basal_ui import engine, settings
 from basal_ui.app import create_app
 from basal_ui.fleet import Fleet, Runner
 from basal_ui.hardware import Hardware
@@ -113,6 +117,394 @@ def test_batch_refuses_bad_input(client, tmp_path, body, status, message):
     body = {**body, "input": {"GOOD": str(good), "BAD": str(bad)}.get(body["input"], body["input"])}
     response = client.post("/api/batch", json=body)
     assert response.status_code == status and message in response.json()["detail"]
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_batch_presets_api_lists_engine_names(client):
+    from basal.presets import names
+
+    response = client.get("/api/batch/presets")
+    assert response.status_code == 200
+    assert response.json() == {"available": True, "presets": names(), "langs": ["auto", "pl", "en"]}
+
+
+def test_batch_presets_api_reports_feature_unavailable(monkeypatch, client):
+
+    monkeypatch.setitem(engine.FEATURES, "presets", lambda: False)
+    response = client.get("/api/batch/presets")
+    assert response.status_code == 200
+    assert response.json()["available"] is False
+    assert response.json()["presets"] == response.json()["langs"] == []
+    assert response.json()["reason_code"] == "batch_presets_unavailable"
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_batch_preset_argv_and_no_preset_argv(client, tmp_path, monkeypatch):
+    from basal.presets import names
+
+    from basal_ui import batch
+
+    captured = []
+    monkeypatch.setattr(batch, "run_tool", lambda job, module, argv: captured.append(argv) or {"items": 1, "errors": 0})
+    for i, body in enumerate(({"preset": names()[0], "lang": "pl"}, {}, {"preset": names()[0]})):
+        source = tmp_path / f"preset-{i}.jsonl"
+        source.write_text(
+            '{"state":"A user asks for help."}\n' if i != 1 else '{"state":"s","question":"q","options":["a","b"]}\n'
+        )
+        response = client.post("/api/batch", json={"id": "mini", "input": str(source), **body})
+        assert response.status_code == 202
+        assert wait_batch(client)["phase"] == "done"
+    assert ["--preset", names()[0], "--lang", "pl"] == captured[0][-4:]
+    assert "--preset" not in captured[1] and "--lang" not in captured[1]
+    assert ["--preset", names()[0]] == captured[2][-2:]
+    assert "--lang" not in captured[2]
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_state_only_batch_input_requires_preset_and_path_preview_accepts_it(client, tmp_path, monkeypatch):
+    from basal.presets import names
+
+    from basal_ui import batch
+
+    preset = names()[0]
+
+    monkeypatch.setattr(batch, "run_tool", lambda job, module, argv: {"items": 1, "errors": 0})
+    source = tmp_path / "states.jsonl"
+    source.write_text('{"state":"A user asks for help."}\n')
+    assert client.post("/api/batch", json={"id": "mini", "input": str(source)}).status_code == 400
+    no_preset_preview = client.post("/api/paths/check", json={"path": str(source), "kind": "jsonl"})
+    assert no_preset_preview.json()["ok"] is False
+    preview = client.post("/api/paths/check", json={"path": str(source), "kind": "jsonl", "preset": preset})
+    assert preview.status_code == 200
+    assert preview.json()["ok"] is True and preview.json()["first"]["questions"] > 0
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "preset": preset})
+    assert response.status_code == 202 and wait_batch(client)["phase"] == "done"
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine 2.5 presets")
+def test_batch_rejects_unknown_preset(client, tmp_path):
+    source = tmp_path / "items.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "preset": "missing"})
+    assert response.status_code == 400 and "unknown preset" in response.json()["detail"]
+
+
+def test_batch_rejects_unsupported_preset_language(client, tmp_path):
+    source = tmp_path / "items.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n')
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "lang": "de"})
+    assert response.status_code == 400 and "lang must be one of" in response.json()["detail"]
+
+
+def test_batch_preset_route_unavailable_when_engine_feature_is_missing(monkeypatch, client):
+
+    monkeypatch.setitem(engine.FEATURES, "presets", lambda: False)
+    assert client.get("/api/batch/presets").json()["available"] is False
+
+
+@pytest.mark.skipif(not engine.feature("presets"), reason="Engine presets unavailable")
+def test_preset_materializes_native_requests_and_preserves_source(tmp_path, monkeypatch):
+    from basal.presets import questions
+    from basal.run import summarise, to_request
+
+    from basal_ui import batch
+    from basal_ui.jobs import Job, LogBuffer
+
+    source = tmp_path / "input.jsonl"
+    original = '{"id":"one","state":"Help me"}\n{"id":"two","state":"s","question":"q","options":["a","b"]}\n'
+    source.write_text(original)
+    temporary = []
+
+    def native_boundary(job, module, argv):
+        path = Path(argv[argv.index("--input") + 1])
+        temporary.append(path)
+        items = [json.loads(line) for line in path.read_text().splitlines()]
+        assert items[0]["questions"] == questions("triage", "en", "Help me")
+        assert "questions" not in items[1]
+        request = to_request(items[0], preset="triage", lang="en")
+        answers = {name: {"type": "choice"} for name in request["questions"]}
+        assert summarise(items[0], {"answers": answers})["answers"] == answers
+        return {"items": 2, "errors": 0}
+
+    monkeypatch.setattr(batch, "run_tool", native_boundary)
+    fleet = type("Fleet", (), {"ready": lambda self, model: type("Runner", (), {"base_url": "http://localhost"})()})()
+    result = batch.run_batch(
+        Job("batch", "m", "test", LogBuffer()), fleet, "m", source, tmp_path / "out", preset="triage", lang="en"
+    )
+    assert result["input"] == str(source) and source.read_text() == original
+    assert not temporary[0].exists()
+
+
+def test_preset_materialization_cancellation_cleans_temp(tmp_path, monkeypatch):
+    import basal
+
+    from basal_ui import batch
+    from basal_ui.jobs import Cancelled, Job, LogBuffer
+
+    source = tmp_path / "input.jsonl"
+    source.write_text('{"state":"one"}\n{"state":"two"}\n')
+    created = []
+    real_temp = batch.tempfile.TemporaryDirectory
+
+    def temporary(*args, **kwargs):
+        context = real_temp(*args, **kwargs)
+        created.append(Path(context.name))
+        return context
+
+    monkeypatch.setattr(batch.tempfile, "TemporaryDirectory", temporary)
+    monkeypatch.setattr(batch, "run_tool", lambda *a, **k: pytest.fail("cancelled job launched Native tool"))
+    job = Job("batch", "m", "test", LogBuffer())
+
+    def questions(name, lang, state):
+        job.cancel.set()
+        return {
+            "urgency": {
+                "type": "choice",
+                "instructions": "Choose urgency",
+                "criteria": {"low": "Low", "high": "High"},
+            },
+        }
+
+    presets = ModuleType("basal.presets")
+    presets.questions = questions
+    monkeypatch.setitem(sys.modules, "basal.presets", presets)
+    monkeypatch.setattr(basal, "presets", presets, raising=False)
+    fleet = type("Fleet", (), {"ready": lambda self, model: type("Runner", (), {"base_url": "http://localhost"})()})()
+    with pytest.raises(Cancelled):
+        batch.run_batch(job, fleet, "m", source, tmp_path / "out", preset="triage", lang="en")
+    assert created and not created[0].exists()
+    assert source.read_text() == '{"state":"one"}\n{"state":"two"}\n'
+    assert not (tmp_path / "out").exists()
+
+
+def test_batch_choice_and_command(client, tmp_path, monkeypatch):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input.jsonl"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out = tmp_path / "out.jsonl"
+    part = tmp_path / "out.jsonl.part"
+    part.write_text('{"answer":1}\n')
+    calls = []
+
+    def fake_run(job, module, args):
+        calls.append(args)
+        return {"items": 1}
+
+    monkeypatch.setattr(batch, "run_tool", fake_run)
+    body = {"id": "mini", "input": str(source), "output": str(out)}
+    assert client.post("/api/batch", json=body).json()["code"] == "batch_choice"
+    assert part.read_text() == '{"answer":1}\n'
+    assert client.post("/api/batch", json={**body, "choice": "resume", "concurrency": 2}).status_code == 202
+    assert wait_batch(client)["phase"] == "done"
+    assert "--restart" not in calls[-1] and calls[-1][-1] == "2"
+    assert client.post("/api/batch", json={**body, "choice": "restart", "stop_after": 0}).status_code == 202
+    assert wait_batch(client)["phase"] == "done"
+    assert calls[-1][-3:] == ["--restart", "--stop-after", "0"]
+    part.unlink()
+    sidecar = tmp_path / "out.jsonl.part.json"
+    sidecar.write_text("{}")
+    assert client.post("/api/batch", json=body).json()["code"] == "batch_choice"
+    assert client.post("/api/batch", json={**body, "choice": "resume"}).status_code == 409
+    assert sidecar.read_text() == "{}"
+    assert client.post("/api/batch", json={**body, "stop_after": -1}).status_code == 400
+
+
+@pytest.mark.parametrize("partial,phase", [(True, "stopped_resumable"), (False, "error")])
+def test_batch_failed_run_preserves_partial(client, tmp_path, monkeypatch, partial, phase):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input.jsonl"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out = tmp_path / "out.jsonl"
+    part = tmp_path / "out.jsonl.part"
+
+    def fail(job, module, args):
+        if partial:
+            part.write_text('{"answer":1}\n\n{"incomplete":')
+        raise RuntimeError("server unavailable")
+
+    monkeypatch.setattr(batch, "run_tool", fail)
+    if partial:
+        monkeypatch.setattr(type(part), "read_bytes", lambda _: pytest.fail("checkpoint must be streamed"))
+    assert client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(out)}).status_code == 202
+    job = wait_batch(client)
+    assert job["phase"] == phase and "server unavailable" in job["error"]
+    if partial:
+        assert job["done"] == 1 and part.exists()
+        assert job["result"] == {
+            "id": "mini",
+            "input": str(source),
+            "output": str(out),
+            "concurrency": 16,
+            "early_exit": None,
+            "stop_after": 16,
+        }
+
+
+def test_installed_engine_resumes_after_cancel(client, child, tmp_path):
+    from basal_ui import batch
+
+    if not batch.capabilities()["restart"]:
+        pytest.skip("installed Engine does not support Batch resume")
+    child.gate.clear()
+    source = tmp_path / "resume.jsonl"
+    source.write_text('{"state":"s","question":"q","options":["a","b"]}\n' * 4)
+    out = tmp_path / "answers.jsonl"
+    part = tmp_path / "answers.jsonl.part"
+    body = {"id": "mini", "input": str(source), "output": str(out), "concurrency": 1}
+    try:
+        assert client.post("/api/batch", json=body).status_code == 202
+        deadline = time.monotonic() + 30
+        while not child.seen and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert child.seen
+        client.delete("/api/batch")
+        assert wait_batch(client)["phase"] == "cancelled"
+        assert part.exists()
+    finally:
+        child.gate.set()
+    assert client.post("/api/batch", json=body).status_code == 409
+    assert client.post("/api/batch", json={**body, "choice": "resume", "concurrency": 2}).status_code == 202
+    assert wait_batch(client)["phase"] == "done"
+    assert len(out.read_text().splitlines()) == 4
+
+
+@pytest.mark.parametrize("suffix", [".part", ".part.json", ".part.json.tmp"])
+@pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink"])
+def test_checkpoint_collision_refused(client, tmp_path, monkeypatch, suffix, alias):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    out = tmp_path / "answers"
+    artifact = tmp_path / ("answers" + suffix)
+    artifact.write_text('{"question":"q","options":["a","b"]}\n')
+    source = artifact
+    if alias != "direct":
+        source = tmp_path / "input"
+        if alias == "symlink":
+            source.symlink_to(artifact)
+        else:
+            source.hardlink_to(artifact)
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(out)})
+    assert response.status_code == 400
+    assert "must be distinct" in response.json()["detail"] or "hard links" in response.json()["detail"]
+    assert artifact.read_text() == '{"question":"q","options":["a","b"]}\n'
+
+
+def test_output_checkpoint_alias_and_stale_choice_refused(client, tmp_path, monkeypatch):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out = tmp_path / "answers"
+    body = {"id": "mini", "input": str(source), "output": str(out), "choice": "restart"}
+    assert client.post("/api/batch", json=body).status_code == 409
+    out.write_text("old output")
+    part = tmp_path / "answers.part"
+    part.hardlink_to(out)
+    assert client.post("/api/batch", json=body).status_code == 400
+    assert out.read_text() == "old output"
+
+
+def test_job_rechecks_stale_restart(tmp_path):
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1"))
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        batch.run_batch(
+            None, fleet, "mini", tmp_path / "input", tmp_path / "output", choice="restart", restart_supported=True
+        )
+
+
+@pytest.mark.parametrize(
+    "first,second", [(".part", ".part.json"), (".part", ".part.json.tmp"), (".part.json", ".part.json.tmp")]
+)
+@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+def test_checkpoint_artifacts_must_not_alias(client, tmp_path, monkeypatch, first, second, link):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out = tmp_path / "answers"
+    target, alias = tmp_path / ("answers" + first), tmp_path / ("answers" + second)
+    target.write_text("preserve")
+    if link == "symlink":
+        alias.symlink_to(target)
+    else:
+        alias.hardlink_to(target)
+    response = client.post(
+        "/api/batch", json={"id": "mini", "input": str(source), "output": str(out), "choice": "restart"}
+    )
+    assert response.status_code == 400
+    assert target.read_text() == "preserve"
+
+
+@pytest.mark.parametrize("suffix", [".part", ".part.json", ".part.json.tmp"])
+@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+def test_checkpoint_link_to_unrelated_file_refused(client, tmp_path, monkeypatch, suffix, link):
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out, target = tmp_path / "answers", tmp_path / "unrelated"
+    target.write_text("do not overwrite")
+    artifact = tmp_path / ("answers" + suffix)
+    if link == "symlink":
+        artifact.symlink_to(target)
+    else:
+        artifact.hardlink_to(target)
+    body = {"id": "mini", "input": str(source), "output": str(out), "choice": "restart"}
+    response = client.post("/api/batch", json=body)
+    assert response.status_code == 400 and "must not be symbolic links or hard links" in response.json()["detail"]
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1"))
+    with pytest.raises(ValueError, match="must not be symbolic links or hard links"):
+        batch.run_batch(None, fleet, "mini", source, out, choice="restart", restart_supported=True)
+    assert target.read_text() == "do not overwrite"
+
+
+def test_dangling_checkpoint_symlink_refused(client, tmp_path, monkeypatch):
+    from basal_ui import batch
+
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    (tmp_path / "answers.part").symlink_to(tmp_path / "missing")
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(tmp_path / "answers")})
+    assert response.status_code == 400
+    assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize("kind", ["cycle", "fifo"])
+def test_non_regular_checkpoint_refused_without_opening(client, tmp_path, monkeypatch, kind):
+    from types import SimpleNamespace
+
+    from basal_ui import batch
+
+    if kind == "fifo" and not hasattr(os, "mkfifo"):
+        pytest.skip("named pipes are unavailable")
+    monkeypatch.setattr(batch, "capabilities", lambda: {"restart": True, "stop_after": True})
+    source = tmp_path / "input"
+    source.write_text('{"question":"q","options":["a","b"]}\n')
+    out, part = tmp_path / "answers", tmp_path / "answers.part"
+    if kind == "cycle":
+        part.symlink_to(part.name)
+    else:
+        os.mkfifo(part)
+    response = client.post("/api/batch", json={"id": "mini", "input": str(source), "output": str(out)})
+    assert response.status_code == 400
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://127.0.0.1"))
+    with pytest.raises(ValueError, match="Batch checkpoint files"):
+        batch.run_batch(None, fleet, "mini", source, out, restart_supported=True)
 
 
 def test_batch_strips_question_metadata_without_rounding_or_touching_input(tmp_path, monkeypatch):
