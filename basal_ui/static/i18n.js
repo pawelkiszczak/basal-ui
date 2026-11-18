@@ -4,6 +4,15 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Stop after": "Zatrzymaj po",
+  "Stop after consecutive unanswered lines; 0 records per-line errors.": "Zatrzymaj po kolejnych wierszach bez odpowiedzi; 0 zapisuje błędy dla poszczególnych wierszy.",
+  "Requires an Engine with Batch stop support": "Wymaga silnika obsługującego zatrzymywanie zadań wsadowych",
+  "Unfinished Batch": "Niedokończone zadanie wsadowe",
+  "Resume the unfinished Batch or restart and discard its partial answers?": "Wznowić niedokończone zadanie czy rozpocząć od nowa i odrzucić częściowe odpowiedzi?",
+  "Resume": "Wznów",
+  "Restart": "Rozpocznij od nowa",
+  "Stopped, resumable.": "Zatrzymano; można wznowić.",
+  "code:phase_stopped_resumable": "zatrzymano; można wznowić",
   " Options": " Opcje",
   " Setup": " Konfiguruj",
   "(count capped)": "(limit zliczania osiągnięty)",

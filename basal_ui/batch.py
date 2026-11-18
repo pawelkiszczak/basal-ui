@@ -3,6 +3,10 @@ loaded model's private basal-serve; the answers go to a JSONL file, one line per
 to the child: they are not counted in the statistics or the history (as benchmarks)."""
 
 import json
+import os
+import subprocess
+import sys
+from functools import lru_cache
 from pathlib import Path
 
 from .jobs import run_tool
@@ -13,9 +17,56 @@ def default_output(input_path) -> Path:
     return path.with_name(f"{path.stem}.answers.jsonl")
 
 
-def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, early_exit=None) -> dict:
+@lru_cache(maxsize=1)
+def capabilities():
+    try:
+        help_text = subprocess.run(
+            [sys.executable, "-m", "basal.run", "--help"], capture_output=True, text=True, timeout=30, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        help_text = ""
+    return {"restart": "--restart" in help_text, "stop_after": "--stop-after" in help_text}
+
+
+def unfinished(output_path):
+    part = Path(str(output_path) + ".part")
+    return part.exists() or Path(str(part) + ".json").exists()
+
+
+def validate_paths(source, output):
+    part = Path(str(output) + ".part")
+    artifacts = (part, Path(str(part) + ".json"), Path(str(part) + ".json.tmp"))
+    for left, right in [(source, output), *((path, artifact) for path in (source, output) for artifact in artifacts)]:
+        try:
+            same = os.path.samefile(left, right)
+        except OSError:
+            same = False
+        if same or Path(left).resolve() == Path(right).resolve():
+            raise ValueError("input, output and Batch checkpoint files must be distinct")
+
+
+def run_batch(
+    job,
+    fleet,
+    model_id,
+    input_path,
+    output_path,
+    concurrency=16,
+    early_exit=None,
+    choice=None,
+    stop_after=16,
+    restart_supported=False,
+) -> dict:
     """The batch job: basal-run in its own process (it writes the output file at the end); a cancel stops it."""
     runner = fleet.ready(model_id)
+    if restart_supported:
+        validate_paths(input_path, output_path)
+    if restart_supported and choice and not unfinished(output_path):
+        raise RuntimeError("Unfinished Batch no longer exists; start again without a choice.")
+    if restart_supported and unfinished(output_path) and choice not in ("resume", "restart"):
+        raise RuntimeError("Unfinished Batch found; choose Resume or Restart before starting.")
+    if restart_supported and choice == "resume" and not Path(str(output_path) + ".part").exists():
+        raise RuntimeError("No partial output to resume; choose Restart to replace the unfinished record.")
     total = sum(1 for line in Path(input_path).read_text(encoding="utf-8").splitlines() if line.strip())
     job.progress("running", 0, total)
     args = [
@@ -30,7 +81,21 @@ def run_batch(job, fleet, model_id, input_path, output_path, concurrency=16, ear
     ]
     if early_exit:
         args += ["--early-exit", str(early_exit)]
-    summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
+    if choice == "restart":
+        args.append("--restart")
+    if stop_after != 16:
+        args += ["--stop-after", str(stop_after)]
+    try:
+        summary = run_tool(job, "run", args)  # basal-run prints its summary as the last line
+    except RuntimeError as exc:
+        part = Path(str(output_path) + ".part")
+        if restart_supported and part.exists():
+            from .jobs import Resumable
+
+            done = sum(1 for line in part.read_bytes().splitlines() if line.strip())
+            job.progress("stopped_resumable", done, total)
+            raise Resumable(str(exc)) from exc
+        raise
     if summary is None:
         raise RuntimeError("basal-run printed no summary")
     job.progress("running", total, total)

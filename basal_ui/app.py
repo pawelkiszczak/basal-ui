@@ -1377,6 +1377,12 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.get("/api/batch/capabilities")
+    def batch_capabilities():
+        from . import batch
+
+        return batch.capabilities()
+
     @app.post("/api/batch", status_code=202)
     def post_batch(body: dict = Body(...)):
         from . import batch
@@ -1410,6 +1416,28 @@ def create_app(
             raise HTTPException(400, "output must not be the input file")
         if not out.parent.is_dir() or not os.access(out.parent, os.W_OK):
             raise HTTPException(400, f"cannot write to {out.parent}")
+        caps = batch.capabilities()
+        if caps["restart"]:
+            try:
+                batch.validate_paths(source, out)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        choice = body.get("choice")
+        if choice is not None and (choice not in ("resume", "restart") or not caps["restart"]):
+            raise HTTPException(400, "choice requires Batch resume support and must be resume or restart")
+        stop_after = body.get("stop_after", 16)
+        if isinstance(stop_after, bool) or not isinstance(stop_after, int) or stop_after < 0:
+            raise HTTPException(400, "stop_after must be a non-negative integer")
+        if stop_after != 16 and not caps["stop_after"]:
+            raise HTTPException(400, "stop_after is unavailable in this Engine")
+        if caps["restart"] and choice and not batch.unfinished(out):
+            raise HTTPException(409, "Unfinished Batch no longer exists; start again without a choice")
+        if caps["restart"] and batch.unfinished(out) and choice is None:
+            return JSONResponse(
+                {"detail": "Unfinished Batch found; choose Resume or Restart.", "code": "batch_choice"}, status_code=409
+            )
+        if caps["restart"] and choice == "resume" and not Path(str(out) + ".part").exists():
+            raise HTTPException(409, "No partial output to resume; choose Restart to replace the unfinished record")
         concurrency = body.get("concurrency", 16)
         if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 256:
             raise HTTPException(400, "concurrency must be an integer between 1 and 256")
@@ -1440,6 +1468,9 @@ def create_app(
                 out,
                 concurrency,
                 early_exit,
+                choice,
+                stop_after,
+                caps["restart"],
             )
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
