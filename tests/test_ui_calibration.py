@@ -463,3 +463,156 @@ def test_snapshot_rewrite_preserves_engine_recorded_identity(tmp_path, field):
     path.write_text(json.dumps({"fitted_on": fitted}))
     calibration.name_snapshot(path, snapshot)
     assert json.loads(path.read_text())["fitted_on"] == fitted
+
+
+def test_calibration_new_options_are_gated_validated_and_passed_to_engine(tmp_path, monkeypatch, config):
+    calls = []
+    monkeypatch.setattr(calibrate, "main", lambda argv: (calls.append(argv), print("report")))
+    monkeypatch.setattr(
+        calibration, "keep_options", lambda *args: {"noul": "CALIBRATION.json"} if args[3] != "none" else {}
+    )
+    flags = set()
+    monkeypatch.setattr(engine, "calibrate_flags", lambda: flags)
+    _, app = make_app(tmp_path)
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text('{"basal_calibrate_rows":1}\n')
+    body = {"id": "mini", "input": str(rows), "from_rows": True, "advanced": {"report_only": True}}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/calibrate", json={**body, "advanced": {"conformal": [0.8]}}).status_code == 400
+        assert client.post("/api/calibrate", json={**body, "advanced": {"keep_shipped": ["noul"]}}).status_code == 400
+        assert client.post("/api/calibrate", json=body).status_code == 202
+        assert wait_job(client)["phase"] == "done"
+        assert "--conformal" not in calls[-1] and "--keep-shipped" not in calls[-1]
+        flags.add("--conformal")  # Engine 2.5 declares conformal but not keep-shipped.
+        assert client.post("/api/calibrate", json={**body, "advanced": {"keep_shipped": ["noul"]}}).status_code == 400
+        assert (
+            client.post(
+                "/api/calibrate", json={**body, "advanced": {"conformal": [0.8], "report_only": True}}
+            ).status_code
+            == 202
+        )
+        assert wait_job(client)["phase"] == "done"
+        assert calls[-1][calls[-1].index("--conformal") + 1] == "0.8" and "--keep-shipped" not in calls[-1]
+        flags.add("--keep-shipped")
+        for levels in ([0], [1], ["0.8"], [True]):
+            assert client.post("/api/calibrate", json={**body, "advanced": {"conformal": levels}}).status_code == 400
+        assert client.post("/api/calibrate", json={**body, "advanced": {"keep_shipped": ["choice"]}}).status_code == 400
+        assert (
+            client.post(
+                "/api/calibrate", json={**body, "advanced": {"compare": "none", "keep_shipped": ["noul"]}}
+            ).status_code
+            == 400
+        )
+        body["advanced"].update(conformal=[0.8, 0.95], keep_shipped=["noul"])
+        assert client.post("/api/calibrate", json=body).status_code == 202
+        assert wait_job(client)["phase"] == "done"
+        assert calls[-1][calls[-1].index("--conformal") + 1] == "0.8,0.95"
+        assert calls[-1][calls[-1].index("--keep-shipped") + 1] == "noul"
+
+
+def test_calibration_report_returns_new_fields_only_when_present(tmp_path, config):
+    _, app = make_app(tmp_path)
+    directory = settings.calibrations_dir("mini")
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "current.json"
+    data = {
+        **FITTED,
+        "fitted_on": {
+            "revision": "served-revision",
+            "model_files": "digest",
+            "kept_shipped": ["noul"],
+            "kept_shipped_from": {"file": "CALIBRATION.json"},
+        },
+        "conformal": {"levels": {"0.8": {"per_type": {"choice": {"cert_coverage": 0.9, "cert_mean_size": 1.2}}}}},
+        "thresholds": {
+            "0.05": {
+                "per_type": {"choice": {"icc": 0.2, "design_effect": 1.5, "refuted": 0.9, "reason": "CERT refutes"}}
+            }
+        },
+    }
+    path.write_text(json.dumps(data))
+    path.with_suffix(".report.txt").write_text("engine report")
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.get("/api/calibrations/report", params={"id": "mini", "file": str(path)}).json()
+        assert response["report"] == "engine report"
+        assert response["details"]["fitted_on"]["revision"] == "served-revision"
+        assert response["details"]["thresholds"]["0.05"]["per_type"]["choice"]["reason"] == "CERT refutes"
+        path.write_text(json.dumps(FITTED))
+        assert client.get("/api/calibrations/report", params={"id": "mini", "file": str(path)}).json() == {
+            "report": "engine report"
+        }
+
+
+@pytest.mark.skipif("--keep-shipped" not in engine.calibrate_flags(), reason="Engine does not support --keep-shipped")
+def test_keep_options_checks_file_identity_orders_and_engine(tmp_path):
+    model = tmp_path / "source-model"
+    model.mkdir()
+    (model / "basal.json").write_text('{"prompt_format": 2}')
+    path = model / "CALIBRATION.json"
+    baseline = {
+        "temperature_per_prim": {"noul": 1.0},
+        "thresholds": {"0.05": {"per_type": {"noul": {"confidence": 0.9}}}},
+    }
+    path.write_text(json.dumps(baseline))
+    assert calibration.keep_options(model, "eager", {}, "none") == {}
+    assert "noul" in calibration.keep_options(model, "eager", {})
+    assert "choice" not in calibration.keep_options(model, "eager", {})
+    baseline["fitted_on"] = {"model": "other-model"}
+    path.write_text(json.dumps(baseline))
+    assert calibration.keep_options(model, "eager", {}) == {}
+    baseline["fitted_on"] = {"orders": 2}
+    path.write_text(json.dumps(baseline))
+    assert calibration.keep_options(model, "eager", {"orders": 1}) == {}
+    baseline["fitted_on"] = {}
+    baseline["engine"] = "mlx"
+    path.write_text(json.dumps(baseline))
+    assert calibration.keep_options(model, "eager", {}) == {}
+    unknown = tmp_path / "external.json"
+    unknown.write_text(json.dumps({k: v for k, v in baseline.items() if k != "engine"}))
+    assert calibration.keep_options(model, "eager", {}, str(unknown)) == {}
+    baseline["engine"] = "eager"
+    path.write_text(json.dumps(baseline))
+    rows = tmp_path / "fit.rows.jsonl"
+    head = {
+        "basal_calibrate_rows": 1,
+        "baseline": str(path),
+        "kind": "torch",
+        "quant": None,
+        "model": str(model),
+        "fmt": 2,
+        "orders": 1,
+        "layout": "canonical",
+    }
+    rows.write_text(json.dumps(head) + "\n")
+    assert "noul" in calibration.keep_options(model, "eager", {}, rows=rows)
+    head["baseline_why"] = "mismatched adapter"
+    rows.write_text(json.dumps(head) + "\n")
+    assert calibration.keep_options(model, "eager", {}, rows=rows) == {}
+    path.unlink()
+    assert calibration.keep_options(model, "eager", {}) == {}
+
+
+def test_fit_uses_active_model_snapshot_and_options(tmp_path, monkeypatch, config):
+    monkeypatch.setattr(engine, "calibrate_flags", lambda: {"--keep-shipped"})
+    seen, calls = [], []
+    monkeypatch.setattr(calibration, "keep_options", lambda *args: seen.append(args) or {"noul": "compatible.json"})
+    monkeypatch.setattr(calibrate, "main", lambda argv: (calls.append(argv), print("report")))
+    fleet, app = make_app(tmp_path)
+    active = tmp_path / "active-snapshot"
+    active.mkdir()
+    runner = Runner(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu", settings_mod=settings)
+    runner.state, runner.model, runner.mode = "ready", "mini", "eager"
+    runner.options, runner.loaded_path = {"mode": "eager", "orders": "2"}, str(active)
+    fleet.runners["mini"] = runner
+    settings.set_load_options("mini", {"mode": "eager", "orders": "1"})
+    source = tmp_path / "labelled.jsonl"
+    source.write_text('{"state":"s","question":"q?","options":["a","b"],"gold":0}\n')
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/api/calibrate",
+            json={"id": "mini", "input": str(source), "advanced": {"keep_shipped": ["noul"], "report_only": True}},
+        )
+        assert response.status_code == 202, response.text
+        assert wait_job(client)["phase"] == "done"
+    assert seen[0][0] == active and seen[0][2]["orders"] == "2"
+    assert calls[0][calls[0].index("--calibration") + 1] == "compatible.json"

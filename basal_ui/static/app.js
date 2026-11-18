@@ -1507,9 +1507,25 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog"><h3>${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
-$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;};
+$('#calibrationAdvanced').insertAdjacentHTML('beforeend',`<div class="manager-fields"><label class="manager-field">${t('Conformal coverage levels')}<input id="calConformal" type="text" placeholder="0.8, 0.9"><span id="calConformalReason" class="reason"></span></label><fieldset><legend>${t('Keep compared thresholds')}</legend><div class="controls">${['choice','noul','score'].map(type=>`<label><input type="checkbox" data-keep-type="${type}" disabled> ${esc(type)}</label>`).join('')}</div><span id="calKeepReason" class="reason"></span></fieldset></div>`);
+let calibrationOptions={}, keepSequence=0;
+async function refreshKeepOptions(){
+  const id=$('#calibrationModel').value, choice=$('#calCompare').value, compare=choice==='path'?$('#calComparePath').value.trim():choice, seq=++keepSequence;
+  const boxes=[...document.querySelectorAll('[data-keep-type]')];
+  boxes.forEach(x=>{x.disabled=true;x.checked=false;});
+  $('#calKeepReason').textContent=!calibrationOptions.keep_shipped?t('Installed Engine does not support keeping thresholds'):t('No compatible compared thresholds available');
+  if(!id||!calibrationOptions.keep_shipped||!compare||compare==='none')return;
+  try{
+    const data=await api(`/api/calibrations/keep-options?id=${encodeURIComponent(id)}&compare=${encodeURIComponent(compare)}`);
+    if(seq!==keepSequence)return;
+    boxes.forEach(x=>{x.disabled=!data.types[x.dataset.keepType];});
+    $('#calKeepReason').textContent=boxes.some(x=>!x.disabled)?'':t('No compatible compared thresholds available');
+  }catch(e){if(seq===keepSequence)$('#calKeepReason').textContent=e.message;}
+}
+$('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;refreshKeepOptions();};
+$('#calComparePath').oninput=refreshKeepOptions;
 $('#calCompare').onchange();
 ['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
@@ -1529,7 +1545,7 @@ function renderCalibrationModels() {
   }
   $('#runCalibration').disabled=calibrationRunning||!rows.length;
 }
-$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);loadCalibrations();};
+$('#calibrationModel').onchange=()=>{localStorage.setItem('basal-ui.calibrationModel',$('#calibrationModel').value);calibrationOptions={};refreshKeepOptions();loadCalibrations();};
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets})});
@@ -1539,6 +1555,9 @@ $('#cancelCalibration').onclick=()=>act(async()=>{await api('/api/calibrate',{me
 $('#runCalibration').onclick=()=>act(async()=>{
   const targets=[['#calibrationT1','0.01'],['#calibrationT5','0.05']].filter(([s])=>$(s).checked).map(([,t])=>t);
   const compare=$('#calCompare').value,advanced={strict:$('#calStrict').checked,reference:$('#calReference').value.trim()||null,min_per_type:Number($('#calMinType').value),min_blend:Number($('#calMinBlend').value),min_family:Number($('#calMinFamily').value),min_per_set:Number($('#calMinSet').value),concurrency:Number($('#calConcurrency').value),compare:compare==='path'?$('#calComparePath').value.trim():compare,save_rows:$('#calSaveRows').checked,report_only:$('#calReportOnly').checked};
+  const levels=$('#calConformal').value.trim();
+  if(levels&&!$('#calConformal').disabled){const parts=levels.split(',').map(x=>x.trim());if(parts.some(x=>!x||!Number.isFinite(Number(x))||Number(x)<=0||Number(x)>=1))throw new Error(t('Enter coverage levels between 0 and 1, separated by commas'));advanced.conformal=parts.map(Number);}
+  advanced.keep_shipped=[...document.querySelectorAll('[data-keep-type]:checked:not(:disabled)')].map(x=>x.dataset.keepType);
   await api('/api/calibrate',{method:'POST',body:JSON.stringify({id:$('#calibrationModel').value,input:$('#calibrationInput').value.trim(),targets,advanced})});
   toast(t('Calibration started')); await refreshStatus();
 });
@@ -1560,7 +1579,7 @@ function renderCalibrationState(job) {
   $('#cancelCalibration').hidden=!running; $('#runCalibration').disabled=running||!$('#calibrationModel').value;
   $('#calibrationProgress').textContent=!job?'':running?`${shortName(job.model)} · ${ts(job.phase,job.phase_code,job.phase_params)}…`:job.phase==='error'?`${t('Failed: {error}',{error:job.error})}`:job.phase==='cancelled'?t('Cancelled'):['done','done_with_warnings'].includes(job.phase)?`${job.phase==='done_with_warnings'?t('Completed with warnings'):t('Completed (see report for certification)')}: ${shortName(job.result?.file||'')}${job.result?.warnings?.length?' · '+job.result.warnings.join(' · '):''}`:'';
   if(calibrationRunning&&!running)loadCalibrations();
-  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';$('#reportDialog').showModal();}
+  if(!running&&job?.result?.report_only&&calibrationReportSeen!==job.started){calibrationReportSeen=job.started;$('#reportText').textContent=job.result.report||'';renderCalibrationReport(null);$('#reportDialog').showModal();}
   calibrationRunning=running;
 }
 async function loadCalibrations() {
@@ -1572,7 +1591,9 @@ async function loadCalibrations() {
   try{
     const data=await api(`/api/calibrations?id=${encodeURIComponent(id)}`);
     if(!calibrationCurrent(id,sequence))return;
-    renderCalibrationFiles(id,data);
+    calibrationOptions=data.options||{};$('#calConformal').disabled=!calibrationOptions.conformal;
+    $('#calConformalReason').textContent=calibrationOptions.conformal?'':t('Installed Engine does not support conformal levels');
+    refreshKeepOptions();renderCalibrationFiles(id,data);
   }catch(e){
     if(!calibrationCurrent(id,sequence))return;
     files.innerHTML=`<div class="error-box">${esc(e.message)}</div>`;
@@ -1620,8 +1641,21 @@ function renderCalibrationFiles(id, d) {
     if(id!==$('#calibrationModel').value)return;
     const sequence=++calibrationSequence, r=await api(`/api/calibrations/report?id=${encodeURIComponent(id)}&file=${encodeURIComponent(b.dataset.report)}`);
     if(!calibrationCurrent(id,sequence))return;
-    $('#reportText').textContent=r.report; $('#reportDialog').showModal();
+    $('#reportText').textContent=r.report; renderCalibrationReport(r.details); $('#reportDialog').showModal();
   }));
+}
+function renderCalibrationReport(details){
+  const root=$('#reportDetails');root.innerHTML='';if(!details)return;
+  const fitted=details.fitted_on||{}, items=[];
+  for(const [key,label] of [['revision','Revision'],['model_files','Model files digest'],['model_content','Model content digest']])if(fitted[key]!=null)items.push(`<dt>${t(label)}</dt><dd>${esc(fitted[key])}</dd>`);
+  if(fitted.kept_shipped?.length)items.push(`<dt>${t('Kept from')}</dt><dd>${esc(fitted.kept_shipped.join(', '))}: ${esc(fitted.kept_shipped_from?.file||'—')}</dd>`);
+  const rows=[];
+  for(const [target,group] of Object.entries(details.thresholds||{}))for(const [type,e] of Object.entries(group.per_type||{})){
+    if(['icc','design_effect','refuted','kept'].some(k=>e[k]!=null))rows.push(`<tr><td>${esc(target)}</td><td>${esc(type)}</td><td>${esc(e.icc??'—')}</td><td>${esc(e.design_effect??'—')}</td><td>${e.refuted!=null?`${esc(e.refuted)}: ${esc(e.reason||'')}`:''}${e.kept?` ${t('Kept from')} ${esc(fitted.kept_shipped_from?.file||'—')}`:''}</td></tr>`);
+  }
+  const conformal=[];
+  for(const [level,group] of Object.entries(details.conformal?.levels||{}))for(const [type,e] of Object.entries(group.per_type||{}))conformal.push(`<tr><td>${esc(level)}</td><td>${esc(type)}</td><td>${esc(e.cert_coverage??'—')}</td><td>${esc(e.cert_mean_size??'—')}</td><td>${esc(e.reason||'')}</td></tr>`);
+  root.innerHTML=`${items.length?`<dl>${items.join('')}</dl>`:''}${rows.length?`<div class="table-wrap"><table><thead><tr><th>${t('Max error')}</th><th>${t('Type')}</th><th>ICC</th><th>${t('Design effect')}</th><th>${t('Refuted or kept')}</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:''}${conformal.length?`<h4>${t('Conformal results')}</h4><div class="table-wrap"><table><thead><tr><th>${t('Coverage level')}</th><th>${t('Type')}</th><th>${t('CERT coverage')}</th><th>${t('Mean set size')}</th><th>${t('Reason')}</th></tr></thead><tbody>${conformal.join('')}</tbody></table></div>`:''}`;
 }
 // Load options: the engine mode and basal-serve's runtime settings of one load (basal_ui/options.py)
 const GRAPH_MODES=['fast','fast-nocompile','fast-exit','fp8','nvfp4','int8'];

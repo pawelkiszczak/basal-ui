@@ -390,6 +390,12 @@ file are checked before the run starts), `--report-only` (the run uses the same 
 file is written) and `--save-rows`, which keeps the uncalibrated probabilities next to the file; such a file gets
 **Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check).
 
+When the installed Engine supports them, **Advanced** accepts comma-separated conformal coverage levels between 0
+and 1 and lets you keep compared thresholds and temperatures per question type. Only types with compatible compared
+thresholds are enabled; changing the comparison rechecks them. A fit uses Active load settings for a loaded model,
+otherwise Saved load settings. Reports show available identity digests, kept sources, refuted thresholds, ICC and
+design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
+
 ## History and logs
 
 **History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:

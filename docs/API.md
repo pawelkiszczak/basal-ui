@@ -447,3 +447,18 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+## Custom calibration
+
+`POST /api/calibrate` starts a calibration job for `id` and a local labelled `input`; `targets` is a list of
+`max_error` values. Its optional `advanced` object accepts `conformal` (a list of numeric coverage levels strictly
+between 0 and 1) and `keep_shipped` (a list drawn from `choice`, `noul`, and `score`). These options are rejected
+when the installed `basal-calibrate` parser does not declare them. Kept types require compatible temperatures and
+per-type thresholds in the Shipped calibration or the explicitly compared file; `compare: "none"` cannot keep any.
+A loaded model's Active load settings and snapshot are used; otherwise its Saved load settings are used.
+
+`GET /api/calibrations?id=...` reports option availability in `options`. `GET /api/calibrations/keep-options?id=...&compare=...`
+returns a `types` object mapping eligible question types to their compared file, using `shipped`, `none`, or a file
+path for `compare`. The start request rechecks eligibility. `GET /api/calibrations/report?id=...&file=...` returns
+its original `report` text and, when present, `details` with fitted identity, conformal results and per-type threshold
+metadata. Old reports without those fields retain the original response shape.
