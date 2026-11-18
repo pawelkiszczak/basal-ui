@@ -38,9 +38,16 @@
 - Extend the Decision forwarding read timeout to 600 seconds, report gateway read timeouts as 504
   `UPSTREAM_TIMEOUT`, and cancel forwarding on client disconnect. Engine computation may continue after disconnect;
   see [API.md](API.md#several-models-behind-basal-ui).
+- **Playground answer sets and conditional questions:** edit coverage and gates when supported by the Engine; see
+  answer sets, abstention, coverage notes and skipped questions. History preserves truncation details and Replay
+  retains native question fields. [USAGE.md](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
 - Calibration fits and compares the layout in one snapshot of active or saved load settings, including its model revision and mode. Invalid model metadata leaves fitted files available and shows the shipped calibration as unavailable. Imported and fitted files are labelled, layout mismatches are flagged, and saved-row refits preserve the original layout.
 - basal-ui runs on engine releases `>=2.4.1,<2.6` and pins **2.5.1**; CI tests 2.4.1, 2.5.0 and 2.5.1. What 2.5
   adds is offered behind feature probes (`basal_ui/engine.py`), so 2.4.1 keeps working as before.
+- basal-ui supports Engine `>=2.4.1,<2.9` and pins **2.8.0**; CI tests 2.4.1, 2.5.0, 2.5.1, 2.6.0 and 2.8.0.
+  Long-request lane choices follow the installed parser, SOAM offers auto/on/off, and older Saved load settings and
+  presets are migrated. Recurrent model predictions follow the Engine's accelerated GPU architectures and a foreign
+  calibration warning appears on the model row.
   [README](../README.md#supported-engine-range)
 - With engine 2.5.0 the API server's MCP `decide` / `decide_many` tools take a `model` argument and `list_models`
   names the loaded models; the Playground's MCP example then targets the selected model instead of refusing it.

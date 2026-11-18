@@ -269,6 +269,10 @@ class Runner:
                 "command": self.command,
                 "progress": self.progress,
                 "error": self.error,
+                "calibration_origin_warning": getattr(self.process, "calibration_origin_warning", None),
+                "calibration_origin_warning_code": (
+                    "calibration_origin" if getattr(self.process, "calibration_origin_warning", None) else None
+                ),
                 "media_requested": self.media_requested,
                 "media": self.media,
                 "restart_required": restart_required,
@@ -504,6 +508,8 @@ class Runner:
     def _read_logs(self, proc):
         for line in proc.stdout:
             self.log.append(line.rstrip())
+            if "basal: warning:" in line and "its temperatures and certified thresholds may not hold" in line:
+                proc.calibration_origin_warning = line.rstrip()
 
     def _exit_error(self, proc, log_thread):
         # A descendant may keep stdout open after the child exits; never block status indefinitely.

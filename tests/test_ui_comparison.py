@@ -892,7 +892,7 @@ def test_comparison_truncation_is_preserved_and_diagnostics_omitted(app_client, 
     assert response.status_code == 200 and response.json()["usage"]["truncated"] == fields
     assert "secret-for-test" not in response.text
     record = client.get("/api/history", params={"model": model["id"]}).json()["items"][0]
-    assert record["truncated"] is True
+    assert record["truncated"] == fields
     full = client.get(f"/api/history/{record['id']}").json()
     assert full["response"]["usage"]["truncated"] == fields and "secret-for-test" not in json.dumps(full)
     child.reply["usage"]["truncated"]["head_tokens"] = "secret-for-test"

@@ -53,4 +53,4 @@ def test_a_state_over_the_context_is_truncated_and_flagged(ui, text_model):
     assert t["dropped_tokens"] > 0 and t["head_tokens"] + t["tail_tokens"] + t["dropped_tokens"] == t["state_tokens"]
     assert usage["longest_prompt_tokens"] <= limit
     record = ui.get("/api/history", params={"model": text_model["id"], "source": "playground"})["items"][0]
-    assert record["truncated"] is True
+    assert record["truncated"] == t
