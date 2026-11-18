@@ -29,7 +29,7 @@ still work.
 filter; arrows navigate matching actions, Enter runs one and Escape closes the rail. It opens the downloaded-model
 loader, Playground, current-request API examples, Settings, Batch or Model manager; opening a view does not run
 inference. The header toggle closes it when more workspace is wanted. On smaller screens it is an inline panel
-above the view rather than an overlay covering its controls.
+after the view, matching keyboard navigation order. [Mobile example](images/quick-actions-mobile.png).
 
 **Dashboard** shows recorded Decision throughput, latency, errors, endpoint traffic and loaded-model activity.
 [Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
@@ -133,6 +133,15 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   them), or the raw JSON request (which carries `"model"`). **Request settings** contains `facts`, `lang`, Edit JSON,
   and supported Thinking / early-exit controls, keeping the model and example selectors visible in the toolbar. Question names must be
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
+  **Fetch URL** loads one public HTTP(S) page on the app server into editable State without sending a Decision.
+  HTML becomes readable text, JSON stays structured, and plain text stays text. The note shows the original and final
+  URL, type, byte count and truncation; review the result before sending. Fetch is anonymous and bounded to 4 MiB,
+  10 seconds, three redirects and 200,000 text characters; larger JSON or numbers that cannot survive the browser
+  round trip are refused rather than silently changed.
+  The State token estimate divides UTF-8 bytes by four and omits questions, options, media and prompt overhead; it
+  is not a fit guarantee. Active context limit and policy come from the loaded model, and actual Decision usage wins.
+  Cancel stops the fetch. The final URL is saved with the request in History; Replay restores the recorded State and
+  shows its source without fetching again. Load another example or saved request to leave Replay.
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
   and must be attached again.
   Choice, multi and non-boolean act options use inline key/description rows with add, remove, move-up/down and
@@ -270,10 +279,16 @@ with their log and any report written before failure retained.
 
 **Batch** runs `basal-run` from the app: a loaded model, an input JSONL file (simple items or full `/v1/systemone`
 requests, [in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SERVING.md#inference-on-a-jsonl-file)), the output file (default `<stem>.answers.jsonl` next to it, e.g. `items.jsonl` → `items.answers.jsonl`), the
-concurrency and, for a `--mode fast-exit` model, an early-exit level. The progress, the summary (items, errors,
-seconds, items per second, server p50, accuracy over the items with `gold`) and the answers page by page are shown;
-**Download answers** saves the output file. Batch requests go straight to the model's basal-serve: they are not
-counted in the statistics or the history. One batch runs at a time; its log is **Logs → job:batch**.
+concurrency and, for a `--mode fast-exit` model, an early-exit level. On Engine 2.5, **Engine question preset** adds the Engine's
+ready questions to state-only JSONL lines, and **Language** selects `auto` (detect from the state), `pl` or `en`.
+The progress, the summary (items, errors, seconds, items per second, server p50, accuracy over the items with `gold`)
+and the answers page by page are shown; **Download answers** saves the output file. Batch requests go straight to the
+model's basal-serve: they are not counted in the statistics or the history. One batch runs at a time; its log is
+**Logs → job:batch**. Engine 2.4.1 keeps these preset controls disabled with the installed-engine reason.
+
+Batch materializes preset-only rows in a private temporary input before running Native `basal-run`, because Engine 2.5
+summarization expects full requests for named preset answers. The original file remains unchanged. Engine 2.8 resume
+and checkpoint integration is tracked in #70 and is not qualified here.
 
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
@@ -317,6 +332,8 @@ keep free; unload a model or raise the budget. The Manager Library bar shows eac
 estimates and the memory available now. On Apple Silicon, MLX and MPS allocations live in unified memory and may show
 only partly as resident memory; the estimate is what the budget check uses.
 
+Optionally set **Unload idle models after minutes** in **Settings → Memory & storage** (empty means off; 1–9,007,199,254,740,991 whole minutes). A ready model is unloaded after that long without a Decision only when its server reports no running or queued work. Changing the timeout starts a fresh countdown for models already loaded. Batch and other model jobs keep their models loaded while they run. Idle-unloaded models remain remembered for auto-load at the next start; requests return the existing model-not-loaded error until then. The Library, Dashboard and model log show the reason.
+
 ## Statistics and benchmarks
 
 ### Dashboard
@@ -353,7 +370,7 @@ instances, but Decisions recorded after the reset remain counted.
 latency) and 120 at concurrency 8 (decisions, questions and input tokens per second, errors). Every item with a `gold`
 answer is scored once (accuracy overall and per file). The set is either the bundled examples (44 items in
 `basal/examples/`) or your own JSONL file or directory: [BENCHMARK_SETS.md](BENCHMARK_SETS.md). The same block runs
-three other measurements, one at a time:
+five other measurements, one at a time:
 
 - **Load test**: `basal-loadtest` against the loaded model with your sequential / concurrent counts, concurrency,
   questions per request, synthetic states of about N tokens (with a share of long ones and a seed) and, for a
@@ -365,6 +382,13 @@ three other measurements, one at a time:
   loaded, measured (latency with one and both option orders, decisions per second, agreement with the first mode,
   accuracy, load time, memory) and freed in turn. Its memory is counted in the budget while it runs (twice the
   estimate with `eager-fp32`); a mode that fails is listed with its error.
+
+- **Identity gate**: `basal-bench --identity` for a downloaded model, in fp32 or bf16. It uses saved attention, merge,
+  lean, tree and Gemma attention settings when non-default; the fast mode must be available for this model and
+  machine. Automatic lean/tree choices are resolved with Native compiled-graph semantics. Results list each
+  prefix-reuse path's gate and maximum probability delta.
+- **Order check** (Engine 2.5): `basal-bench --order-check` measures option-order flips and averaged readouts.
+  The result is available only when the installed Engine exposes the check.
 
 The last 20 results per model stay in the stats file and are shown side by side. Benchmark requests are not counted
 in the statistics or the history.
@@ -390,6 +414,22 @@ file are checked before the run starts), `--report-only` (the run uses the same 
 file is written) and `--save-rows`, which keeps the uncalibrated probabilities next to the file; such a file gets
 **Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check).
 
+When the installed Engine supports them, **Advanced** accepts comma-separated conformal coverage levels between 0
+and 1 and lets you keep compared thresholds and temperatures per question type. Only types with compatible compared
+thresholds are enabled; changing the comparison rechecks them. A fit uses Active load settings for a loaded model,
+otherwise Saved load settings. Reports show available identity digests, kept sources, refuted thresholds, ICC and
+design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
+[Advanced calibration controls](images/calibration-advanced.png).
+
+## Fine-tuning on labelled Decisions
+
+In **Model manager → Calibration → Fine-tune**, select a downloaded bf16 basal or Attached model, enter the path to labelled JSONL and a new output name, then choose epochs, learning rate, LoRA rank and alpha, held-out share, maximum sequence length, gradient checkpointing and an optional optimizer-step limit. The Engine must expose fine-tuning and its declared `finetune` add-on must be installed; use **Backends → Engine add-ons** and restart when prompted. The input format is the same labelled request format as Calibration. Native trains choice, noul, score and act questions and skips multi and task decisions. The preflight reports skipped types and requires both training decisions and held-out groups; the file is copied privately and never rewritten.
+
+The cancellable job reserves twice the model's estimated memory. Native writes both a full merged checkpoint and `lora/` under `<models dir>/adapters/<model slug>/<name>/`; plan for the full checkpoint's disk space. The original base weights remain unchanged. Results report held-out accuracy before and after, training and held-out counts, scored decisions and skips. A run with no scored decisions has no accuracy result; accuracy is not a certificate or a quality guarantee. The upstream fine-tuning implementation was tested on Apple Silicon with basal-omni-pico; other GPUs remain untested.
+
+A completed adapter for the same base and revision is suggested in the existing Load options adapter field; a custom adapter path still works. Saving an option changes the next load, while a running model keeps its Active settings until restart. The Engine validates mode and quantisation compatibility and adapter calibration identity. A base calibration does not certify changed adapter weights: calibrate the adapted model on held-out data. Delete a result from its card to remove the full output and held-out labels; unload active adapter users and stop jobs first. Saved load options are not Active leases and can still contain a path to a deleted adapter. Missing, incomplete, and cleanup-pending records remain visible for cleanup. If deletion is interrupted or fails, return to the model and retry deletion; the retained path is shown on the result card.
+
+Private output creation and deletion require descriptor-relative directory operations and ownership checks. Fine-tuning is unavailable on native Windows and other systems without those operations; the app reports the reason rather than using unverified ownership or deletion.
 ## History and logs
 
 **History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:
@@ -419,7 +459,7 @@ and receive its retained lines from the start.
 One port serves every loaded model. The API server runs inside basal-ui and forwards each request to the private
 `basal-serve` of the model it names, so every request body must carry `"model"`: `400 MODEL_REQUIRED` without it,
 `404 MODEL_NOT_FOUND` for a model that is not loaded (both list the loaded models). `GET /v1/models` lists the ready
-models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /v1/stats` returns
+models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /metrics` exposes [Prometheus metrics](API.md#prometheus-metrics), and `GET /v1/stats` returns
 the statistics above (admin key only when keys are required — that is, basal-ui's own key). Details:
 [API.md](API.md#several-models-behind-basal-ui).
 
@@ -439,7 +479,7 @@ key** is enabled; use a key before selecting **Local network**. Keys are generat
 SHA-256 hashes in the settings file and keys file, and their plaintext is shown only once when created. Copy it then;
 it cannot be retrieved later. Revoking a key rewrites the live keys file and takes effect without a restart. Each
 `basal-serve` child listens on loopback only and takes no key: only basal-ui, which starts it and knows its private
-port, reaches it. basal-ui's own internal admin key (the only key `/v1/stats` accepts) is not exposed in the UI.
+port, reaches it. basal-ui's internal admin key is not exposed in the UI. To use `/v1/stats` or `/metrics` with authentication, set `BASAL_UI_ADMIN_KEY` before startup as described in the [Prometheus setup](API.md#prometheus-metrics).
 
 **Restart server** restarts only the API server (instant; the models stay loaded) and applies the saved host, port,
 key, CORS and MCP settings; until then the status line shows **Restart to apply**. **Max context length** and
@@ -535,5 +575,17 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+## Server limits
+
+Load options include request concurrency, request timeout, body size, branch count, prompt size and stall detection limits when the installed Engine declares them. Empty request timeout and stall detection fields leave them unset. The Dashboard shows a stalled Engine call's age and main and long lane counts when the Engine reports them. A stalled call may still be running; unloading the model is a separate operation.
+
+### Playground question sets
+
+When the installed Engine provides question sets, open **Insert question set**, select a set and language, optionally
+enter a max error between 0 and 1, and insert its editable questions. Auto uses the Engine's language guess from the
+current state. Existing questions are kept and duplicate names receive a suffix. In Edit JSON mode insertion preserves
+the other request fields. The control explains when the Engine does not provide sets.
+
+![Playground question-set insertion](images/question-sets.png)
 
 Settings URL import at 320 px, using a controlled test response: [English](images/presets-url-en-320.png) · [Polish](images/presets-url-pl-320.png).

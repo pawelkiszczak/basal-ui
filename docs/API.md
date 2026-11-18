@@ -11,7 +11,15 @@ isolation from other users of the same machine — any local account can reach a
 only on a host whose users you trust. Backend URLs and interpreters set in a model's load options (`ollama_url`,
 `llamacpp_url`, `think_url`, `think_python`) are contacted or run with basal-ui's own privileges.
 
+
+## Model server limits and health
+
+The model options endpoint reports availability of each server limit in `limits_available`. The status response reports stalled health and `engine_call_s` when supplied by the Engine, plus its `long` running and queued counts. Total running and queued include the long lane. Engine refusals preserve their status and code on System One and Decisions routes, including aliases; `Retry-After` is forwarded when present. The forwarding read timeout is at least the Active request timeout plus 30 seconds.
+
 ## Local app management API
+
+`GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
+
 
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
 
@@ -29,8 +37,8 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 
 | Route | Contract |
 |---|---|
-| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
-| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `GET /api/addons` | Current Python environment and `media`/`gguf`/`finetune` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf` / `finetune`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
 | `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
@@ -42,12 +50,46 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Fetch a public page for Playground
+
+`POST /api/fetch` on the UI port accepts `{"url":"https://example.com/"}` and returns `url`, `final_url`,
+`content_type`, actual response `bytes`, `truncated` and typed `state`. It fetches anonymously without cookies,
+credentials, proxy settings or automatic redirect following. Every destination is checked for public unicast
+addresses before connecting; mixed public and non-public DNS results are refused. Responses are limited to 4 MiB,
+three redirects and 10 seconds for the entire operation, and text is truncated at 200,000 characters. JSON remains
+structured and is refused if invalid, nonfinite, contains a number that cannot survive the browser round trip, or is too large for the state limit; unsupported content types and
+content encodings are refused. Errors have English `detail` and a translation `code`. Cancelling or disconnecting
+the request and shutting down the app terminate the owned fetch process.
+
+`POST /api/decide` accepts optional top-level `source_url` as Playground metadata. History stores it with the
+recorded request, but it is removed before forwarding to the model; nested State fields remain unchanged. The
+external gateway and model API do not define this UI-only metadata as a request field.
+
+### Fine-tuning
+
+`GET /api/finetune` reports availability and known model IDs; `?id=<model>` also returns that model's results, including incomplete or missing outputs. Availability reasons use `finetune_engine`, `finetune_addon`, `finetune_restart` or `finetune_platform`. The records survive an Engine downgrade. A ready row contains trusted `name`, `output`, `base` and `adapter` paths plus Native's `train_decisions`, `heldout_lines`, `scored`, `skipped`, `top1_before`, `top1_after`, `steps` and `seconds`. Null accuracy means no scored decisions; zero accuracy is a value. A training report is not a selectable calibration.
+
+`POST /api/finetune` accepts `id`, `input`, `out_name`, `epochs`, `lr`, `rank`, `alpha`, `holdout`, `max_len`, `grad_checkpointing` and optional `max_steps`; it returns 202 and the `finetune` job state with preflight counts. Input is semantically checked and copied privately before admission. The job uses local weights offline, reserves twice the estimated memory until its child exits, writes a private output without `--force`, and logs to `job:finetune`. `DELETE /api/finetune` requests cancellation.
+
+`POST /api/finetune/delete` takes a server-known `id` and `name`, never a client path. It rejects active adapter users and jobs; a successful response reports `removed_bytes` as logical regular-file bytes removed, not physical disk reclaimed. Before cleanup, a `cleanup_pending` record is persisted with the existing ownership information. Incomplete cleanup reports zero and a server-derived `retained_path`; the pending result remains visible after reload and can be deleted again by its ID and name. Registry errors retain recoverable ownership, including when the files are already gone. `GET /api/models/options` includes ready, base-associated `adapters` while retaining the custom adapter field. Saved options take effect on the next load; a running child retains its Active settings. Errors carry specific `finetune_*` message codes and diagnostic parameters.
+
+### Batch presets
+
+`GET /api/batch/presets` returns the Engine's ready question names and supported language values:
+`{"available":true,"presets":["..."],"langs":["auto","pl","en"]}`. On Engine 2.4.1 it returns
+`available: false`, empty lists, a `reason`, `reason_code` and installed `version`; it does not import the 2.5-only preset module.
+
+`POST /api/batch` accepts optional `preset` (one of those names) and `lang` (`auto`, `pl` or `en`). `auto` is the
+default and is inferred by the Engine from each state's language; explicit `pl` or `en` passes `--lang`. With a
+preset selected, JSONL lines with neither `questions` nor `question` are expanded with the Engine's preset questions
+into a private temporary input for basal-run. The original input is unchanged.
+Unknown presets or unsupported language values return HTTP 400.
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:
 
 ```json
-{"path":"/Users/me/requests.jsonl","kind":"jsonl"}
+{"path":"/Users/me/requests.jsonl","kind":"jsonl","preset":"triage"}
 ```
 
 `kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
@@ -59,11 +101,23 @@ inspects the first non-empty row for request/label shape, question types and a p
 every request in the file. Scanning stops at 100,000 non-empty rows or 64 MiB; the first row must fit within 1 MiB.
 A blank prefix exhausting the scan limit is not reported as an empty file. Preview text is limited to 300 characters
 plus an ellipsis when truncated.
+When the selected Batch preset is included as `preset`, a state-only first row is previewed as a request using that
+preset's questions. Without it, the same row is unsuitable.
 
 For output, the response reports parent-directory existence, writability and whether an existing file would be
 overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
 Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
 as the other management routes; it is not a filesystem sandbox.
+
+### Benchmarks
+
+`POST /api/benchmark` accepts `{"id":"<downloaded model id>","kind":"identity","dtype":"bf16"}` or
+`{"id":"<downloaded model id>","kind":"order_check"}`. Identity `dtype` is `fp32` or `bf16` (required) and
+requires the fast execution mode to be available for that model and host. `order_check` requires Engine 2.5's
+`order_check` feature probe; otherwise the request returns HTTP 400. Both start the shared `benchmark` job, reserve
+memory while running, write logs under `job:benchmark`, and save results with `GET /api/benchmarks`. Identity keeps
+per-path outcomes, deltas and Engine identity; Order check stores the Native report in `report`. The accepted
+benchmark kinds are `benchmark`, `loadtest`, `determinism`, `modes`, `identity` and `order_check`.
 
 ## Several models behind basal-ui
 
@@ -94,6 +148,47 @@ paths, like basal-serve's own errors.
 "avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
+
+### Prometheus metrics
+
+`GET /metrics` returns Prometheus 0.0.4 text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. Lifetime counters can decrease after a statistics reset. Rolling 15-minute counts are gauges because they can decrease as the window advances or after a reset. Each ready native Engine child's available text metrics are included with its loaded ID as a `model` label. Samples are grouped by metric family, including histogram and summary subseries. Children that do not respond within two seconds, return a non-text response or do not support metrics are skipped; Cascades and Comparison models are never scraped.
+
+The basal-ui metric names are:
+
+| Metric | Labels | Type | Unit |
+|---|---|---|---|
+| `basal_ui_requests_total` | `model` | counter | requests |
+| `basal_ui_questions_total` | `model` | counter | questions |
+| `basal_ui_errors_total` | `model` | counter | failed requests |
+| `basal_ui_input_tokens_total` | `model` | counter | input tokens |
+| `basal_ui_latency_seconds` | `model`, `quantile` (`0.5` or `0.95`) | gauge | seconds |
+| `basal_ui_latency_seconds_avg` | `model` | gauge | seconds |
+| `basal_ui_traffic_requests_total` | `endpoint`, `method` | gauge | requests in 15 minutes |
+| `basal_ui_traffic_errors_total` | `endpoint`, `method` | gauge | failed requests in 15 minutes |
+| `basal_ui_models_loaded` | none | gauge | ready models |
+
+Latency quantiles use at most 1,000 retained samples per model, not the complete lifetime distribution.
+Average latency uses lifetime recorded requests. Unavailable latency values are omitted.
+
+To enable authenticated scraping, create a secret file accessible to both basal-ui and Prometheus and start basal-ui with its contents in `BASAL_UI_ADMIN_KEY` (set **Require an API key** in the API server settings):
+
+```sh
+umask 077
+uv run --no-project python -c 'import secrets; print(secrets.token_urlsafe(32))' > /secure/path/basal-admin-key
+BASAL_UI_ADMIN_KEY="$(cat /secure/path/basal-admin-key)" basal-ui
+```
+
+Keep the secret file readable only by the operator and Prometheus. Set the environment variable before starting basal-ui; an unset or empty value generates a random internal key. Only its digest is saved in the per-process key file; it is not exposed in the UI. Restart basal-ui to change it. Prometheus uses the same secret file below (omit `authorization` when keys are disabled):
+
+```yaml
+scrape_configs:
+  - job_name: basal-ui
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    authorization:
+      type: Bearer
+      credentials_file: /secure/path/basal-admin-key
+```
 
 ### Recent Decision traffic
 
@@ -447,6 +542,28 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+## Custom calibration
+
+`POST /api/calibrate` starts a calibration job for `id` and a local labelled `input`; `targets` is a list of
+`max_error` values. Its optional `advanced` object accepts `conformal` (a list of numeric coverage levels strictly
+between 0 and 1) and `keep_shipped` (a list drawn from `choice`, `noul`, and `score`). These options are rejected
+when the installed `basal-calibrate` parser does not declare them. Kept types require compatible temperatures and
+per-type thresholds in the Shipped calibration or the explicitly compared file; `compare: "none"` cannot keep any.
+A loaded model's Active load settings and snapshot are used; otherwise its Saved load settings are used.
+
+`GET /api/calibrations?id=...` reports option availability in `options`. `GET /api/calibrations/keep-options?id=...&compare=...`
+returns a `types` object mapping eligible question types to their compared file, using `shipped`, `none`, or a file
+path for `compare`. The start request rechecks eligibility. `GET /api/calibrations/report?id=...&file=...` returns
+its original `report` text and, when present, `details` with fitted identity, conformal results and per-type threshold
+metadata. Old reports without those fields retain the original response shape.
+
+### Playground question sets
+
+`GET /api/question-sets` lists Engine set names, available languages and question counts.
+`POST /api/question-sets/{name}` accepts JSON with `lang` (`auto`, `pl` or `en`, default `auto`), string `state`
+(default empty), and optional numeric `max_error` strictly between 0 and 1. It returns the Engine's questions unchanged;
+Auto delegates language guessing to the Engine. An unknown name returns 404, invalid inputs 400, and both routes return
+503 when the Engine lacks question sets.
 
 ## Preset URL import
 
