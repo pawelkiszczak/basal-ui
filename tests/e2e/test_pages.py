@@ -1845,15 +1845,17 @@ def test_conditional_questions_follow_renamed_and_removed_sources(browser, ui):
         page.evaluate("""() => setRequest({state: 'synthetic', questions: {
             gate: {type: 'choice', instructions: 'Gate?', criteria: {yes: 'Yes', no: 'No'}},
             independent: {type: 'noul', instructions: 'Independent?'},
-            next: {type: 'noul', instructions: 'Next?', ask_if: {gate: ['yes'], independent: ['true']}}
+            level: {type: 'score', instructions: 'Level?', option_keys: 'hide', criteria: {low: 'Low', high: 'High'}},
+            next: {type: 'noul', instructions: 'Next?', ask_if: {gate: ['yes'], level: ['Low']}}
         }})""")
         dependent.locator(".q-gates summary").click()
         source.locator(".q-type").select_option("verify")
-        assert page.evaluate("buildRequest().questions.next.ask_if") == {"gate": ["yes"], "independent": ["true"]}
-        clear = dependent.get_by_role("button", name="Remove unavailable conditions")
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {"gate": ["yes"], "level": ["Low"]}
+        clear = dependent.get_by_role("button", name="Remove condition on gate: yes")
         sync_api.expect(clear).to_be_visible()
+        dependent.locator('[data-gate-question="independent"][data-gate-answer="true"]').check()
         clear.click()
         sync_api.expect(dependent.locator(".q-gates summary")).to_be_focused()
-        assert page.evaluate("buildRequest().questions.next.ask_if") == {"independent": ["true"]}
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {"level": ["Low"], "independent": ["true"]}
     finally:
         context.close()

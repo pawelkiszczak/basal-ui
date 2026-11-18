@@ -777,10 +777,10 @@ function renderGateOptions(card) {
   if(!supported){host.innerHTML=`<p class="muted">${t('This Engine does not support conditional questions.')}</p>`;return;}
   const extra=card._extra, deps=Array.isArray(extra.depends_on)?extra.depends_on:[], rawGates=extra.ask_if;
   const gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{};
-  const stale=new Map(Object.entries(gates).filter(([,values])=>Array.isArray(values)&&values.length));
+  const unlisted=new Map(Object.entries(gates).filter(([,values])=>Array.isArray(values)&&values.length));
   const candidates=[...document.querySelectorAll('.question')].filter(other=>other!==card&&['choice','noul','score'].includes($('.q-type',other).value));
   const fields=candidates.map(other=>{
-    const [name,q]=parseQuestionCard(other), selected=stale.get(name)||[], recognized=new Set();
+    const [name,q]=parseQuestionCard(other), selected=unlisted.get(name)||[], recognized=new Set();
     const criteria=q.criteria??q.levels??[], answers=q.type==='noul'?['true','false']:q.type==='score'&&Array.isArray(criteria)?criteria.map((_,i)=>String(i)):Array.isArray(criteria)?criteria.map(String):Object.keys(criteria);
     const options=answers.map(value=>{
       const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];
@@ -788,22 +788,26 @@ function renderGateOptions(card) {
       return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;
     }).join(' ');
     const missing=selected.filter(value=>!recognized.has(value));
-    if(missing.length)stale.set(name,missing);else stale.delete(name);
+    if(missing.length)unlisted.set(name,missing);else unlisted.delete(name);
     return `<fieldset><legend>${esc(name)}</legend><label><input type="checkbox" data-dependency="${esc(name)}" ${deps.includes(name)?'checked':''}> ${t('Depends on this question')}</label>${options?`<div>${t('Ask if answer is')}: ${options}</div>`:''}</fieldset>`;
   }).join('');
   host.innerHTML=fields||`<p class="muted">${t('Add another question to create a condition.')}</p>`;
-  if(!stale.size)return;
-  const warning=document.createElement('p');
-  warning.className='reason';
-  warning.textContent=t('Some conditions refer to unavailable questions or answers.')+' '+[...stale].map(([name,values])=>name+': '+values.map(value=>typeof value==='string'?value:JSON.stringify(value)).join(', ')).join(' · ');
-  const remove=document.createElement('button');
-  remove.type='button'; remove.textContent=t('Remove unavailable conditions');
-  remove.onclick=()=>{
-    const repaired=Object.entries(gates).map(([name,values])=>[name,stale.has(name)?values.filter(value=>!stale.get(name).includes(value)):values]).filter(([,values])=>!Array.isArray(values)||values.length);
-    if(repaired.length)extra.ask_if=Object.fromEntries(repaired);else delete extra.ask_if;
-    renderGateOptions(card);$('.q-gates summary',card).focus();syncRequest();
-  };
-  host.append(warning,remove);
+  if(!unlisted.size)return;
+  const other=document.createElement('fieldset'), legend=document.createElement('legend');
+  legend.textContent=t('Other condition answers');other.append(legend);
+  for(const [name,values] of unlisted)for(const value of values){
+    const remove=document.createElement('button');
+    remove.type='button';
+    remove.textContent=t('Remove condition on {question}: {answer}',{question:name,answer:typeof value==='string'?value:JSON.stringify(value)});
+    remove.onclick=()=>{
+      const current=Object.entries(extra.ask_if||{});
+      const remaining=current.map(([key,answers])=>[key,key===name&&Array.isArray(answers)?answers.filter(answer=>answer!==value):answers]).filter(([,answers])=>!Array.isArray(answers)||answers.length);
+      if(remaining.length)extra.ask_if=Object.fromEntries(remaining);else delete extra.ask_if;
+      renderGateOptions(card);$('.q-gates summary',card).focus();syncRequest();
+    };
+    other.append(remove);
+  }
+  host.append(other);
 }
 function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   if(name===undefined){const names=new Set([...document.querySelectorAll('.q-name')].map(input=>input.value));name='question';for(let i=2;names.has(name);i++)name=`question${i}`;}
