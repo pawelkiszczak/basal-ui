@@ -4,6 +4,31 @@
 // aria-label attributes that equal a key). Unknown strings stay English, as do messages that come from the server.
 const LANG = localStorage.getItem('basal-ui.lang') === 'pl' ? 'pl' : 'en';
 const PL = {
+  "Question name": "Nazwa pytania",
+  "Question type": "Typ pytania",
+  "Option keys": "Klucze opcji",
+  "Option description": "Opis opcji",
+  "Question JSON": "JSON pytania",
+  "Unload idle models after minutes (empty = off)": "Wyładuj nieaktywne modele po minutach (puste = wyłączone)",
+  "Enter whole minutes from 1 to 9,007,199,254,740,991, or leave empty to turn off.": "Wpisz całkowitą liczbę minut od 1 do 9 007 199 254 740 991 lub pozostaw puste, aby wyłączyć.",
+  "Conformal coverage levels": "Poziomy pokrycia konformalnego",
+  "Keep compared thresholds": "Zachowaj porównywane progi",
+  "Installed Engine does not support keeping thresholds": "Zainstalowany Engine nie obsługuje zachowywania progów",
+  "No compatible compared thresholds available": "Brak zgodnych progów do porównania",
+  "Enter coverage levels between 0 and 1, separated by commas": "Podaj poziomy pokrycia między 0 a 1, oddzielone przecinkami",
+  "Installed Engine does not support conformal levels": "Zainstalowany Engine nie obsługuje poziomów konformalnych",
+  "Revision": "Wersja",
+  "Model files digest": "Skrót plików modelu",
+  "Model content digest": "Skrót zawartości modelu",
+  "Kept from": "Zachowano z",
+  "Max error": "Maksymalny błąd",
+  "Design effect": "Efekt projektu",
+  "Refuted or kept": "Odrzucony lub zachowany",
+  "Conformal results": "Wyniki konformalne",
+  "Coverage level": "Poziom pokrycia",
+  "CERT coverage": "Pokrycie CERT",
+  "Mean set size": "Średni rozmiar zbioru",
+  "Reason": "Powód",
   "Estimated State tokens: {tokens} · Active context limit: {limit} · policy: {policy}": "Szacowane tokeny stanu: {tokens} · Aktywny limit kontekstu: {limit} · zasada: {policy}",
   "State estimate unavailable until request JSON is valid.": "Szacunek stanu jest dostępny po poprawieniu JSON żądania.",
   "Estimate: UTF-8 State bytes divided by four. Questions, options, media and prompt overhead are excluded; actual Decision usage is authoritative.": "Szacunek: liczba bajtów stanu UTF-8 podzielona przez cztery. Nie obejmuje pytań, opcji, mediów ani narzutu promptu; rzeczywiste zużycie decyzji jest rozstrzygające.",
@@ -753,6 +778,7 @@ const PL = {
   "Stopped models:": "Zatrzymane modele:",
   "Storage location": "Lokalizacja pamięci",
   "Strict": "Rygorystycznie",
+  "Skip to main content": "Przejdź do treści głównej",
   "Suggested": "Sugerowane",
   "Suggested for this machine": "Polecane dla tego komputera",
   "Synthetic tokens": "Tokeny syntetyczne",
@@ -1108,6 +1134,20 @@ const PL = {
   "policy": "polityka",
   "question": "pytanie",
   "queued": "w kolejce",
+  "Server limits": "Limity serwera",
+  "Model is busy. Wait and retry.": "Model jest zajęty. Poczekaj i spróbuj ponownie.",
+  "Request timed out. Try a smaller request or increase the timeout.": "Przekroczono limit czasu żądania. Zmniejsz żądanie lub zwiększ limit czasu.",
+  "Request is too large. Reduce its size and retry.": "Żądanie jest zbyt duże. Zmniejsz je i spróbuj ponownie.",
+  "Maximum requests": "Maksymalna liczba żądań",
+  "Request timeout (seconds)": "Limit czasu żądania (sekundy)",
+  "Maximum body (MB)": "Maksymalny rozmiar treści (MB)",
+  "Maximum branches": "Maksymalna liczba gałęzi",
+  "Maximum prompt (MB)": "Maksymalny rozmiar promptu (MB)",
+  "Stall detection (seconds)": "Wykrywanie zawieszenia (sekundy)",
+  "This option is not available in the installed Engine.": "Ta opcja nie jest dostępna w zainstalowanym Engine.",
+  "stalled": "zawieszony",
+  "Engine call age: {seconds} s": "Czas wywołania Engine: {seconds} s",
+  "Main: {running} running · {queued} queued; long: {longRunning} running · {longQueued} queued": "Główna: {running} w toku · {queued} w kolejce; długa: {longRunning} w toku · {longQueued} w kolejce",
   "ready": "gotowy",
   "reasoned": "rozumowano",
   "recommended": "polecany",
@@ -1217,6 +1257,7 @@ const PL = {
   "— on disk": "— na dysku"
 };  // 'English text': 'tekst po polsku'
 const PL_PLURAL = {
+  "Unloaded after {n} idle minute at {time}": ["Wyładowano po {n} minucie bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}"],
   "{n} non-empty row": ["{n} niepusty wiersz", "{n} niepuste wiersze", "{n} niepustych wierszy"],
   "{n} question": ["{n} pytanie", "{n} pytania", "{n} pytań"],
   "{n} request": ["{n} żądanie", "{n} żądania", "{n} żądań"],
@@ -1280,7 +1321,7 @@ document.documentElement.lang = LANG;
 document.querySelector('.theme-controls')?.insertAdjacentHTML('afterend',
   `<div class="theme-controls lang-controls" role="group" aria-label="Language">${['en', 'pl'].map(lang =>
     `<button class="btn" type="button" data-lang-choice="${lang}" data-variant="outline" aria-pressed="${lang === LANG}">${lang.toUpperCase()}</button>`).join('')}</div>`);
-translateStatic(document.body);
+if (!document.currentScript?.hasAttribute("data-dynamic-only")) translateStatic(document.body);
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-lang-choice]');
   if (!b) return;

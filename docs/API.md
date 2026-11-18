@@ -11,7 +11,15 @@ isolation from other users of the same machine — any local account can reach a
 only on a host whose users you trust. Backend URLs and interpreters set in a model's load options (`ollama_url`,
 `llamacpp_url`, `think_url`, `think_python`) are contacted or run with basal-ui's own privileges.
 
+
+## Model server limits and health
+
+The model options endpoint reports availability of each server limit in `limits_available`. The status response reports stalled health and `engine_call_s` when supplied by the Engine, plus its `long` running and queued counts. Total running and queued include the long lane. Engine refusals preserve their status and code on System One and Decisions routes, including aliases; `Retry-After` is forwarded when present. The forwarding read timeout is at least the Active request timeout plus 30 seconds.
+
 ## Local app management API
+
+`GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
+
 
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
 
@@ -109,6 +117,47 @@ paths, like basal-serve's own errors.
 "avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
 "avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
+
+### Prometheus metrics
+
+`GET /metrics` returns Prometheus 0.0.4 text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. Lifetime counters can decrease after a statistics reset. Rolling 15-minute counts are gauges because they can decrease as the window advances or after a reset. Each ready native Engine child's available text metrics are included with its loaded ID as a `model` label. Samples are grouped by metric family, including histogram and summary subseries. Children that do not respond within two seconds, return a non-text response or do not support metrics are skipped; Cascades and Comparison models are never scraped.
+
+The basal-ui metric names are:
+
+| Metric | Labels | Type | Unit |
+|---|---|---|---|
+| `basal_ui_requests_total` | `model` | counter | requests |
+| `basal_ui_questions_total` | `model` | counter | questions |
+| `basal_ui_errors_total` | `model` | counter | failed requests |
+| `basal_ui_input_tokens_total` | `model` | counter | input tokens |
+| `basal_ui_latency_seconds` | `model`, `quantile` (`0.5` or `0.95`) | gauge | seconds |
+| `basal_ui_latency_seconds_avg` | `model` | gauge | seconds |
+| `basal_ui_traffic_requests_total` | `endpoint`, `method` | gauge | requests in 15 minutes |
+| `basal_ui_traffic_errors_total` | `endpoint`, `method` | gauge | failed requests in 15 minutes |
+| `basal_ui_models_loaded` | none | gauge | ready models |
+
+Latency quantiles use at most 1,000 retained samples per model, not the complete lifetime distribution.
+Average latency uses lifetime recorded requests. Unavailable latency values are omitted.
+
+To enable authenticated scraping, create a secret file accessible to both basal-ui and Prometheus and start basal-ui with its contents in `BASAL_UI_ADMIN_KEY` (set **Require an API key** in the API server settings):
+
+```sh
+umask 077
+uv run --no-project python -c 'import secrets; print(secrets.token_urlsafe(32))' > /secure/path/basal-admin-key
+BASAL_UI_ADMIN_KEY="$(cat /secure/path/basal-admin-key)" basal-ui
+```
+
+Keep the secret file readable only by the operator and Prometheus. Set the environment variable before starting basal-ui; an unset or empty value generates a random internal key. Only its digest is saved in the per-process key file; it is not exposed in the UI. Restart basal-ui to change it. Prometheus uses the same secret file below (omit `authorization` when keys are disabled):
+
+```yaml
+scrape_configs:
+  - job_name: basal-ui
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    authorization:
+      type: Bearer
+      credentials_file: /secure/path/basal-admin-key
+```
 
 ### Recent Decision traffic
 
@@ -462,3 +511,18 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+## Custom calibration
+
+`POST /api/calibrate` starts a calibration job for `id` and a local labelled `input`; `targets` is a list of
+`max_error` values. Its optional `advanced` object accepts `conformal` (a list of numeric coverage levels strictly
+between 0 and 1) and `keep_shipped` (a list drawn from `choice`, `noul`, and `score`). These options are rejected
+when the installed `basal-calibrate` parser does not declare them. Kept types require compatible temperatures and
+per-type thresholds in the Shipped calibration or the explicitly compared file; `compare: "none"` cannot keep any.
+A loaded model's Active load settings and snapshot are used; otherwise its Saved load settings are used.
+
+`GET /api/calibrations?id=...` reports option availability in `options`. `GET /api/calibrations/keep-options?id=...&compare=...`
+returns a `types` object mapping eligible question types to their compared file, using `shipped`, `none`, or a file
+path for `compare`. The start request rechecks eligibility. `GET /api/calibrations/report?id=...&file=...` returns
+its original `report` text and, when present, `details` with fitted identity, conformal results and per-type threshold
+metadata. Old reports without those fields retain the original response shape.
