@@ -1850,12 +1850,20 @@ def test_conditional_questions_follow_renamed_and_removed_sources(browser, ui):
         }})""")
         dependent.locator(".q-gates summary").click()
         source.locator(".q-type").select_option("verify")
-        assert page.evaluate("buildRequest().questions.next.ask_if") == {"gate": ["yes"], "level": ["Low"], "untouched": []}
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {
+            "gate": ["yes"],
+            "level": ["Low"],
+            "untouched": [],
+        }
         clear = dependent.get_by_role("button", name="Remove condition on gate: yes")
         sync_api.expect(clear).to_be_visible()
         dependent.locator('[data-gate-question="independent"][data-gate-answer="true"]').check()
         clear.click()
         sync_api.expect(dependent.locator(".q-gates summary")).to_be_focused()
-        assert page.evaluate("buildRequest().questions.next.ask_if") == {"level": ["Low"], "untouched": [], "independent": ["true"]}
+        assert page.evaluate("buildRequest().questions.next.ask_if") == {
+            "level": ["Low"],
+            "untouched": [],
+            "independent": ["true"],
+        }
     finally:
         context.close()
