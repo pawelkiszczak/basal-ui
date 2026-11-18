@@ -1,10 +1,14 @@
 import base64
 import contextlib
+import json
+import math
 import os
 import struct
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -44,6 +48,7 @@ def instant_start(monkeypatch):
                 if not self.temporary:
                     settings.remember_loaded(assessment.variant.id, media)
                 self.state, self.media, self.ready_at = "ready", (["image", "audio"] if media else []), time.time()
+                self.last_used = time.monotonic()
                 self.serve_snapshot = {"log_decisions": "", "max_len": 4096, "calibration": None}
 
     monkeypatch.setattr(Runner, "_start", start)
@@ -438,6 +443,97 @@ def test_startup_timeout_kills_child_process_group(tmp_path, monkeypatch):
         pytest.fail("grandchild process survived startup timeout")
 
 
+def test_runner_detached_stdin_and_fatal_startup_log(tmp_path):
+    if os.name != "posix":
+        pytest.skip("closing the launcher stdin requires POSIX")
+    child = (
+        "import sys; assert sys.stdin.read() == ''; "
+        "print('Fatal Python error: init_sys_streams', file=sys.stderr); "
+        "print('OSError: [Errno 9] Bad file descriptor', file=sys.stderr); "
+        "print('<no Python frame>', file=sys.stderr); sys.exit(1)"
+    )
+    launcher = f"""
+import json, os, sys, time
+from types import SimpleNamespace
+from basal_ui import catalog
+from basal_ui.fleet import Runner
+os.close(0)
+catalog.is_downloaded = lambda *args, **kwargs: {str(tmp_path)!r}
+runner = Runner(models_dir_fn=lambda: {str(tmp_path)!r})
+runner._build_command = lambda *args: [sys.executable, '-c', {child!r}]
+assessment = SimpleNamespace(variant=SimpleNamespace(id='synthetic', repo='synthetic', weights_bytes=0),
+                             mode='eager', est_memory_bytes=0)
+runner.load(assessment)
+deadline = time.monotonic() + 5
+while runner.status()['state'] != 'error' and time.monotonic() < deadline:
+    time.sleep(0.01)
+print(json.dumps({{'status': runner.status(), 'log': runner.log.text()}}))
+"""
+    result = subprocess.run([sys.executable, "-c", launcher], capture_output=True, text=True, timeout=10, check=True)
+    data = json.loads(result.stdout)
+    assert data["status"]["state"] == "error"
+    assert "OSError: [Errno 9] Bad file descriptor" in data["status"]["error"]
+    assert data["log"].endswith("<no Python frame>")
+
+
+def test_runner_exit_excerpt_is_bounded_without_truncating_log():
+    runner = Runner()
+    runner.log.append("x" * 3000)
+    runner.log.append("OSError: [Errno 9] Bad file descriptor")
+    runner.log.append("<no Python frame>")
+    error = runner._exit_error(SimpleNamespace(returncode=1), None)
+    assert len(error) < 2100 and "OSError: [Errno 9] Bad file descriptor" in error
+    assert runner.log.text().startswith("x" * 3000)
+
+
+@pytest.mark.parametrize("later_exit", [False, True])
+def test_runner_exit_waits_for_log_reader(tmp_path, monkeypatch, later_exit):
+    runner = Runner(models_dir_fn=lambda: tmp_path)
+    assessment = catalog.assess(MINI, HW)
+    release = tmp_path / "exit"
+    code = (
+        "import pathlib,sys,time; "
+        + (f"p=pathlib.Path({str(release)!r}); \nwhile not p.exists(): time.sleep(0.01)\n" if later_exit else "")
+        + "print('OSError: [Errno 9] Bad file descriptor', file=sys.stderr); "
+        "print('<no Python frame>', file=sys.stderr); sys.exit(1)"
+    )
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(runner, "_build_command", lambda *args: [sys.executable, "-c", code])
+    read = runner._read_logs
+    entered, unblock = threading.Event(), threading.Event()
+
+    def delayed_read(proc):
+        entered.set()
+        assert unblock.wait(5)
+        read(proc)
+
+    monkeypatch.setattr(runner, "_read_logs", delayed_read)
+    if later_exit:
+        monkeypatch.setattr(
+            "basal_ui.fleet.httpx.get",
+            lambda *args, **kwargs: httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", args[0])),
+        )
+        monkeypatch.setattr(runner, "_models_entry", lambda media: (None, []))
+    try:
+        runner.load(assessment)
+        assert entered.wait(2)
+        if later_exit:
+            wait_for(lambda: runner.status()["state"] == "ready")
+            release.touch()
+        wait_for(lambda: runner.process is not None and runner.process.poll() is not None)
+        timer = threading.Timer(0.1, unblock.set)
+        timer.start()
+        wait_for(lambda: runner.status()["state"] == "error")
+        timer.join()
+        error = runner.status()["error"]
+        assert "OSError: [Errno 9] Bad file descriptor" in error
+        assert "<no Python frame>" in runner.log.text()
+        assert len(error) < 2100
+    finally:
+        unblock.set()
+        runner.unload()
+
+
 def test_api_serve_settings_and_key_routes(tmp_path):
     app, _ = app_for(tmp_path, [])
     with TestClient(app, base_url="http://127.0.0.1") as client:
@@ -501,7 +597,7 @@ HTTPServer(('127.0.0.1', int(__import__('sys').argv[1])), Handler).serve_forever
     monkeypatch.setattr(
         Runner,
         "_build_command",
-        lambda self, v, path, assessment, media, port, serve: [sys.executable, "-c", code, str(port)],
+        lambda self, v, path, assessment, media, port, serve, calibration: [sys.executable, "-c", code, str(port)],
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
@@ -879,14 +975,16 @@ def test_memory_routes_validate_and_report_the_hardware_budget(tmp_path):
     app, _ = app_for(tmp_path, [], hw=Hardware("cpu", "cpu", 16 * 1024**3, None, None, frozenset(), 5))
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert client.get("/api/memory").json() == {
-            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3},
+            "settings": {"budget_bytes": None, "reserve_bytes": 2 * 1024**3, "idle_unload_minutes": None},
             "hardware_budget_bytes": 16 * 1024**3,
             "available_bytes": 5,
         }
         assert client.put("/api/memory", json={"budget_bytes": 1024}).status_code == 400
         assert client.put("/api/memory", json={"reserve_bytes": -1}).status_code == 400
-        saved = client.put("/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}).json()
-        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0}
+        saved = client.put(
+            "/api/memory", json={"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": None}
+        ).json()
+        assert saved["settings"] == {"budget_bytes": 8 * 1024**3, "reserve_bytes": 0, "idle_unload_minutes": None}
         assert client.get("/api/status").json()["memory"]["budget_bytes"] == 8 * 1024**3
 
 
@@ -1034,6 +1132,17 @@ def test_presets_validate_and_strip_request_model(tmp_path):
         assert client.get("/api/presets").json() == {"load": {}, "request": {}}
         result = client.put("/api/presets", json={"kind": "load", "name": "cpu", "value": {"mode": "eager"}})
         assert result.status_code == 200 and result.json()["load"]["cpu"] == {"mode": "eager"}  # the non-default ones
+        from basal_ui import engine
+
+        if "--reread" in engine.serve_flags():
+            values = {"reread": 0.7, "reread_image": 280, "order_average": 3, "prepared": "off"}
+            saved = client.put("/api/presets", json={"kind": "load", "name": "new", "value": values})
+            assert saved.json()["load"]["new"] == values
+            assert client.get("/api/presets").json()["load"]["new"] == values
+        result = client.put(
+            "/api/presets", json={"kind": "load", "name": "old", "value": {"long_lane": True, "soam": False}}
+        )
+        assert result.status_code == 200 and result.json()["load"]["old"] == {"long_lane": "on", "soam": "off"}
         result = client.put(
             "/api/presets",
             json={
@@ -1154,6 +1263,47 @@ def test_revision_reaches_cached_check_and_download_but_not_child_flags(tmp_path
     assert "--revision" not in command
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("case", ["defaults", "selected", "override"])
+def test_loaded_model_metadata_preserves_child_values_and_fills_missing_values(tmp_path, monkeypatch, native, case):
+    native_context = {"limit": None, "overflow": "native", "truncate_head": 0.7}
+    native_certified = {"0.01": {"choice": 0.99}}
+    entry = {"name": MINI.id}
+    if native:
+        entry.update(context=native_context, certified=native_certified)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(calibration, "served_certified", lambda *args: {"0.05": {"choice": 0.8}})
+    monkeypatch.setattr(
+        "basal_ui.fleet.subprocess.Popen",
+        lambda *args, **kwargs: SimpleNamespace(stdout=__import__("io").StringIO(), poll=lambda: None, pid=0),
+    )
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda url, **kwargs: httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", url)),
+    )
+    runner = Runner(models_dir_fn=lambda: tmp_path, platform_fn=lambda: "cpu")
+    runner.model = MINI.id
+    if case != "defaults":
+        runner.options = {"context_overflow": "refuse", "truncate_head": 0.2}
+    if case == "override":
+        runner.extra_args = ("--context-overflow", "truncate", "--truncate-head", "0.8")
+    runner._models_entry = lambda media: (entry, [])
+    runner._start(catalog.assess(MINI, HW), runner.gen, cache_dir=tmp_path, serve=settings.serve_settings())
+    fleet = make_fleet(tmp_path)
+    fleet.runners[MINI.id] = runner
+    from basal_ui.gateway import build_app
+
+    with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
+        result = client.get("/v1/models").json()["models"][0]
+    expected = {
+        "defaults": {"limit": None, "overflow": "truncate", "truncate_head": 1 / 3},
+        "selected": {"limit": None, "overflow": "refuse", "truncate_head": 0.2},
+        "override": {"limit": None, "overflow": "truncate", "truncate_head": 0.8},
+    }
+    assert result["context"] == (native_context if native else expected[case])
+    assert result["certified"] == (native_certified if native else {"0.05": {"choice": 0.8}})
+
+
 @pytest.mark.parametrize(("port", "capability"), [("FP8", (8, 0)), ("NVFP4", (9, 0))])
 def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_path, monkeypatch, port, capability):
     monkeypatch.setattr("basal_ui.backends.sys.platform", "linux")
@@ -1178,3 +1328,1706 @@ def test_backend_selection_cannot_bypass_checkpoint_hardware_requirements(tmp_pa
             assert response.json()["suggestions"] == []
         modes = client.get("/api/models/options", params={"id": "quantized"}).json()["modes"]
         assert not any(mode["available"] for mode in modes if mode["mode"] not in ("ollama", "llamacpp"))
+
+
+def test_idle_unload_lifecycle(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert fleet.idle_thread.is_alive()
+        assert client.get("/api/memory").json()["settings"]["idle_unload_minutes"] is None
+        assert client.put("/api/memory", json={"idle_unload_minutes": 1}).status_code == 200
+        assert client.post("/api/load", json={"id": "mini"}).status_code == 202
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        assert client.put("/api/memory", json={"idle_unload_minutes": 0}).status_code == 400
+        assert client.put("/api/memory", json={"idle_unload_minutes": None}).status_code == 200
+        fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
+        assert "mini" in states(client)
+        assert client.put("/api/memory", json={"idle_unload_minutes": 1}).status_code == 200
+        with fleet.lease("mini"):
+            fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
+            assert "mini" in states(client)
+        from basal_ui.fleet import CascadeRunner
+
+        route = CascadeRunner(
+            {"name": "route", "kind": "escalate", "levels": [{"model": "mini"}]}, settings, fleet.event
+        )
+        route.state = "ready"
+        fleet.runners["route"] = route
+        with fleet.lease("route"):
+            fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
+            assert {"mini", "route"} <= states(client).keys()
+        fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 61)
+        assert "mini" not in states(client) and "route" not in states(client)
+        assert "cascade route stopped because member mini was unloaded" in fleet.logs["basal-ui"].text()
+        assert client.get("/api/status").json()["idle_unloads"]["mini"]["code"] == "idle_unload"
+        assert settings.last_models()[0]["id"] == "mini"
+        assert "unloaded after 1 idle minutes" in fleet.logs["mini"].text()
+        settings.set_auto_load(True)
+    assert not fleet.idle_thread.is_alive()
+    restarted, new_fleet = app_for(tmp_path, [MINI])
+    with TestClient(restarted, base_url="http://127.0.0.1") as client:
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = new_fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        new_fleet.unload_idle(runner.last_used + 60)
+        assert "mini" in client.get("/api/status").json()["idle_unloads"]
+        assert client.post("/api/load", json={"id": "mini"}).status_code == 202
+        wait_for(lambda: states(client).get("mini") == "ready")
+        assert "mini" not in client.get("/api/status").json()["idle_unloads"]
+
+
+def test_idle_unload_rechecks_health_and_timeout(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    health = {"status": "ok", "running": 1, "queued": 0}
+
+    def get_health(*args, **kwargs):
+        return httpx.Response(200, json=health, request=httpx.Request("GET", "http://localhost/health"))
+
+    monkeypatch.setattr("basal_ui.fleet.httpx.get", get_health)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        now = max(runner.last_used, fleet.idle_settings_changed) + 61
+        last_used = runner.last_used
+        client.get("/api/status")
+        assert runner.last_used == last_used
+        for state, temporary in (("starting", False), ("downloading", False), ("ready", True)):
+            runner.state, runner.temporary = state, temporary
+            fleet.unload_idle(now)
+            assert fleet.runners["mini"] is runner
+        runner.state, runner.temporary = "ready", False
+        for counters in ({"running": 1, "queued": 0}, {"running": 0, "queued": 1}, {"running": None, "queued": 0}):
+            health.update(counters)
+            fleet.unload_idle(now)
+            assert "mini" in states(client)
+        health.update(running=0, queued=0)
+
+        def disable_during_health(*args, **kwargs):
+            client.put("/api/memory", json={"idle_unload_minutes": None})
+            return get_health()
+
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", disable_during_health)
+        fleet.unload_idle(now)
+        assert "mini" in states(client)
+
+
+def test_idle_timeout_changes_restart_countdown(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        runner.last_used -= 600
+        for minutes in (3, 1):
+            assert client.put("/api/memory", json={"idle_unload_minutes": minutes}).status_code == 200
+            deadline = fleet.idle_settings_changed + minutes * 60
+            fleet.unload_idle(deadline - 0.001)
+            assert "mini" in states(client)
+        fleet.unload_idle(deadline)
+        assert "mini" not in states(client)
+
+
+@pytest.mark.parametrize("latest", ["last_used", "settings"])
+def test_idle_unload_at_float_deadline(tmp_path, monkeypatch, instant_start, latest):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        start = math.nextafter(32.0, math.inf)
+        runner.last_used = start if latest == "last_used" else 0.0
+        fleet.idle_settings_changed = start if latest == "settings" else 0.0
+        deadline = start + 60
+        fleet.unload_idle(math.nextafter(deadline, -math.inf))
+        assert "mini" in states(client)
+        fleet.unload_idle(deadline)
+        assert "mini" not in states(client)
+
+
+def test_idle_unload_releases_fleet_lock_while_terminating(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    entered, release = threading.Event(), threading.Event()
+
+    def terminate(proc):
+        entered.set()
+        assert release.wait(5)
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        runner.est_memory_bytes = 123
+        monkeypatch.setattr(Runner, "_terminate", staticmethod(terminate))
+        worker = threading.Thread(target=fleet.unload_idle, args=(fleet.idle_settings_changed + 60,))
+        worker.start()
+        try:
+            assert entered.wait(3)
+            assert fleet.lock.acquire(timeout=1)
+            try:
+                assert "mini" not in fleet.runners
+                assert fleet.retiring[runner] == 123
+            finally:
+                fleet.lock.release()
+            with pytest.raises(KeyError), fleet.lease("mini"):
+                pass
+        finally:
+            release.set()
+            worker.join(5)
+        assert not worker.is_alive()
+        assert runner not in fleet.retiring
+
+
+def test_idle_unload_revalidates_activity_replacement_and_shutdown(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url, runner.health_polling = "http://localhost", True
+        deadline = max(runner.last_used, fleet.idle_settings_changed) + 60
+        good = httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        )
+        monkeypatch.setattr(Runner, "decide", lambda *args, **kwargs: httpx.Response(200, json={"answers": {}}))
+
+        def activity(*args, **kwargs):
+            assert client.post("/api/decide", json={"model": "mini", "state": "x", "questions": {}}).status_code == 200
+            return good
+
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", activity)
+        fleet.unload_idle(deadline)
+        assert fleet.runners["mini"] is runner
+        runner.last_used = deadline - 60
+
+        def replace(*args, **kwargs):
+            fleet.unload("mini", forget=False)
+            client.post("/api/load", json={"id": "mini"})
+            wait_for(lambda: fleet.runners["mini"].state == "ready")
+            return good
+
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", replace)
+        fleet.unload_idle(deadline)
+        replacement = fleet.runners["mini"]
+        assert replacement is not runner
+        assert "mini" not in client.get("/api/status").json()["idle_unloads"]
+        replacement.base_url, replacement.health_polling = "http://localhost", True
+
+        def stop(*args, **kwargs):
+            fleet.stop_idle_timer()
+            return good
+
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", stop)
+        fleet.unload_idle(max(replacement.last_used, fleet.idle_settings_changed) + 60)
+        assert fleet.runners["mini"] is replacement
+
+
+def test_idle_unload_long_job_and_max_timeout(tmp_path, monkeypatch, instant_start):
+    app, fleet = app_for(tmp_path, [MINI])
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+
+        def run_tool(_job, _module, _args):
+            entered.set()
+            assert release.wait(5)
+            return {"completed": 1}
+
+        monkeypatch.setattr("basal_ui.batch.run_tool", run_tool)
+        source = tmp_path / "batch.jsonl"
+        source.write_text('{"state":"x","questions":{}}\n')
+        assert client.post("/api/batch", json={"id": "mini", "input": str(source)}).status_code == 202
+        try:
+            assert entered.wait(3)
+            fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 600)
+            assert "mini" in fleet.runners
+        finally:
+            release.set()
+            fleet.jobs.get("batch").thread.join(5)
+        assert not fleet.jobs.get("batch").thread.is_alive()
+        fleet.unload_idle(runner.last_used + 59)
+        assert "mini" in fleet.runners
+        assert client.put("/api/memory", json={"idle_unload_minutes": 2**53 - 1}).status_code == 200
+        fleet.unload_idle(time.monotonic() + 60)
+        assert "mini" in fleet.runners
+        assert fleet.idle_thread.is_alive()
+
+
+def test_idle_unload_decision_error_and_existing_unloaded_errors(tmp_path, monkeypatch, instant_start):
+    from basal_ui.gateway import build_app
+
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        runner.last_used -= 120
+        monkeypatch.setattr(Runner, "decide", lambda *a, **k: httpx.Response(422, json={"error": "bad"}))
+        assert client.post("/api/decide", json={"model": "mini", "state": "x", "questions": {}}).status_code == 422
+        fleet.unload_idle(runner.last_used + 59)
+        assert "mini" in fleet.runners
+        fleet.unload_idle(runner.last_used + 60)
+        assert client.post("/api/decide", json={"model": "mini", "state": "x", "questions": {}}).status_code == 404
+        with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as gateway:
+            response = gateway.post("/v1/systemone", json={"model": "mini", "state": "x", "questions": {}})
+            assert response.status_code == 404 and response.json()["code"] == "MODEL_NOT_FOUND"
+
+
+@pytest.mark.parametrize(
+    "health",
+    [
+        {"status": "ok", "running": 0, "queued": 1},
+        {"status": "ok", "running": 1, "queued": 0},
+        {"status": "ok", "running": False, "queued": 0},
+        {"status": "ok", "running": 0},
+        {"status": "error", "running": 0, "queued": 0},
+        [],
+        None,
+    ],
+)
+def test_idle_unload_unknown_or_busy_health_is_safe(tmp_path, monkeypatch, instant_start, health):
+    app, fleet = app_for(tmp_path, [MINI])
+
+    def get_health(*args, **kwargs):
+        if health is None:
+            raise httpx.ConnectError("unavailable")
+        return httpx.Response(200, json=health, request=httpx.Request("GET", "http://localhost/health"))
+
+    monkeypatch.setattr("basal_ui.fleet.httpx.get", get_health)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        fleet.unload_idle(max(runner.last_used, fleet.idle_settings_changed) + 60)
+        assert fleet.runners["mini"] is runner
+
+
+def test_api_errors_and_forwarding_failure_reset_idle_countdown(tmp_path, monkeypatch, instant_start):
+    from basal_ui.gateway import build_app
+
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(
+        "basal_ui.fleet.httpx.get",
+        lambda *a, **k: httpx.Response(
+            200,
+            json={"status": "ok", "running": 0, "queued": 0},
+            request=httpx.Request("GET", "http://localhost/health"),
+        ),
+    )
+
+    async def answer(self, client, body, path):
+        if body["state"] == "failure":
+            raise httpx.ConnectError("failed")
+        return httpx.Response(500, json={"error": "failed"})
+
+    monkeypatch.setattr(Runner, "adecide", answer)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.put("/api/memory", json={"idle_unload_minutes": 1})
+        client.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client).get("mini") == "ready")
+        runner = fleet.runners["mini"]
+        runner.base_url = "http://localhost"
+        with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as gateway:
+            for state, status in (("error", 500), ("failure", 502)):
+                runner.last_used -= 120
+                response = gateway.post("/v1/systemone", json={"model": "mini", "state": state, "questions": {}})
+                assert response.status_code == status
+                fleet.unload_idle(runner.last_used + 59)
+                assert "mini" in fleet.runners
+
+
+def test_idle_timeout_safe_integer_api_round_trip_and_rejection(tmp_path):
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        maximum = 2**53 - 1
+        assert client.put("/api/memory", json={"idle_unload_minutes": maximum}).status_code == 200
+        assert client.put("/api/memory", json={"reserve_bytes": 0}).json()["settings"]["idle_unload_minutes"] == maximum
+        before = (tmp_path / "settings.json").read_bytes()
+        for value in (2**53, 10**309, -1, 0, 1.5, "1", True):
+            response = client.put("/api/memory", json={"idle_unload_minutes": value})
+            assert response.status_code == 400 and "idle_unload_minutes" in response.json()["detail"]
+            assert (tmp_path / "settings.json").read_bytes() == before
+        assert client.get("/api/memory").json()["settings"]["idle_unload_minutes"] == maximum
+
+
+def test_shared_idle_revision_restarts_countdown_and_invalidates_probe(tmp_path, monkeypatch, instant_start):
+    app_a, fleet_a = app_for(tmp_path, [MINI])
+    app_b, fleet_b = app_for(tmp_path, [MINI])
+    request = httpx.Request("GET", "http://localhost/health")
+    good = httpx.Response(200, json={"status": "ok", "running": 0, "queued": 0}, request=request)
+    with (
+        TestClient(app_a, base_url="http://127.0.0.1") as client_a,
+        TestClient(app_b, base_url="http://127.0.0.1") as client_b,
+    ):
+        client_b.post("/api/load", json={"id": "mini"})
+        wait_for(lambda: states(client_b).get("mini") == "ready")
+        runner = fleet_b.runners["mini"]
+        runner.base_url, runner.health_polling = "http://localhost", True
+        runner.last_used -= 600
+        assert client_a.put("/api/memory", json={"idle_unload_minutes": 2}).status_code == 200
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", lambda *args, **kwargs: good)
+        fleet_b.unload_idle(time.monotonic())
+        assert fleet_b.runners["mini"] is runner
+        changed = fleet_b.idle_settings_changed
+        revision = fleet_b.idle_settings_generation
+        assert revision == fleet_a.idle_settings_generation
+        assert client_a.put("/api/memory", json={"reserve_bytes": 0}).status_code == 200
+        assert client_a.put("/api/memory", json={"idle_unload_minutes": 2}).status_code == 200
+        fleet_b.refresh_idle_settings()
+        assert (fleet_b.idle_settings_generation, fleet_b.idle_settings_changed) == (revision, changed)
+
+        def change_and_revert(*args, **kwargs):
+            code = "from basal_ui import settings; settings.update_memory({'idle_unload_minutes': 3}); settings.update_memory({'idle_unload_minutes': 2})"
+            subprocess.run([sys.executable, "-c", code], check=True, timeout=15, env=os.environ.copy())
+            return good
+
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", change_and_revert)
+        fleet_b.unload_idle(changed + 120)
+        assert fleet_b.runners["mini"] is runner
+        assert fleet_b.idle_settings_generation == revision + 2
+        assert fleet_b.idle_settings_changed >= changed
+        monkeypatch.setattr("basal_ui.fleet.httpx.get", lambda *args, **kwargs: good)
+        deadline = fleet_b.idle_settings_changed + 120
+        fleet_b.unload_idle(math.nextafter(deadline, -math.inf))
+        assert fleet_b.runners["mini"] is runner
+        fleet_b.unload_idle(deadline)
+        assert "mini" not in fleet_b.runners
+
+
+def test_gateway_start_failure_leaves_no_idle_timer(tmp_path):
+    class FailedGateway:
+        def start(self):
+            raise RuntimeError("gateway startup failed")
+
+    fleet = make_fleet(tmp_path)
+    app = create_app(
+        catalog_fn=lambda **_: ([], "test"),
+        hardware_fn=lambda: HW,
+        fleet=fleet,
+        stats=fleet.stats,
+        history=fleet.history,
+        gateway=FailedGateway(),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="gateway startup failed"), TestClient(app, base_url="http://127.0.0.1"):
+            pass
+        assert fleet.idle_thread is None
+    finally:
+        fleet.shutdown()
+        fleet.stats.close()
+
+
+def test_question_sets_use_installed_engine_and_validate_inputs(tmp_path):
+    presets = pytest.importorskip("basal.presets")
+
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        listing = client.get("/api/question-sets")
+        assert listing.status_code == 200
+        assert listing.json() == [
+            {
+                "name": name,
+                "languages": list(presets.PRESETS[name]),
+                "question_count": len(presets.questions(name, "en")),
+            }
+            for name in presets.names()
+        ]
+        for name in presets.names():
+            for lang, state in [
+                ("pl", "example"),
+                ("en", "example"),
+                ("auto", "To jest zgłoszenie i sprawa"),
+                ("auto", "A billing issue"),
+            ]:
+                payload = {"lang": lang, "state": state, "max_error": 0.05}
+                response = client.post(f"/api/question-sets/{name}", json=payload)
+                assert response.status_code == 200
+                assert response.json() == presets.questions(name, None if lang == "auto" else lang, state, 0.05)
+        assert client.post("/api/question-sets/missing", json={}).status_code == 404
+        for payload in (
+            {"lang": "xx"},
+            {"state": []},
+            {"max_error": True},
+            {"max_error": 0},
+            {"max_error": 1},
+            {"max_error": "0.05"},
+        ):
+            assert client.post("/api/question-sets/triage", json=payload).status_code == 400
+
+
+def test_question_sets_refuse_when_engine_lacks_capability(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/question-sets").status_code == 503
+        assert client.post("/api/question-sets/triage", json={}).status_code == 503
+
+
+def test_attach_route_downloads_attaches_and_lists_the_local_variant(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    snapshot = tmp_path / catalog.ATTACH_REVISION
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text('{"num_parameters": 4000000000}')
+    target_weights = snapshot / "model.safetensors"
+    target_weights.write_bytes(b"weights")
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: True)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, *args, **kwargs: snapshot)
+
+    def fake_run_tool(job, module, argv):
+        assert module == "attach"
+        assert argv[0] == snapshot and argv[-2:] == ["--format", "1"]
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "basal.json").write_text(json.dumps({"attached": {"base": "Qwen/Qwen3-4B", "revision": snapshot.name}}))
+        (out / "config.json").symlink_to(snapshot / "config.json")
+        (out / "model.safetensors").symlink_to(target_weights)
+
+    monkeypatch.setattr(jobs, "run_tool", fake_run_tool)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "elsewhere/model"}).status_code == 400
+        response = client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"})
+        assert response.status_code == 202
+        job = fleet.jobs.get("attach")
+        job.thread.join(2)
+        assert not job.thread.is_alive() and job.phase == "done", job.error
+        variant = next(item for item in client.get("/api/models").json()["models"] if item["family"] == "attached")
+        assert variant["id"] == "attached/qwen-qwen3-4b"
+        assert variant["local_dir"] == str(models / "attached" / "qwen-qwen3-4b")
+        assert variant["tier"] == "4.0B" and variant["weights_bytes"] == len(b"weights")
+        assert variant["downloaded"] and variant["uncalibrated"] and variant["attached"]
+        assert variant["inspect_reason"] == "attached models cannot be inspected"
+        assert not any(item["id"] == variant["id"] for item in client.get("/api/models").json()["suggestions"])
+        loaded = SimpleNamespace(state="ready")
+        fleet.runners[variant["id"]] = loaded
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 409
+        del fleet.runners[variant["id"]]
+        assert client.delete(f"/api/attach/{variant['id']}").status_code == 200
+        assert not Path(variant["local_dir"]).exists() and target_weights.exists()
+        assert settings.attached_models() == []
+
+
+def test_attached_models_only_offer_supported_execution_modes():
+    from basal_ui import catalog, options
+
+    variant = Variant("attached/test", "Qwen/Qwen3-4B", "attached", "4.0B", "bf16", "bf16", None, 100, True)
+    modes = options.available_modes(variant, HW, catalog.assess(variant, HW))
+    available = {row["mode"] for row in modes if row["available"]}
+    allowed = {"eager", "mps", "mlx", "mlx-q8", "fast"}
+    assert available <= allowed
+    assert any(row["mode"] in allowed for row in modes)
+    refused = next(row for row in modes if row["mode"] == "vllm")
+    assert refused["reason"] == catalog.ATTACHED_MODE_REASON
+    assert refused["reason_code"] == "mode_attached"
+
+
+def test_attach_is_unavailable_without_the_engine_feature(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/attach").json() == {"available": False, "bases": []}
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 400
+
+
+def attached_weights(path):
+    names = [f"model-{i:05d}-of-00003.safetensors" for i in range(1, 4)]
+    (path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": dict(enumerate(names))}))
+    for name in names:
+        (path / name).write_bytes(b"weights")
+    return names
+
+
+def test_attached_output_needs_metadata_and_complete_weights(tmp_path):
+    path = tmp_path / "attached" / "qwen-qwen3-4b"
+    path.mkdir(parents=True)
+    variant = Variant(
+        "attached/qwen-qwen3-4b",
+        "Qwen/Qwen3-4B",
+        "attached",
+        "4B",
+        "bf16",
+        "bf16",
+        None,
+        1,
+        True,
+        local_dir=str(path),
+        cache_revision=catalog.ATTACH_REVISION,
+        attached_format=1,
+    )
+    (path / "basal.json").write_text(
+        json.dumps(
+            {
+                "prompt": 1,
+                "attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION},
+                "readout": {"codes": "AB"},
+            }
+        )
+    )
+    (path / "CALIBRATION.json").write_text('{"thresholds":{}}')
+    (path / "config.json").write_text("{}")
+    (path / "tokenizer.json").write_text("{}")
+    names = attached_weights(path)
+    index = path / "model.safetensors.index.json"
+    contents = index.read_text()
+    index.unlink()
+    assert catalog.is_downloaded(variant, tmp_path) is None
+    from unittest.mock import patch
+
+    import huggingface_hub
+
+    base = Variant(
+        "Qwen/Qwen3-4B",
+        "Qwen/Qwen3-4B",
+        "attached-base",
+        "unknown",
+        "bf16",
+        "bf16",
+        None,
+        None,
+        True,
+        cache_revision=catalog.ATTACH_REVISION,
+    )
+    with patch.object(huggingface_hub, "snapshot_download", return_value=str(path)):
+        assert catalog.is_downloaded(base, tmp_path) is None
+    (path / names[0]).unlink()
+    assert catalog.is_downloaded(variant, tmp_path) is None
+    index.write_text(contents)
+    assert catalog.is_downloaded(variant, tmp_path) is None
+    (path / names[0]).write_bytes(b"weights")
+    assert catalog.is_downloaded(variant, tmp_path) == path
+    (path / "CALIBRATION.json").unlink()
+    assert catalog.is_downloaded(variant, tmp_path) is None
+
+
+def test_attach_refuses_unapproved_inputs_before_start(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        for body in (
+            {"base": []},
+            {"base": "unapproved/model"},
+            {"base": "Qwen/Qwen3-4B", "format": True},
+            {"base": "Qwen/Qwen3-4B", "revision": "main"},
+        ):
+            assert client.post("/api/attach", json=body).status_code == 400
+        assert fleet.jobs.get("attach") is None
+
+
+def test_attach_persistence_failure_cleans_only_owned_output(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    snapshot = tmp_path / catalog.ATTACH_REVISION
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "tokenizer.json").write_text("{}")
+    names = attached_weights(snapshot)
+    real_downloaded = catalog.is_downloaded
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: False)
+    monkeypatch.setattr(
+        catalog,
+        "is_downloaded",
+        lambda variant, *a, **kw: snapshot if variant.family == "attached-base" else real_downloaded(variant, *a, **kw),
+    )
+
+    def attach(job, module, argv):
+        out = Path(argv[argv.index("--out") + 1])
+        for name in ("config.json", "tokenizer.json", "model.safetensors.index.json", *names):
+            (out / name).symlink_to(snapshot / name)
+        (out / "basal.json").write_text(
+            json.dumps(
+                {
+                    "prompt": 1,
+                    "attached": {"base": "Qwen/Qwen3-4B", "revision": snapshot.name},
+                    "readout": {"codes": "AB"},
+                }
+            )
+        )
+        (out / "CALIBRATION.json").write_text('{"thresholds":{}}')
+
+    monkeypatch.setattr(jobs, "run_tool", attach)
+    monkeypatch.setattr(settings, "add_attached", lambda record: (_ for _ in ()).throw(OSError("disk full")))
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 202
+        job = fleet.jobs.get("attach")
+        job.thread.join(5)
+        assert job.phase == "error" and "disk full" in job.error
+        assert not (models / "attached" / "qwen-qwen3-4b").exists()
+        assert (snapshot / names[0]).read_bytes() == b"weights"
+        assert settings.attached_models() == []
+
+
+def test_attach_cancel_drains_tool_and_cleans_partial_directory(tmp_path, monkeypatch):
+    from basal_ui import engine, jobs
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    snapshot = tmp_path / catalog.ATTACH_REVISION
+    snapshot.mkdir()
+    (snapshot / "weights").write_bytes(b"shared")
+    entered = threading.Event()
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: False)
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *a, **kw: snapshot)
+
+    def attach(job, module, argv):
+        out = Path(argv[argv.index("--out") + 1])
+        (out / "weights").symlink_to(snapshot / "weights")
+        entered.set()
+        assert job.cancel.wait(5)
+        job.check()
+
+    monkeypatch.setattr(jobs, "run_tool", attach)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 202
+        assert entered.wait(5)
+        assert client.delete("/api/attach/attached/qwen-qwen3-4b").status_code == 404
+        client.delete("/api/attach")
+        job = fleet.jobs.get("attach")
+        job.thread.join(5)
+        assert not job.thread.is_alive() and job.phase == "cancelled"
+        assert not (settings.models_dir() / "attached/qwen-qwen3-4b").exists()
+        assert (snapshot / "weights").read_bytes() == b"shared"
+        assert settings.attached_models() == []
+
+
+def test_attached_removal_waits_for_jobs_and_retains_corrupt_directory(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    model = "attached/qwen-qwen3-4b"
+    out = models / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text("corrupt")
+    (out / "user-file").write_text("keep")
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, fleet = app_for(tmp_path, [MINI])
+    entered, release = threading.Event(), threading.Event()
+
+    def job_target(job):
+        entered.set()
+        assert release.wait(5)
+
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            fleet.jobs.start("calibrate", model, "hold", job_target)
+            assert entered.wait(5)
+            assert client.delete(f"/api/attach/{model}").status_code == 409
+            release.set()
+            fleet.jobs.get("calibrate").thread.join(5)
+            response = client.delete(f"/api/attach/{model}")
+            assert response.status_code == 200 and response.json()["retained_directory"]
+            assert (out / "user-file").read_text() == "keep"
+            assert settings.attached_models() == []
+    finally:
+        release.set()
+
+
+def test_attached_calibration_selection_requires_matching_fitted_model(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    models = tmp_path / "models"
+    settings.set_models_dir(str(models))
+    model = "attached/qwen-qwen3-4b"
+    out = models / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps(
+            {
+                "prompt": 1,
+                "attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION},
+                "readout": {"codes": "AB"},
+            }
+        )
+    )
+    (out / "CALIBRATION.json").write_text('{"thresholds": {}}')
+    (out / "config.json").write_text("{}")
+    (out / "tokenizer.json").write_text("{}")
+    attached_weights(out)
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    directory = settings.calibrations_dir(model)
+    directory.mkdir(parents=True)
+    selected = directory / "candidate.json"
+    selected.write_text(json.dumps({"fitted_on": {"model": "other"}, "thresholds": {}}))
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/calibrations/select", json={"id": model, "file": str(selected)}).status_code == 400
+        assert settings.calibration_selection().get(model) is None
+        selected.write_text(json.dumps({"fitted_on": {"model": str(out)}, "thresholds": {}}))
+        assert client.post("/api/calibrations/select", json={"id": model, "file": str(selected)}).status_code == 200
+        listed = next(m for m in client.get("/api/models").json()["models"] if m["id"] == model)
+        assert listed["uncalibrated"]
+
+
+def test_attached_record_survives_engine_without_attach(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        row = next(m for m in client.get("/api/models").json()["models"] if m["id"] == model)
+        assert not row["runnable"] and row["reason_code"] == "attach_unavailable"
+        assert client.post("/api/load", json={"id": model}).status_code == 400
+        assert settings.attached_models()[0]["id"] == model
+
+
+def test_attach_cancellation_drains_inflight_download(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    entered, release = threading.Event(), threading.Event()
+    thread = threading.Thread(target=lambda: (entered.set(), release.wait(5)))
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(Fleet, "download", lambda self, variant: (thread.start(), True)[1])
+    app, fleet = app_for(tmp_path, [MINI])
+    monkeypatch.setattr(fleet.downloads, "alive", lambda repo: thread.is_alive())
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *a, **kw: tmp_path / catalog.ATTACH_REVISION)
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            assert client.post("/api/attach", json={"base": "Qwen/Qwen3-4B"}).status_code == 202
+            assert entered.wait(5)
+            client.delete("/api/attach")
+            job = fleet.jobs.get("attach")
+            assert job.running and thread.is_alive()
+            release.set()
+            job.thread.join(5)
+            assert not thread.is_alive() and job.phase == "cancelled"
+            assert settings.attached_models() == []
+    finally:
+        release.set()
+        thread.join(5)
+
+
+def test_attached_load_and_remove_are_serialized(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps(
+            {
+                "prompt": 1,
+                "attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION},
+                "readout": {"codes": "AB"},
+            }
+        )
+    )
+    (out / "CALIBRATION.json").write_text('{"thresholds": {}}')
+    (out / "config.json").write_text("{}")
+    (out / "tokenizer.json").write_text("{}")
+    attached_weights(out)
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    entered, release, delete_started = threading.Event(), threading.Event(), threading.Event()
+
+    def load_runner(runner, assessment, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        runner.model, runner.model_repo, runner.state = model, assessment.variant.repo, "starting"
+        return runner.status()
+
+    monkeypatch.setattr(Runner, "load", load_runner)
+    app, fleet = app_for(tmp_path, [MINI])
+    results = {}
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            load = threading.Thread(
+                target=lambda: results.setdefault("load", client.post("/api/load", json={"id": model}))
+            )
+
+            def remove():
+                delete_started.set()
+                results["delete"] = client.delete(f"/api/attach/{model}")
+
+            deletion = threading.Thread(target=remove)
+            load.start()
+            assert entered.wait(5)
+            deletion.start()
+            assert delete_started.wait(5)
+            release.set()
+            load.join(5)
+            deletion.join(5)
+            assert results["load"].status_code == 202 and results["delete"].status_code == 409
+            assert out.is_dir() and settings.attached_models()[0]["id"] == model
+    finally:
+        release.set()
+
+
+def test_attached_remove_restores_files_when_persistence_fails(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps({"attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION}})
+    )
+    (out / "owned").write_text("preserve")
+    target = tmp_path / "shared"
+    target.write_text("shared")
+    (out / "weight").symlink_to(target)
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    monkeypatch.setattr(settings, "save", lambda data: (_ for _ in ()).throw(OSError("disk full")))
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as client:
+        assert client.delete(f"/api/attach/{model}").status_code == 500
+        assert (out / "owned").read_text() == "preserve"
+        assert (out / "weight").is_symlink() and target.read_text() == "shared"
+        assert settings.attached_models()[0]["id"] == model
+        assert list(out.parent.glob(".removing-*")) == []
+
+
+@pytest.mark.parametrize("which", ["root", "output"])
+def test_unsafe_attached_symlink_is_visible_and_only_record_is_removed(tmp_path, monkeypatch, which):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel").write_text("keep")
+    out.parent.parent.mkdir(parents=True, exist_ok=True)
+    if which == "root":
+        out.parent.symlink_to(outside, target_is_directory=True)
+    else:
+        out.parent.mkdir()
+        out.symlink_to(outside, target_is_directory=True)
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as client:
+        row = next(x for x in client.get("/api/models").json()["models"] if x["id"] == model)
+        assert not row["downloaded"]
+        save = settings.save
+        monkeypatch.setattr(settings, "save", lambda data: (_ for _ in ()).throw(OSError("disk full")))
+        assert client.delete(f"/api/attach/{model}").status_code == 500
+        assert settings.attached_models()[0]["id"] == model and (outside / "sentinel").read_text() == "keep"
+        monkeypatch.setattr(settings, "save", save)
+        response = client.delete(f"/api/attach/{model}")
+        assert response.json() == {"deleted": model, "freed_bytes": 0, "retained_directory": True}
+        assert settings.attached_models() == [] and (outside / "sentinel").read_text() == "keep"
+        assert (out.parent if which == "root" else out).is_symlink()
+
+
+def test_attached_non_object_config_stays_visible_and_removable(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    out.mkdir(parents=True)
+    (out / "config.json").write_text("[]")
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.get("/api/models")
+        assert response.status_code == 200
+        row = next(x for x in response.json()["models"] if x["id"] == model)
+        assert not row["downloaded"]
+        assert client.delete(f"/api/attach/{model}").json()["retained_directory"]
+
+
+def test_attached_certification_requires_active_matching_thresholds(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps(
+            {
+                "prompt": 1,
+                "layout": "canonical",
+                "attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION},
+                "readout": {"codes": "AB"},
+            }
+        )
+    )
+    (out / "CALIBRATION.json").write_text('{"thresholds": {}}')
+    (out / "config.json").write_text("{}")
+    (out / "tokenizer.json").write_text("{}")
+    attached_weights(out)
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    cal = tmp_path / "fitted.json"
+    cal.write_text(
+        json.dumps(
+            {
+                "fitted_on": {"model": str(out), "orders": 2},
+                "temperature_per_prim": {"choice": 0.25},
+                "thresholds": {"0.05": {"per_type": {"choice": {"confidence": 0.8}}}},
+            }
+        )
+    )
+    settings.select_calibration(model, str(cal))
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    app, fleet = app_for(tmp_path, [MINI])
+    runner = fleet._runner(LogBuffer())
+    runner.model, runner.model_repo, runner.state, runner.mode = model, "Qwen/Qwen3-4B", "ready", "eager"
+    runner.models_entry = {"name": model, "temperature_per_prim": {"choice": 0.25}, "orders": 2, "certified": {}}
+    fleet.runners[model] = runner
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+
+        def row():
+            return next(x for x in client.get("/api/models").json()["models"] if x["id"] == model)
+
+        assert row()["uncalibrated"]
+        assert client.get("/api/status").json()["models"][0]["uncalibrated"]
+        runner.models_entry["certified"] = {"0.05": {"choice": 0.8}}
+        assert not row()["uncalibrated"]
+        assert not client.get("/api/status").json()["models"][0]["uncalibrated"]
+        runner.models_entry["certified"] = {"0.05": {"choice": 0.9}}
+        assert row()["uncalibrated"]
+        changed = json.loads(cal.read_text())
+        changed["thresholds"]["0.05"]["per_type"]["noul"] = {"confidence": 0.6}
+        cal.write_text(json.dumps(changed))
+        runner.models_entry["certified"] = {"0.05": {"choice": 0.8, "noul": 0.7}}
+        assert row()["uncalibrated"]
+        assert client.get("/api/status").json()["models"][0]["uncalibrated"]
+
+
+def test_attached_partial_cleanup_reports_retained_staging(tmp_path, monkeypatch):
+    from basal_ui import app as app_module
+    from basal_ui import engine
+
+    settings.set_models_dir(str(tmp_path / "models"))
+    model = "attached/qwen-qwen3-4b"
+    out = settings.models_dir() / model
+    out.mkdir(parents=True)
+    (out / "basal.json").write_text(
+        json.dumps({"attached": {"base": "Qwen/Qwen3-4B", "revision": catalog.ATTACH_REVISION}})
+    )
+    (out / "deleted").write_text("deleted")
+    (out / "keep").write_text("recover me")
+    target = tmp_path / "shared"
+    target.write_text("shared")
+    (out / "weight").symlink_to(target)
+    settings.add_attached(
+        {
+            "id": model,
+            "base": "Qwen/Qwen3-4B",
+            "revision": catalog.ATTACH_REVISION,
+            "out_dir": str(out),
+            "format": 1,
+            "created": 1,
+        }
+    )
+    monkeypatch.setattr(engine, "feature", lambda name: name == "attach")
+    real_rmtree = app_module.shutil.rmtree
+
+    def fail_after_partial(path, *args, **kwargs):
+        path = Path(path)
+        if path.name.startswith(".removing-"):
+            (path / out.name / "deleted").unlink()
+            raise OSError("cleanup failed")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(app_module.shutil, "rmtree", fail_after_partial)
+    app, _ = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.delete(f"/api/attach/{model}")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["cleanup_error"] and result["retained_directory"] and result["freed_bytes"] == 0
+        stage = Path(result["retained_path"])
+        assert stage.parent == out.parent and (stage / out.name / "keep").read_text() == "recover me"
+        assert (stage / out.name / "weight").is_symlink() and target.read_text() == "shared"
+        assert not settings.attached_models()
+
+
+def test_runner_calibration_origin_warning_is_process_scoped():
+    from types import SimpleNamespace
+
+    warning = "basal: warning: CALIBRATION.json: copied; its temperatures and certified thresholds may not hold for this model"
+    runner = Runner()
+    old = SimpleNamespace(stdout=[warning + "\n"])
+    runner.process = old
+    with runner.lock:
+        reader = threading.Thread(target=runner._read_logs, args=(old,))
+        reader.start()
+        reader.join(timeout=1)
+        assert not reader.is_alive()  # PR #103 may join the reader while holding the Runner lock
+    assert runner.status()["calibration_origin_warning"] == warning
+    assert runner.status()["calibration_origin_warning_code"] == "calibration_origin"
+    runner.process = SimpleNamespace(stdout=[])
+    runner._read_logs(old)
+    assert runner.status()["calibration_origin_warning"] is None
+
+
+def test_unavailable_audio_storage_preserves_ordinary_history(tmp_path, monkeypatch):
+    from basal_ui import history_audio
+
+    settings.save({"keep_history_audio": True})
+    monkeypatch.setattr(history_audio, "supported", lambda: False)
+    app, fleet = app_for(tmp_path, [MINI])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        prefs = client.get("/api/settings").json()
+        assert prefs["history_audio_available"] is False and prefs["keep_history_audio"] is False
+        refusal = client.put("/api/settings", json={"keep_history_audio": True})
+        assert refusal.status_code == 400 and refusal.json()["code"] == "history_audio_unsupported"
+        request = {"state": "synthetic", "media": [{"type": "audio", "data": "QUJD"}]}
+        fleet._record(MINI.id, request, "/v1/systemone", "playground", 200, {}, 1)
+        record = fleet.history.list()[0]
+        assert fleet.history.detail(record["id"], True)["replay_request"] is None
+        assert not history_audio.storage_present(fleet.history.path)
+
+
+def test_history_audio_settings_and_explicit_replay(tmp_path):
+    app, fleet = app_for(tmp_path, [])
+    body = {"state": "business", "audio": ["data:audio/wav;base64,QUJD"]}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/settings").json()["keep_history_audio"] is False
+        assert client.get("/api/settings").json()["history_audio_budget_bytes"] == 268435456
+        assert client.put("/api/settings", json={"keep_history_audio": 1}).status_code == 400
+        assert client.put("/api/settings", json={"keep_history_audio": True}).json()["keep_history_audio"] is True
+        fleet._record("mini", body, "/v1/systemone", "playground", 200, {}, 1)
+        item = client.get("/api/history").json()["items"][0]
+        normal_response = client.get("/api/history/" + item["id"])
+        assert normal_response.headers["cache-control"] == "no-store"
+        normal = normal_response.json()
+        assert normal["replay_requires_audio"] and "QUJD" not in str(normal)
+        replay_response = client.get("/api/history/" + item["id"], params={"replay": "true"})
+        assert replay_response.headers["cache-control"] == "no-store"
+        replay = replay_response.json()
+        assert replay["replay_request"]["media"] == [{"type": "audio", "data": "QUJD"}]
+        assert "QUJD" not in str(replay["request"])
+        client.put("/api/settings", json={"keep_history_audio": False})
+        assert client.get("/api/history/" + item["id"], params={"replay": "true"}).json()["replay_request"]
+
+
+def test_async_recording_does_not_block_loop_and_drains_on_cancellation(tmp_path, monkeypatch):
+    import asyncio
+
+    fleet = make_fleet(tmp_path)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def record(*_args):
+        entered.set()
+        release.wait()
+        finished.set()
+
+    monkeypatch.setattr(fleet, "_record", record)
+
+    async def exercise():
+        task = asyncio.create_task(fleet._arecord())
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+        fleet.shutdown()
+
+
+def test_sync_fleet_audio_recording_and_storage_failure_preserve_answer(tmp_path, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    runner = Runner()
+    runner.state, runner.model = "ready", "mini"
+    fleet.runners["mini"] = runner
+    sent = []
+
+    def decide(_runner, body, path):
+        sent.append((body, path))
+        return httpx.Response(200, json={"answers": {}})
+
+    monkeypatch.setattr(Runner, "decide", decide)
+    settings.set_keep_history_audio(True)
+    body = {"state": {"data": "ordinary"}, "media": [{"type": "audio", "data": "QUJD"}]}
+    assert fleet.decide("mini", body).status_code == 200
+    row = fleet.history.list()[0]
+    assert fleet.history.detail(row["id"], True)["replay_request"] == {"model": "mini", **body}
+    assert sent == [(body, "/v1/systemone")]
+    monkeypatch.setattr(fleet.history, "append", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("failed")))
+    assert fleet.decide("mini", body).status_code == 200
+    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    assert not fleet.leases and not fleet.inflight
+
+
+def test_audio_policy_failure_is_coded_and_preserves_other_settings(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    settings.save({"keep_history_audio": True, "unrelated": {"preserve": "value"}})
+    path = tmp_path / "settings.json"
+    original = path.read_bytes()
+    real_read = Path.read_text
+
+    def fail_settings(self, *args, **kwargs):
+        if self == path:
+            raise OSError("private path or bytes must not escape")
+        return real_read(self, *args, **kwargs)
+
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client, monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", fail_settings)
+        reply = client.get("/api/settings")
+        assert reply.status_code == 503 and reply.json()["code"] == "history_audio_policy_unavailable"
+        assert "private path" not in reply.text
+        reply = client.put("/api/settings", json={"keep_history_audio": False})
+        assert reply.status_code == 503 and reply.json()["code"] == "history_audio_policy_unavailable"
+    assert path.read_bytes() == original
+    assert settings.keep_history_audio() is True
+
+
+@pytest.mark.parametrize("damage", [b"{broken", b"[]", b"\xff"])
+def test_audio_policy_corruption_never_reports_false_or_overwrites(tmp_path, damage):
+    path = tmp_path / "settings.json"
+    path.write_bytes(damage)
+    with pytest.raises(settings.HistoryAudioPolicyError):
+        settings.keep_history_audio()
+    with pytest.raises(settings.HistoryAudioPolicyError):
+        settings.set_keep_history_audio(False)
+    assert path.read_bytes() == damage
+
+
+@pytest.mark.parametrize("audio_storage", [False, True])
+def test_invalid_history_utf8_does_not_fail_sync_decision(audio_storage, tmp_path, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    runner = Runner()
+    runner.state, runner.model = "ready", "mini"
+    fleet.runners["mini"] = runner
+    monkeypatch.setattr(Runner, "decide", lambda *_: httpx.Response(200, json={"answers": {}}))
+    if audio_storage:
+        history_path = fleet.history.path
+        history_path.with_name(history_path.name + ".audio").mkdir(mode=0o700)
+    fleet.history.path.write_bytes(b"\xff")
+    assert fleet.decide("mini", {"state": "ordinary"}).status_code == 200
+    if audio_storage:
+        assert fleet.history.path.read_bytes() == b"\xff"
+        assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    else:
+        assert fleet.history.path.read_bytes().splitlines()[0] == b"\xff"
+        assert len(fleet.history.list()) == 1
+        assert "decision not recorded" not in (fleet.logs.get("basal-ui").text() if "basal-ui" in fleet.logs else "")
+
+
+def test_audio_policy_one_shot_read_failure_keeps_other_settings(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    settings.save({"keep_history_audio": True, "unrelated": {"preserve": "value"}})
+    path = tmp_path / "settings.json"
+    before = path.read_bytes()
+    real_read = Path.read_text
+    failed = False
+
+    def first_read_fails(self, *args, **kwargs):
+        nonlocal failed
+        if self == path and not failed:
+            failed = True
+            raise OSError("temporary failure")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", first_read_fails)
+    with pytest.raises(settings.HistoryAudioPolicyError):
+        settings.set_keep_history_audio(False)
+    assert path.read_bytes() == before
+    assert settings.load()["unrelated"] == {"preserve": "value"}
+
+
+def test_audio_policy_read_failure_keeps_successful_sync_decision(tmp_path, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    runner = Runner()
+    runner.state, runner.model = "ready", "mini"
+    fleet.runners["mini"] = runner
+    monkeypatch.setattr(Runner, "decide", lambda *_: httpx.Response(200, json={"answers": {}}))
+    settings.set_keep_history_audio(True)
+    monkeypatch.setattr(
+        settings, "_audio_policy_data", lambda: (_ for _ in ()).throw(settings.HistoryAudioPolicyError())
+    )
+    assert fleet.decide("mini", {"state": "ordinary"}).status_code == 200
+    assert fleet.history.list() == []
+    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+
+
+@pytest.mark.parametrize("damage", [b"{broken", b"[]", b"\xff"])
+def test_audio_policy_corruption_returns_coded_api_error(tmp_path, damage):
+    app, _ = app_for(tmp_path, [])
+    path = tmp_path / "settings.json"
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        path.write_bytes(damage)
+        for reply in (client.get("/api/settings"), client.put("/api/settings", json={"keep_history_audio": False})):
+            assert reply.status_code == 503
+            assert reply.json()["code"] == "history_audio_policy_unavailable"
+            assert reply.headers["cache-control"] == "no-store"
+        assert path.read_bytes() == damage
+        path.unlink()
+
+
+def test_cascade_api_start_routes_models_and_stops_when_member_unloads(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui import fleet as fleet_module
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    app, fleet = app_for(tmp_path, [])
+
+    class ReadyMember(Runner):
+        def __init__(self, model, url):
+            self.model, self.base_url, self.state, self.process = model, url, "ready", None
+            self.est_memory_bytes, self.temporary, self.ready_at = 10, False, time.time()
+            self.models_entry, self.rss_bytes = {"name": model}, None
+
+        def status(self):
+            return {"id": self.model, "state": self.state, "rss_bytes": None}
+
+        def detach(self):
+            self.state = "idle"
+            return None, self.est_memory_bytes
+
+    fleet.runners.update(
+        {
+            "a/one": ReadyMember("a/one", "http://127.0.0.1:8101"),
+            "b/two": ReadyMember("b/two", "http://127.0.0.1:8102"),
+        }
+    )
+    launched = []
+
+    class Process:
+        stdout = ()
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(fleet_module, "rss_by_pgid", lambda: {})
+    monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda argv, **kwargs: (launched.append(argv), Process())[1])
+    monkeypatch.setattr(fleet_module.httpx, "get", lambda *args, **kwargs: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(fleet_module.Runner, "_terminate", lambda proc: None)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+        assert client.post("/api/cascades", json={**body, "name": []}).status_code == 400
+        assert client.post("/api/cascades", json=body).status_code == 201
+        assert client.post("/api/cascades/tri/start").status_code == 202
+        assert launched[0][-6:] == [
+            "--replicas",
+            "http://127.0.0.1:8101",
+            "--escalate",
+            "http://127.0.0.1:8102",
+            "--escalate-below",
+            "0.8",
+        ]
+        assert any(item["id"] == "tri" and item["entry"]["kind"] == "cascade" for item in fleet.model_entries())
+        client.post("/api/unload", json={"id": "a/one"})
+        assert "tri" not in fleet.runners
+
+
+def test_cascade_start_refuses_unloaded_member(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
+        assert client.post("/api/cascades", json=body).status_code == 201
+        response = client.post("/api/cascades/tri/start")
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "CASCADE_MEMBER_NOT_LOADED"
+
+
+def test_cascade_routes_explain_engine_compatibility(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(engine, "feature", lambda name: False)
+    app, _ = app_for(tmp_path, [])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.get("/api/cascades")
+    assert response.status_code == 409
+    assert "need engine 2.5" in response.json()["detail"]
+
+
+def test_cascade_cancelled_before_spawn_preserves_replacement(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui import fleet as fleet_module
+
+    fleet = make_fleet(tmp_path)
+    member = Runner()
+    member.state, member.model, member.base_url = "ready", "member", "http://localhost:1234"
+    fleet.runners["member"] = member
+    spec = {
+        "name": "route",
+        "kind": "escalate",
+        "levels": [{"model": "member"}],
+        "fallback": {"url": "https://example.com", "model": "fallback"},
+    }
+    monkeypatch.setattr(engine, "feature", lambda name: True)
+    monkeypatch.setattr(settings, "cascades", lambda: [spec])
+    entered, release = threading.Event(), threading.Event()
+
+    make_socket = fleet_module.socket.socket
+
+    def reserve_socket(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return make_socket(*args, **kwargs)
+
+    monkeypatch.setattr(fleet_module.socket, "socket", reserve_socket)
+    monkeypatch.setattr(Runner, "_poll_health", lambda *args: None)
+    monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda *a, **k: pytest.fail("cancelled cascade spawned"))
+    errors = []
+
+    def start():
+        try:
+            fleet.start_cascade("route")
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        fleet.unload("route", forget=False)
+        replacement = Runner()
+        with fleet.lock:
+            fleet.runners["route"] = replacement
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert errors == ["cascade start cancelled"]
+    assert fleet.runners["route"] is replacement
+
+
+def test_cascade_unloaded_during_health_check_does_not_become_ready(tmp_path, monkeypatch):
+    from basal_ui import engine
+    from basal_ui import fleet as fleet_module
+
+    fleet = make_fleet(tmp_path)
+    member = Runner()
+    member.state, member.model, member.base_url = "ready", "member", "http://localhost:1234"
+    fleet.runners["member"] = member
+    spec = {"name": "route", "kind": "escalate", "levels": [{"model": "member"}]}
+    monkeypatch.setattr(engine, "feature", lambda name: True)
+    monkeypatch.setattr(settings, "cascades", lambda: [spec])
+    monkeypatch.setattr(Runner, "_poll_health", lambda *args: None)
+    entered, release = threading.Event(), threading.Event()
+    terminated = []
+
+    class Process:
+        stdout = ()
+        pid = 12345
+        returncode = None
+
+        def poll(self):
+            return None
+
+    proc = Process()
+    monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(Runner, "_terminate", lambda p: terminated.append(p) if p is not None else None)
+
+    def health(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(fleet_module.httpx, "get", health)
+    errors = []
+
+    def start():
+        try:
+            fleet.start_cascade("route")
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        runner = fleet.runners["route"]
+        fleet.unload("route", forget=False)
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert errors == ["cascade start cancelled"]
+    assert runner.state == "idle" and "route" not in fleet.runners
+    assert terminated == [proc]
+
+
+def test_unload_persistence_failure_reaps_detached_cascade_and_member(tmp_path, monkeypatch):
+    import subprocess
+
+    from basal_ui.fleet import CascadeRunner
+
+    app, fleet = app_for(tmp_path, [])
+    member_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    cascade_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    member = Runner()
+    member.model, member.state, member.process, member.est_memory_bytes = "member", "ready", member_proc, 100
+    cascade = CascadeRunner(
+        {"name": "route", "kind": "escalate", "levels": [{"model": "member"}]}, settings, fleet.event
+    )
+    cascade.state, cascade.process = "ready", cascade_proc
+    fleet.runners.update({"member": member, "route": cascade})
+
+    def fail_write(_):
+        assert not fleet.lock._is_owned()
+        raise OSError("settings write failed")
+
+    monkeypatch.setattr(settings, "forget_loaded", fail_write)
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            with pytest.raises(OSError, match="settings write failed"):
+                client.post("/api/unload", json={"id": "member"})
+            assert member_proc.poll() is not None and cascade_proc.poll() is not None
+            assert "member" not in fleet.runners and "route" not in fleet.runners
+            assert not fleet.retiring and "member" not in fleet.draining
+    finally:
+        for proc in (member_proc, cascade_proc):
+            if proc.poll() is None:
+                Runner._terminate(proc)
+
+
+def test_stale_stop_does_not_unload_replacement(tmp_path, monkeypatch):
+    from basal_ui.fleet import CascadeRunner
+
+    fleet = make_fleet(tmp_path)
+    spec = {"name": "route", "kind": "escalate", "levels": [{"model": "member"}]}
+    old = CascadeRunner(spec, settings, fleet.event)
+    replacement = CascadeRunner(spec, settings, fleet.event)
+    fleet.runners["route"] = old
+    entered, release = threading.Event(), threading.Event()
+    original = fleet.unload
+
+    def delayed(name, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(name, **kwargs)
+
+    monkeypatch.setattr(fleet, "unload", delayed)
+    errors = []
+
+    def stop():
+        try:
+            fleet.stop_cascade("route")
+        except KeyError as exc:
+            errors.append(exc.args[0])
+
+    worker = threading.Thread(target=stop)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        original("route", forget=False)
+        with fleet.lock:
+            fleet.runners["route"] = replacement
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive() and errors == ["route"]
+    assert fleet.runners["route"] is replacement and replacement.state == "starting"
+    original("route", forget=False)
+
+
+def test_unrelated_repository_can_be_deleted_with_cascade_running(tmp_path, instant_start, monkeypatch):
+    from basal_ui.fleet import CascadeRunner
+
+    app, fleet = app_for(tmp_path, [MINI, SMALL])
+    removed = []
+    monkeypatch.setattr(catalog, "delete", lambda variant, cache_dir: removed.append(variant.repo) or 42)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.post("/api/load", json={"id": MINI.id}).status_code == 202
+        wait_for(lambda: states(client).get(MINI.id) == "ready")
+        cascade = CascadeRunner(
+            {"name": "route", "kind": "escalate", "levels": [{"model": MINI.id}]}, settings, fleet.event
+        )
+        cascade.state = "ready"
+        fleet.runners["route"] = cascade
+        assert client.post("/api/models/delete", json={"id": MINI.id}).status_code == 409
+        response = client.post("/api/models/delete", json={"id": SMALL.id})
+        assert response.status_code == 200 and response.json()["freed_bytes"] == 42
+        assert removed == [SMALL.repo]
+
+
+def test_existing_blend_with_fallback_cannot_start(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    app, fleet = app_for(tmp_path, [])
+    monkeypatch.setattr(engine, "feature", lambda name: name == "router")
+    monkeypatch.setattr(
+        settings,
+        "cascades",
+        lambda: [
+            {
+                "name": "route",
+                "kind": "blend",
+                "levels": [{"model": "a"}, {"model": "b"}],
+                "weights": [1, 1],
+                "fallback": {"url": "http://example.test", "model": "chat"},
+            }
+        ],
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/cascades/route/start")
+        assert response.status_code == 409 and "Blend cannot use" in response.json()["detail"]["detail"]
+        assert "route" not in fleet.runners and "route" not in fleet.draining

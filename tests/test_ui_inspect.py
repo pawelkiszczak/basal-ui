@@ -67,6 +67,9 @@ def test_models_api_reports_why_a_variant_cannot_be_inspected(client):
     assert models["mini-mlx"]["inspect_reason"] == inspect.inspectable(MLX, HW)  # the CPU: never None
     assert models["mini-mlx"]["inspect_reason"] in (inspect.MLX_NEEDS_MAC, inspect.MLX_NEEDS_ENGINE)
     assert models["pico"]["recurrent"] is True
+    refused = client.post("/api/inspect", json={"id": "pico"})
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == models["pico"]["inspect_reason"]
 
 
 class StubExplainer:

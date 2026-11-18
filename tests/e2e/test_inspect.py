@@ -5,7 +5,7 @@ import time
 import pytest
 
 from basal_ui.engine import feature
-from tests.e2e.support import CHOICE, catalog
+from tests.e2e.support import CHOICE
 
 
 def stop_inspector(ui):
@@ -36,12 +36,6 @@ def test_basal_viz_explains_a_decision_of_a_bf16_model_and_stops(ui, bf16_model)
         stop_inspector(ui)
     assert ui.http.get("/viz/api/info").status_code == 503
     assert ui.status()["memory"]["committed_bytes"] == committed
-
-
-def test_ports_basal_viz_cannot_read_are_refused(ui):
-    other = next((m for m in catalog(ui) if m["inspect_reason"]), None)
-    assert other is not None
-    assert ui.detail("POST", "/api/inspect", {"id": other["id"]}, 400) == other["inspect_reason"]
 
 
 def test_basal_viz_reads_an_mlx_port_on_apple_silicon(ui, hardware, mlx_model):

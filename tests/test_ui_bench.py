@@ -262,3 +262,300 @@ def test_mode_comparison_runs_basal_bench_and_reserves_its_memory(tmp_path, monk
             "mode": "ollama",
             "error": "basal-bench exited (1): no Ollama server",
         }
+
+
+def test_identity_gate_runs_engine_tool_and_saves_gate_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+    monkeypatch.setattr(
+        "basal_ui.options.available_modes",
+        lambda *args: [{"mode": "fast", "available": True, "reason": None}],
+    )
+    rows = [{"path": "plain", "gate": "pass", "max_dp": 0.001}, {"path": "soam", "gate": "FAIL", "max_dp": 0.02}]
+    seen = []
+
+    def fake_tool(job, module, argv, out_path=None, **kwargs):
+        seen.extend(argv)
+        with open(out_path, "w") as out:
+            json.dump({"rows": rows}, out)
+        return {"rows": rows}
+
+    monkeypatch.setattr(bench, "run_tool", fake_tool)
+    app, fleet = make_app(tmp_path, monkeypatch, variants=[BF16])
+    settings.set_load_options(
+        "bf16", {"attn": "fa3", "merge": "on", "lean": "pass2", "tree": "flex", "gemma_attn": "math"}
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/benchmark", json={"id": "bf16", "kind": "identity", "dtype": "bf16"})
+        assert response.status_code == 202, response.text
+        result = finished(client)["result"]
+        assert seen[:6] == ["--identity", "--model", str(tmp_path), "--dtype", "bfloat16", "--out"]
+        assert seen[7:] == [
+            "--attn",
+            "fa3",
+            "--merge",
+            "on",
+            "--lean",
+            "pass2",
+            "--tree",
+            "flex",
+            "--gemma-attn",
+            "math",
+        ]
+        assert client.get("/api/benchmarks").json()["bf16"][-1]["rows"] == rows
+        assert result["rows"] == rows and result["pass"] is False
+        assert result["engine"] and fleet.reserved == {}
+
+
+def test_order_check_is_refused_without_engine_feature(tmp_path, monkeypatch):
+    from basal_ui import engine
+
+    monkeypatch.setattr(catalog, "is_downloaded", lambda variant, cache_dir, revision=None: tmp_path)
+    monkeypatch.setitem(engine.FEATURES, "order_check", lambda: False)
+    app, _ = make_app(tmp_path, monkeypatch, variants=[BF16])
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        response = client.post("/api/benchmark", json={"id": "bf16", "kind": "order_check"})
+        assert response.status_code == 400 and "Engine 2.5" in response.json()["detail"]
+
+
+def test_identity_rejects_empty_results_and_releases_reservation(tmp_path, monkeypatch):
+    class Reserved:
+        released = False
+        stats = None
+
+        def release(self, kind):
+            assert kind == "identity"
+            self.released = True
+
+    fleet = Reserved()
+    monkeypatch.setattr(bench, "run_tool", lambda *args, **kwargs: {"rows": []})
+    with pytest.raises(RuntimeError, match="invalid identity gate output"):
+        bench.identity_job(Job("benchmark", "m", "test", LogBuffer()), fleet, BF16, tmp_path, "float32", {})
+    assert fleet.released
+
+
+@pytest.mark.parametrize("delta", [float("nan"), float("inf"), -0.1, True])
+def test_identity_rejects_invalid_delta(tmp_path, monkeypatch, delta):
+    class FleetStub:
+        stats = None
+
+        def release(self, kind):
+            assert kind == "identity"
+
+    monkeypatch.setattr(bench, "run_tool", lambda *a, **k: {"rows": [{"path": "p", "gate": "pass", "max_dp": delta}]})
+    with pytest.raises(RuntimeError, match="invalid identity"):
+        bench.identity_job(Job("benchmark", "m", "test", LogBuffer()), FleetStub(), BF16, tmp_path, "float32", {})
+
+
+@pytest.mark.parametrize("result", [None, {}, {"mode": "mlx", "n": 1, "by_k": {}}])
+def test_order_check_rejects_malformed_report(tmp_path, monkeypatch, result):
+    class FleetStub:
+        stats = None
+        released = False
+
+        def release(self, kind):
+            assert kind == "order_check"
+            self.released = True
+
+    fleet = FleetStub()
+    monkeypatch.setattr(bench, "run_tool", lambda *a, **k: result)
+    with pytest.raises(RuntimeError, match="invalid order check"):
+        bench.order_check_job(Job("benchmark", "m", "test", LogBuffer()), fleet, BF16, tmp_path)
+    assert fleet.released
+
+
+@pytest.mark.parametrize(
+    "lean,tree,effective",
+    [
+        ("pass2", "flex", ("pass2", "flex")),
+        ("auto", "auto", ("pass2", "flex")),
+        ("auto", "dense", ("off", "dense")),
+        ("on", "auto", ("on", "dense")),
+        ("off", "auto", ("off", "dense")),
+        ("pass2", "auto", ("pass2", "flex")),
+        ("auto", "flex", ("pass2", "flex")),
+    ],
+)
+def test_identity_arguments_pass_native_parser(monkeypatch, tmp_path, lean, tree, effective):
+    import argparse
+
+    from basal import identity
+
+    parsed = []
+    parse = argparse.ArgumentParser.parse_args
+
+    class Parsed(Exception):
+        pass
+
+    def capture(parser, argv):
+        parsed.append(parse(parser, argv))
+        raise Parsed()
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
+    options = {"attn": "fa3", "merge": "on", "lean": lean, "tree": tree, "gemma_attn": "math"}
+    argv = bench.identity_args(tmp_path, "float32", options, tmp_path / "out.json")
+    with pytest.raises(Parsed):
+        identity.main(argv[1:])
+    assert (parsed[0].dtype, parsed[0].attn, parsed[0].merge, parsed[0].lean, parsed[0].tree, parsed[0].gemma_attn) == (
+        "float32",
+        "fa3",
+        "on",
+        *effective,
+        "math",
+    )
+
+
+def test_identity_reservation_conflict_cancel_and_maintenance(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "is_downloaded", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(
+        "basal_ui.options.available_modes", lambda *a: [{"mode": "fast", "available": True, "reason": None}]
+    )
+    started, release = threading.Event(), threading.Event()
+
+    def tool(job, module, argv, out_path=None):
+        started.set()
+        assert release.wait(5)
+        job.check()
+        return {"rows": [{"path": "plain", "gate": "pass", "max_dp": 0.0}]}
+
+    monkeypatch.setattr(bench, "run_tool", tool)
+    app, fleet = make_app(tmp_path, monkeypatch, variants=[BF16])
+    body = {"id": "bf16", "kind": "identity", "dtype": "fp32"}
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        try:
+            assert client.post("/api/benchmark", json=body).status_code == 202
+            assert started.wait(5)
+            assert fleet.reserved == {"identity": 2 * catalog.assess(BF16, HW).est_memory_bytes}
+            assert client.post("/api/benchmark", json=body).status_code == 409
+            assert client.delete("/api/benchmark").status_code == 200
+            release.set()
+            fleet.jobs.get("benchmark").thread.join(5)
+            assert fleet.jobs.get("benchmark").state()["phase"] == "cancelled"
+            assert fleet.reserved == {}
+            fleet.engine_addon_installing = True
+            assert client.post("/api/benchmark", json=body).status_code == 409
+            assert fleet.reserved == {}
+        finally:
+            release.set()
+            fleet.engine_addon_installing = False
+            fleet.jobs.join(5)
+
+
+def test_engine_check_tool_failure_releases_memory(tmp_path, monkeypatch):
+    class FleetStub:
+        stats = None
+        released = []
+
+        def release(self, kind):
+            self.released.append(kind)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("Native tool failed")
+
+    fleet = FleetStub()
+    monkeypatch.setattr(bench, "run_tool", fail)
+    for kind in ("identity", "order_check"):
+        with pytest.raises(RuntimeError, match="Native tool failed"):
+            if kind == "identity":
+                bench.identity_job(Job("benchmark", "m", "test", LogBuffer()), fleet, BF16, tmp_path, "float32", {})
+            else:
+                bench.order_check_job(Job("benchmark", "m", "test", LogBuffer()), fleet, BF16, tmp_path)
+    assert fleet.released == ["identity", "order_check"]
+
+
+@pytest.mark.parametrize("flags", [set(), {"--adapter"}, {"--mlx-forward"}, {"--adapter", "--mlx-forward"}])
+@pytest.mark.parametrize("values", [{}, {"adapter": "/tmp/adapter", "mlx_forward": "basal"}])
+def test_comparison_flags_follow_installed_bench(monkeypatch, flags, values):
+    monkeypatch.setattr(bench, "bench_flags", lambda: flags)
+    options = {"ollama_url": "http://localhost", "llamacpp_url": "http://localhost", **values}
+    argv = bench.bench_args("/model", ["mlx"], 10, 5, None, options)
+    for key in ("adapter", "mlx_forward"):
+        flag = "--" + key.replace("_", "-")
+        assert (flag in argv) == (flag in flags and key in values)
+        if flag in argv:
+            assert argv[argv.index(flag) + 1] == values[key]
+
+
+@pytest.mark.parametrize("load_errors", [None, 3])
+def test_determinism_result_preserves_engine_shape(tmp_path, monkeypatch, load_errors):
+    from types import SimpleNamespace
+
+    result = {"requests": 5, "identical": 5, "max_abs_diff": 0, "decision_flips": 0, "concurrency": 2}
+    if load_errors is not None:
+        result["load_errors"] = load_errors
+    from basal_ui import jobs
+
+    def popen(command, **kwargs):
+        from pathlib import Path
+
+        Path(command[command.index("--out") + 1]).write_text(json.dumps({"url": "private", "determinism": result}))
+        return SimpleNamespace(stdout=[], wait=lambda: None, poll=lambda: 0, pid=0, returncode=0)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    monkeypatch.setattr("basal_ui.jobs._group_alive", lambda _pid: False)
+    stats = Stats(tmp_path / "stats.json")
+    fleet = SimpleNamespace(ready=lambda _: SimpleNamespace(base_url="http://local"), stats=stats)
+    job = Job("benchmark", "mini", "test", LogBuffer())
+    out = bench.loadtest_job(job, fleet, "mini", "bundled", [], {**bench.LOADTEST_DEFAULTS, "determinism": 5})
+    assert out["determinism"] == result and "url" not in out
+    assert stats.snapshot()["benchmarks"]["mini"][0]["determinism"] == result
+
+
+@pytest.mark.parametrize("saved_downloaded", [False, True])
+def test_comparison_uses_active_options_before_saved(tmp_path, monkeypatch, saved_downloaded):
+    active_path, saved_path = tmp_path / "active", tmp_path / "saved"
+    monkeypatch.setattr(
+        catalog,
+        "is_downloaded",
+        lambda variant, cache_dir, revision=None: saved_path if revision == "saved" and saved_downloaded else None,
+    )
+    monkeypatch.setattr(bench, "bench_flags", lambda: {"--adapter", "--mlx-forward"})
+    calls = []
+
+    def run(job, module, argv, out_path=None, on_json=None):
+        calls.append(argv)
+        on_json({"mode": "eager", "n": 10})
+
+    monkeypatch.setattr(bench, "run_tool", run)
+    app, fleet = make_app(tmp_path, monkeypatch, variants=[BF16])
+    runner = Runner()
+    runner.state, runner.model, runner.loaded_path = "ready", "bf16", str(active_path)
+    runner.options = {"revision": "active", "mlx_forward": "basal", "adapter": "/active"}
+    fleet.runners["bf16"] = runner
+    settings.set_load_options("bf16", {"revision": "saved", "ollama_model": "saved-model", "mlx_packed": True})
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        assert client.get("/api/modes", params={"id": "bf16"}).status_code == 200
+        body = {"id": "bf16", "kind": "modes", "modes": ["eager"], "n": 10, "lat_n": 5}
+        assert client.post("/api/benchmark", json=body).status_code == 202
+        assert finished(client)["phase"] == "done"
+        assert calls[0][calls[0].index("--mlx-forward") + 1] == "basal"
+        assert calls[0][calls[0].index("--adapter") + 1] == "/active"
+        runner.state = "idle"
+        saved_downloaded = True
+        assert client.post("/api/benchmark", json=body).status_code == 202
+        assert finished(client)["phase"] == "done"
+        assert "--mlx-forward" not in calls[1] and "--adapter" not in calls[1]
+        assert [argv[argv.index("--model") + 1] for argv in calls] == [str(active_path), str(saved_path)]
+        assert all("--mlx-packed" in argv and argv[argv.index("--ollama-model") + 1] == "saved-model" for argv in calls)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('def main():\n    ap.add_argument("--model")\n', {"--model"}),
+        (
+            'def main():\n    ap.add_argument("--model")\n    ap.add_argument("--adapter")\n'
+            '    ap.add_argument("--mlx-forward", dest="mlx_forward")\n',
+            {"--model", "--adapter", "--mlx-forward"},
+        ),
+    ],
+    ids=["2.4.1", "2.8"],
+)
+def test_bench_flag_probe_reads_installed_parser_declarations(monkeypatch, source, expected):
+    from basal_ui import engine
+
+    engine.bench_flags.cache_clear()
+    monkeypatch.setattr(engine.inspect, "getsource", lambda _: source)
+    try:
+        assert engine.bench_flags() == expected
+    finally:
+        engine.bench_flags.cache_clear()

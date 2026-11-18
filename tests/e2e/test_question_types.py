@@ -3,9 +3,15 @@ evidence, and the statistics per type."""
 
 import pytest
 
+from basal_ui.engine import feature
 from tests.e2e.support import CHOICE, advanced_requests
 
 REQUESTS = {r["id"]: r for r in advanced_requests()}
+
+
+def check_rank(a, q):
+    assert a["experimental"] and a["candidates"] == len(q["candidates"])
+    assert a["top"] == a["ranking"][0]["key"] and a["requests"] >= 1
 
 
 def check_multi(a, q):
@@ -68,8 +74,10 @@ def check_extract(a, q, state):
 
 @pytest.mark.parametrize("example", sorted(REQUESTS))
 def test_each_question_type_answers_in_its_own_shape(ui, text_model, example):
-    ui.load(text_model["id"])
     request = REQUESTS[example]
+    if next(iter(request["questions"].values()))["type"] == "rank" and not feature("rank"):
+        pytest.skip("Engine lacks rank questions")
+    ui.load(text_model["id"])
     name, q = next(iter(request["questions"].items()))
     a = ui.decide(text_model["id"], request)["answers"][name]
     assert a["type"] == q["type"]
@@ -85,6 +93,8 @@ def test_each_question_type_answers_in_its_own_shape(ui, text_model, example):
 def test_every_type_reaches_the_statistics(ui, text_model):
     ui.load(text_model["id"])
     for request in REQUESTS.values():
+        if next(iter(request["questions"].values()))["type"] == "rank" and not feature("rank"):
+            continue
         ui.decide(text_model["id"], request)
     by_type = ui.get("/api/stats")["models"][text_model["id"]]["by_type"]
     assert {"multi", "act", "tool", "classify", "verify", "compress", "extract"} <= set(by_type)
@@ -108,3 +118,29 @@ def test_facts_and_language_are_accepted_and_evidence_needs_its_head(ui, text_mo
             assert CHOICE["state"][span["start"] : span["end"]] == span["text"]
     else:
         assert "evidence is not available for this model" in r["error"]
+
+
+def test_answer_sets_abstention_and_conditional_skip(ui, text_model):
+    from basal_ui.engine import feature
+
+    if not feature("answer_sets") or not feature("conditional_questions"):
+        pytest.skip("Engine does not support answer sets and conditional questions")
+    ui.load(text_model["id"])
+    base = {
+        "state": "The customer asks about a blocked card.",
+        "questions": {
+            "first": {"type": "noul", "instructions": "Is this about a card?", "coverage": 0.9, "max_error": 0.001}
+        },
+    }
+    answer = ui.decide(text_model["id"], base)["answers"]["first"]
+    assert set(answer["answer_set"]) <= {"true", "false"} and answer["answer_set"]
+    assert answer["abstain"] is True
+    opposite = "false" if answer["probabilities"]["true"] >= answer["probabilities"]["false"] else "true"
+    base["questions"]["second"] = {
+        "type": "noul",
+        "instructions": "Is this urgent?",
+        "ask_if": {"first": [opposite]},
+        "depends_on": ["first"],
+    }
+    response = ui.decide(text_model["id"], base)
+    assert response["answers"]["second"] is None and "second" in response["usage"]["skipped"]

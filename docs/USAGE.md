@@ -9,6 +9,21 @@ tokenizer, prompt format and calibration of its base repository (the model card'
 `base_model_revision` when the card has one; `--model <base> --gguf <file>`), whose small metadata files are downloaded
 with it; one whose card names no base model is listed as not runnable.
 
+## Attached models
+
+On Engine 2.5, **Model manager → Library → Attach a model** downloads a supported base and runs `basal-attach` as a
+background job. The curated list currently contains `Qwen/Qwen3-4B`; free-text repository ids are refused. The
+result appears in the catalog as an **Attached** model, uses the Engine to serve Decisions, and can be loaded in
+eager, mps, mlx, mlx-q8 or fast mode. It is excluded from Suggested and Inspect. Its initial `CALIBRATION.json` has
+no certified thresholds, so the Library labels it **uncalibrated** until a Selected calibration is fitted and chosen.
+The Calibration tab works on the attached directory as for other models. An Attached model can be removed from
+Library only when it is unloaded; only the attachment directory and its links are removed, not the linked base
+weights. If metadata is corrupt, removal retains the directory and removes only its record. Engine 2.4.1 disables
+attachment controls because it has no `basal-attach`. If cleanup fails after removal, Library shows the retained staging
+directory so you can inspect and recover its remaining files. Format 1 is the default; format 2 is available only when the
+tokenizer passes the Engine validation. If an Attached model's active calibration or identity changes, previously
+displayed Playground and comparison certification evidence is invalidated until you run a new Decision.
+
 Install from the [README's source instructions](../README.md#install) until the first PyPI release. From that checkout:
 
 ```bash
@@ -29,7 +44,7 @@ still work.
 filter; arrows navigate matching actions, Enter runs one and Escape closes the rail. It opens the downloaded-model
 loader, Playground, current-request API examples, Settings, Batch or Model manager; opening a view does not run
 inference. The header toggle closes it when more workspace is wanted. On smaller screens it is an inline panel
-above the view rather than an overlay covering its controls.
+after the view, matching keyboard navigation order. [Mobile example](images/quick-actions-mobile.png).
 
 **Dashboard** shows recorded Decision throughput, latency, errors, endpoint traffic and loaded-model activity.
 [Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
@@ -133,6 +148,15 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   them), or the raw JSON request (which carries `"model"`). **Request settings** contains `facts`, `lang`, Edit JSON,
   and supported Thinking / early-exit controls, keeping the model and example selectors visible in the toolbar. Question names must be
   non-blank and unique; requests containing fields or media the builder cannot restore stay visible in Edit JSON mode.
+  **Fetch URL** loads one public HTTP(S) page on the app server into editable State without sending a Decision.
+  HTML becomes readable text, JSON stays structured, and plain text stays text. The note shows the original and final
+  URL, type, byte count and truncation; review the result before sending. Fetch is anonymous and bounded to 4 MiB,
+  10 seconds, three redirects and 200,000 text characters; larger JSON or numbers that cannot survive the browser
+  round trip are refused rather than silently changed.
+  The State token estimate divides UTF-8 bytes by four and omits questions, options, media and prompt overhead; it
+  is not a fit guarantee. Active context limit and policy come from the loaded model, and actual Decision usage wins.
+  Cancel stops the fetch. The final URL is saved with the request in History; Replay restores the recorded State and
+  shows its source without fetching again. Load another example or saved request to leave Replay.
   Changing between English and Polish keeps this tab's Playground draft across the page reload; media is not retained
   and must be attached again.
   Choice, multi and non-boolean act options use inline key/description rows with add, remove, move-up/down and
@@ -140,6 +164,10 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   keys retain their request semantics. Renaming an act outcome keeps its cost-matrix column attached to that outcome.
   Blank or duplicate row keys are reported instead of silently dropping an option. Marked-image options remain
   read-only here and are edited through **Mark elements**.
+  On supported Engines, choice, noul and score cards offer `coverage` and `max_error`; conditional controls choose
+  dependencies and matching answers from other choice, noul and score cards. The Engine validates names, values and
+  cycles. Answer sets, abstention, calibration notes and skipped questions appear in the Decision. A missing conformal
+  level can produce every option; the note explains this, rather than claiming a calibrated set.
   Loading or selecting a model, including from another view, retains this tab's attachments and marked-element
   questions. Sending is blocked if the selected model cannot accept the retained media; remove it or select a
   compatible media-loaded model.
@@ -160,13 +188,37 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   because they refer to spans in the state's text; the raw JSON request still rejects evidence with media. Inspect's
   example list leaves the media examples out (the lens reads text only).
 
+## Decision servers and Comparison models
+
+In **Model manager → Library**, attach an external Decision server with a display name, HTTP(S) URL and optional API key. The app reads its `/v1/models` and labels its entries **Comparison**. A URL ending in `/v1/decisions` also supports hosted servers whose model listing returns 404; in that case the display name is the upstream model name. External servers are not started, loaded, unloaded or restarted by basal-ui. An unavailable server is shown in Library and checked again on the existing status cycle. Detach removes its records and key. External memory reported as `memory_bytes` is shown separately and does not enter the basal memory budget.
+
+Requests and attachments sent to non-loopback, non-link-local hosts leave this machine; the attachment form requires explicit consent naming that host, and the management API enforces it too. Optional keys live in an owner-only sidecar next to settings and are not returned by the app. Loopback and link-local hosts do not require consent. A Comparison model appears only in the second Playground comparison slot and Batch. It is not suggested, loaded, calibrated, inspected, benchmarked or served through the API server or MCP. Its confidence is uncalibrated and cannot support an Automatable claim.
+
+Comparison requests reject basal-only fields and question types, too many options and unsupported media before inference. A server must report image input for images; audio is refused. Hosted Decisions translation refuses fields it cannot preserve. The reported `max_options` is used when present; otherwise the conservative limit is 26. The Playground shows a server failure in its own result panel, without hiding the basal result.
+
+![Decision server attachment in Model manager](images/decision-servers.png)
+
+![A basal Decision and a Comparison Decision side by side](images/external-comparison.png)
+
+Experimental rank questions accept candidates one per line, optionally as `key: text`. Groups and priors are JSON objects keyed by candidate key. Instructions must contain `{candidate}`. The result lists the Engine ranking in its returned order, including scores and optional choice and yes values. Rank is unavailable when the installed Engine lacks the feature. [Rank editor screenshot](images/playground-rank.png) and [ranking result](images/playground-rank-result.png).
+
+## Recording audio in the Playground
+
+Select a ready model loaded with audio support and choose **Record audio**. The browser asks for microphone permission only after this action; HTTPS or a loopback address and a supported browser are required. The meter shows the microphone input and does not play it through speakers. Press **Stop recording** or Escape to finish; leaving the Playground cancels the recording. Changing the request, attachments or selected model cancels unfinished work. Sending is unavailable until capture and preparation finish. A clip is appended to existing attachments and can be played, renamed or removed. It uses mono 16 kHz signed 16-bit PCM WAV and the ordinary model, eight-item and 20 MiB-per-file checks.
+
+The capture automatically stops before 30 seconds: this conservative ceiling assumes the current Omni audio window, since a window is not exposed by model metadata. Longer or empty decoded clips are refused rather than truncated. Switching UI language drops attachments with a warning, including recorded clips.
+
+**Settings → Memory & storage → Keep audio in History** is off by default. When enabled and saved, History retains audio only, up to its displayed 256 MiB budget. Oldest clips expire as needed while their History rows remain; turning it off stops new retention but keeps existing audio. Clear History deletes retained audio. Images are never retained, and audio is retrieved only when Replay is selected. Saved request presets can include audio independently of this setting. If the saved policy cannot be read, the switch shows an unknown state and stays disabled; reload after fixing the settings file or its access. A failed save response triggers one readback, and an unconfirmed readback is also shown as unknown.
+
+History commits its retention and expiration metadata before removing old clips or filling the newly reserved audio file. A failure before that commit preserves earlier retained clips; a later storage failure can leave a committed row with audio unavailable. Only app-owned audio files with matching recorded identity are read or removed. Audio files from the unshipped experimental prototype that lack that identity are not automatically trusted or deleted; retain them for manual recovery if needed.
+
 ## Playground comparison, API examples and calibration evidence
 
 **Compare loaded models** runs the current request against two different ready models. Both receive the same
 frozen state, questions, request settings and ordered attachments, with only `model` changed. Answers are shown
 side by side using their actual question types: a choice, an action or a selected set is not replaced by a generic
 most-probable label. Each panel retains its request snapshot, warnings, usage and raw response; a failure in one
-panel does not hide the other model's answer. Media unsupported by either selected model is refused before sending.
+panel does not hide the other model's answer. Media unsupported by a Comparison model is refused before sending to that server; the basal answer remains independent.
 This is an interactive comparison, not an accuracy or performance benchmark. It creates two real Decisions in
 History and the existing statistics; merely viewing the panel adds none.
 
@@ -199,6 +251,8 @@ clearing it. Rails stack below their content when there is not enough width to r
 
 ## Load options
 
+![Load options for a model](images/load-options.png)
+
 **⚙ Options** next to every Load button (and **⚙** next to a loaded model's Restart) opens the load options of that
 model in collapsible sections (Engine and any section holding a non-default value open; a section you open or close
 stays that way for the next dialog in the session; a collapsed section still saves its values):
@@ -209,7 +263,8 @@ A ROCm GPU, although PyTorch reports CUDA, is offered none of the NVIDIA-only mo
 Ollama and llama-server take the URL of the running service), quantisation, attention kernels,
 dtype, the vLLM preset, GPU share and KV-sharing fast prefill, the Gemma 4 eager forward, attention and per-layer
 embedding offload (`--eager-forward`, `--eager-attn`, `--ple-offload`), the exit heads directory, determinism, option
-orders and the `auto` band, batching, the state and prefix caches, the scheduler and long-request lane, the **prompt
+orders and the `auto` band, batching, SOAM (`auto` follows the Engine default), the state and prefix caches, the
+scheduler and long-request lane (choices and default follow the installed Engine), the **prompt
 layout** (`--layout canonical`, `state_twice` or `qfirst` for prompt-format-2 models trained on it; default: the
 model's basal.json; a non-canonical layout is refused with the state or prefix cache, and a loaded row shows it as a
 `layout` chip), the **context
@@ -217,9 +272,26 @@ policy** (truncate the middle of the state, or refuse with 422; the share kept f
 CUDA graph engine's kernel switches (`--gemma-attn`, `--merge`, `--lean`, `--tree`, `--batches`, `--readout-layer`,
 `--template-prefix`, `--fp8-accum`), `--strict-calibration` and a **revision** (a commit, tag or branch of the
 repository: downloaded and served as that snapshot, which calibration and Inspect then read too; a **revision** chip
-marks the model in the catalog and on its loaded row). Each field shows only for the modes that read it. **Presets**
+marks the model in the catalog and on its loaded row). A warning on the model row reports calibration fitted on other
+model files; Logs has the Engine details. Older Saved load settings and imported load presets are migrated on use. Each field shows only for the modes that read it.
+
+
+With engine 2.5 the dialog also offers the second read of uncertain answers (`--reread`, `--reread-combine`,
+`--reread-max-tokens`, `--reread-image`) and K-order averaging (`--order-average`), the prepared start-up kernels
+(`--prepared auto`, `off` or a directory), compile scope and graph memory sizing (`--compile-scope`,
+`--graph-memory-gb`, whose value replaces the fixed graph-engine overhead in the fit estimate for Native graph mode; fast-exit retains the fixed estimate), the MLX forward and
+compute (`--mlx-forward`, `--mlx-compute`), the FP8 / NVFP4 quantisation switches (`--fp8-scaling`,
+`--fp8-bf16-layers`, `--quant-load`, `--nvfp4-amax`, `--nvfp4-scope`), state-cache locking and precision
+(`--state-cache-lock`, `--state-cache-bits`), the long-request lane for Qwen3.5 models (`--long-lane-gdn` for supported recurrent-model scheduling),
+rank candidates (`--rank-max-candidates`), vLLM's overlapping engine calls
+(`--vllm-overlap`) and the Gemma 4 global attention kernel (`--global-attn`). On engine 2.4.1 each of these is greyed
+out with a visible availability reason, and a saved non-default value is refused with that reason instead of
+reaching a basal-serve that would not know the flag; the defaults emit nothing, so a configuration saved on 2.4.1
+loads unchanged.
+
+**Presets**
 save a set of options under a name to apply to any model; the Playground saves requests the same way (**Saved
-requests** in the examples list), and both export to and import from one `presets.json`. Only the values that differ
+requests** in the examples list), and both export to and import from one `presets.json`. Settings also imports a pack from a public HTTP(S) URL with `application/json` content, up to 1 MiB. Imports update entries in order; a failure can leave earlier entries saved. Only the values that differ
 from basal-serve's defaults are
 passed, and a combination basal-serve refuses shows its own message on the model's row. **Remember for this model**
 keeps them for its next plain Load; a restart and auto-load reuse the options the model runs with. The row lists them
@@ -270,10 +342,26 @@ with their log and any report written before failure retained.
 
 **Batch** runs `basal-run` from the app: a loaded model, an input JSONL file (simple items or full `/v1/systemone`
 requests, [in the engine docs](https://github.com/rkinas/basal/blob/main/docs/SERVING.md#inference-on-a-jsonl-file)), the output file (default `<stem>.answers.jsonl` next to it, e.g. `items.jsonl` → `items.answers.jsonl`), the
-concurrency and, for a `--mode fast-exit` model, an early-exit level. The progress, the summary (items, errors,
-seconds, items per second, server p50, accuracy over the items with `gold`) and the answers page by page are shown;
-**Download answers** saves the output file. Batch requests go straight to the model's basal-serve: they are not
-counted in the statistics or the history. One batch runs at a time; its log is **Logs → job:batch**.
+concurrency and, for a `--mode fast-exit` model, an early-exit level. On Engine 2.5, **Engine question preset** adds the Engine's
+ready questions to state-only JSONL lines, and **Language** selects `auto` (detect from the state), `pl` or `en`.
+The progress, the summary (items, errors,
+seconds, items per second, server p50, accuracy over simple items with `gold`) and the answers page by page are shown;
+**Download answers** saves the output file. Ordinary basal Batch requests go straight to the model's basal-serve and are not counted in statistics or History. Comparison Batch uses a private loopback proxy to supply the upstream model name and key, and each Comparison Decision is recorded in History, Usage and Dashboard traffic with its server name. Comparison Batch validates every non-empty JSONL line before starting, and identifies the actual line number for refusals. The Batch view keeps the latest accuracy by model and input for this browser session. One batch runs at a time; its log is **Logs → job:batch**.
+
+The Engine grades `gold` only on simple items. Comparison Batch refuses `gold` on full requests instead of silently
+ignoring the label; convert those rows to simple items when accuracy is needed.
+Batch materializes preset-only rows in a private temporary input before running Native `basal-run`, because Engine 2.5
+summarization expects full requests for named preset answers. The original file remains unchanged.
+
+When the installed `basal-run` supports resume, an unfinished output (`.part` or `.part.json`) requires an explicit
+**Resume** or **Restart** choice. Restart discards the partial answers. Resume requires the same input, request
+options and server identity; concurrency may change. If the Engine refuses the record, its reason is shown and
+Restart is offered directly on the stopped job, with the original output path and explicit confirmation. A stopped
+run with a partial output shows the retained line count and reason. **Stop after** sets the number of consecutive
+unanswered lines before stopping (default 16; 0 writes per-line errors instead). Batch requires regular checkpoint
+files and refuses symbolic links and files with multiple hard links.
+Unsupported controls are disabled on older Engines. External changes to these files while a job starts are not
+coordinated by basal-ui.
 
 The **Path inspector** rail checks the paths on this computer when **Check paths** is pressed, without writing files
 or running inference. Input inspection reports the first non-empty row's JSON/basic request shape, a readable sample
@@ -285,6 +373,14 @@ An explicit output path is checked for its parent directory, apparent writabilit
 warning. An empty output field retains Batch's default path without an overwrite check. Checks are advisory:
 files/permissions can change before execution. Editing a path clears its old facts, and late checks cannot replace
 the facts for a newer value.
+
+### Schedules
+
+Open **Batch → Schedules** to choose a loaded model, input and output folders, a filename pattern, concurrency, and either a minute/hour interval or a daily local time. Check the folders before saving; use **Preview next request** to inspect the first row of the next unprocessed file. The scheduler validates the same private snapshot it sends to the Engine. The scheduler scans matching files in name order and submits one Batch at a time alongside manual Batch jobs. Each changed file is tracked by canonical path, size and modification time; generated answers and the scheduler's temporary files are excluded from scans. Answers are named `<stem>.answers.jsonl` in the output folder. Existing answers are protected unless overwrite is enabled, and failed or cancelled jobs preserve prior output.
+
+A model that is not loaded produces a skipped history record; the scheduler never loads it. Scheduled Decisions appear in History and Usage with source `schedule`, while native manual Batch retains its existing behavior. The Jobs area and `job:batch` log show progress and support cancellation. **Run now** ignores pause and timing but respects processed-file and overwrite protection. Daily catch-up runs at most one missed slot; it does not replay every missed day. Pause, edit, resume and delete affect future work; a job already running can finish. Three consecutive errors pause the schedule; edit or resume clears that streak. Change an input to make a failed or cancelled file eligible again. If basal-ui stops after publishing an output but before saving its run record, the next start recovers that checkpoint and marks its duration unknown.
+
+The scheduler runs only while basal-ui is running. Definitions, scan clocks and processed signatures survive restarts separately from size-rotated run history. Folder and first-request checks are advisory: files and permissions can change before execution. Comparison models require the separate Comparison feature (PR 60) to be available. Requests with fields basal-run would discard or that the Comparison model does not support are rejected before any request is sent to the upstream server. An accepted scan resumes its remaining files in their original order after a restart. Files arriving later wait for the next interval unless you select Run now. If a resumed scan cannot inspect its folders, it records a failure and waits for its normal cadence before trying again.
 
 ![Read-only Batch path inspector](images/batch.png)
 
@@ -317,6 +413,8 @@ keep free; unload a model or raise the budget. The Manager Library bar shows eac
 estimates and the memory available now. On Apple Silicon, MLX and MPS allocations live in unified memory and may show
 only partly as resident memory; the estimate is what the budget check uses.
 
+Optionally set **Unload idle models after minutes** in **Settings → Memory & storage** (empty means off; 1–9,007,199,254,740,991 whole minutes). A ready model is unloaded after that long without a Decision only when its server reports no running or queued work. Changing the timeout starts a fresh countdown for models already loaded. Batch and other model jobs keep their models loaded while they run. Idle-unloaded models remain remembered for auto-load at the next start; requests return the existing model-not-loaded error until then. The Library, Dashboard and model log show the reason.
+
 ## Statistics and benchmarks
 
 ### Dashboard
@@ -324,7 +422,7 @@ only partly as resident memory; the estimate is what the budget check uses.
 The 15-minute or one-hour window shows **input tokens processed per second**, not generated output tokens, and
 requests/s, request-weighted mean latency, error rate, per-minute traffic and public endpoint attribution. These are
 recorded child-inference attempts from Playground, the API server and MCP, not all HTTP traffic: UI polling,
-pre-inference authentication/validation rejections, Batch, benchmarks and private Inference tests do not contribute.
+pre-inference authentication/validation rejections, ordinary basal Batch, benchmarks and private Inference tests do not contribute. Comparison Batch Decisions do contribute.
 
 Recent traffic is in memory in this app process only, starts at observation, and is not restored from lifetime
 statistics or merged from other processes. Rates use observed elapsed time rather than inventing a full prior
@@ -353,18 +451,29 @@ instances, but Decisions recorded after the reset remain counted.
 latency) and 120 at concurrency 8 (decisions, questions and input tokens per second, errors). Every item with a `gold`
 answer is scored once (accuracy overall and per file). The set is either the bundled examples (44 items in
 `basal/examples/`) or your own JSONL file or directory: [BENCHMARK_SETS.md](BENCHMARK_SETS.md). The same block runs
-three other measurements, one at a time:
+five other measurements, one at a time:
 
 - **Load test**: `basal-loadtest` against the loaded model with your sequential / concurrent counts, concurrency,
   questions per request, synthetic states of about N tokens (with a share of long ones and a seed) and, for a
   `fast-exit` model, an early-exit level.
 - **Determinism check**: `basal-loadtest --determinism N`: N requests alone, then the same N mixed with N others; a
-  model loaded with **Deterministic** (load options) must return identical probabilities.
+  model loaded with **Deterministic** (load options) must return identical probabilities. When reported by the Engine,
+  load errors count failed background requests.
 - **Compare engine modes**: `basal-bench` in basal-ui's own process for a downloaded model: every chosen mode (the
   ones this machine can run, plus `eager-fp32`, `vllm@deterministic` and `fast-exit@<policy>` where available) is
   loaded, measured (latency with one and both option orders, decisions per second, agreement with the first mode,
   accuracy, load time, memory) and freed in turn. Its memory is counted in the budget while it runs (twice the
-  estimate with `eager-fp32`); a mode that fails is listed with its error.
+  estimate with `eager-fp32`); a mode that fails is listed with its error. The Active load settings supply the
+  adapter and any Active MLX forward setting when `basal-bench` declares the corresponding flags; for an unloaded
+  model, Saved load settings are used. Other comparison settings continue to use Saved load settings. Older Engines
+  omit unsupported flags.
+
+- **Identity gate**: `basal-bench --identity` for a downloaded model, in fp32 or bf16. It uses saved attention, merge,
+  lean, tree and Gemma attention settings when non-default; the fast mode must be available for this model and
+  machine. Automatic lean/tree choices are resolved with Native compiled-graph semantics. Results list each
+  prefix-reuse path's gate and maximum probability delta.
+- **Order check** (Engine 2.5): `basal-bench --order-check` measures option-order flips and averaged readouts.
+  The result is available only when the installed Engine exposes the check.
 
 The last 20 results per model stay in the stats file and are shown side by side. Benchmark requests are not counted
 in the statistics or the history.
@@ -380,7 +489,7 @@ questions (`classify`, `verify`, `extract` with `gold`) are certified on the ans
 is reserved in the budget until it ends; Cancel takes effect when it finishes). Every problem of the input is reported
 with its line before a model is loaded. The job's output is under **Logs → job:calibrate**. The files go to
 `calibrations/<org>--<model>/` next to the settings file, each with its report (`.report.txt`); the table compares them
-with the shipped file (decisions per type, certified thresholds of the types and tasks, automation on CERT).
+with the shipped file (decisions per type, certified thresholds of the types and tasks, automation on CERT). Fits use the active load settings layout, or the saved layout when unloaded; the table shows each file’s layout and warns when the Selected calibration differs from those settings.
 **Import** copies a file fitted elsewhere (with its report next to it) into the list; one fitted on another model or
 revision shows basal-serve's warning. **Use** selects one for the model: basal-ui then starts its `basal-serve` with
 `--calibration FILE`, and a loaded model shows **Restart to apply**. **Advanced** passes basal-calibrate's own
@@ -388,11 +497,30 @@ controls: `--strict` with a `--reference`, `--min-per-type`, `--min-blend`, `--m
 `--concurrency`, the file to compare with (shipped, none: `--no-calibration`, or a path; a path and a `--reference`
 file are checked before the run starts), `--report-only` (the run uses the same engine as a fit, the report opens, no
 file is written) and `--save-rows`, which keeps the uncalibrated probabilities next to the file; such a file gets
-**Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check).
+**Refit**, a `--from-rows` fit on them without loading any model (no load options, no memory check). A refit uses its original calibration file to identify the saved rows’ layout; if it is missing or unreadable, the refit is refused. For legacy rows without a revision, the paired file’s revision is trusted rather than independently verified. Refit remains available without a downloaded model snapshot; an unreadable saved baseline is reported, and mismatched baseline thresholds are excluded while its temperatures are retained. When the Engine cannot accept the required layout flag, the affected fit or refit control explains why it is unavailable.
 
+Newly fitted calibration files, reports and saved rows are published only after successful validation.
+On POSIX systems, these generated files are owner-only (`0600`); existing files are not overwritten.
+
+When the installed Engine supports them, **Advanced** accepts comma-separated conformal coverage levels between 0
+and 1 and lets you keep compared thresholds and temperatures per question type. Only types with compatible compared
+thresholds are enabled; changing the comparison rechecks them. A fit uses Active load settings for a loaded model,
+otherwise Saved load settings. Reports show available identity digests, kept sources, refuted thresholds, ICC and
+design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
+[Advanced calibration controls](images/calibration-advanced.png).
+
+## Fine-tuning on labelled Decisions
+
+In **Model manager → Calibration → Fine-tune**, select a downloaded bf16 basal or Attached model, enter the path to labelled JSONL and a new output name, then choose epochs, learning rate, LoRA rank and alpha, held-out share, maximum sequence length, gradient checkpointing and an optional optimizer-step limit. The Engine must expose fine-tuning and its declared `finetune` add-on must be installed; use **Backends → Engine add-ons** and restart when prompted. The input format is the same labelled request format as Calibration. Native trains choice, noul, score and act questions and skips multi and task decisions. The preflight reports skipped types and requires both training decisions and held-out groups; the file is copied privately and never rewritten.
+
+The cancellable job reserves twice the model's estimated memory. Native writes both a full merged checkpoint and `lora/` under `<models dir>/adapters/<model slug>/<name>/`; plan for the full checkpoint's disk space. The original base weights remain unchanged. Results report held-out accuracy before and after, training and held-out counts, scored decisions and skips. A run with no scored decisions has no accuracy result; accuracy is not a certificate or a quality guarantee. The upstream fine-tuning implementation was tested on Apple Silicon with basal-omni-pico; other GPUs remain untested.
+
+A completed adapter for the same base and revision is suggested in the existing Load options adapter field; a custom adapter path still works. Saving an option changes the next load, while a running model keeps its Active settings until restart. The Engine validates mode and quantisation compatibility and adapter calibration identity. A base calibration does not certify changed adapter weights: calibrate the adapted model on held-out data. Delete a result from its card to remove the full output and held-out labels; unload active adapter users and stop jobs first. Saved load options are not Active leases and can still contain a path to a deleted adapter. Missing, incomplete, and cleanup-pending records remain visible for cleanup. If deletion is interrupted or fails, return to the model and retry deletion; the retained path is shown on the result card.
+
+Private output creation and deletion require descriptor-relative directory operations and ownership checks. Fine-tuning is unavailable on native Windows and other systems without those operations; the app reports the reason rather than using unverified ownership or deletion.
 ## History and logs
 
-**History** lists every decision basal-ui answered — from the playground, the API server and MCP — newest first:
+**History** lists every decision basal-ui answered — from the playground, the API server, MCP and Comparison Batch — newest first:
 time, model, source, a preview of the state, the answer of each question with its confidence, latency and HTTP
 status. Filter by model and source, search the state, open a row for the full request and response (its time is a
 button, so rows open from the keyboard and keep focus across refreshes), copy the request
@@ -400,7 +528,8 @@ or **Replay in Playground** (a converted request in the Playground with its mode
 Media payloads, including nested image/audio payload objects in recorded Decisions-style requests, are replaced by
 their size. Replay is blocked with an explanation when an original attachment is missing; redaction is not a promise
 that the API accepts every recorded media shape. Ordinary structured context and question descriptions, including
-fields named `data`, are preserved. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
+fields named `data`, are preserved. Native `coverage`, `ask_if` and `depends_on` survive Replay; skipped names and
+the full truncation object remain in the recorded response. The last 2000 decisions are kept in `<settings stem>.history.jsonl` (owner-only)
 next to the settings file. A live-only History view keeps the newest 500 rows. **More** enters older-page browsing:
 explicitly loaded pages and their cursor are kept across polls until the view or filters are reset.
 **Clear history** empties the file before clearing the live view; a failed write leaves the existing records available.
@@ -419,7 +548,7 @@ and receive its retained lines from the start.
 One port serves every loaded model. The API server runs inside basal-ui and forwards each request to the private
 `basal-serve` of the model it names, so every request body must carry `"model"`: `400 MODEL_REQUIRED` without it,
 `404 MODEL_NOT_FOUND` for a model that is not loaded (both list the loaded models). `GET /v1/models` lists the ready
-models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /v1/stats` returns
+models (the basal `models` entries and the OpenAI `data` list), `GET /health` names them, and `GET /metrics` exposes [Prometheus metrics](API.md#prometheus-metrics), and `GET /v1/stats` returns
 the statistics above (admin key only when keys are required — that is, basal-ui's own key). Details:
 [API.md](API.md#several-models-behind-basal-ui).
 
@@ -439,7 +568,7 @@ key** is enabled; use a key before selecting **Local network**. Keys are generat
 SHA-256 hashes in the settings file and keys file, and their plaintext is shown only once when created. Copy it then;
 it cannot be retrieved later. Revoking a key rewrites the live keys file and takes effect without a restart. Each
 `basal-serve` child listens on loopback only and takes no key: only basal-ui, which starts it and knows its private
-port, reaches it. basal-ui's own internal admin key (the only key `/v1/stats` accepts) is not exposed in the UI.
+port, reaches it. basal-ui's internal admin key is not exposed in the UI. To use `/v1/stats` or `/metrics` with authentication, set `BASAL_UI_ADMIN_KEY` before startup as described in the [Prometheus setup](API.md#prometheus-metrics).
 
 **Restart server** restarts only the API server (instant; the models stay loaded) and applies the saved host, port,
 key, CORS and MCP settings; until then the status line shows **Restart to apply**. **Max context length** and
@@ -535,3 +664,37 @@ The browser app binds `127.0.0.1` by default and refuses changes (load, delete, 
 so a web page cannot drive it through the browser; `--host 0.0.0.0` lifts the host check and prints a warning.
 Machine-compatibility rules have fixture coverage. Real-model/browser verification and its hardware limits are
 recorded in the [verified development gate](E2E.md#verified-dev-gate-2026-10-29).
+## Cascades
+
+![A running escalation Cascade in Model manager](images/cascades.png)
+
+With Engine 2.5, a Cascade combines ready basal models behind one name. In Model manager → Library, create an
+escalation Cascade to retry uncertain decisions at the next loaded model, or a Blend to average probabilities using
+positive weights. An escalation Cascade may optionally send remaining uncertain choice questions to an OpenAI-compatible chat
+endpoint; the Engine router does not support combining Blend with fallback. Its fallback API key is stored in the owner-only `settings.decision-secrets.json` sidecar (named from the configured settings file) and is not returned by the API.
+
+Start and stop Cascades from the loaded-model list. They do not load their members, count against the memory budget,
+or start automatically after a restart; every member must already be ready. Unloading a member stops any Cascade
+that uses it. The Playground reports which level/model answered. Blend and fallback results are marked uncalibrated
+and must not be treated as automatable. Cascades are excluded from Calibration, Inspect, and Benchmarks; only
+escalation Cascades without fallback are available to Batch. Editing or deleting a running Cascade requires stopping it first.
+A settings and secret update uses separate atomic file replacements; a crash between them can leave them out of sync.
+Engine 2.4.1 lacks the router and shows an unavailable reason.
+## Server limits
+
+Load options include request concurrency, request timeout, body size, branch count, prompt size and stall detection limits when the installed Engine declares them. Empty request timeout and stall detection fields leave them unset. The Dashboard shows a stalled Engine call's age and main and long lane counts when the Engine reports them. A stalled call may still be running; unloading the model is a separate operation.
+
+### Playground question sets
+
+When the installed Engine provides question sets, open **Insert question set**, select a set and language, optionally
+enter a max error between 0 and 1, and insert its editable questions. Auto uses the Engine's language guess from the
+current state. Existing questions are kept and duplicate names receive a suffix. In Edit JSON mode insertion preserves
+the other request fields. The control explains when the Engine does not provide sets.
+
+![Playground question-set insertion](images/question-sets.png)
+
+Settings URL import at 320 px, using a controlled test response: [English](images/presets-url-en-320.png) · [Polish](images/presets-url-pl-320.png).
+
+Tool questions can import and refresh a streamable HTTP MCP catalogue, select tools, and shortlist the current merged question locally by its instructions, including offline saved definitions. Saved requests and presets retain the selected definitions and source selection for offline use; bearer tokens are never saved. The picker reports the Active model's remaining option slots when its prompt format is known, including other enabled options.
+
+![MCP tool picker with a synthetic catalogue and a simulated ready model](images/mcp-tools.png)

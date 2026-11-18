@@ -93,3 +93,20 @@ def pico_model(ui):
         lambda m: m["recurrent"] and m["port"] == "bf16",
         "basal-omni-pico (bf16) is not downloaded",
     )
+
+
+@pytest.fixture
+def audio_model(ui):
+    model = pick(
+        ui,
+        "BASAL_E2E_MEDIA_MODEL",
+        lambda m: m.get("media_mode") and "audio" in m.get("media", []),
+        "no downloaded audio-capable model is available",
+    )
+    try:
+        ui.post("/api/load", {"id": model["id"], "media": True})
+        loaded = ui.wait_model(model["id"])
+        assert loaded and loaded["state"] == "ready", loaded
+        yield model
+    finally:
+        ui.unload(model["id"])
