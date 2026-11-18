@@ -8,20 +8,20 @@
 :root {
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f3f2ee;
-  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
-  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #66645f;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --control-border: #676e68;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
   --neutral-mark: #c3c2b7;
   --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
   --w-state: rgba(27,175,122,0.14); --w-question: rgba(237,161,0,0.18); --w-option: rgba(74,58,167,0.10); --w-prefill: rgba(232,123,164,0.22);
-  --accent: #2a78d6;
+  --accent: #2a78d6; --primary-foreground: #fff; --status-icon-foreground: #fff; --tip-shadow: rgba(0,0,0,.12);
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
-    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #a3a19b;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --neutral-mark: #5b5a55; --good-text: #0ca30c;
     --w-state: rgba(25,158,112,0.22); --w-question: rgba(201,133,0,0.26); --w-option: rgba(144,133,233,0.18); --w-prefill: rgba(213,81,129,0.28);
@@ -31,30 +31,30 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
-  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #a3a19b;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --control-border: #929d95;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
   --neutral-mark: #5b5a55; --good-text: #0ca30c;
   --w-state: rgba(25,158,112,0.22); --w-question: rgba(201,133,0,0.26); --w-option: rgba(144,133,233,0.18); --w-prefill: rgba(213,81,129,0.28);
   --accent: #3987e5;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
+body { margin: 0; background: var(--page); color: var(--ink); font: .875rem/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
 header h1 { font-size: 16px; margin: 0; font-weight: 600; }
-header .chip { margin-inline-start: 4px; }
+header .chip { margin-inline-start: 4px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 header .spacer { flex: 1; }
 @media (max-width: 600px) { header { flex-wrap: wrap; } header .chip { white-space: normal; overflow-wrap: anywhere; max-width: 100%; } }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 12px; white-space: nowrap; }
 button, select, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 12px; }
-button:hover { background: var(--surface-2); }
-button.primary { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; padding: 8px 16px; }
-button.primary:hover { filter: brightness(1.08); }
+@media (hover: hover){button:hover { background: var(--surface-2); }}
+button.primary { background: var(--accent); color: var(--primary-foreground); border-color: transparent; font-weight: 600; padding: 8px 16px; }
+@media (hover: hover){button.primary:hover { filter: brightness(1.08); }}
 button.primary:disabled { opacity: .55; cursor: progress; }
 button.ghost { border-color: transparent; background: transparent; color: var(--ink-2); padding: 4px 8px; }
-button.ghost:hover { background: var(--surface-2); }
-select, input, textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; width: 100%; }
+@media (hover: hover){button.ghost:hover { background: var(--surface-2); }}
+select, input, textarea { background: var(--surface); border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 8px; width: 100%; }
 textarea { resize: vertical; min-height: 90px; }
 label.f { display: block; font-size: 12px; color: var(--ink-2); margin: 10px 0 4px; }
 main { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 1fr); gap: 20px; padding: 20px; align-items: start; }
@@ -63,16 +63,17 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
 .card + .card { margin-top: 16px; }
 .qedit { border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-top: 10px; background: var(--page); }
-.qedit .row { display: flex; gap: 8px; align-items: center; }
+.qedit .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.qedit label { min-width: 0; }
+.qedit label.f { margin: 0; }
 .opt { display: grid; grid-template-columns: 90px 1fr 28px; gap: 6px; margin-top: 6px; }
 .opt.nokey { grid-template-columns: 1fr 28px; }
 .hint { color: var(--muted); font-size: 12px; }
 .actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
 .hist { list-style: none; margin: 0; padding: 0; }
-.hist li { padding: 8px; border-radius: 8px; cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
-.hist li:hover { background: var(--surface-2); }
-.hist .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hist .a { color: var(--ink-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist button { width: 100%; text-align: left; padding: 8px; border: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; }
+.hist .q, .hist .a { overflow-wrap: anywhere; min-width: 0; }
+.hist .a { color: var(--ink-2); font-size: 12px; }
 .empty { color: var(--muted); text-align: center; padding: 60px 20px; }
 .empty h2 { color: var(--ink); font-weight: 600; font-size: 18px; }
 .result { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 20px; overflow: hidden; }
@@ -86,7 +87,7 @@ aside { position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: a
 .answer { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .answer .opt-text { font-size: 18px; font-weight: 600; }
 .status { display: inline-flex; gap: 6px; align-items: center; padding-block: 3px; padding-inline: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink); }
-.status .ic { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
+.status .ic { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; color: var(--status-icon-foreground); font-size: 11px; font-weight: 700; }
 .step { padding: 18px 20px; border-bottom: 1px solid var(--border); }
 .step:last-child { border-bottom: 0; }
 .step h3 { margin: 0 0 2px; font-size: 14px; display: flex; gap: 10px; align-items: center; }
@@ -123,28 +124,28 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .chart svg { display: block; width: 100%; overflow: visible; }
 .chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart .dl { fill: var(--ink-2); font-size: 12px; }
-.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 12px; min-width: 160px; display: none; z-index: 3; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 16px var(--tip-shadow); font-size: 12px; min-width: 160px; max-width: calc(100vw - 16px); overflow-wrap: anywhere; display: none; z-index: 6; }
 .tip .t { color: var(--muted); margin-bottom: 4px; }
 .tip .r { display: grid; grid-template-columns: 14px auto 1fr; gap: 6px; align-items: center; }
 .tip .r b { font-variant-numeric: tabular-nums; }
-.tip .r span:last-child { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.tip .r span:last-child { color: var(--ink-2); min-width: 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 12px; color: var(--ink-2); }
-.legend span { display: inline-flex; align-items: center; gap: 6px; max-width: 320px; }
-.legend span i { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
+.legend span i { font-style: normal; overflow-wrap: anywhere; min-width: 0; }
 .orders { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 @media (max-width: 760px) { .orders { grid-template-columns: 1fr; } }
 .orders h4 { margin: 0 0 8px; font-size: 12px; color: var(--ink-2); font-weight: 600; display: flex; gap: 6px; align-items: center; }
 .hbars { display: grid; grid-template-columns: auto minmax(0, 1.4fr) minmax(56px, 1fr) 48px; gap: 6px 8px; align-items: center; font-size: 12px; }
 .hbars .letter { font: 700 12px ui-monospace, Menlo, monospace; color: var(--ink-2); }
-.hbars .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.hbars .txt { overflow-wrap: anywhere; min-width: 0; color: var(--ink); }
 .hbars .track { height: 12px; position: relative; }
 .hbars .track div { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; min-width: 1px; }
 .hbars .val { text-align: end; font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .hbars .win .txt, .hbars .win.val { font-weight: 600; }
 .toptok { margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 .toptok code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
-.cmp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(120px, 2fr) 60px; gap: 4px 10px; align-items: center; font-size: 12px; }
-.cmp .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) 60px; gap: 4px 10px; align-items: center; font-size: 12px; }
+.cmp .txt { overflow-wrap: anywhere; min-width: 0; }
 .cmp .pair { direction: ltr; display: grid; gap: 2px; }
 .cmp .pair div { height: 8px; border-radius: 0 4px 4px 0; min-width: 1px; }
 .cmp .val { text-align: end; font-variant-numeric: tabular-nums; color: var(--ink-2); }
@@ -163,8 +164,15 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
 .loading { display: flex; gap: 10px; align-items: center; color: var(--ink-2); padding: 12px 4px; }
 .spin { width: 16px; height: 16px; border: 2px solid var(--grid); border-top-color: var(--accent); border-radius: 50%; animation: sp .8s linear infinite; }
 @keyframes sp { to { transform: rotate(360deg); } }
-.scale { direction: ltr; display: flex; gap: 2px; margin-top: 12px; }
-.scale div { flex: 1; text-align: center; font-size: 11px; color: var(--ink-2); padding: 6px 4px; background: var(--surface-2); border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) {
+  .prompt .cursor { animation: none; }
+  .spin { display: none; }
+}
+@media (forced-colors: active) {
+  .tabs button.on { border: 2px solid ButtonText; }
+}
+.scale { direction: ltr; display: flex; flex-wrap: wrap; gap: 2px; margin-top: 12px; }
+.scale div { flex: 1 1 8em; min-width: 0; text-align: center; font-size: 11px; color: var(--ink-2); padding: 6px 4px; background: var(--surface-2); border-radius: 4px; overflow-wrap: anywhere; }
 .scale div.on { outline: 2px solid var(--ink); outline-offset: -2px; color: var(--ink); font-weight: 600; }
 </style>
 </head>
@@ -206,8 +214,12 @@ canvas.mask { width: 200px; height: 200px; border-radius: 6px; border: 1px solid
   </section>
 </main>
 <div class="tip" id="tip"></div>
+<script src="/static/i18n.js" data-dynamic-only></script>
 <script>
 "use strict";
+const tr = t;
+translateStatic(document.body);
+document.title = tr("basal decision visualiser");
 const $ = (s, r = document) => r.querySelector(s);
 // blue / orange always mean option order 1 / 2; options take the remaining slots in fixed order (7th+ fold to grey)
 const SERIES = ["--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
@@ -256,7 +268,7 @@ function showTip(ev, title, rows) {
   let x = ev.pageX + pad, y = ev.pageY + pad;
   if (x + w > window.scrollX + innerWidth - 8) x = ev.pageX - w - pad;
   if (y + hh > window.scrollY + innerHeight - 8) y = ev.pageY - hh - pad;
-  tip.style.left = x + "px"; tip.style.top = y + "px";
+  tip.style.left = Math.max(window.scrollX + 8, x) + "px"; tip.style.top = Math.max(window.scrollY + 8, y) + "px";
 }
 const hideTip = () => { tip.style.display = "none"; };
 
@@ -266,17 +278,18 @@ function questionEditor(name, q) {
   if (!EDITABLE.includes(q.type || "choice")) return rawEditor(name, q);
   const type = h("select", {}, ...EDITABLE.map(t => h("option", { value: t }, t)));
   type.value = q.type || "choice";
-  const nm = h("input", { value: name, placeholder: "name", style: { width: "110px" }, "aria-label": "Question name" });
-  const instr = h("textarea", { rows: 2, placeholder: "Question, e.g. Do którego działu skierować zgłoszenie?" });
+  const nm = h("input", { value: name, placeholder: tr("name"), style: { width: "110px" } });
+  const instr = h("textarea", { rows: 2, placeholder: tr("Question, e.g. Do którego działu skierować zgłoszenie?") });
   instr.value = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions ?? "");
-  const keys = h("select", { title: "Show option keys to the model?" }, h("option", { value: "show" }, "keys shown"), h("option", { value: "hide" }, "keys hidden"));
+  const keys = h("select", { title: tr("Show option keys to the model?") }, h("option", { value: "show" }, tr("keys shown")), h("option", { value: "hide" }, tr("keys hidden")));
   keys.value = q.option_keys || "show";
+  const field = (label, control) => h("label", { class: "f" }, tr(label), control);
   const opts = h("div");
   const addOpt = (k, v) => {
     const row = h("div", { class: "opt" });
-    const kk = h("input", { value: k ?? "", placeholder: "key", "aria-label": "Option key" });
-    const vv = h("input", { value: v == null ? "" : (typeof v === "string" ? v : JSON.stringify(v)), placeholder: "description", "aria-label": "Option description" });
-    row.append(kk, vv, h("button", { class: "ghost", title: "Remove option", onclick: () => row.remove() }, "×"));
+    const kk = h("input", { value: k ?? "", placeholder: tr("key") });
+    const vv = h("input", { value: v == null ? "" : (typeof v === "string" ? v : JSON.stringify(v)), placeholder: tr("description") });
+    row.append(field("Option key", kk), field("Option description", vv), h("button", { class: "ghost", "aria-label": tr("Remove option"), onclick: () => row.remove() }, "×"));
     opts.append(row);
   };
   let crit = q.criteria ?? q.levels;
@@ -285,26 +298,25 @@ function questionEditor(name, q) {
   else if (Array.isArray(crit)) crit.forEach((v, i) => t0 === "score" ? addOpt(String(i), v) : addOpt(v, ""));
   else if (crit) Object.entries(crit).forEach(([k, v]) => addOpt(k, v));
   else { addOpt("a", ""); addOpt("b", ""); }
-  const addBtn = h("button", { class: "ghost", onclick: () => addOpt("", "") }, "+ option");
+  const addBtn = h("button", { class: "ghost", onclick: () => addOpt("", "") }, tr("+ option"));
   const sync = () => {
     const noul = type.value === "noul";
-    addBtn.style.display = noul ? "none" : ""; keys.style.display = ["noul", "multi"].includes(type.value) ? "none" : "";
+    addBtn.style.display = noul ? "none" : ""; keys.parentElement.style.display = ["noul", "multi"].includes(type.value) ? "none" : "";
     if (noul) {
       const rows = [...opts.children];
       while (rows.length > 2) rows.pop().remove();
       while (opts.children.length < 2) addOpt("", "");
-      const [a, b] = opts.children; a.children[0].value = "true"; b.children[0].value = "false";
-      a.children[0].disabled = b.children[0].disabled = true;
-    } else [...opts.children].forEach(r => r.children[0].disabled = false);
+      const [a, b] = opts.children; a.querySelector("input").value = "true"; b.querySelector("input").value = "false";
+    }
+    [...opts.children].forEach(r => { r.querySelector("input").disabled = noul; r.querySelector("button").disabled = noul; });
   };
   type.onchange = sync;
   box.append(
-    h("div", { class: "row" }, nm, type, keys, h("button", { class: "ghost", title: "Remove question", onclick: () => box.remove() }, "×")),
-    h("label", { class: "f" }, "Question"), instr,
-    h("label", { class: "f" }, "Options ", h("span", { class: "hint" }, "key · description (noul: yes / no text, optional)")), opts, addBtn);
+    h("div", { class: "row" }, field("Question name", nm), field("Question type", type), field("Option keys", keys), h("button", { class: "ghost", "aria-label": tr("Remove question"), onclick: () => box.remove() }, "×")),
+    field("Question", instr), opts, addBtn);
   sync();
   box.read = () => {
-    const t = type.value, rows = [...opts.children].map(r => [r.children[0].value.trim(), r.children[1].value.trim()]);
+    const t = type.value, rows = [...opts.children].map(r => [...r.querySelectorAll("input")].map(input => input.value.trim()));
     const out = { type: t, instructions: instr.value.trim() };
     if (t === "noul") { const c = {}; if (rows[0][1]) c.true = rows[0][1]; if (rows[1][1]) c.false = rows[1][1]; if (Object.keys(c).length) out.criteria = c; }
     else {
@@ -317,11 +329,11 @@ function questionEditor(name, q) {
 }
 function rawEditor(name, q) {  // a question type the form does not edit: its JSON, sent as written
   const box = h("div", { class: "qedit" });
-  const nm = h("input", { value: name, placeholder: "name", style: { width: "110px" }, "aria-label": "Question name" });
-  const js = h("textarea", { rows: 6, "aria-label": "Question JSON" });
+  const nm = h("input", { value: name, placeholder: tr("name"), style: { width: "110px" } });
+  const js = h("textarea", { rows: 6 });
   js.value = JSON.stringify(q, null, 2);
-  box.append(h("div", { class: "row" }, nm, h("span", { class: "chip" }, q.type), h("button", { class: "ghost", title: "Remove question", onclick: () => box.remove() }, "×")),
-    h("label", { class: "f" }, "Question ", h("span", { class: "hint" }, "JSON, as in the API")), js);
+  box.append(h("div", { class: "row" }, h("label", { class: "f" }, tr("Question name"), nm), h("span", { class: "chip" }, q.type), h("button", { class: "ghost", "aria-label": tr("Remove question"), onclick: () => box.remove() }, "×")),
+    h("label", { class: "f" }, tr("Question JSON"), js));
   box.read = () => [nm.value.trim() || "q", JSON.parse(js.value)];
   return box;
 }
@@ -341,10 +353,12 @@ function readRequest() {
 // ---- history ----------------------------------------------------------------------------------------------------
 function renderHistory() {
   const items = store.get("basal-viz-history", []);
-  $("#hist").replaceChildren(...(items.length ? items.map(it => h("li", { onclick: () => { loadRequest(it.req); decide(it.gold); } },
+  const restoreFocus = $("#hist").contains(document.activeElement);
+  $("#hist").replaceChildren(...(items.length ? items.map(it => h("li", {}, h("button", { type: "button", onclick: () => { loadRequest(it.req); decide(it.gold); } },
     h("span", { class: "q" }, it.q), h("span", { class: "chip" }, pct(it.conf, 1)),
-    h("span", { class: "a" }, "→ " + it.a), h("span", { class: "a" }, new Date(it.t).toLocaleTimeString()))) :
-    [h("li", { style: { cursor: "default" } }, h("span", { class: "hint" }, "Decisions you make appear here."))]));
+    h("span", { class: "a" }, "→ " + it.a), h("span", { class: "a" }, new Date(it.t).toLocaleTimeString(LANG))))) :
+    [h("li", {}, h("span", { class: "hint" }, tr("Decisions you make appear here.")))]));
+  if (restoreFocus) ($("#hist button") || $("#clearh")).focus();
 }
 function pushHistory(req, res, gold) {
   const q = res.questions[0]; if (!q) return;
@@ -358,13 +372,20 @@ $("#clearh").onclick = () => { store.set("basal-viz-history", []); renderHistory
 let currentGold = null, postedRequest = null;
 async function decide(gold, requestOverride) {
   currentGold = gold === undefined ? currentGold : gold;
-  const req = requestOverride||readRequest();
+  const out = $("#out");
+  let req;
+  try { req = requestOverride || readRequest(); }
+  catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    out.querySelector(".err")?.remove();
+    out.prepend(h("div", { class: "err" }, tr("Error: ") + tr("Invalid question JSON.")));
+    return;
+  }
   if (!Object.keys(req.questions).length) return;
   const btn = $("#go"); btn.disabled = true;
-  const out = $("#out");
   [...out.querySelectorAll(".result")].forEach(r => r.classList.add("stale"));
   out.querySelector(".err")?.remove(); out.querySelector(".empty")?.remove();
-  const ld = h("div", { class: "loading" }, h("div", { class: "spin" }), "Running the model — a forward pass per option order, with every layer recorded…");
+  const ld = h("div", { class: "loading" }, h("div", { class: "spin" }), tr("Running the model — a forward pass per option order, with every layer recorded…"));
   out.prepend(ld);
   try {
     const r = await fetch("api/explain", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
@@ -375,7 +396,7 @@ async function decide(gold, requestOverride) {
     pushHistory(req, res, currentGold);
   } catch (e) {
     ld.remove();
-    out.prepend(h("div", { class: "err" }, "Error: " + e.message));
+    out.prepend(h("div", { class: "err" }, tr("Error: ") + e.message));
     [...out.querySelectorAll(".result")].forEach(r => r.classList.remove("stale"));
   } finally { btn.disabled = false; }
 }
@@ -393,10 +414,10 @@ $("#ex").onchange = e => {
 // ---- rendering --------------------------------------------------------------------------------------------------
 function verdict(conf, th) {
   const t1 = th["0.01"], t5 = th["0.05"];
-  if (t1 == null && t5 == null) return { color: "var(--neutral-mark)", icon: "–", label: "No certified threshold", why: "the calibration file certifies no confidence level for this question type, so basal-serve defers it whenever a request sets max_error" };
-  if (t1 != null && conf >= t1) return { color: "var(--good)", icon: "✓", label: "Auto-accept", why: `confidence ≥ ${t1.toFixed(3)}: accepting every decision at least this confident gave about 1% errors on test data` };
-  if (t5 != null && conf >= t5) return { color: "var(--warning)", icon: "!", label: "Accept at 5% risk", why: `confidence ≥ ${t5.toFixed(3)}: accepting every decision at least this confident gave about 5% errors ${t1 != null ? ` (the 1% level starts at ${t1.toFixed(3)})` : " (no 1% level is certified)"}` };
-  return { color: "var(--critical)", icon: "?", label: "Route to a person", why: `below ${t5 != null ? t5.toFixed(3) : "the threshold"}: too uncertain to accept automatically` };
+  if (t1 == null && t5 == null) return { color: "var(--neutral-mark)", icon: "–", label: tr("No certified threshold"), why: tr("the calibration file certifies no confidence level for this question type, so basal-serve defers it whenever a request sets max_error") };
+  if (t1 != null && conf >= t1) return { color: "var(--good)", icon: "✓", label: tr("Auto-accept"), why: tr("confidence ≥ {threshold}: accepting every decision at least this confident gave about 1% errors on test data", {threshold: t1.toFixed(3)}) };
+  if (t5 != null && conf >= t5) return { color: "var(--warning)", icon: "!", label: tr("Accept at 5% risk"), why: tr("confidence ≥ {threshold}: accepting every decision at least this confident gave about 5% errors", {threshold: t5.toFixed(3)}) + (t1 != null ? tr(" (the 1% level starts at {threshold})", {threshold: t1.toFixed(3)}) : tr(" (no 1% level is certified)")) };
+  return { color: "var(--critical)", icon: "?", label: tr("Route to a person"), why: tr("below {threshold}: too uncertain to accept automatically", {threshold: t5 != null ? t5.toFixed(3) : tr("the threshold")}) };
 }
 function statusChip(v) { return h("span", { class: "status", title: v.why }, h("span", { class: "ic", style: { background: v.color } }, v.icon), v.label); }
 function step(n, title, sub, ...body) { return h("div", { class: "step" }, h("h3", {}, h("span", { class: "n" }, n), title), sub ? h("p", { class: "sub" }, sub) : null, h("div", { class: "body" }, ...body)); }
@@ -404,53 +425,52 @@ function step(n, title, sub, ...body) { return h("div", { class: "step" }, h("h3
 function render(res, req, gold) {
   const out = $("#out");
   out.replaceChildren(...res.questions.map(q => renderQuestion(q, gold && gold[q.name])));
-  out.append(h("div", { class: "foot" }, `${res.model} · total ${Math.round(res.total_ms)} ms`));
+  out.append(h("div", { class: "foot" }, tr("{model} · total {ms} ms", {model: res.model, ms: Math.round(res.total_ms)})));
 }
 
 function renderQuestion(q, goldKey) {
   const a = q.answer, v = verdict(a.confidence, q.thresholds);
   const wrap = h("div", { class: "result" });
-  const typeLabel = q.kind === "multi" ? "multi-label (yes / no per label)" : ({ choice: "choice", noul: "yes / no", score: "score" }[q.type] + (q.kind !== q.type ? ` (${q.kind})` : ""));
+  const typeLabel = q.kind === "multi" ? tr("multi-label (yes / no per label)") : ({ choice: "choice", noul: tr("yes / no"), score: "score" }[q.type] + (q.kind !== q.type ? ` (${q.kind})` : ""));
   const two = q.orders.length > 1;
   let n = 0;
-  let heroV = pct(a.confidence, 1), heroL = "confidence";
-  if (q.type === "noul") { heroV = pct(a.noul, 1); heroL = "P(yes)"; }
-  if (q.type === "score") { heroV = a.score.toFixed(2); heroL = `expected level (0–${q.options.length - 1})`; }
+  let heroV = pct(a.confidence, 1), heroL = tr("confidence");
+  if (q.type === "noul") { heroV = pct(a.noul, 1); heroL = tr("P(yes)"); }
+  if (q.type === "score") { heroV = a.score.toFixed(2); heroL = tr("expected level (0–{max})", {max: q.options.length - 1}); }
   const goldEl = goldKey != null ? (goldKey === a.key
-    ? h("span", { class: "status" }, h("span", { class: "ic", style: { background: "var(--good)" } }, "✓"), "matches the expected answer")
-    : h("span", { class: "status" }, h("span", { class: "ic", style: { background: "var(--critical)" } }, "✗"), "expected: " + q.options[q.keys.indexOf(goldKey)])) : null;
+    ? h("span", { class: "status" }, h("span", { class: "ic", style: { background: "var(--good)" } }, "✓"), tr("matches the expected answer"))
+    : h("span", { class: "status" }, h("span", { class: "ic", style: { background: "var(--critical)" } }, "✗"), tr("expected: ") + q.options[q.keys.indexOf(goldKey)])) : null;
   wrap.append(h("div", { class: "rhead" },
-    h("div", {}, h("div", { class: "qname" }, h("span", { class: "chip" }, q.name), h("span", { class: "chip" }, typeLabel), h("span", { class: "chip" }, q.lang === "pl" ? "Polish prompt" : "English prompt")),
+    h("div", {}, h("div", { class: "qname" }, h("span", { class: "chip" }, q.name), h("span", { class: "chip" }, typeLabel), h("span", { class: "chip" }, q.lang === "pl" ? tr("Polish prompt") : tr("English prompt"))),
       h("div", { class: "qtext" }, q.question)),
     h("div", { class: "hero" }, h("div", { class: "v" }, heroV), h("div", { class: "l" }, heroL)),
-    h("div", { class: "answer" }, h("span", { class: "hint" }, "Answer"), h("span", { class: "opt-text" }, q.options[a.index]), statusChip(v), goldEl)));
+    h("div", { class: "answer" }, h("span", { class: "hint" }, tr("Answer")), h("span", { class: "opt-text" }, q.options[a.index]), statusChip(v), goldEl)));
 
-  wrap.append(step(++n, "What the model reads",
-    `Your question becomes a chat prompt with an option code before each option (prompt format ${INFO?.prompt_format ?? "?"}). The assistant turn is pre-filled with {"answer": " so the very next token must be a code. ` +
-      (two ? "It is asked twice: options in original and in reversed order." : "It is asked once, in the order given (this model's default; basal-serve --orders 2 adds the reversed order)."),
+  wrap.append(step(++n, tr("What the model reads"),
+    tr('Your question becomes a chat prompt with an option code before each option (prompt format {format}). The assistant turn is pre-filled with {prefill} so the very next token must be a code. ', {format: INFO?.prompt_format ?? "?", prefill: '{"answer": "'}) +
+      (two ? tr("It is asked twice: options in original and in reversed order.") : tr("It is asked once, in the order given (this model's default; basal-serve --orders 2 adds the reversed order).")),
     promptView(q)));
-  if (two) wrap.append(step(++n, "Both orders in one forward pass",
-    "The two prompts share everything up to the options. The server packs them into one row: the shared prefix is computed once, and each option block attends only to the prefix and to itself.",
+  if (two) wrap.append(step(++n, tr("Both orders in one forward pass"),
+    tr("The two prompts share everything up to the options. The server packs them into one row: the shared prefix is computed once, and each option block attends only to the prefix and to itself."),
     packView(q)));
-  wrap.append(step(++n, "How the decision forms, layer by layer",
-    `After each of the ${q.layers.length} layers, the hidden state at the answer position is read through the final norm and output head ("logit lens")${two ? ", averaged over both orders" : ""}. Early layers were not trained to be read this way, so treat them as a rough picture; the last layer is the real answer.`,
+  wrap.append(step(++n, tr("How the decision forms, layer by layer"),
+    tr('After each of the {layers} layers, the hidden state at the answer position is read through the final norm and output head ("logit lens"){orders}. Early layers were not trained to be read this way, so treat them as a rough picture; the last layer is the real answer.', {layers: q.layers.length, orders: two ? tr(", averaged over both orders") : ""}),
     layerChart(q)));
-  wrap.append(step(++n, "Option-code readout",
-    "Only the logits of the option codes are kept and turned into probabilities." + (two ? " The same option has a different code in each order." : ""),
+  wrap.append(step(++n, tr("Option-code readout"),
+    tr("Only the logits of the option codes are kept and turned into probabilities.") + (two ? tr(" The same option has a different code in each order.") : ""),
     readoutView(q)));
-  wrap.append(step(++n, two ? "Average both orders, then calibrate" : "Calibrate",
-    (two ? "Probabilities are mapped back to the options and averaged, which cancels most of the preference for a position. Then t" : "T") +
-      `he temperature of the calibration file (T = ${q.temperature.toFixed(3)} for ${q.type} with ${q.options.length} options) makes the confidence match the observed accuracy.`,
+  wrap.append(step(++n, two ? tr("Average both orders, then calibrate") : tr("Calibrate"),
+    (two ? tr("Probabilities are mapped back to the options and averaged, which cancels most of the preference for a position. ") : "") + tr("The temperature of the calibration file (T = {temperature} for {type} with {options} options) makes the confidence match the observed accuracy.", {temperature: q.temperature.toFixed(3), type: q.type, options: q.options.length}),
     averageView(q)));
-  wrap.append(step(++n, "Decision",
-    "The top option is the answer. Its calibrated confidence is compared with the thresholds the calibration file certifies for this question type.",
+  wrap.append(step(++n, tr("Decision"),
+    tr("The top option is the answer. Its calibrated confidence is compared with the thresholds the calibration file certifies for this question type."),
     decisionView(q, v)));
   const t = q.timing_ms;
   wrap.append(h("div", { class: "step foot" },
-    h("span", {}, `${INFO?.mode ?? "engine"} forward as served: ${Math.round(t.packed)} ms`),
-    h("span", {}, `${two ? "two separate forwards" : "a forward"} with every layer recorded: ${Math.round(t.separate_with_lens)} ms`),
-    h("span", {}, `served vs recorded readout, max difference: ${q.packed_max_diff.toExponential(1)}`),
-    q.served_max_diff != null ? h("span", {}, `basal-serve's answer vs this page: max difference ${q.served_max_diff.toExponential(1)}`) : null));
+    h("span", {}, tr("{mode} forward as served: {ms} ms", {mode: INFO?.mode ?? "Engine", ms: Math.round(t.packed)})),
+    h("span", {}, tr("{passes} with every layer recorded: {ms} ms", {passes: two ? tr("two separate forwards") : tr("a forward"), ms: Math.round(t.separate_with_lens)})),
+    h("span", {}, tr("served vs recorded readout, max difference: {value}", {value: q.packed_max_diff.toExponential(1)})),
+    q.served_max_diff != null ? h("span", {}, tr("basal-serve answer vs this page: max difference {value}", {value: q.served_max_diff.toExponential(1)})) : null));
   return wrap;
 }
 
@@ -460,40 +480,40 @@ function promptView(q) {
   const show = i => {
     tabs.querySelectorAll("button").forEach((b, k) => b.classList.toggle("on", k === i));
     const o = q.orders[i];
-    pre.replaceChildren(...o.segments.map(s => h("span", { class: s.kind }, s.text)), h("span", { class: "cursor", title: "the model's next token" }));
-    count.textContent = `${o.n_tokens} tokens · option order ${o.perm.map(j => o.letters[o.perm.indexOf(j)] + "=" + (j + 1)).join(" ")}`;
+    pre.replaceChildren(...o.segments.map(s => h("span", { class: s.kind }, s.text)), h("span", { class: "cursor", title: tr("the model's next token") }));
+    count.textContent = tr("{tokens} · option order {order}", {tokens: tp(o.n_tokens, "{n} token", "{n} tokens"), order: o.perm.map(j => o.letters[o.perm.indexOf(j)] + "=" + (j + 1)).join(" ")});
   };
   const tabs = h("div", { class: "tabs" }, ...q.orders.map((_, i) => h("button", { onclick: () => show(i) },
-    h("span", { class: "lk", style: { background: ORDER_COLORS[i], marginRight: "6px", verticalAlign: "middle" } }), q.orders.length < 2 ? "Option order (as given)" : i ? "Order 2 (reversed)" : "Order 1 (original)")));
+    h("span", { class: "lk", style: { background: ORDER_COLORS[i], marginRight: "6px", verticalAlign: "middle" } }), q.orders.length < 2 ? tr("Option order (as given)") : i ? tr("Order 2 (reversed)") : tr("Order 1 (original)"))));
   const count = h("span", { class: "hint", style: { marginLeft: "10px" } });
   box.append(h("div", {}, tabs, count), pre, h("div", { class: "keyrow" },
-    ...[["var(--w-state)", "state"], ["var(--w-question)", "question"], ["var(--w-option)", "options"], ["var(--w-prefill)", "answer pre-fill"]].map(([c, l]) => h("span", {}, h("span", { class: "sw", style: { background: c } }), l)),
-    h("span", {}, h("span", { class: "sw", style: { background: "transparent", border: "1px solid var(--muted)" } }), "fixed template (grey text)")));
+    ...[["var(--w-state)", "state"], ["var(--w-question)", "question"], ["var(--w-option)", "options"], ["var(--w-prefill)", tr("answer pre-fill")]].map(([c, l]) => h("span", {}, h("span", { class: "sw", style: { background: c } }), tr(l))),
+    h("span", {}, h("span", { class: "sw", style: { background: "transparent", border: "1px solid var(--muted)" } }), tr("fixed template (grey text)"))));
   show(0);
   return box;
 }
 
 function packView(q) {
   const p = q.packing, total = p.prefix + p.tails.reduce((a, b) => a + b, 0), max = p.separate;
-  const seg = (n, c, title) => h("div", { style: { flex: `${n} 0 0`, background: c }, title: `${title}: ${n} tokens`,
-    onpointermove: e => showTip(e, title, [{ color: c, value: n + " tokens", label: "" }]), onpointerleave: hideTip });
+  const seg = (n, c, title) => h("div", { style: { flex: `${n} 0 0`, background: c }, title: `${title}: ${tp(n, "{n} token", "{n} tokens")}`,
+    onpointermove: e => showTip(e, title, [{ color: c, value: tp(n, "{n} token", "{n} tokens"), label: "" }]), onpointerleave: hideTip });
   const pre = "var(--neutral-mark)";
-  const sepBar = h("div", { class: "bar" }, seg(p.prefix, pre, "Shared prefix (order 1)"), seg(p.tails[0], ORDER_COLORS[0], "Order 1 options"), h("div", { class: "gap" }),
-    seg(p.prefix, pre, "Shared prefix again (order 2)"), seg(p.tails[1] || 0, ORDER_COLORS[1], "Order 2 options"));
-  const packBar = h("div", { class: "bar" }, seg(p.prefix, pre, "Shared prefix (computed once)"), seg(p.tails[0], ORDER_COLORS[0], "Order 1 options"),
-    seg(p.tails[1] || 0, ORDER_COLORS[1], "Order 2 options"), h("div", { style: { flex: `${max - total} 0 0` } }));
+  const sepBar = h("div", { class: "bar" }, seg(p.prefix, pre, tr("Shared prefix (order 1)")), seg(p.tails[0], ORDER_COLORS[0], tr("Order 1 options")), h("div", { class: "gap" }),
+    seg(p.prefix, pre, tr("Shared prefix again (order 2)")), seg(p.tails[1] || 0, ORDER_COLORS[1], tr("Order 2 options")));
+  const packBar = h("div", { class: "bar" }, seg(p.prefix, pre, tr("Shared prefix (computed once)")), seg(p.tails[0], ORDER_COLORS[0], tr("Order 1 options")),
+    seg(p.tails[1] || 0, ORDER_COLORS[1], tr("Order 2 options")), h("div", { style: { flex: `${max - total} 0 0` } }));
   const saved = 1 - total / max;
   const left = h("div", {},
-    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, "Two separate prompts"), h("span", {}, `${max} tokens`)), sepBar),
-    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, "Packed into one row (what the server runs)"), h("span", {}, `${total} tokens`)), packBar),
-    h("div", {}, h("span", { class: "bignum" }, pct(saved, 0)), h("span", { class: "hint" }, " fewer tokens than two separate prompts: the second order costs only its options")),
-    h("div", { class: "keyrow" }, h("span", {}, h("span", { class: "sw", style: { background: pre } }), `shared prefix · ${p.prefix}`),
-      h("span", {}, h("span", { class: "sw", style: { background: ORDER_COLORS[0] } }), `order 1 · ${p.tails[0]}`),
-      h("span", {}, h("span", { class: "sw", style: { background: ORDER_COLORS[1] } }), `order 2 · ${p.tails[1] || 0}`)));
-  const cv = h("canvas", { class: "mask", width: 200, height: 200, "aria-label": "Attention mask of the packed row" });
+    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, tr("Two separate prompts")), h("span", {}, tp(max, "{n} token", "{n} tokens"))), sepBar),
+    h("div", { class: "packrow" }, h("div", { class: "lbl" }, h("span", {}, tr("Packed into one row (what the server runs)")), h("span", {}, tp(total, "{n} token", "{n} tokens"))), packBar),
+    h("div", {}, h("span", { class: "bignum" }, pct(saved, 0)), h("span", { class: "hint" }, tr(" fewer tokens than two separate prompts: the second order costs only its options"))),
+    h("div", { class: "keyrow" }, h("span", {}, h("span", { class: "sw", style: { background: pre } }), tr("shared prefix · {n}", {n: p.prefix})),
+      h("span", {}, h("span", { class: "sw", style: { background: ORDER_COLORS[0] } }), tr("order 1 · {n}", {n: p.tails[0]})),
+      h("span", {}, h("span", { class: "sw", style: { background: ORDER_COLORS[1] } }), tr("order 2 · {n}", {n: p.tails[1] || 0}))));
+  const cv = h("canvas", { class: "mask", width: 200, height: 200, "aria-label": tr("Attention mask of the packed row") });
   requestAnimationFrame(() => drawMask(cv, p));
   return h("div", { class: "pack" }, left, h("div", {}, cv, h("div", { class: "hint", style: { marginTop: "4px" } },
-    "Attention mask: row = token, column = what it may look at. Order 2 never sees order 1.")));
+    tr("Attention mask: row = token, column = what it may look at. Order 2 never sees order 1."))));
 }
 function drawMask(cv, p) {
   const segs = [[0, p.prefix]].concat(p.tails.map((n, i) => [i + 1, n]));
@@ -519,7 +539,7 @@ function layerChart(q) {
   const draw = () => {
     const W = Math.max(300, box.clientWidth || 640), H = 256, m = { l: 36, r: k <= 4 ? 150 : 16, t: 10, b: 42 };
     const x = i => m.l + (i / (L - 1)) * (W - m.l - m.r), y = p => m.t + (1 - p) * (H - m.t - m.b);
-    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": "Probability of each option after every layer" });
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": tr("Probability of each option after every layer") });
     for (const g of [0, 0.25, 0.5, 0.75, 1]) {
       svg.append(svgEl("line", { x1: m.l, x2: W - m.r, y1: y(g), y2: y(g), stroke: g === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
       const t = svgEl("text", { x: m.l - 6, y: y(g) + 4, "text-anchor": "end" }); t.textContent = pct(g, 0); svg.append(t);
@@ -528,7 +548,7 @@ function layerChart(q) {
     for (let i = 0; i < L; i++) if ((i + 1) % step === 0 || i === 0) {
       const t = svgEl("text", { x: x(i), y: H - m.b + 16, "text-anchor": "middle" }); t.textContent = i + 1; svg.append(t);
     }
-    const xt = svgEl("text", { x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle" }); xt.textContent = "layer"; svg.append(xt);
+    const xt = svgEl("text", { x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle" }); xt.textContent = tr("layer"); svg.append(xt);
     const order = [...Array(k).keys()].sort((a, b) => q.calibrated[a] - q.calibrated[b]);  // winner drawn last (on top)
     for (const j of order) {
       const d = q.layers.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[j]).toFixed(1)}`).join("");
@@ -540,7 +560,9 @@ function layerChart(q) {
       for (let i = 1; i < ys.length; i++) if (ys[i].y - ys[i - 1].y < 14) ys[i].y = ys[i - 1].y + 14;
       for (const { j, y: yy } of ys) {
         const t = svgEl("text", { x: x(L - 1) + 10, y: yy + 4, class: "dl" });
-        const s = q.options[j]; t.textContent = (s.length > 18 ? s.slice(0, 17) + "…" : s) + " " + pct(q.layers[L - 1][j], 0); svg.append(t);
+        const s = q.options[j], value = pct(q.layers[L - 1][j], 0);
+        t.textContent = (s.length > 18 ? s.slice(0, 17) + "…" : s) + " " + value;
+        const title = svgEl("title"); title.textContent = s + " " + value; t.append(title); svg.append(t);
       }
     }
     const cross = svgEl("line", { y1: m.t, y2: H - m.b, stroke: "var(--ink-2)", "stroke-width": 1, visibility: "hidden" });
@@ -551,7 +573,7 @@ function layerChart(q) {
       const i = Math.max(0, Math.min(L - 1, Math.round((px - m.l) / (W - m.l - m.r) * (L - 1))));
       cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
       const rows = [...Array(k).keys()].sort((a, b) => q.layers[i][b] - q.layers[i][a]).map(j => ({ color: optColor(j), value: pct(q.layers[i][j]), label: q.options[j] }));
-      showTip(e, `after layer ${i + 1} of ${L}${i === L - 1 ? " (final)" : ""}`, rows);
+      showTip(e, tr("after layer {layer} of {total}{final}", {layer: i + 1, total: L, final: i === L - 1 ? tr(" (final)") : ""}), rows);
     });
     hit.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
     svg.append(hit);
@@ -564,7 +586,7 @@ function layerChart(q) {
   let settled = L;
   for (let i = L - 1; i >= 0; i--) { const p = q.layers[i]; if (p.indexOf(Math.max(...p)) === w) settled = i + 1; else break; }
   return h("div", {}, box, h("p", { class: "hint", style: { margin: "8px 0 0" } },
-    `The final answer takes the lead at layer ${settled} of ${L} and keeps it to the end.`));
+    tr("The final answer takes the lead at layer {layer} of {total} and keeps it to the end.", {layer: settled, total: L})));
 }
 function legend(items) {
   return h("div", { class: "legend" }, ...items.map(it => h("span", { title: it.label },
@@ -578,46 +600,46 @@ function readoutView(q) {
     o.letters.forEach((letter, pos) => {
       const j = o.perm[pos], p = o.letter_probs[pos], win = pos === best ? "win" : "";
       grid.append(h("span", { class: "letter" }, letter), h("span", { class: "txt " + win, title: q.options[j] }, q.options[j]),
-        h("div", { class: "track", onpointermove: e => showTip(e, `order ${i + 1} · code ${letter}`, [{ color: ORDER_COLORS[i], value: pct(p, 2), label: q.options[j] }]), onpointerleave: hideTip },
+        h("div", { class: "track", onpointermove: e => showTip(e, tr("order {order} · code {letter}", {order: i + 1, letter}), [{ color: ORDER_COLORS[i], value: pct(p, 2), label: q.options[j] }]), onpointerleave: hideTip },
           h("div", { style: { width: Math.max(0.3, p * 100) + "%", background: ORDER_COLORS[i] } })),
         h("span", { class: "val " + win }, pct(p)));
     });
     const top = o.top_tokens.slice(0, 3).map(([t, p]) => h("span", {}, h("code", {}, JSON.stringify(t)), " " + pct(p) + "  "));
-    return h("div", {}, h("h4", {}, h("span", { class: "lk", style: { background: ORDER_COLORS[i] } }), q.orders.length < 2 ? "Option order (as given)" : i ? "Order 2 (reversed)" : "Order 1 (original)"), grid,
-      h("div", { class: "toptok" }, "Unrestricted next token: ", ...top));
+    return h("div", {}, h("h4", {}, h("span", { class: "lk", style: { background: ORDER_COLORS[i] } }), q.orders.length < 2 ? tr("Option order (as given)") : i ? tr("Order 2 (reversed)") : tr("Order 1 (original)")), grid,
+      h("div", { class: "toptok" }, tr("Unrestricted next token: "), ...top));
   });
   return h("div", { class: "orders" }, ...cols);
 }
 
 function averageView(q) {
   const k = q.options.length;
-  const g = h("div", { class: "cmp" }, h("span", { class: "hdr" }, "option"), h("span", { class: "hdr" }, "order 1 · order 2 → average"), h("span", { class: "hdr", style: { textAlign: "end" } }, "average"));
+  const g = h("div", { class: "cmp" }, h("span", { class: "hdr" }, tr("option")), h("span", { class: "hdr" }, tr("order 1 · order 2 → average")), h("span", { class: "hdr", style: { textAlign: "end" } }, tr("average")));
   for (let j = 0; j < k; j++) {
     const a = q.orders[0].canon[j], b = q.orders[1]?.canon[j] ?? a;
     g.append(h("span", { class: "txt", title: q.options[j] }, q.options[j]),
       h("div", { class: "pair", onpointermove: e => showTip(e, q.options[j], [
-        { color: ORDER_COLORS[0], value: pct(a, 2), label: "order 1" }, { color: ORDER_COLORS[1], value: pct(b, 2), label: "order 2" },
-        { color: "var(--neutral-mark)", value: pct(q.mean[j], 2), label: "average" }]), onpointerleave: hideTip },
+        { color: ORDER_COLORS[0], value: pct(a, 2), label: tr("order 1") }, { color: ORDER_COLORS[1], value: pct(b, 2), label: tr("order 2") },
+        { color: "var(--neutral-mark)", value: pct(q.mean[j], 2), label: tr("average") }]), onpointerleave: hideTip },
         h("div", { style: { width: Math.max(.3, a * 100) + "%", background: ORDER_COLORS[0] } }),
         h("div", { style: { width: Math.max(.3, b * 100) + "%", background: ORDER_COLORS[1] } }),
         h("div", { style: { width: Math.max(.3, q.mean[j] * 100) + "%", background: "var(--neutral-mark)" } })),
       h("span", { class: "val" }, pct(q.mean[j])));
   }
   const gap = Math.max(...q.options.map((_, j) => Math.abs(q.orders[0].canon[j] - (q.orders[1]?.canon[j] ?? q.orders[0].canon[j]))));
-  const c = h("div", { class: "cmp", style: { marginTop: "18px" } }, h("span", { class: "hdr" }, "option"), h("span", { class: "hdr" }, q.orders.length > 1 ? "average → calibrated" : "raw → calibrated"), h("span", { class: "hdr", style: { textAlign: "end" } }, "final"));
+  const c = h("div", { class: "cmp", style: { marginTop: "18px" } }, h("span", { class: "hdr" }, tr("option")), h("span", { class: "hdr" }, q.orders.length > 1 ? tr("average → calibrated") : tr("raw → calibrated")), h("span", { class: "hdr", style: { textAlign: "end" } }, tr("final")));
   for (let j = 0; j < k; j++) {
     const win = j === q.answer.index;
     c.append(h("span", { class: "txt", style: { fontWeight: win ? 600 : 400 }, title: q.options[j] }, q.options[j]),
       h("div", { class: "pair", onpointermove: e => showTip(e, q.options[j], [
-        { color: "var(--neutral-mark)", value: pct(q.mean[j], 2), label: "average" }, { color: FINAL, value: pct(q.calibrated[j], 2), label: `calibrated (T=${q.temperature.toFixed(3)})` }]), onpointerleave: hideTip },
+        { color: "var(--neutral-mark)", value: pct(q.mean[j], 2), label: tr("average") }, { color: FINAL, value: pct(q.calibrated[j], 2), label: tr("calibrated (T={value})", {value: q.temperature.toFixed(3)}) }]), onpointerleave: hideTip },
         h("div", { style: { width: Math.max(.3, q.mean[j] * 100) + "%", background: "var(--neutral-mark)" } }),
         h("div", { style: { width: Math.max(.3, q.calibrated[j] * 100) + "%", background: FINAL } })),
       h("span", { class: "val", style: { fontWeight: win ? 600 : 400, color: win ? "var(--ink)" : "" } }, pct(q.calibrated[j])));
   }
-  const calLegend = legend([{ color: "var(--neutral-mark)", label: q.orders.length > 1 ? "average (raw)" : "raw" }, { color: FINAL, label: `calibrated, T = ${q.temperature.toFixed(3)}${q.temperature > 1 ? " (softens)" : q.temperature < 1 ? " (sharpens)" : ""}` }]);
+  const calLegend = legend([{ color: "var(--neutral-mark)", label: q.orders.length > 1 ? tr("average (raw)") : tr("raw") }, { color: FINAL, label: tr("calibrated, T = {value}{effect}", {value: q.temperature.toFixed(3), effect: q.temperature > 1 ? tr(" (softens)") : q.temperature < 1 ? tr(" (sharpens)") : ""}) }]);
   if (q.orders.length < 2) return h("div", {}, c, calLegend);
-  return h("div", {}, g, legend([{ color: ORDER_COLORS[0], label: "order 1" }, { color: ORDER_COLORS[1], label: "order 2" }, { color: "var(--neutral-mark)", label: "average" }]),
-    h("p", { class: "hint", style: { margin: "8px 0 0" } }, `Largest disagreement between the two orders: ${pct(gap)}${gap > 0.2 ? " — the model is sensitive to option order here" : ""}.`),
+  return h("div", {}, g, legend([{ color: ORDER_COLORS[0], label: tr("order 1") }, { color: ORDER_COLORS[1], label: tr("order 2") }, { color: "var(--neutral-mark)", label: tr("average") }]),
+    h("p", { class: "hint", style: { margin: "8px 0 0" } }, tr("Largest disagreement between the two orders: {gap}{detail}.", {gap: pct(gap), detail: gap > 0.2 ? tr(" — the model is sensitive to option order here") : ""})),
     c, calLegend);
 }
 
@@ -625,22 +647,22 @@ function decisionView(q, v) {
   const th = q.thresholds, conf = q.answer.confidence, t1 = th["0.01"], t5 = th["0.05"];
   const lo = 1 / q.options.length;  // confidence can never be below 1/k
   const X = p => ((p - lo) / (1 - lo) * 100).toFixed(2) + "%";
-  const m = h("div", { class: "meter", role: "img", "aria-label": `confidence ${pct(conf)}; thresholds ${t5} and ${t1}` },
+  const m = h("div", { class: "meter", role: "img", "aria-label": tr("confidence {confidence}; thresholds {t5} and {t1}", {confidence: pct(conf), t5, t1}) },
     h("div", { class: "track" }), h("div", { class: "fill", style: { width: X(conf), background: v.color, opacity: .35 } }),
-    t5 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t5) } }, h("span", {}, `5% error · ${t5.toFixed(2)}`)) : null,
-    t1 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t1) } }, h("span", {}, `1% error · ${t1.toFixed(2)}`)) : null,
+    t5 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t5) } }, h("span", {}, tr("5% error · {value}", {value: t5.toFixed(2)}))) : null,
+    t1 != null ? h("div", { class: "tick", style: { insetInlineStart: X(t1) } }, h("span", {}, tr("1% error · {value}", {value: t1.toFixed(2)}))) : null,
     h("div", { class: "dot", style: { insetInlineStart: X(conf), background: v.color } }),
     h("div", { class: "mk", style: { insetInlineStart: X(conf) } }, pct(conf)));
   const body = [h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--muted)" } },
-    h("span", {}, `${pct(lo, 0)} (pure guess among ${q.options.length})`), h("span", {}, "100%")), m,
+    h("span", {}, tr("{value} (pure guess among {count})", {value: pct(lo, 0), count: q.options.length})), h("span", {}, "100%")), m,
     h("p", { style: { margin: "22px 0 0", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } }, statusChip(v), h("span", { class: "hint" }, v.why + "."))];
   if (q.type === "score") {
     const lvl = Math.round(q.answer.score);
     body.push(h("div", { class: "scale" }, ...q.options.map((o, i) => h("div", { class: i === lvl ? "on" : "", title: o }, `${i} · ${o}`))),
-      h("p", { class: "hint", style: { margin: "6px 0 0" } }, `Expected level ${q.answer.score.toFixed(2)} = Σ level × probability; most likely level: ${q.options[q.answer.index]}.`));
+      h("p", { class: "hint", style: { margin: "6px 0 0" } }, tr("Expected level {score} = Σ level × probability; most likely level: {option}.", {score: q.answer.score.toFixed(2), option: q.options[q.answer.index]})));
   }
-  if (q.type === "noul") body.push(h("p", { class: "hint", style: { margin: "8px 0 0" } }, `P(yes) = ${pct(q.answer.noul, 2)} — ` +
-    (q.kind === "multi" ? `the API returns it as this label's probability in the multi answer.` : `the API returns this as "noul".`)));
+  if (q.type === "noul") body.push(h("p", { class: "hint", style: { margin: "8px 0 0" } }, tr("P(yes) = {value} — ", {value: pct(q.answer.noul, 2)}) +
+    (q.kind === "multi" ? tr("the API returns it as this label’s probability in the multi answer.") : tr('the API returns this as "noul".'))));
   return h("div", {}, ...body);
 }
 
@@ -656,17 +678,17 @@ function explainPosted(req) {
     const ri = await fetch("api/info");
     INFO = await ri.json();
     if (!ri.ok) throw new Error(INFO.error || ri.statusText);
-    $("#modelchip").textContent = `${INFO.model} · ${INFO.device} · ${INFO.dtype} · ${INFO.layers} layers · prompt format ${INFO.prompt_format} · ${INFO.orders} option order${INFO.orders === 1 ? "" : "s"}`;
+    $("#modelchip").textContent = `${INFO.model} · ${INFO.device} · ${INFO.dtype} · ` + tr("{layers} · prompt format {format}", {layers: tp(INFO.layers, "{n} layer", "{n} layers"), format: INFO.prompt_format}) + " · " + tp(INFO.orders, "{n} option order", "{n} option orders");
     EXAMPLES = (await (await fetch("api/examples")).json()).filter(e => !e.request.media);  // the lens reads text only
     const sel = $("#ex"), groups = {};
     EXAMPLES.forEach((e, i) => {
       groups[e.file] ??= sel.appendChild(h("optgroup", { label: e.file }));
       const q = Object.values(e.request.questions)[0];
       const txt = typeof q.instructions === "string" ? q.instructions : "";
-      groups[e.file].append(h("option", { value: i }, `${e.id} — ${txt.slice(0, 60)}${Object.keys(e.request.questions).length > 1 ? ` (+${Object.keys(e.request.questions).length - 1} more)` : ""}`));
+      groups[e.file].append(h("option", { value: i }, `${e.id} — ${txt.slice(0, 60)}${Object.keys(e.request.questions).length > 1 ? tr(" (+{n} more)", {n: Object.keys(e.request.questions).length - 1}) : ""}`));
     });
     loadRequest(EXAMPLES[0].request); currentGold = EXAMPLES[0].gold || null;
-  } catch (e) { $("#modelchip").textContent = `server not reachable: ${e.message}`; }
+  } catch (e) { $("#modelchip").textContent = tr("server not reachable: {error}", {error: e.message}); }
   booted = true;
   if (posted) explainPosted(posted);
 })();
