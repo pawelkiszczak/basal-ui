@@ -281,3 +281,57 @@ def test_unsupported_features_show_disabled_controls(page):
     test_pages.sync_api.expect(page.locator(".q-shared")).to_contain_text(
         "This Engine does not support answer sets and abstention."
     )
+
+
+def test_coverage_survives_type_switch_without_being_sent_on_incompatible_type(page):
+    test_pages.view(page, "playground")
+    request = {
+        "state": "s",
+        "questions": {
+            "q": {"type": "choice", "instructions": "choose", "criteria": {"a": "A", "b": "B"}, "coverage": 0.9}
+        },
+    }
+    page.evaluate("request => {setRequest(request); $('#playgroundForm').disabled=false;}", request)
+    card = page.locator(".question").first
+    card.locator(".q-type").select_option("compress")
+    assert "coverage" not in page.evaluate("() => buildRequest().questions.q")
+    card.locator(".q-type").select_option("noul")
+    assert page.evaluate("() => buildRequest().questions.q.coverage") == 0.9
+    assert card.locator("[data-shared-coverage]").input_value() == "0.9"
+    raw = {"state": "s", "questions": {"q": {"type": "compress", "coverage": 0.9}}}
+    page.evaluate("request => setRequest(request)", raw)
+    assert page.evaluate("() => buildRequest()") == raw
+    page.locator(".question .q-name").fill("renamed")
+    assert "coverage" not in page.evaluate("() => buildRequest().questions.renamed")
+    page.evaluate(
+        "request => {$('#editJsonToggle').checked=true; $('#requestJson').value=JSON.stringify(request);}", raw
+    )
+    sent = []
+    page.route(
+        "**/api/decide",
+        lambda route: (
+            sent.append(route.request.post_data_json),
+            route.fulfill(status=422, json={"error": "invalid coverage"}),
+        ),
+    )
+    page.evaluate("() => {selectedModel='test'; return sendDecision();}")
+    assert sent[0]["questions"] == raw["questions"]
+
+
+def test_malformed_gates_open_without_rewriting_untouched_fields(page):
+    test_pages.view(page, "playground")
+    request = {
+        "state": "s",
+        "questions": {
+            "source": {"type": "noul", "instructions": "source"},
+            "target": {"type": "noul", "instructions": "target", "depends_on": {}, "ask_if": []},
+        },
+    }
+    page.evaluate("request => {setRequest(request); $('#playgroundForm').disabled=false;}", request)
+    target = page.locator(".question").nth(1)
+    target.locator(".q-gates summary").click()
+    test_pages.sync_api.expect(target.locator('[data-dependency="source"]')).to_be_visible()
+    assert page.evaluate("() => buildRequest()") == request
+    target.locator('[data-dependency="source"]').check()
+    assert page.evaluate("() => buildRequest().questions.target.depends_on") == ["source"]
+    assert page.evaluate("() => buildRequest().questions.target.ask_if") == []

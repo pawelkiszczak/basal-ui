@@ -718,6 +718,7 @@ function buildRequest() {
     if(invalid)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
     names.add(name);
     const [,q]=parseQuestionCard(card);
+    if(card._hideCoverage)delete q.coverage;
     const rowErrors=ChoiceEditor.errors(card);
     if(rowErrors.length)throw new Error(`${name}: ${rowErrors.join(' ')}`);
     if(!invalid)questions[name]=q;
@@ -761,7 +762,7 @@ function renderGateOptions(card) {
   if(!supported){host.innerHTML=`<p class="muted">${t('This Engine does not support conditional questions.')}</p>`;return;}
   const candidates=[...document.querySelectorAll('.question')].filter(other=>other!==card&&['choice','noul','score'].includes($('.q-type',other).value));
   host.innerHTML=candidates.map(other=>{
-    const [name,q]=parseQuestionCard(other), deps=card._extra.depends_on||[], gates=card._extra.ask_if||{}, selected=Object.hasOwn(gates,name)?gates[name]:[];
+    const [name,q]=parseQuestionCard(other), deps=Array.isArray(card._extra.depends_on)?card._extra.depends_on:[], rawGates=card._extra.ask_if, gates=rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{}, selected=Object.hasOwn(gates,name)?gates[name]:[];
     const criteria=q.criteria??q.levels??[], answers=q.type==='noul'?['true','false']:q.type==='score'&&Array.isArray(criteria)?criteria.map((_,i)=>String(i)):Array.isArray(criteria)?criteria.map(String):Object.keys(criteria);
     const options=answers.map(value=>{const aliases=q.type==='noul'?(value==='true'?['true','yes',true]:['false','no',false]):q.type==='score'&&Array.isArray(criteria)?[value,criteria[Number(value)]]:[value];return `<label><input type="checkbox" data-gate-question="${esc(name)}" data-gate-answer="${esc(value)}" data-gate-aliases="${esc(JSON.stringify(aliases))}" ${Array.isArray(selected)&&selected.some(v=>aliases.includes(v))?'checked':''}> ${esc(value)}</label>`;}).join(' ');
     return `<fieldset><legend>${esc(name)}</legend><label><input type="checkbox" data-dependency="${esc(name)}" ${deps.includes(name)?'checked':''}> ${t('Depends on this question')}</label>${options?`<div>${t('Ask if answer is')}: ${options}</div>`:''}</fieldset>`;
@@ -776,6 +777,7 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
   $('.q-type',card).value=type;
   renderTypeFields(card,type,q); renderSharedFields(card); rememberOriginal(card,type,q);
   card.addEventListener('input',e=>{
+    if(!['choice','noul','score'].includes(card._type))card._hideCoverage=true;
     if(e.target.matches('[data-shared-coverage]')){const value=e.target.value;if(value==='')delete card._extra.coverage;else card._extra.coverage=Number(value);}
     if(e.target.closest('.q-shared'))return syncRequest();
     if(e.target.matches('.q-name,[data-f="criteria"],.choice-editor input'))refreshOpenGates(card);
@@ -783,17 +785,18 @@ function addQuestion(name, q={type:'choice',instructions:'',criteria:{}}) {
     syncRequest();
   });
   card.addEventListener('change',e=>{
+    if(!e.target.matches('.q-type')&&!['choice','noul','score'].includes(card._type))card._hideCoverage=true;
     if(e.target.matches('[data-dependency]')){
-      const name=e.target.dataset.dependency, deps=new Set(card._extra.depends_on||[]);e.target.checked?deps.add(name):deps.delete(name);
+      const name=e.target.dataset.dependency, deps=new Set(Array.isArray(card._extra.depends_on)?card._extra.depends_on:[]);e.target.checked?deps.add(name):deps.delete(name);
       if(deps.size)card._extra.depends_on=[...deps];else delete card._extra.depends_on;
     } else if(e.target.matches('[data-gate-question]')){
-      const name=e.target.dataset.gateQuestion, value=e.target.dataset.gateAnswer, aliases=JSON.parse(e.target.dataset.gateAliases), gates=Object.assign(Object.create(null),card._extra.ask_if||{}), values=Object.hasOwn(gates,name)&&Array.isArray(gates[name])?gates[name].filter(v=>!aliases.includes(v)):[];
+      const name=e.target.dataset.gateQuestion, value=e.target.dataset.gateAnswer, aliases=JSON.parse(e.target.dataset.gateAliases), rawGates=card._extra.ask_if, gates=Object.assign(Object.create(null),rawGates&&typeof rawGates==='object'&&!Array.isArray(rawGates)?rawGates:{}), values=Object.hasOwn(gates,name)&&Array.isArray(gates[name])?gates[name].filter(v=>!aliases.includes(v)):[];
       if(e.target.checked)values.push(value);if(values.length)gates[name]=values;else delete gates[name];
       if(Object.keys(gates).length)card._extra.ask_if=gates;else delete card._extra.ask_if;
     } else if(e.target.matches('.q-type')){
       if(ChoiceEditor.errors(card).length){e.target.value=card._type;syncRequest();return;}
       const next=e.target.value, [,current]=parseQuestionCard(card,card._type);
-      card._type=next; card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
+      card._type=next; card._hideCoverage=!['choice','noul','score'].includes(next); card._extra=Object.fromEntries(Object.entries(card._extra).filter(([k])=>!OWNED[next].includes(k)));
       renderTypeFields(card,next,{...current,type:next}); renderSharedFields(card); refreshOpenGates(card);
     } else {
       if(e.target.matches('[data-f="yesno"]')){
