@@ -11,14 +11,30 @@ isolation from other users of the same machine — any local account can reach a
 only on a host whose users you trust. Backend URLs and interpreters set in a model's load options (`ollama_url`,
 `llamacpp_url`, `think_url`, `think_python`) are contacted or run with basal-ui's own privileges.
 
+
+## Model server limits and health
+
+The model options endpoint reports availability of each server limit in `limits_available`. The status response reports stalled health and `engine_call_s` when supplied by the Engine, plus its `long` running and queued counts. Total running and queued include the long lane. Engine refusals preserve their status and code on System One and Decisions routes, including aliases; `Retry-After` is forwarded when present. The forwarding read timeout is at least the Active request timeout plus 30 seconds.
+
 ## Local app management API
 
+`GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
+
+
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
+
+`GET /api/status` includes `features.answer_sets` and `features.conditional_questions`, probed from the installed
+Engine. Native Playground Decisions forward question fields unchanged to the child for validation. History preserves
+`usage.skipped` in the response and exposes `truncated` as the Engine object when present (otherwise `false`). Native
+Replay preserves question fields; media redaction can prevent Replay. OpenAI Decisions translation is unchanged.
 
 `GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
 `{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
 selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
 a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
+
+`GET /api/calibrations?id=…` lists each file’s `layout`, the active or saved layout in `shipped.context`, `layout_mismatch` and its message code, the model `default_layout`, and the `calibrate_layout` Engine capability. `POST /api/calibrate` uses that active or saved layout and returns `calibration_layout_unsupported` if the Engine lacks the required layout flag, including a canonical override of a non-canonical model default. Refit uses the original file layout and returns `calibration_rows_layout_unknown` when its paired calibration cannot establish that layout. Saved-row refits work without the model snapshot, reject known identity contradictions, and honor the requested comparison; when a legacy row header lacks revision, the paired calibration’s declared revision is trusted, not independently verified. `calibration_rows_baseline_unavailable` reports an unreadable baseline. Mismatched baseline thresholds are excluded using Engine semantics. Model listings expose `has_calibration_rows` so those refits remain reachable.
+Each calibration listing, fit, and model-card shipped calibration uses one snapshot of the active or saved load settings for revision, mode, and layout. Invalid or non-object model layout metadata leaves `default_layout` null and reports `shipped.error`; fitted files remain available in the listing.
 
 Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
 `est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
@@ -29,9 +45,21 @@ format/tier rankings as heuristics rather than benchmarks. Physical-memory estim
 
 | Route | Contract |
 |---|---|
-| `GET /api/addons` | Current Python environment and `media`/`gguf` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
-| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
+| `GET /api/addons` | Current Python environment and `media`/`gguf`/`finetune` inventory: declaration, compatibility, installed/import status, Engine version/source, selected requirements, command and coded unavailability reason. Unavailable provenance produces a coded inventory explanation, not a replacement Engine. |
+| `POST /api/addons` | `{"extra":"media","confirmed":true}` (or `gguf` / `finetune`) starts `engine-addon`; 202 with job state. Invalid extra/confirmation is 400; unsafe/busy environment is 409, with `code: addon_install_refused` and diagnostic parameters. Package names/commands/URLs cannot be supplied by the request. |
 | `DELETE /api/addons` | Requests cancellation through the existing Jobs API. |
+| `GET /api/attach` | Returns `{"available":boolean,"bases":[...]}`; bases are empty unless `engine.feature("attach")` is available. |
+| `POST /api/attach` | `{"base":"Qwen/Qwen3-4B","revision":null,"format":1}` starts the normal base download pinned to `1cfa9a7208912126459214e8b04321603b3df60c` and an `attach` job; format is 1 by default or 2, subject to the Engine tokenizer check. Unsupported bases/format are 400, duplicate or busy job is 409, unavailable Engine feature is 400. |
+| `DELETE /api/attach` | Cancels the attach job; an in-flight shared download drains before the job stops. |
+| `DELETE /api/attach/{id}` | Removes the record and verified owned directory; returns owned `freed_bytes` and `retained_directory` if ownership cannot be verified. Returns 409 while busy and 404 for unknown ids. Shared base weights remain cached. |
+
+If removal persists the record change but cleanup fails, the response includes `cleanup_error: true`,
+`retained_path` naming the staging directory, and conservative `freed_bytes: 0`. Inspect the retained directory
+before removing it manually; linked base weights remain in the cache.
+
+The attach job and download progress appear in `GET /api/status` under `jobs["attach"]` and `downloads[base]`;
+its log is available at `GET /api/logs?source=job%3Aattach`. The generated model is listed by `GET /api/models`
+and can be loaded and calibrated like other catalog entries.
 
 Progress is in `GET /api/status` → `jobs["engine-addon"]`; logs use
 `GET /api/logs?source=job%3Aengine-addon` and its existing cursor/generation contract. Success returns
@@ -42,15 +70,73 @@ versions, never requests/reinstalls the Engine and verifies its identity afterwa
 transactionally rolled back on failure/cancellation. See [the operator precautions](BACKENDS.md#installing-engine-add-ons).
 These privileged local routes retain the UI's Host/Origin protections; loopback is not isolation from other OS users.
 
+### Fetch a public page for Playground
+
+`POST /api/fetch` on the UI port accepts `{"url":"https://example.com/"}` and returns `url`, `final_url`,
+`content_type`, actual response `bytes`, `truncated` and typed `state`. It fetches anonymously without cookies,
+credentials, proxy settings or automatic redirect following. Every destination is checked for public unicast
+addresses before connecting; mixed public and non-public DNS results are refused. Responses are limited to 4 MiB,
+three redirects and 10 seconds for the entire operation, and text is truncated at 200,000 characters. JSON remains
+structured and is refused if invalid, nonfinite, contains a number that cannot survive the browser round trip, or is too large for the state limit; unsupported content types and
+content encodings are refused. Errors have English `detail` and a translation `code`. Cancelling or disconnecting
+the request and shutting down the app terminate the owned fetch process.
+
+`POST /api/decide` accepts optional top-level `source_url` as Playground metadata. History stores it with the
+recorded request, but it is removed before forwarding to the model; nested State fields remain unchanged. The
+external gateway and model API do not define this UI-only metadata as a request field.
+
+### Fine-tuning
+
+`GET /api/finetune` reports availability and known model IDs; `?id=<model>` also returns that model's results, including incomplete or missing outputs. Availability reasons use `finetune_engine`, `finetune_addon`, `finetune_restart` or `finetune_platform`. The records survive an Engine downgrade. A ready row contains trusted `name`, `output`, `base` and `adapter` paths plus Native's `train_decisions`, `heldout_lines`, `scored`, `skipped`, `top1_before`, `top1_after`, `steps` and `seconds`. Null accuracy means no scored decisions; zero accuracy is a value. A training report is not a selectable calibration.
+
+`POST /api/finetune` accepts `id`, `input`, `out_name`, `epochs`, `lr`, `rank`, `alpha`, `holdout`, `max_len`, `grad_checkpointing` and optional `max_steps`; it returns 202 and the `finetune` job state with preflight counts. Input is semantically checked and copied privately before admission. The job uses local weights offline, reserves twice the estimated memory until its child exits, writes a private output without `--force`, and logs to `job:finetune`. `DELETE /api/finetune` requests cancellation.
+
+`POST /api/finetune/delete` takes a server-known `id` and `name`, never a client path. It rejects active adapter users and jobs; a successful response reports `removed_bytes` as logical regular-file bytes removed, not physical disk reclaimed. Before cleanup, a `cleanup_pending` record is persisted with the existing ownership information. Incomplete cleanup reports zero and a server-derived `retained_path`; the pending result remains visible after reload and can be deleted again by its ID and name. Registry errors retain recoverable ownership, including when the files are already gone. `GET /api/models/options` includes ready, base-associated `adapters` while retaining the custom adapter field. Saved options take effect on the next load; a running child retains its Active settings. Errors carry specific `finetune_*` message codes and diagnostic parameters.
+
+### Batch presets
+
+`GET /api/batch/presets` returns the Engine's ready question names and supported language values:
+`{"available":true,"presets":["..."],"langs":["auto","pl","en"]}`. On Engine 2.4.1 it returns
+`available: false`, empty lists, a `reason`, `reason_code` and installed `version`; it does not import the 2.5-only preset module.
+
+`POST /api/batch` accepts optional `preset` (one of those names) and `lang` (`auto`, `pl` or `en`). `auto` is the
+default and is inferred by the Engine from each state's language; explicit `pl` or `en` passes `--lang`. With a
+preset selected, JSONL lines with neither `questions` nor `question` are expanded with the Engine's preset questions
+into a private temporary input for basal-run. The original input is unchanged.
+Unknown presets or unsupported language values return HTTP 400.
+
+### Batch resume
+
+`GET /api/batch/capabilities` reports boolean `restart` and `stop_after` probes for the installed `basal-run`.
+`POST /api/batch` accepts `choice` (`resume` or `restart`) and a non-negative integer `stop_after` (default 16;
+0 writes individual errors). With resume support, a `.part` or `.part.json` at the output returns 409 with
+`code: batch_choice` unless a choice is supplied. An orphan sidecar cannot be resumed; Restart explicitly replaces
+it. Resume is checked by the Engine against input, request options and server identity. A nonzero exit retaining a
+`.part` reports `phase: stopped_resumable`, `done`, `total` and the Engine's error in the Batch job in
+`GET /api/status`; its `result` retains the original Batch request for an explicitly confirmed Restart. Otherwise failure remains `error`. Older Engines retain their previous Batch behavior.
+
+### Decision servers
+
+`POST /api/decision-servers` accepts `{"name":"Local", "url":"http://127.0.0.1:11434", "key":null, "consent":false}` and returns 201. `consent: true` is required for hosts other than loopback; missing consent returns 400 with `CONSENT_REQUIRED`. URLs containing credentials, query strings or fragments are refused. `GET /api/decision-servers` lists server state and reported models without keys; `DELETE /api/decision-servers/{id}` removes the server, its models and key. Secrets are held in an owner-only `<settings stem>.decision-secrets.json` sidecar and are never exported in settings.
+
+Settings and the secret sidecar are each replaced atomically under the settings lock, with rollback on ordinary write
+failures. A process crash between the two replacements can leave a stale sidecar entry or a server without its key;
+the pair is not a cross-file transaction.
+
+`GET /api/status` marks model rows `kind: basal` or `kind: comparison`; a Comparison row may include `reported_memory_bytes` and never consumes the basal budget. Comparison models may be sent to the UI's `/api/decide` and `/api/batch` only. Requests outside the comparison subset return `UNSUPPORTED_FOR_COMPARISON` before upstream inference; Comparison Batch includes the source line in the refusal. Playground and Comparison Batch Decisions are recorded with `server` in History and attributed to the Comparison model in Usage and rolling traffic. Ordinary basal Batch remains unrecorded.
+
+Comparison choice and score responses must include a complete probability distribution over the requested options. Distributions must total 1 within an absolute tolerance of 0.001; a reported noul value must agree with its true probability within the same tolerance. Probabilities are not normalized or rewritten; invalid responses return 502.
+
+The API server gateway `/v1/models`, health, explicit model routing and MCP exclude Comparison models. For an endpoint ending in `/v1/decisions`, a 404 on `/v1/models` uses the server display name as the upstream model name; only the representable subset is translated.
 ### Batch path inspection
 
 `POST /api/paths/check` inspects a path on the **app server's machine**, not the browser's machine:
 
 ```json
-{"path":"/Users/me/requests.jsonl","kind":"jsonl"}
+{"path":"/Users/me/requests.jsonl","kind":"jsonl","preset":"triage"}
 ```
 
-`kind` is `jsonl` or `output`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
+`kind` is `jsonl`, `output`, `input_dir`, or `output_dir`. An invalid kind/path, including a NUL character, returns HTTP 400. A well-formed
 inspection request returns HTTP 200 even when the file is missing or unsuitable: inspect `ok` and `code`.
 Common facts are `path`, `kind`, `exists`, `is_file`, `is_dir`, `ok` and `code`.
 
@@ -59,11 +145,29 @@ inspects the first non-empty row for request/label shape, question types and a p
 every request in the file. Scanning stops at 100,000 non-empty rows or 64 MiB; the first row must fit within 1 MiB.
 A blank prefix exhausting the scan limit is not reported as an empty file. Preview text is limited to 300 characters
 plus an ellipsis when truncated.
+When the selected Batch preset is included as `preset`, a state-only first row is previewed as a request using that
+preset's questions. Without it, the same row is unsuitable.
 
 For output, the response reports parent-directory existence, writability and whether an existing file would be
 overwritten. These are advisory facts at inspection time; permissions and files can change before Batch runs.
 Inspection never writes files or runs inference. This privileged local route has the same Host/Origin boundary
 as the other management routes; it is not a filesystem sandbox.
+
+### Benchmarks
+
+`POST /api/benchmark` accepts `{"id":"<downloaded model id>","kind":"identity","dtype":"bf16"}` or
+`{"id":"<downloaded model id>","kind":"order_check"}`. Identity `dtype` is `fp32` or `bf16` (required) and
+requires the fast execution mode to be available for that model and host. `order_check` requires Engine 2.5's
+`order_check` feature probe; otherwise the request returns HTTP 400. Both start the shared `benchmark` job, reserve
+memory while running, write logs under `job:benchmark`, and save results with `GET /api/benchmarks`. Identity keeps
+per-path outcomes, deltas and Engine identity; Order check stores the Native report in `report`. The accepted
+benchmark kinds are `benchmark`, `loadtest`, `determinism`, `modes`, `identity` and `order_check`.
+
+### Scheduled Batch
+
+`GET /api/schedules` lists definitions; `POST /api/schedules` creates one. Supply `model`, absolute `input_dir` and `output_dir`, `pattern`, `concurrency` (1–256), and an `interval` containing either `every_minutes` (1–525600) or `daily_at` (`HH:MM`, local time). Optional booleans are `overwrite`, `catch_up`, and `paused`; `id` may be supplied or generated. `PUT /api/schedules/{id}` updates a definition, `DELETE` removes it, `POST /api/schedules/{id}/pause` and `/resume` change pause state, and `POST /api/schedules/{id}/run` returns `started`, `queued`, `skipped`, `failed`, or `no_new_files`. Run now bypasses pause and due time, but not processed-file or overwrite protection. It returns 409 with code `schedule_owned` while another instance sharing settings is running scheduled work. `GET /api/schedules/{id}/preview` inspects the next unprocessed matching input without inference or writes. `GET /api/schedules/{id}/runs?cursor=0` returns up to 100 latest run records and `next_cursor`.
+
+`GET /api/jobs` returns the same process-local job states as `GET /api/status` under `jobs`. A run records the model, file, actual start and duration, row and error counts, output path and completion, skip, failure or cancellation reason. Definitions, scan clocks and processed signatures are stored in settings; run history uses an owner-only, size-rotated `<settings stem>.schedules.jsonl` sidecar. Unreadable or corrupt history is an error. Changes, resume and edit reset the failure streak; three consecutive errors pause a schedule. Skips and cancellations do not count as errors; cancelled file signatures are not automatically retried. Published output checkpoints are recovered after an interrupted process; recovered records have null duration. Accepted scans retain their remaining file order after restart; later arrivals wait for the next interval unless Run now adds them. A failed resumed scan settles its clock so a missing folder does not retry every timer tick. Run now also scans for newly arrived files during an active job. A changed source is identified by canonical path, size and nanosecond modification time. Comparison models require PR 60; their inputs are preflighted before basal-run so unsupported or discarded fields are rejected without contacting the upstream server. An unloaded model is skipped, never loaded automatically.
 
 ## Several models behind basal-ui
 
@@ -79,6 +183,7 @@ response.
 | `model` not loaded or not ready | 404 | `MODEL_NOT_FOUND` — the message lists the loaded models |
 | the model was unloaded while the request arrived | 409 | `MODEL_NOT_READY` |
 | its `basal-serve` cannot be reached | 502 | `UPSTREAM_ERROR` |
+| no child response within the forwarding read timeout | 504 | `UPSTREAM_TIMEOUT` |
 | `Content-Type` is not `application/json` | 415 | `UNSUPPORTED_MEDIA_TYPE` |
 | the body is over 256 MiB | 413 | `REQUEST_TOO_LARGE` |
 | a browser `Origin` outside the **CORS origins** setting | 403 | `ORIGIN_REFUSED` |
@@ -86,14 +191,77 @@ response.
 Errors use the basal envelope (`{"error", "code"}`) on the System One paths and the OpenAI envelope on the Decisions
 paths, like basal-serve's own errors.
 
+The forwarding read-inactivity timeout is 600 seconds, not a total request deadline. Connection, write and pool
+timeouts remain 120 seconds. When an active Engine `request_timeout` is available in the Runner's load options,
+the read timeout is at least that deadline plus 30 seconds; exposing that Engine option is tracked by
+[#65](https://github.com/pawelkiszczak/basal-ui/issues/65). Supported Engines 2.4.1–2.5.1 do not expose that
+deadline, so 600 seconds is a fixed fallback and does not guarantee completion for every workload. Engine-supplied
+errors retain their status and code; `UPSTREAM_TIMEOUT` identifies a timeout generated by basal-ui. The same read
+timeout applies to Playground and MCP forwarding. Benchmarks retain their own 300-second HTTPX timeout.
+Configure client timeouts accordingly.
+
+After a gateway client disconnects, basal-ui cancels its forwarding await, closes its upstream HTTP connection,
+releases its lease and records a 499 `CLIENT_DISCONNECTED` failure in history and error counts. A read timeout is
+recorded as 504. Neither event guarantees that the Engine stopped computing. In supported Engine sources
+([2.4.1](https://github.com/rkinas/basal/blob/v2.4.1/basal/server.py),
+[2.5.0](https://github.com/rkinas/basal/blob/v2.5.0/basal/server.py),
+[2.5.1](https://github.com/rkinas/basal/blob/v2.5.1/basal/server.py)), `systemone` awaits `srv.serve` without
+monitoring client disconnect, while model calls run in an executor. Reliable per-request cancellation and removal
+of queued work therefore require Engine support; basal-ui does not terminate a shared model process to cancel one
+Decision. A disconnect before forwarding starts is not recorded as a Decision. If the upstream response or timeout
+has already arrived and its record is being persisted, that outcome is recorded instead of 499 even if the client
+disconnects during persistence; 499 identifies cancellation while forwarding is still in progress.
+
 `GET /v1/models` lists the ready models in both shapes: `models` holds each model's basal-serve entry (as above) and
 `data` the OpenAI list (`{"id", "object": "model", "created", "owned_by": "basal"}`), with `"object": "list"`.
 `GET /health` answers `{"status": "ok", "models": [ids]}`.
 
 `GET /v1/stats` returns basal-ui's statistics: `{"models": {id: {"requests", "questions", "errors", "input_tokens",
 "avg_latency_ms", "p50_ms", "p95_ms", "avg_best_prob", "first_used", "last_used", "by_type": {type: {"questions",
-"avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. With **Require an API key** it needs an admin key (only
+"avg_best_prob"}}}}, "benchmarks": {id: [results]}}`. Determinism results preserve the Engine’s optional
+`determinism.load_errors` count. With **Require an API key** it needs an admin key (only
 basal-ui's internal key is one; user keys get 403), otherwise it is open like `/v1/keys`.
+
+### Prometheus metrics
+
+`GET /metrics` returns Prometheus 0.0.4 text on the API server port. When keys are required, it requires an admin key, like `/v1/stats`. Lifetime counters can decrease after a statistics reset. Rolling 15-minute counts are gauges because they can decrease as the window advances or after a reset. Each ready native Engine child's available text metrics are included with its loaded ID as a `model` label. Samples are grouped by metric family, including histogram and summary subseries. Children that do not respond within two seconds, return a non-text response or do not support metrics are skipped; Cascades and Comparison models are never scraped.
+
+The basal-ui metric names are:
+
+| Metric | Labels | Type | Unit |
+|---|---|---|---|
+| `basal_ui_requests_total` | `model` | counter | requests |
+| `basal_ui_questions_total` | `model` | counter | questions |
+| `basal_ui_errors_total` | `model` | counter | failed requests |
+| `basal_ui_input_tokens_total` | `model` | counter | input tokens |
+| `basal_ui_latency_quantile_seconds` | `model`, `quantile` (`0.5` or `0.95`) | gauge | seconds |
+| `basal_ui_latency_seconds_avg` | `model` | gauge | seconds |
+| `basal_ui_traffic_requests_15m` | `endpoint`, `method` | gauge | requests in 15 minutes |
+| `basal_ui_traffic_errors_15m` | `endpoint`, `method` | gauge | failed requests in 15 minutes |
+| `basal_ui_models_loaded` | none | gauge | ready models |
+
+Latency quantiles use at most 1,000 retained samples per model, not the complete lifetime distribution.
+Average latency uses lifetime recorded requests. Unavailable latency values are omitted.
+
+To enable authenticated scraping, create a secret file accessible to both basal-ui and Prometheus and start basal-ui with its contents in `BASAL_UI_ADMIN_KEY` (set **Require an API key** in the API server settings):
+
+```sh
+umask 077
+uv run --no-project python -c 'import secrets; print(secrets.token_urlsafe(32))' > /secure/path/basal-admin-key
+BASAL_UI_ADMIN_KEY="$(cat /secure/path/basal-admin-key)" basal-ui
+```
+
+Keep the secret file readable only by the operator and Prometheus. Set the environment variable before starting basal-ui; an unset or empty value generates a random internal key. Only its digest is saved in the per-process key file; it is not exposed in the UI. Restart basal-ui to change it. Prometheus uses the same secret file below (omit `authorization` when keys are disabled):
+
+```yaml
+scrape_configs:
+  - job_name: basal-ui
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+    authorization:
+      type: Bearer
+      credentials_file: /secure/path/basal-admin-key
+```
 
 ### Recent Decision traffic
 
@@ -165,14 +333,18 @@ process only; it does not clear another process's in-memory window. Rolling tele
 
 ### MCP routing
 
-With tested Engine 2.4.1, the streamable-HTTP MCP `decide` and `decide_many` tools answer with the **first loaded
-model**. Their schemas have no `model` argument or `list_models` tool. Use `GET /v1/models` for inventory and the
-System One/OpenAI Decisions routes for named-model routing. Playground refuses to generate an MCP example for
-a different selected model rather than silently changing its target.
+With Engine 2.5.0 the streamable-HTTP MCP `decide` and `decide_many` tools take an optional `model` argument and a
+`list_models` tool returns `{"models": [...]}`, the ids of the loaded models. Without `model` they answer with the
+**first loaded model**. With Engine 2.4.1 their schemas have neither: they always answer with the first loaded model;
+use `GET /v1/models` for inventory and the System One/OpenAI Decisions routes for named-model routing. On 2.4.1
+Playground refuses to generate an MCP example for a different selected model rather than silently changing its target;
+on 2.5.0 the example passes the selected model as `model`. `GET /api/status` reports which applies as
+`serving.mcp_models`.
 
-Use the running gateway's `/mcp` HTTP endpoint with an initialized MCP client. The stock Engine's `basal-mcp`
-stdio bridge accepts neither `--model` nor an API-key option and does not send the gateway's required `model`
-field; it is not a working stdio-to-gateway connection example.
+Use the running gateway's `/mcp` HTTP endpoint with an initialized MCP client. With Engine 2.5.0 the Engine's stdio
+bridge reaches the gateway too: `basal-mcp --url http://HOST:PORT --model MODEL_ID [--api-key KEY]` sends `model` and
+the bearer key with every request. The 2.4.1 `basal-mcp` accepts neither `--model` nor an API-key option and does not
+send the gateway's required `model` field.
 
 ## Errors and request IDs
 
@@ -267,6 +439,10 @@ are not fetched. Empty text with image input is accepted if the underlying model
 There must be 1–200 questions. Each requires `type` and non-empty `instructions`; `name` is optional and must be
 unique when provided. Omitted names appear as JSON `null`. A `choice` needs 2–255 values, each a string or boolean;
 values must be unique after converting to strings, and original values (including booleans) are restored in answers.
+A fallback preserves the selected choice even if its returned option probabilities favor a different option. When a
+fallback returns no option log probabilities, `probabilities` and `confidence` are `null`; clients requiring a numeric
+distribution must handle this explicitly. Router-provided
+`answered_by`, `level`, `model` and `calibrated` fields are retained when available.
 A `score` needs 2–10 levels. These Decisions limits may exceed basal's own per-prompt-format option limit: prompt format
 1 supports 2–10 options and format 2 supports 2–255 (the `ollama` mode limit is 20). The serving format must still
 accept the translated question.
@@ -443,3 +619,63 @@ SDK `typesafe-sdk` 0.7.5, OpenAI SDK 3.35.1 and LiteLLM 1.106.1 (SDK and proxy) 
 | Ollama / llama.cpp | System One request and answer shape through basal's server integrations | Basal-specific question types and extensions may not be supported by those servers; option limits depend on the selected backend and prompt format. |
 | Ollaya | System One question/answer wire shape | Basal-specific types/fields and response usage may differ. |
 | OpenAI Decisions | `/v1/decisions` and `/decisions` request/answer translation | Only predicate, choice and score are translated; see limits above. Safety/metadata/store fields are accepted but ignored. Errors use route-specific OpenAI envelopes. |
+
+## Cascades
+
+Engine 2.5 exposes configured Cascades through the local app API:
+
+- `GET /api/cascades` lists definitions and running state; fallback keys are never returned.
+- `POST /api/cascades` creates a definition (`name`, `kind`, ordered `levels`, optional `weights` and `fallback`).
+- `PUT /api/cascades/{name}` replaces a stopped definition; `DELETE` removes a stopped definition.
+- `POST /api/cascades/{name}/start` starts it only when every member is ready; `/stop` unloads the router.
+
+The gateway's `GET /v1/models` lists Cascade entries with `kind: "cascade"` and accepts their name in the request's
+`model` field. Escalation answers include `answered_by`; multi-level routers may also return `level` and `model`.
+Blend cannot be combined with an LLM fallback by the installed router. Blend and fallback answers
+include `calibrated: false`. Batch accepts only escalation Cascades without fallback; Calibration, Inspect, and Benchmarks do not accept Cascades.
+The router feature probe gates these routes. Fallback keys live in the owner-only decision-secrets sidecar and never appear in responses. Settings and secrets use separate atomic replacements, so a process crash between them can leave them out of sync.
+## Custom calibration
+
+`POST /api/calibrate` starts a calibration job for `id` and a local labelled `input`; `targets` is a list of
+`max_error` values. Its optional `advanced` object accepts `conformal` (a list of numeric coverage levels strictly
+between 0 and 1) and `keep_shipped` (a list drawn from `choice`, `noul`, and `score`). These options are rejected
+when the installed `basal-calibrate` parser does not declare them. Kept types require compatible temperatures and
+per-type thresholds in the Shipped calibration or the explicitly compared file; `compare: "none"` cannot keep any.
+A loaded model's Active load settings and snapshot are used; otherwise its Saved load settings are used.
+`GET /api/calibrations?id=...` reports option availability in `options`. `GET /api/calibrations/keep-options?id=...&compare=...`
+returns a `types` object mapping eligible question types to their compared file, using `shipped`, `none`, or a file
+path for `compare`. The start request rechecks eligibility. `GET /api/calibrations/report?id=...&file=...` returns
+its original `report` text and, when present, `details` with fitted identity, conformal results and per-type threshold
+metadata. Old reports without those fields retain the original response shape.
+### Playground question sets
+`GET /api/question-sets` lists Engine set names, available languages and question counts.
+`POST /api/question-sets/{name}` accepts JSON with `lang` (`auto`, `pl` or `en`, default `auto`), string `state`
+(default empty), and optional numeric `max_error` strictly between 0 and 1. It returns the Engine's questions unchanged;
+Auto delegates language guessing to the Engine. An unknown name returns 404, invalid inputs 400, and both routes return
+503 when the Engine lacks question sets.
+## Preset URL import
+`POST /api/presets/import-url` accepts `{"url": "https://example.com/presets.json"}` and returns
+`{"presets": {"load": {}, "request": {}}, "count": 0}` with the resulting presets and processed entry count.
+Only public HTTP(S) addresses and `application/json` responses up to 1 MiB are accepted; redirects are checked too.
+Entries use the same validation, replacement and deletion rules as `PUT /api/presets`, in load then request order.
+A failed entry can leave earlier entries saved. Request preset root `model` is removed.
+### MCP tool import and shortlist
+`POST /api/mcp/tools` accepts `{ "url": "http://localhost:PORT/mcp", "token": "..." }` (token optional) and returns `{ "tools": [...] }`. It initializes a streamable HTTP MCP session and follows up to 20 pages within a 30-second operation and 4 MiB response budget. Only loopback clients can import from explicit loopback servers. Other targets must resolve exclusively to public unicast addresses, and bearer tokens for remote hosts require HTTPS. The token is operation-only; failures include an English `detail` and a `code`.
+`POST /api/tools/shortlist` accepts `{ "tools": [...], "query": "...", "k": 40 }` and returns ranked original definitions in `tools`. Ranking uses local BM25 and does not call a model or an MCP tool.
+Load options use the installed Engine parser's `long_lane` choices and default. `soam` accepts `auto`, `on`, or `off`; `auto` sends no flag. Legacy `long_lane: true` stays on and `false` inherits the installed Engine's default. If a load preset uses `long_lane: auto` on an Engine without that choice, it uses the installed Engine's default. Legacy boolean `soam` values migrate to `auto` or `off`. A model status may include `calibration_origin_warning` and `calibration_origin_warning_code` when the Engine reports a calibration fitted on other model files.
+
+### Load option availability
+
+`GET /api/models/options?id=...` includes Native `kind` and `compiled` on mode rows, and returns `unavailable`, a map of option keys to reasons when the installed Engine lacks support. Saved values remain visible; submitting an unavailable non-default value is refused. `PUT /api/models/options` saves validated non-default values. Existing load presets and their import/export carry these option values.
+
+The `/api/status` response includes `features.rank`, a capability probe for experimental rank questions. `POST /api/decide` forwards rank questions to the Engine; its validation errors and results are returned unchanged.
+
+## History audio retention
+
+The settings response reports support as `history_audio_available`. Unsupported platforms keep ordinary History and reject attempts to enable audio retention.
+
+`GET /api/settings` returns `keep_history_audio` (default `false`) and the read-only `history_audio_budget_bytes` (268435456). `PUT /api/settings` accepts the boolean `keep_history_audio`; disabling it preserves existing retained audio. The oldest audio expires when the budget is needed, while History rows remain. Images are not retained and clearing History deletes retained audio. If the saved policy cannot be read or safely changed, either route returns HTTP 503 with `code: history_audio_policy_unavailable` and `Cache-Control: no-store`; clients must treat the state as unknown rather than off.
+
+History commits new retention and eviction metadata before deleting old audio and filling the reserved new file. A precommit failure preserves previously retained audio; after the metadata commit, a storage failure can leave the new row with unavailable audio and previously selected clips expired. Cleanup uses recorded app-owned file identity; experimental prototype blobs without identity are not trusted for replay or automatic deletion. These guarantees do not establish power-loss rollback or protection against a concurrently hostile process with the same OS user.
+
+History lists and ordinary `GET /api/history/{id}` remain redacted. A detail can indicate `replay_requires_audio: true`; only an explicit `GET /api/history/{id}?replay=true` requests the complete replay payload. If retained audio is unavailable, `replay_error_code` is `history_audio_unavailable`; missing images can also prevent Replay. No audio bytes are loaded by routine History polling.

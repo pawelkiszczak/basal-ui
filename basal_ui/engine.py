@@ -1,7 +1,10 @@
 """The Engine basal-ui runs on (rkinas/basal): version gate, feature probes, experimental-engine identity."""
 
+import ast
+import functools
 import importlib.metadata
 import importlib.util
+import inspect
 import json
 import os
 
@@ -9,8 +12,9 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 ENGINE_REPO = "rkinas/basal"
-TESTED_RELEASES = ("2.4.1",)  # every release basal-ui is tested with; CI runs each; the last is the pin
-SUPPORTED_RANGE = ">=2.4.1,<2.5"  # bump with TESTED_RELEASES
+# every release basal-ui is tested with; CI runs each; the last is the pin
+TESTED_RELEASES = ("2.4.1", "2.5.0", "2.5.1", "2.6.0", "2.8.0")
+SUPPORTED_RANGE = ">=2.4.1,<2.9"  # bump with TESTED_RELEASES
 SUPPORTED = SpecifierSet(SUPPORTED_RANGE)
 UNCHECKED_ENV = "BASAL_UI_ENGINE_UNCHECKED"
 PINNED_RELEASE = TESTED_RELEASES[-1]
@@ -73,11 +77,67 @@ def check():
     return out
 
 
+def _parameter(module, attribute, name):
+    """Whether the callable `attribute` of the Engine module `module` (dotted path inside it) takes parameter `name`;
+    False when the module cannot be imported here (an optional dependency of the Engine is missing)."""
+    try:
+        target = importlib.import_module(module)
+        for part in attribute.split("."):
+            target = getattr(target, part)
+        return name in inspect.signature(target).parameters
+    except (ImportError, AttributeError, TypeError, ValueError):
+        return False
+
+
 FEATURES = {
-    "adapter": lambda: _spec("basal.adapter") is not None,  # --adapter (rkinas/basal#52, 2.5.1)
+    "answer_sets": lambda: (
+        _parameter("basal.server", "limits", "q") and _parameter("basal.server", "plain_limits", "cal")
+    ),
+    "conditional_questions": lambda: _parameter("basal.server", "ask_gates", "questions"),
+    "rank": lambda: _spec("basal.rank") is not None,
+    "calibrate_layout": lambda: any(
+        "--layout" in a.option_strings for a in importlib.import_module("basal.calibrate").parser()._actions
+    ),
+    "adapter": lambda: _spec("basal.adapter") is not None,  # --adapter (rkinas/basal#52, 2.5.0)
     # basal-viz reads Gemma 4 basal-omni (rkinas/basal#75); basal_ui.inspect imports basal.viz anyway
     "viz_gemma4": lambda: hasattr(importlib.import_module("basal.viz"), "is_gemma4"),
+    # MCP tools with a `model` argument and list_models (rkinas/basal#66, 2.5.0: basal.mcp_server.http(models=))
+    "mcp_models": lambda: _parameter("basal.mcp_server", "http", "models"),
+    # --mode mlx serves Qwen3.5 (basal-omni-pico) from bf16 weights (2.5.0: MLXBackend(compute=), --mlx-compute)
+    "mlx_recurrent": lambda: _parameter("basal.engine", "MLXBackend.__init__", "compute"),
+    # --mode int8: block-scaled int8 in the CUDA graph engine (2.5.0: basal/server.py MODES, basal/int8block.py)
+    "int8": lambda: "int8" in importlib.import_module("basal.server").MODES,
+    # basal-viz --mode mlx / mlx-q8 reads the MLX engine's layers (2.5.0: basal/viz.py mlx_lens)
+    "viz_mlx": lambda: hasattr(importlib.import_module("basal.viz"), "mlx_lens"),
+    "router": lambda: _spec("basal.router") is not None,
+    "attach": lambda: _spec("basal.attach") is not None,
+    "finetune": lambda: _spec("basal.finetune") is not None,
+    "presets": lambda: _spec("basal.presets") is not None,
+    "order_check": lambda: _spec("basal.ordercheck") is not None,
 }
+
+
+def _flags(module):
+    """Long options declared by an Engine console script's parser."""
+    parser = importlib.import_module(module).parser()
+    return frozenset(s for action in parser._actions for s in action.option_strings if s.startswith("--")) - {"--help"}
+
+
+@functools.cache
+def serve_flags():
+    """Long options declared by basal-serve."""
+    return _flags("basal.server")
+
+
+@functools.cache
+def calibrate_flags():
+    """Long options declared by basal-calibrate."""
+    return _flags("basal.calibrate")
+
+
+def serve_modes():
+    """Execution modes declared by basal-serve."""
+    return frozenset(importlib.import_module("basal.server").MODES)
 
 
 def feature(name):
@@ -88,3 +148,29 @@ def feature(name):
 def supported(version):
     """Whether an Engine release (e.g. the latest on GitHub) is in this basal-ui's supported range."""
     return _in_range(version)
+
+
+@functools.cache
+def serve_option(flag):
+    """Choices and default declared for a basal-serve flag, or None."""
+    parser = importlib.import_module("basal.server").parser()
+    return next(((tuple(a.choices or ()), a.default) for a in parser._actions if flag in a.option_strings), None)
+
+
+@functools.cache
+def bench_flags():
+    """Long options declared by the installed basal-bench parser."""
+    try:
+        bench = importlib.import_module("basal.bench")
+        if callable(getattr(bench, "parser", None)):
+            return _flags("basal.bench")
+        tree = ast.parse(inspect.getsource(bench.main))
+    except (ImportError, AttributeError, OSError, TypeError, SyntaxError):
+        return frozenset()
+    return frozenset(
+        arg.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
+        for arg in node.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.startswith("--")
+    )

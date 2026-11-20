@@ -36,8 +36,9 @@ adapter is merged before `--quant-load cpu`; `--adapter <out>/lora` answers the 
 
 ## Upstream
 
-- PR: [rkinas/basal#52](https://github.com/rkinas/basal/pull/52) (draft; no issue — proposed in the PR)
-- Scheduled for engine 2.5.1, with a rebase on 2.5 requested first.
+- PR: [rkinas/basal#52](https://github.com/rkinas/basal/pull/52) (no issue — proposed in the PR)
+- Scheduled for engine 2.5.1, with a rebase on 2.5 requested first; merged and released in engine 2.5.0
+  (2026-11-02, release notes "LoRA adapters at load").
 
 ## Measurements
 
@@ -57,6 +58,6 @@ Not run here: CUDA, SGLang and Gemma 4 (covered by the acceptance check when 2.5
 
 ## Outcome
 
-Pending engine 2.5.1. basal-ui offers the adapter load option behind `engine.feature("adapter")`: enabled on the
-proposal branch (experimental engine), greyed out with *needs engine ≥ 2.5.1* on supported releases. When 2.5.1
-enters `SUPPORTED`, the probe and the gating go.
+Shipped in engine 2.5.0. basal-ui offers the adapter load option behind `engine.feature("adapter")`: enabled with
+engine 2.5.0, greyed out with *needs engine ≥ 2.5.0* on 2.4.1. The probe stays while 2.4.1 is in `SUPPORTED_RANGE`;
+it and the gating go when the range starts at 2.5.0.

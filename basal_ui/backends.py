@@ -56,7 +56,7 @@ BACKENDS = {
     "torch": (
         "PyTorch",
         ("torch",),
-        ("eager", "mps", "fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4"),
+        ("eager", "mps", "fast", "fast-nocompile", "fast-exit", "fp8", "nvfp4", "int8"),
         "https://pytorch.org/get-started/locally/",
     ),
     "mlx": ("MLX", ("mlx", "mlx_lm"), ("mlx", "mlx-q8"), "https://ml-explore.github.io/mlx/build/html/install.html"),
@@ -405,7 +405,11 @@ class Manager:
             snapshots = []
             for item in selected:
                 runner = fleet.ready(item["id"])
-                if runner.generation != item["generation"] or fleet.leases.get(runner, 0):
+                if (runner.models_entry or {}).get("kind") == "cascade":
+                    raise RuntimeError("A Cascade cannot be used in a backend test")
+                if fleet.dependent_cascades(item["id"]):
+                    raise RuntimeError("Stop dependent Cascades before unloading a member for a backend test")
+                if getattr(runner, "generation", None) != item["generation"] or fleet.leases.get(runner, 0):
                     raise RuntimeError("Unload selection changed or is busy; refresh and confirm again")
                 if item["id"] not in variants or not runner.serve_snapshot:
                     raise RuntimeError("Cannot capture the active model configuration")

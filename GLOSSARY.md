@@ -8,6 +8,15 @@ try it.
 **Decision**:
 The result of evaluating a request's questions against its supplied context, including the evidence and uncertainty available for those answers.
 
+**Decision server**:
+A user-configured external service that answers Decisions and reports the models it offers.
+
+**Comparison model**:
+A model reported by an external Decision server, used for Playground comparison or Batch without a basal calibration certificate.
+
+**Attached model**:
+An Engine-served basal-attach model; distinct from a Comparison model on an external Decision server.
+
 **Replay**:
 Preparing a new request from a recorded decision request for review before submission. A record missing required attachments cannot be replayed completely.
 
@@ -37,6 +46,9 @@ Whether basal-ui supports a backend on the app host's platform and hardware. Sep
 **Model compatibility**:
 Whether a model's architecture and format can run with a backend and execution mode after required dependencies are installed. Separate from memory fit.
 
+**Attached model**:
+A curated chat model linked into an Engine model directory for serving Decisions, without retraining. Its initial calibration has no certified thresholds.
+
 **Inference test**:
 An explicit, isolated check of one downloaded model, revision and execution mode using a fixed short decision. Passing is not a general accuracy or performance certification.
 
@@ -61,3 +73,9 @@ A change to the Engine submitted upstream, tracked from use case to merged relea
 
 **Research note**:
 The record of an Engine proposal's use case, measurements and outcome.
+
+**Cascade**:
+A named router over ordered, ready native models, using escalation or a weighted Blend, optionally followed by a chat fallback. A Cascade is not a model checkpoint.
+
+**Blend**:
+A Cascade kind that combines eligible answers using weighted probabilities; its blended answers are uncalibrated.
