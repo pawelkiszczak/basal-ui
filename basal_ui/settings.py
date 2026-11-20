@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -103,16 +104,21 @@ class HistoryAudioPolicyError(OSError):
     """The saved audio policy cannot be read or changed safely."""
 
 
+def _read_settings_object(path):
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("Settings are not an object.")
+    return value
+
+
 def _audio_policy_data():
     try:
-        value = json.loads(_settings_path().read_text(encoding="utf-8"))
+        value = _read_settings_object(_settings_path())
     except FileNotFoundError:
         return {}
     except (OSError, ValueError, UnicodeError) as exc:
         raise HistoryAudioPolicyError("History audio policy unavailable") from exc
-    if not isinstance(value, dict) or (
-        "keep_history_audio" in value and not isinstance(value["keep_history_audio"], bool)
-    ):
+    if "keep_history_audio" in value and not isinstance(value["keep_history_audio"], bool):
         raise HistoryAudioPolicyError("History audio policy unavailable")
     return value
 
@@ -210,7 +216,7 @@ def _write_private(path: Path, text: str) -> None:
 
 def _read(*, strict=False, require_file=False) -> dict:
     try:
-        value = json.loads(_settings_path().read_text(encoding="utf-8"))
+        return _read_settings_object(_settings_path())
     except FileNotFoundError:
         if strict and require_file:
             raise
@@ -219,11 +225,6 @@ def _read(*, strict=False, require_file=False) -> dict:
         if strict:
             raise OSError("Could not read settings.") from exc
         return {}
-    if not isinstance(value, dict):
-        if strict:
-            raise OSError("Settings are not an object.")
-        return {}
-    return value
 
 
 def _migrate_options(value):
@@ -261,9 +262,8 @@ def _migrate_saved_options(*, strict=False, require_file=False):
 def load(*, strict=False, require_file=False) -> dict:
     value = _read(strict=strict, require_file=require_file)
     if _migrate_options(value):
-        value = _migrate_saved_options(
-            strict=strict, require_file=require_file
-        )  # re-read under the lock to preserve concurrent writes
+        with suppress(OSError):
+            value = _migrate_saved_options(strict=strict, require_file=require_file)
     legacy = value.pop("last_model", None)  # one model before basal-ui loaded several
     if isinstance(legacy, dict) and "last_models" not in value:
         value["last_models"] = [legacy]
@@ -944,16 +944,13 @@ def _schedule_settings() -> dict:
     """Read scheduling state without treating unreadable or corrupt settings as absent."""
     path = _settings_path()
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        return _read_settings_object(path)
     except FileNotFoundError:
         if path.is_symlink():
             raise CorruptSettings(f"{path} points to a missing settings file") from None
         return {}
     except (ValueError, UnicodeDecodeError) as exc:
         raise CorruptSettings(f"{path} is not valid JSON (a settings object)") from exc
-    if not isinstance(value, dict):
-        raise CorruptSettings(f"{path} is not valid JSON (a settings object)")
-    return value
 
 
 @_locked
@@ -1138,12 +1135,28 @@ def append_schedule_run(row: dict, spec: dict, checkpoint: bool = False) -> None
         if row.get("error") and live == spec:
             state["failures"] = state.get("failures", 0) + 1
             if state["failures"] >= 3:
-                live.update(paused=True, paused_reason="paused after three consecutive failed runs")
+                live.update(
+                    paused=True,
+                    paused_reason="paused after three consecutive failed runs",
+                    paused_reason_code="schedule_auto_paused",
+                )
         elif live == spec and not row.get("skipped") and not row.get("cancelled"):
             state["failures"] = 0
     publications = data.get("schedule_publications")
     if isinstance(publications, dict):
         publications.pop(row["run_id"], None)
+    if row.get("skipped") in ("model not loaded", "model not ready"):
+        latest = next(
+            (
+                entry
+                for entry in reversed(current)
+                if entry.get("schedule") == row["schedule"] and entry.get("file") == row.get("file")
+            ),
+            None,
+        )
+        if latest is not None and all(latest.get(key) == row.get(key) for key in ("model", "size", "mtime", "skipped")):
+            save(data)
+            return
     data["schedule_history_pending"] = row
     save(data)
     _write_schedule_history([*current, row])

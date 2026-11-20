@@ -12,7 +12,6 @@ import argparse
 import asyncio
 import base64
 import dataclasses
-import io
 import ipaddress
 import json
 import math
@@ -23,6 +22,7 @@ import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -36,7 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from . import backends, catalog, engine, hardware, history_audio, settings
 from . import options as load_options
 from .addons import AddonManager
-from .fetch import FetchError, FetchManager
+from .fetch import FetchError, FetchManager, explicit_loopback
 from .fleet import CascadeMemberNotLoaded, Fleet
 from .gateway import Gateway
 from .history import History
@@ -139,101 +139,14 @@ def create_app(
 
     finetune_manager = finetune or FineTune(fleet, settings_mod, hardware_fn, addon_manager)
     preset_fetch_manager = preset_fetch_manager or FetchManager(presets=True)
-    mcp_importer = mcp_importer or FetchManager("basal_ui.mcp_import")
+    mcp_importer = mcp_importer or FetchManager("basal_ui.mcp_import", timeout=30)
     from . import batch, paths
-    from .schedules import SchedulerBusy, Schedules
+    from .schedules import SchedulerBusy, Schedules, validate
 
-    def start_scheduled_batch(spec, source, output, signature, runner, row):
-        snapshot = None
-        try:
-            try:
-                batch.validate_runner(runner)
-            except ValueError as exc:
-                raise RuntimeError(str(exc)) from exc
-            if output.resolve() == source.resolve():
-                raise RuntimeError("output must not be the input file")
-            fd, name = tempfile.mkstemp(prefix=".basal-ui-schedule-", suffix=".jsonl", dir=output.parent)
-            snapshot = Path(name)
-            with (
-                os.fdopen(fd, "wb") as target,
-                paths._open(source) as raw,
-                io.TextIOWrapper(raw, encoding="utf-8", errors="surrogateescape", newline="") as stream,
-            ):
-                before = os.fstat(raw.fileno())
-                if [before.st_size, before.st_mtime_ns] != signature:
-                    raise RuntimeError("input changed while preparing the Batch")
-                first = True
-                for number, line in enumerate(stream, 1):
-                    if schedule_stop.is_set():
-                        return None
-                    try:
-                        target.write(line.encode("utf-8"))
-                    except UnicodeEncodeError as exc:
-                        raise RuntimeError(f"{source.name}: line {number}: invalid UTF-8") from exc
-                    if not line.strip():
-                        continue
-                    try:
-                        item = json.loads(line)
-                    except (ValueError, RecursionError):
-                        item = None
-                    if not isinstance(item, dict) or not ("questions" in item or "options" in item):
-                        raise RuntimeError(f"{source.name}: line {number} is not a Batch request")
-                    if (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison":
-                        error = batch.validate_comparison_item(item, runner)
-                        if error:
-                            raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
-                    if first:
-                        try:
-                            _, reason = paths._row_shape(item)
-                        except RecursionError as exc:
-                            raise RuntimeError(
-                                f"{source.name}: line {number}: request nesting exceeds the parser limit"
-                            ) from exc
-                        if reason:
-                            raise RuntimeError(f"{source.name}: line {number}: {reason}")
-                        first = False
-                after = os.fstat(raw.fileno())
-                if [after.st_size, after.st_mtime_ns] != signature:
-                    raise RuntimeError("input changed while preparing the Batch")
-            if first:
-                raise RuntimeError(f"{source.name}: no requests")
-
-            def reserve():
-                fleet.start_model_job(
-                    "batch",
-                    spec["model"],
-                    f"{spec['model']} on {source.name}",
-                    batch.run_scheduled,
-                    fleet,
-                    spec["model"],
-                    source,
-                    snapshot,
-                    output,
-                    spec["concurrency"],
-                    runner,
-                    spec["overwrite"],
-                    settings_mod,
-                    spec,
-                    row,
-                    runner_expected=runner,
-                )
-                return fleet.jobs.get("batch")
-
-            with fleet.lock:
-                if schedule_stop.is_set():
-                    return None
-                job = settings_mod.reserve_schedule(spec, reserve)
-            if job is None:
-                return None
-            snapshot = None
-            return job
-        except (OSError, UnicodeDecodeError) as exc:
-            raise RuntimeError(str(exc)) from exc
-        finally:
-            if snapshot is not None:
-                snapshot.unlink(missing_ok=True)
-
-    schedules = schedules or Schedules(settings_mod, fleet, start_scheduled_batch)
+    schedule_stop = threading.Event()
+    schedules = schedules or Schedules(
+        settings_mod, fleet, partial(batch.start_scheduled, fleet, settings_mod, schedule_stop)
+    )
     allowed_hosts = tuple(allowed_hosts)
     from .inspect import Inspector, inspect_app, inspectable
 
@@ -341,8 +254,6 @@ def create_app(
                 print(f"basal-ui: auto-load of {last['id']} skipped: {exc}", file=sys.stderr)
                 fleet.event("warn", f"auto-load of {last['id']} skipped: {exc}")
 
-    schedule_stop = threading.Event()
-
     def schedule_timer():
         while not schedule_stop.wait(SCHEDULE_INTERVAL_S):
             try:
@@ -397,62 +308,15 @@ def create_app(
     app.state.addons = addon_manager
     app.state.finetune = finetune_manager
 
-    @app.exception_handler(HTTPException)
-    async def http_error(request, exc):
-        if request.url.path.startswith("/api/finetune"):
-            message = str(exc.detail)
-            parameter = message.split(" ", 1)[0]
-            if parameter in {"epochs", "lr", "rank", "alpha", "holdout", "max_len", "max_steps", "grad_checkpointing"}:
-                code, params = "finetune_parameter", {"parameter": parameter, "message": message}
-            elif message.startswith("out_name"):
-                code, params = "finetune_name", {"message": message}
-            elif message.startswith(("input ", "cannot read labelled", "line ", "need training decisions")):
-                code, params = "finetune_input", {"message": message}
-            elif "active adapter" in message:
-                code, params = "finetune_active_adapter", {"message": message}
-            elif "active jobs" in message or "shutting down" in message or "maintenance" in message:
-                code, params = "finetune_jobs_busy", {"message": message}
-            elif "already exists" in message or "already holds memory" in message:
-                code, params = "finetune_duplicate", {"message": message}
-            elif "unknown fine-tune output" in message or "output is missing" in message:
-                code, params = "finetune_missing", {"message": message}
-            elif message.startswith(("unknown model", "download ", "fine-tuning requires")):
-                code, params = "finetune_model", {"message": message}
-            elif any(word in message for word in ("ownership", "symlink", "directory changed", "output root")):
-                code, params = "finetune_ownership", {"message": message}
-            else:
-                code = "finetune_busy" if exc.status_code == 409 else "finetune_error"
-                params = {"message": message}
-            return JSONResponse(
-                {"detail": message, "code": code, "params": params},
-                status_code=exc.status_code,
-                headers=exc.headers,
-            )
-        if request.url.path.startswith("/api/attach"):
-            message = str(exc.detail)
-            if "already exists" in message:
-                code = "attach_exists"
-            elif "unload the attached model" in message:
-                code = "attach_busy"
-            elif "engine 2.5" in message:
-                code = "attach_unavailable"
-            elif "base must be" in message:
-                code = "attach_base"
-            elif "format must be" in message:
-                code = "attach_format"
-            else:
-                code = "attach_error"
-            return JSONResponse(
-                {"detail": message, "code": code, "params": {"message": message}},
-                status_code=exc.status_code,
-                headers=exc.headers,
-            )
-        from fastapi.exception_handlers import http_exception_handler
-
-        return await http_exception_handler(request, exc)
+    def feature_refusal(status, message, code, **params):
+        return JSONResponse(
+            {"detail": message, "code": code, "params": {"message": message, **params}}, status_code=status
+        )
 
     @app.post("/api/mcp/tools")
     def import_mcp_tools(request: Request, body: dict = Body(...)):
+        peer = request.client
+        body = {**body, "allow_loopback": peer is not None and explicit_loopback(peer.host)}
         try:
             return anyio.from_thread.run(mcp_importer.run, body, request)
         except FetchError as exc:
@@ -684,7 +548,7 @@ def create_app(
                     raise ValueError("url must be an http(s) URL")
                 try:
                     address = ipaddress.ip_address(host)
-                    local = address.is_loopback or address.is_link_local
+                    local = address.is_loopback
                 except ValueError:
                     local = host.lower() == "localhost"
                 consent = body.get("consent", False)
@@ -802,22 +666,22 @@ def create_app(
     @app.post("/api/attach", status_code=202)
     def post_attach(body: dict = Body(...)):
         if not engine.feature("attach"):
-            raise HTTPException(400, "attached models need engine 2.5")
+            return feature_refusal(400, "attached models need engine 2.5", "attach_unavailable")
         base, revision, fmt = body.get("base"), body.get("revision"), body.get("format", 1)
         if not isinstance(base, str) or base not in catalog.ATTACHABLE:
-            raise HTTPException(400, f"base must be one of {', '.join(catalog.ATTACHABLE)}")
+            return feature_refusal(400, f"base must be one of {', '.join(catalog.ATTACHABLE)}", "attach_base")
         if revision is not None and revision != catalog.ATTACH_REVISION:
-            raise HTTPException(400, "unsupported base revision")
+            return feature_refusal(400, "unsupported base revision", "attach_error")
         revision = catalog.ATTACH_REVISION
         if type(fmt) is not int or fmt not in (1, 2):
-            raise HTTPException(400, "format must be 1 or 2")
+            return feature_refusal(400, "format must be 1 or 2", "attach_format")
         slug = base.lower().replace("/", "-")
         model_id = f"attached/{slug}"
         if any(record.get("id") == model_id for record in settings_mod.attached_models()):
-            raise HTTPException(409, f"attached model {model_id!r} already exists")
+            return feature_refusal(409, f"attached model {model_id!r} already exists", "attach_exists")
         out_dir = settings_mod.models_dir() / "attached" / slug
         if out_dir.exists():
-            raise HTTPException(409, f"attached model directory already exists: {out_dir}")
+            return feature_refusal(409, f"attached model directory already exists: {out_dir}", "attach_exists")
         source = catalog.Variant(
             base, base, "attached-base", "unknown", "bf16", "bf16", None, None, True, cache_revision=revision
         )
@@ -827,6 +691,7 @@ def create_app(
 
             fleet.download(source)
             while fleet.downloads.alive(base):
+                job.check()
                 progress = fleet.downloads.status().get(base, {})
                 if progress.get("error"):
                     raise RuntimeError(f"download failed: {progress['error']}")
@@ -886,10 +751,10 @@ def create_app(
                     or out_dir.exists()
                     or out_dir.is_symlink()
                 ):
-                    raise RuntimeError("attached model already exists")
+                    return feature_refusal(409, "attached model already exists", "attach_exists")
                 return fleet.jobs.start("attach", model_id, f"Attach {base}", attach_job)
         except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            return feature_refusal(409, str(exc), "attach_error")
 
     @app.delete("/api/attach")
     def cancel_attach():
@@ -898,18 +763,18 @@ def create_app(
     @app.delete("/api/attach/{model_id:path}")
     def delete_attached(model_id: str):
         if not engine.feature("attach"):
-            raise HTTPException(400, "attached models need engine 2.5")
+            return feature_refusal(400, "attached models need engine 2.5", "attach_unavailable")
         with fleet.lock:
             record = next((r for r in settings_mod.attached_models() if r.get("id") == model_id), None)
             if record is None:
-                raise HTTPException(404, f"unknown attached model {model_id!r}")
+                return feature_refusal(404, f"unknown attached model {model_id!r}", "attach_error")
             base = record.get("base")
             if base not in catalog.ATTACHABLE or model_id != "attached/" + base.lower().replace("/", "-"):
-                raise HTTPException(409, "invalid attached model record")
+                return feature_refusal(409, "invalid attached model record", "attach_error")
             attached_root = settings_mod.models_dir() / "attached"
             out_dir = attached_root / model_id.split("/", 1)[1]
             if record.get("out_dir") != str(out_dir):
-                raise HTTPException(409, "invalid attached model directory")
+                return feature_refusal(409, "invalid attached model directory", "attach_error")
             unsafe = attached_root.is_symlink() or out_dir.is_symlink()
             with fleet.jobs.lock:
                 working = any(j.running and j.model == model_id for j in fleet.jobs.jobs.values())
@@ -919,7 +784,7 @@ def create_app(
                 or model_id in fleet.draining
                 or any(r.model == model_id for r in [*fleet.retiring, *fleet.temporary.values()])
             ):
-                raise HTTPException(409, "unload the attached model and stop its jobs first")
+                return feature_refusal(409, "unload the attached model and stop its jobs first", "attach_busy")
             retained = unsafe
             freed = 0
             staged = None
@@ -937,7 +802,6 @@ def create_app(
                 except (OSError, ValueError, AttributeError):
                     owned = False
                 if owned:
-                    freed = sum(p.stat().st_size for p in out_dir.rglob("*") if not p.is_symlink() and p.is_file())
                     stage_dir = Path(tempfile.mkdtemp(prefix=".removing-", dir=attached_root))
                     staged = stage_dir / out_dir.name
                     try:
@@ -954,17 +818,18 @@ def create_app(
                     staged.rename(out_dir)
                     stage_dir.rmdir()
                 raise
-            if staged is not None:
-                try:
-                    shutil.rmtree(stage_dir)
-                except OSError:
-                    return {
-                        "deleted": model_id,
-                        "freed_bytes": 0,
-                        "retained_directory": True,
-                        "retained_path": str(stage_dir),
-                        "cleanup_error": True,
-                    }
+        if staged is not None:
+            try:
+                freed = sum(p.stat().st_size for p in staged.rglob("*") if not p.is_symlink() and p.is_file())
+                shutil.rmtree(stage_dir)
+            except OSError:
+                return {
+                    "deleted": model_id,
+                    "freed_bytes": 0,
+                    "retained_directory": True,
+                    "retained_path": str(stage_dir),
+                    "cleanup_error": True,
+                }
         return {"deleted": model_id, "freed_bytes": freed, "retained_directory": retained}
 
     @app.post("/api/restart", status_code=202)
@@ -1076,7 +941,7 @@ def create_app(
             "history_audio_available": history_audio.supported(),
         }
 
-    @app.exception_handler(settings.HistoryAudioPolicyError)
+    @app.exception_handler(getattr(settings_mod, "HistoryAudioPolicyError", settings.HistoryAudioPolicyError))
     async def history_audio_policy_error(_request: Request, _exc: settings.HistoryAudioPolicyError):
         return JSONResponse(
             {"detail": "History audio setting is unavailable.", "code": "history_audio_policy_unavailable"},
@@ -1309,10 +1174,8 @@ def create_app(
         }
 
     def require_router():
-        from .engine import feature, installed
-
-        if not feature("router"):
-            raise HTTPException(409, f"Cascades need engine 2.5 (installed: {installed()[0]})")
+        if not engine.feature("router"):
+            raise HTTPException(409, f"Cascades need engine 2.5 (installed: {engine.installed()[0]})")
 
     @app.get("/api/cascades")
     def get_cascades():
@@ -1341,10 +1204,13 @@ def create_app(
             if not isinstance(name, str):
                 raise ValueError("cascade name must be a string")
             variants, _ = all_variants()
-            if name in fleet.runners or any(variant.id == name for variant in variants):
+            if any(variant.id == name for variant in variants):
                 raise ValueError("cascade name conflicts with a model id")
-            settings_mod.set_cascade(body)
+            with fleet.edit_cascade(name):
+                settings_mod.set_cascade(body)
             return get_cascades()
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -1353,17 +1219,12 @@ def create_app(
         require_router()
         payload = {**body, "name": name}
         try:
-            with fleet.lock:
-                if name in fleet.runners or name in fleet.draining:
-                    raise HTTPException(409, "stop the Cascade before editing it")
-                fleet.draining.add(name)
-            try:
+            with fleet.edit_cascade(name):
                 if not any(x["name"] == name for x in settings_mod.cascades()):
                     raise KeyError(name)
                 return {"cascade": settings_mod.set_cascade(payload, replace=True)}
-            finally:
-                with fleet.lock:
-                    fleet.draining.discard(name)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(404, f"cascade {name!r} not found") from exc
         except ValueError as exc:
@@ -1372,17 +1233,13 @@ def create_app(
     @app.delete("/api/cascades/{name}")
     def delete_cascade(name: str):
         require_router()
-        with fleet.lock:
-            if name in fleet.runners or name in fleet.draining:
-                raise HTTPException(409, "stop the Cascade before deleting it")
-            fleet.draining.add(name)
         try:
-            if not any(x["name"] == name for x in settings_mod.cascades()):
-                raise HTTPException(404, f"cascade {name!r} not found")
-            settings_mod.delete_cascade(name)
-        finally:
-            with fleet.lock:
-                fleet.draining.discard(name)
+            with fleet.edit_cascade(name):
+                if not any(x["name"] == name for x in settings_mod.cascades()):
+                    raise HTTPException(404, f"cascade {name!r} not found")
+                settings_mod.delete_cascade(name)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return get_cascades()
 
     @app.post("/api/cascades/{name}/start", status_code=202)
@@ -1576,7 +1433,7 @@ def create_app(
     def get_updates():
         from packaging.version import InvalidVersion, Version
 
-        from . import engine, updates
+        from . import updates
 
         def newer(latest, installed):
             try:
@@ -1845,7 +1702,7 @@ def create_app(
     @app.post("/api/benchmark", status_code=202)
     def post_benchmark(body: dict = Body(...)):
         """Run one model benchmark; Engine-tool checks also accept downloaded, unloaded models."""
-        from . import bench, engine
+        from . import bench
 
         model_id, kind = body.get("id"), body.get("kind", "benchmark")
         if kind not in ("benchmark", "loadtest", "determinism", "modes", "identity", "order_check"):
@@ -1934,8 +1791,6 @@ def create_app(
 
     @app.get("/api/benchmark/availability")
     def benchmark_availability(id: str):
-        from . import engine
-
         variant = find_variant(id)
         current = hw()
         assessment = catalog.assess(variant, current)
@@ -2149,14 +2004,17 @@ def create_app(
 
     @app.post("/api/finetune", status_code=202)
     def post_finetune(body: dict = Body(...)):
-        variant = find_variant(body.get("id"))
-        local_dir = downloaded(variant)
+        try:
+            variant = find_variant(body.get("id"))
+            local_dir = downloaded(variant)
+        except HTTPException as exc:
+            return feature_refusal(exc.status_code, str(exc.detail), "finetune_model")
         try:
             return finetune_manager.start(variant, local_dir, body)
         except (ValueError, OSError) as exc:
-            raise HTTPException(400, str(exc)) from exc
+            return feature_refusal(400, str(exc), getattr(exc, "code", "finetune_error"), **getattr(exc, "params", {}))
         except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            return feature_refusal(409, str(exc), getattr(exc, "code", "finetune_busy"))
 
     @app.delete("/api/finetune")
     def cancel_finetune():
@@ -2167,9 +2025,9 @@ def create_app(
         try:
             return finetune_manager.delete(body.get("id"), body.get("name"))
         except (ValueError, OSError) as exc:
-            raise HTTPException(400, str(exc)) from exc
+            return feature_refusal(400, str(exc), getattr(exc, "code", "finetune_error"), **getattr(exc, "params", {}))
         except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            return feature_refusal(409, str(exc), getattr(exc, "code", "finetune_busy"))
 
     @app.post("/api/calibrate", status_code=202)
     def post_calibrate(body: dict = Body(...)):
@@ -2599,8 +2457,6 @@ def create_app(
 
         preset = body.get("preset")
         if preset not in (None, ""):
-            from . import engine
-
             if not isinstance(preset, str):
                 return JSONResponse({"detail": "preset must be a string", "code": "batch_preset_type"}, status_code=400)
             if not engine.feature("presets"):
@@ -2634,8 +2490,6 @@ def create_app(
 
     @app.get("/api/batch/presets")
     def get_batch_presets():
-        from . import engine
-
         available = engine.feature("presets")
         if not available:
             return {
@@ -2657,8 +2511,6 @@ def create_app(
         return batch.capabilities()
 
     def schedule_definition(body):
-        from .schedules import validate
-
         try:
             spec = validate(body)
             for key in ("input_dir", "output_dir"):
@@ -2682,8 +2534,6 @@ def create_app(
 
     @app.put("/api/schedules/{schedule_id}")
     def update_schedule(schedule_id: str, body: dict = Body(...)):
-        from .schedules import validate
-
         try:
             validator = validate if set(body) <= {"paused", "paused_reason"} else schedule_definition
             return schedules.update(schedule_id, body, validator)
@@ -2702,8 +2552,6 @@ def create_app(
 
     @app.post("/api/schedules/{schedule_id}/pause")
     def pause_schedule(schedule_id: str):
-        from .schedules import validate
-
         try:
             return schedules.update(schedule_id, {"paused": True}, validate)
         except KeyError as exc:
@@ -2711,8 +2559,6 @@ def create_app(
 
     @app.post("/api/schedules/{schedule_id}/resume")
     def resume_schedule(schedule_id: str):
-        from .schedules import validate
-
         try:
             return schedules.update(schedule_id, {"paused": False, "paused_reason": None}, validate)
         except KeyError as exc:
@@ -2755,8 +2601,6 @@ def create_app(
         preset = body.get("preset")
         lang = body.get("lang", "auto")
         if preset is not None:
-            from . import engine
-
             if not engine.feature("presets"):
                 return JSONResponse(
                     {"detail": "Batch presets need Engine 2.5", "code": "batch_presets_unavailable"}, status_code=400

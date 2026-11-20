@@ -352,10 +352,9 @@ def test_audio_mixed_media_and_corrupt_or_hostile_references(tmp_path):
     disk["_audio"]["name"] = "../outside"
     path.write_text(json.dumps(disk) + "\n")
     assert "secret" not in str(history.detail(row["id"], True))
-    with pytest.raises(OSError):
-        history.clear()
+    history.clear()
+    assert path.read_bytes() == b"" and blob.is_symlink()
     assert outside.read_text() == "secret"
-    path.write_text("")
     mixed = {**body, "images": ["data:image/png;base64,QUJD"]}
     row = make_record("m", "api", mixed, 200, {}, 1)
     history.append(row, body=mixed, keep_audio=True)
@@ -571,7 +570,7 @@ def test_existing_unowned_filename_is_not_deleted_on_collision(tmp_path, monkeyp
 @pytest.mark.parametrize(
     "damage", [b"{broken\n", b"[]\n", b"{}\n", b"\xff\n", b"duplicate", b'{"id":"other","_audio":{}}\n']
 )
-def test_corrupt_metadata_never_authorizes_cleanup_or_mutation(tmp_path, damage):
+def test_corrupt_rows_require_explicit_clear_and_preserve_audio_ownership(tmp_path, damage):
     from basal_ui import history_audio
 
     path = tmp_path / "history.jsonl"
@@ -591,9 +590,9 @@ def test_corrupt_metadata_never_authorizes_cleanup_or_mutation(tmp_path, damage)
     reloaded = History(path, keep=1)
     with pytest.raises(OSError):
         reloaded.append(make_record("m", "api", body, 200, {}, 1), body=body, keep_audio=True)
-    with pytest.raises(OSError):
-        reloaded.clear()
     assert (path.read_bytes(), journal.read_bytes(), blob.read_bytes()) == before
+    assert reloaded.clear() == 1
+    assert path.read_bytes() == b"" and not blob.exists()
 
 
 @pytest.mark.parametrize("kind", ["regular", "symlink", "hardlink"])
@@ -646,8 +645,7 @@ def test_postcommit_payload_failure_is_unavailable_and_budget_stays_bounded(tmp_
         raise OSError("write failed")
 
     monkeypatch.setattr(history_audio, "fill", partial_write)
-    with pytest.raises(OSError):
-        history.append(new, body=body, keep_audio=True)
+    history.append(new, body=body, keep_audio=True)
     reloaded = History(history.path)
     assert reloaded.detail(old["id"], True)["replay_error_code"] == "history_audio_unavailable"
     assert reloaded.detail(new["id"], True)["replay_error_code"] == "history_audio_unavailable"
@@ -772,10 +770,9 @@ def test_full_budget_never_evicts_a_foreign_replacement(tmp_path, monkeypatch):
     blob = history.path.with_name(history.path.name + ".audio") / old["_audio"]["name"]
     blob.replace(tmp_path / "owned-original")
     blob.write_text("foreign data")
-    before = history.path.read_bytes()
-    with pytest.raises(OSError):
-        history.append(make_record("m", "api", body, 200, {}, 1), body=body, keep_audio=True)
-    assert history.path.read_bytes() == before
+    new = make_record("m", "api", body, 200, {}, 1)
+    history.append(new, body=body, keep_audio=True)
+    assert history.detail(new["id"], True)["replay_error_code"] == "history_audio_unavailable"
     assert blob.read_text() == "foreign data"
     assert history.detail(old["id"], True)["replay_error_code"] == "history_audio_unavailable"
 

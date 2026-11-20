@@ -715,3 +715,19 @@ def test_dialog_accessible_names(page, text_model):
     page.set_input_files("#mediaInput", [{"name": "screen.png", "mimeType": "image/png", "buffer": png()}])
     page.locator(".mark-elements").first.click()
     name(".elements-dialog", "Oznacz elementy")
+
+
+def test_media_rename_and_preset_url_dialogs(page):
+    page.locator("[data-rename]").first.click()
+    dialog = page.get_by_role("dialog", name="File name")
+    field = dialog.get_by_role("textbox", name="File name")
+    field.fill("renamed.png")
+    field.press("Enter")
+    sync_api.expect(dialog).to_be_hidden()
+    sync_api.expect(page.locator(".media-name").first).to_have_text("renamed.png")
+
+    page.evaluate("() => document.querySelector('#importPresetsUrl').click()")
+    dialog = page.get_by_role("dialog", name="Enter the presets URL")
+    sync_api.expect(dialog).to_be_visible()
+    dialog.get_by_role("button", name="Cancel").click()
+    sync_api.expect(dialog).to_be_hidden()

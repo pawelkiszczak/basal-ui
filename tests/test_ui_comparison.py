@@ -477,14 +477,17 @@ def test_mcp_filters_comparison_for_listing_default_and_explicit_selection(app_c
             assert rejected["isError"] and "not loaded" in rejected["content"][0]["text"]
 
 
-def test_link_local_does_not_require_consent(app_client, monkeypatch):
+def test_link_local_requires_consent(app_client, monkeypatch):
     import httpx
 
     client, _ = app_client
     monkeypatch.setattr(
         httpx, "get", lambda url, **kwargs: httpx.Response(200, json={"data": []}, request=httpx.Request("GET", url))
     )
-    response = client.post("/api/decision-servers", json={"name": "Link local", "url": "http://169.254.1.2:9000"})
+    body = {"name": "Link local", "url": "http://169.254.1.2:9000"}
+    refusal = client.post("/api/decision-servers", json=body)
+    assert refusal.status_code == 400 and refusal.json()["detail"]["code"] == "CONSENT_REQUIRED"
+    response = client.post("/api/decision-servers", json={**body, "consent": True})
     assert response.status_code == 201
     server_id = response.json()["servers"][0]["id"]
     assert client.delete(f"/api/decision-servers/{server_id}").status_code == 200

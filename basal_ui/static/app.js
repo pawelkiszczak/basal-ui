@@ -51,6 +51,7 @@ function comparisonFailure(raw) {
   return lead+t(reason);
 }
 function toast(message, type='success') {
+  if(type==='error' && [...$('#toastStack').querySelectorAll('.toast.error')].some(node=>node.firstChild?.textContent===message))return;
   const node=document.createElement('div'); node.className=`toast ${type}`; node.textContent=message;
   if(type==='error') {
     const close=document.createElement('button'); close.type='button'; close.textContent='×'; close.setAttribute('aria-label',t('Dismiss')); close.onclick=()=>node.remove(); node.append(close);
@@ -78,6 +79,19 @@ function confirmDialog({title,description,confirmLabel=t('Confirm'),destructive=
     accept.addEventListener('click',yes);cancel.addEventListener('click',no);dialog.addEventListener('close',closed);
   });
 }
+function textEntryDialog({title, value='', type='text', acceptLabel}) {
+  const dialog=$('#textEntryDialog'), input=$('#textEntryValue');
+  $('#textEntryTitle').textContent=title;
+  $('#textEntryAccept').textContent=acceptLabel;
+  input.type=type;
+  input.value=value;
+  dialog.returnValue='';
+  return new Promise(resolve=>{
+    dialog.addEventListener('close',()=>resolve(dialog.returnValue==='accept'?input.value:null),{once:true});
+    dialog.showModal();
+    input.select();
+  });
+}
 function applyTheme(theme) {
   const value=['light','dark','system'].includes(theme)?theme:'system';
   document.documentElement.dataset.theme=value==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):value;
@@ -96,8 +110,8 @@ document.addEventListener('keydown',e=>{
   else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
 document.addEventListener('click',event=>{if(recording && event.target.closest('#dt-run')){event.preventDefault();event.stopImmediatePropagation();$('#decisionCompare .dt-error').textContent=t('Finish recording before sending.');$('#decisionCompare .dt-error').hidden=false;}},true);
-document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;if(event.target.closest('#playground') && !event.target.closest('#recordAudio, #sendButton') && recording)cancelRecording();},true);
-document.addEventListener('input',event=>{if(event.target.closest('#playground')){replayIntent++;if(recording && !event.target.closest('#recordAudio'))cancelRecording();}});
+document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;},true);
+document.addEventListener('input',event=>{if(event.target.closest('#playground'))replayIntent++;});
 document.addEventListener('change',event=>{
   if(event.target.matches('input[type=checkbox]'))event.target.setAttribute('aria-checked',String(event.target.checked));
 });
@@ -413,7 +427,7 @@ function renderSelectedMedia() {
   $('#mediaItems').innerHTML = selectedMedia.map((item,index) => `<div class="media-item">${item.kind === 'image'
     ? `<button type="button" class="media-preview" data-preview="${index}" title="${t('Open preview')}"><img src="${esc(item.url)}" alt="${esc(item.file.name)}"></button>`
     : `<audio class="media-audio" controls preload="metadata" src="${esc(item.url)}"></audio>`}${item.kind==='image'?`<button type="button" class="mark-elements" data-mark="${index}"${selectedMedia.some((m,i)=>i!==index&&m.elements)?' hidden':''} title="${selectedMedia.some((m,i)=>i!==index&&m.elements)?t('Only one image can have marked elements at a time'):t('Mark elements')}">${t('Mark elements')}</button>`:''}<div class="media-meta"><span><span class="media-name" title="${esc(item.file.name)}">${esc(item.file.name)}</span><small data-dims="${index}">${fileSize(item.file.size)}</small></span><button type="button" data-rename="${index}">${t('Rename')}</button><button type="button" data-remove="${index}" aria-label="${t('Remove {name}',{name:esc(item.file.name)})}">${t('Remove')}</button></div></div>`).join('');
-  $('#mediaItems').querySelectorAll('[data-rename]').forEach(button=>button.onclick=()=>{const item=selectedMedia[Number(button.dataset.rename)],name=prompt(t('File name'),item.file.name);if(name?.trim()){cancelRecording();item.file=new File([item.file],name.trim(),{type:item.file.type});renderSelectedMedia();syncRequest();}});
+  $('#mediaItems').querySelectorAll('[data-rename]').forEach(button=>button.onclick=async()=>{const item=selectedMedia[Number(button.dataset.rename)];const name=await textEntryDialog({title:t('File name'),value:item.file.name,acceptLabel:t('Rename')});if(name?.trim()&&selectedMedia.includes(item)){cancelRecording();item.file=new File([item.file],name.trim(),{type:item.file.type});renderSelectedMedia();syncRequest();}});
   $('#mediaItems').querySelectorAll('[data-mark]').forEach(button=>button.addEventListener('click',()=>openElementsEditor(Number(button.dataset.mark))));
   $('#mediaItems').querySelectorAll('[data-remove]').forEach(button => button.addEventListener('click', () => {
     cancelRecording();
@@ -667,7 +681,7 @@ $('#exportPresets').onclick=()=>act(async()=>{
 });
 $('#importPresetsButton').onclick=()=>$('#importPresets').click();
 $('#importPresetsUrl').onclick=()=>act(async()=>{
-  const url=prompt(t('Enter the presets URL'));if(url===null)return;
+  const url=await textEntryDialog({title:t('Enter the presets URL'),type:'url',acceptLabel:t('Import from URL')});if(url===null)return;
   const button=$('#importPresetsUrl');button.disabled=true;button.textContent=t('Importing…');
   try {const result=await api('/api/presets/import-url',{method:'POST',body:JSON.stringify({url})});await loadPresets();toast(t('Imported {count} presets',{count:result.count}));}
   catch(e){await loadPresets();throw e;}
@@ -1608,7 +1622,7 @@ async function sendDecision() {
   try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) {
     if(e.status===422&&!jsonMode)showQuestionErrors(String(e.detail||''),request);
-    showDecideError(e.message); toast(e.message,'error');
+    showDecideError(e.message);
   }
   finally { $('#sendButton').disabled=Boolean(recording); }
 }
@@ -1826,7 +1840,7 @@ function decisionServerConsent(){
   let host='';try{host=new URL($('#decisionServerUrl').value).hostname.toLowerCase().replace(/^\[|\]$/g,'');}catch{}
   if(host!==decisionConsentHost)$('#decisionServerConsent').checked=false;
   decisionConsentHost=host;
-  const local=host==='localhost'||host==='::1'||/^127(?:\.\d{1,3}){3}$/.test(host)||/^169\.254(?:\.\d{1,3}){2}$/.test(host)||/^fe[89ab][0-9a-f]:/i.test(host);
+  const local=host==='localhost'||host==='::1'||/^127(?:\.\d{1,3}){3}$/.test(host);
   $('#decisionServerConsentField').hidden=!host||local;
   $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
 }
@@ -2011,7 +2025,7 @@ async function renderCascadeDefinitions() {
     cascadeSignature=signature;
     if(focusedName)[...target.querySelectorAll(focusedDelete?'[data-cascade-delete]':'[data-cascade-action]')].find(button=>(button.dataset.cascadeDelete||button.dataset.cascade)===focusedName)?.focus();
     target.querySelectorAll('[data-cascade-action]').forEach(button=>button.onclick=()=>act(async()=>{await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}/${button.dataset.cascadeAction}`,{method:'POST'});await refreshStatus();await renderCascadeDefinitions();}));
-    target.querySelectorAll('[data-cascade-delete]').forEach(button=>button.onclick=()=>act(async()=>{if(!confirm(t('Delete Cascade {name}?',{name:button.dataset.cascade})))return;await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}`,{method:'DELETE'});await renderCascadeDefinitions();}));
+    target.querySelectorAll('[data-cascade-delete]').forEach(button=>button.onclick=()=>act(async()=>{if(!await confirmDialog({title:t('Delete Cascade {name}?',{name:button.dataset.cascadeDelete}),description:'',confirmLabel:t('Delete'),destructive:true}))return;await api(`/api/cascades/${encodeURIComponent(button.dataset.cascade)}`,{method:'DELETE'});await renderCascadeDefinitions();}));
   }catch(error){cascadeSignature='';target.innerHTML=`<p class="muted">${esc(error.message)}</p>`;}
 }
 function renderPlaygroundModels(ready) {
@@ -2157,8 +2171,9 @@ function benchmarkRow(x) {
   if(kind==='determinism'){const d=x.determinism||{};return `<tr>${head}<td colspan="7"><span class="badge ${d.identical===d.requests?'fit-fits':'fit-tight'}">${t('identical')} ${esc(d.identical)}/${esc(d.requests)}</span> ${t('max |Δp|')} ${esc(d.max_abs_diff)} · ${t('decision flips')} ${esc(d.decision_flips)} · ${t('concurrency')} ${esc(d.concurrency)}${d.load_errors==null?'':` · ${t('load errors')} ${esc(d.load_errors)}`}</td></tr>`;}
   if(kind==='identity'){
     const rows=x.rows||[];
-    const detail=rows.map(r=>`<tr><td>${esc(r.path)}</td><td>${r.gate==='pass'?t('Passed'):t('Failed')}</td><td>${Number(r.max_dp).toExponential(2)}</td></tr>`).join('');
-    const max=Math.max(...rows.map(r=>Number(r.max_dp))).toExponential(2);
+    const formatDp=value=>Number.isFinite(value)?value.toExponential(2):'—';
+    const detail=rows.map(r=>`<tr><td>${esc(r.path)}</td><td>${r.gate==='pass'?t('Passed'):t('Failed')}</td><td>${formatDp(r.max_dp)}</td></tr>`).join('');
+    const max=formatDp(Math.max(...rows.map(r=>r.max_dp).filter(Number.isFinite)));
     return `<tr>${head}<td colspan="7"><details><summary><span class="badge ${x.pass?'fit-fits':'fit-tight'}">${x.pass?t('Passed'):t('Failed')}</span> · ${esc(x.dtype)} · ${esc(x.engine)} · ${t('max |Δp|')} ${max}</summary><table class="mini-table"><thead><tr><th>${t('Path')}</th><th>${t('Gate')}</th><th>${t('max |Δp|')}</th></tr></thead><tbody>${detail}</tbody></table></details></td></tr>`;
   }
   if(kind==='order_check')return `<tr>${head}<td colspan="7"><details><summary>${t('Order check')}</summary><pre>${esc(JSON.stringify(x.report,null,2))}</pre></details></td></tr>`;

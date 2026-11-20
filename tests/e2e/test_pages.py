@@ -2183,6 +2183,7 @@ def test_mcp_picker_merge_refresh_and_token_is_not_saved(page):
     page.locator("#mcp-import").click()
     sync_api.expect(page.locator(".mcp-item")).to_have_count(2)
     page.locator(".mcp-item").nth(1).locator("input").uncheck()
+    assert page.locator("#mcp-token").input_value() == "test-secret"
     page.locator("#mcp-apply").click()
     question = page.evaluate("() => buildRequest().questions.q")
     assert question["tools"] == [original, catalogue[0]]

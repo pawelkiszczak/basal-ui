@@ -1,6 +1,7 @@
 """Batch inference via basal-run. Native manual Batch bypasses History and Usage; scheduled requests are recorded."""
 
 import contextlib
+import io
 import json
 import os
 import socket
@@ -15,6 +16,7 @@ from itertools import combinations
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import paths
 from .jobs import run_tool
 
 PREFLIGHT_TIMEOUT_S = 5
@@ -435,6 +437,97 @@ def run_batch(
     finally:
         if snapshot_path is not None:
             Path(snapshot_path).unlink(missing_ok=True)
+
+
+def start_scheduled(fleet, settings_mod, schedule_stop, spec, source, output, signature, runner, row):
+    snapshot = None
+    try:
+        try:
+            validate_runner(runner)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        if output.resolve() == source.resolve():
+            raise RuntimeError("output must not be the input file")
+        fd, name = tempfile.mkstemp(prefix=".basal-ui-schedule-", suffix=".jsonl", dir=output.parent)
+        snapshot = Path(name)
+        with (
+            os.fdopen(fd, "wb") as target,
+            paths.open_input(source) as raw,
+            io.TextIOWrapper(raw, encoding="utf-8", errors="surrogateescape", newline="") as stream,
+        ):
+            before = os.fstat(raw.fileno())
+            if [before.st_size, before.st_mtime_ns] != signature:
+                raise RuntimeError("input changed while preparing the Batch")
+            first = True
+            for number, line in enumerate(stream, 1):
+                if schedule_stop.is_set():
+                    return None
+                try:
+                    target.write(line.encode("utf-8"))
+                except UnicodeEncodeError as exc:
+                    raise RuntimeError(f"{source.name}: line {number}: invalid UTF-8") from exc
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except (ValueError, RecursionError):
+                    item = None
+                if not isinstance(item, dict) or not ("questions" in item or "options" in item):
+                    raise RuntimeError(f"{source.name}: line {number} is not a Batch request")
+                if (getattr(runner, "models_entry", None) or {}).get("kind") == "comparison":
+                    error = validate_comparison_item(item, runner)
+                    if error:
+                        raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
+                if first:
+                    try:
+                        _, reason = paths.row_shape(item)
+                    except RecursionError as exc:
+                        raise RuntimeError(
+                            f"{source.name}: line {number}: request nesting exceeds the parser limit"
+                        ) from exc
+                    if reason:
+                        raise RuntimeError(f"{source.name}: line {number}: {reason}")
+                    first = False
+            after = os.fstat(raw.fileno())
+            if [after.st_size, after.st_mtime_ns] != signature:
+                raise RuntimeError("input changed while preparing the Batch")
+        if first:
+            raise RuntimeError(f"{source.name}: no requests")
+
+        def reserve():
+            fleet.start_model_job(
+                "batch",
+                spec["model"],
+                f"{spec['model']} on {source.name}",
+                run_scheduled,
+                fleet,
+                spec["model"],
+                source,
+                snapshot,
+                output,
+                spec["concurrency"],
+                runner,
+                spec["overwrite"],
+                settings_mod,
+                spec,
+                row,
+                runner_expected=runner,
+            )
+            return fleet.jobs.get("batch")
+
+        with fleet.lock:
+            if schedule_stop.is_set():
+                return None
+            job = settings_mod.reserve_schedule(spec, reserve)
+        if job is None:
+            return None
+        snapshot = None
+        return job
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    finally:
+        if snapshot is not None:
+            snapshot.unlink(missing_ok=True)
 
 
 def run_scheduled(

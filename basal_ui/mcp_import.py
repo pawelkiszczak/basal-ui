@@ -6,10 +6,10 @@ import math
 import re
 import sys
 from collections import Counter
-from decimal import Decimal
+from decimal import InvalidOperation
 from urllib.parse import quote
 
-from .fetch import MAX_BYTES, FetchError, _Connection, _explicit_loopback, checked_url
+from .fetch import MAX_BYTES, FetchError, PinnedConnection, checked_url, explicit_loopback, preserved_json_number
 
 MAX_PAGES = 20
 VERSIONS = {"2025-11-25", "2025-06-18", "2025-03-26"}
@@ -22,15 +22,10 @@ def fail(message, code="mcp_protocol_error", status=502):
 
 def decode(data):
     def number(value):
-        n = Decimal(value)
-        f = float(value)
-        if (
-            (n.is_zero() and n.is_signed())
-            or (n == n.to_integral_value() and abs(n) > 9007199254740991)
-            or Decimal(str(f)) != n
-        ):
+        try:
+            return preserved_json_number(value)
+        except (ValueError, InvalidOperation, OverflowError):
             fail("MCP response contains a number that cannot be preserved safely.", "mcp_json_precision", 422)
-        return int(value) if "." not in value and "e" not in value.lower() else f
 
     try:
         return json.loads(
@@ -51,8 +46,10 @@ def list_tools(body):
     cursor = body.get("cursor")
     if cursor is not None and (not isinstance(cursor, str) or not cursor):
         fail("Cursor must be a nonempty string.", "mcp_invalid_request", 400)
-    parsed, host, port, addresses = checked_url(body.get("url"), allow_loopback=True)
-    local = host.lower() == "localhost" or _explicit_loopback(host)
+    parsed, host, port, addresses = checked_url(
+        body.get("url"), allow_loopback=body.get("allow_loopback", True) is True
+    )
+    local = host.lower() == "localhost" or explicit_loopback(host)
     if token and not local and parsed.scheme.lower() != "https":
         fail("Use HTTPS for a remote bearer token.", "mcp_insecure_auth", 400)
     path = quote((parsed.path or "/") + ("?" + parsed.query if parsed.query else ""), safe="/%?=&;:+,@!$'()*-._~")
@@ -68,7 +65,7 @@ def list_tools(body):
 
     def request(method, params=None, ident=None):
         nonlocal budget, session
-        conn = _Connection(host, port, addresses, parsed.scheme.lower() == "https")
+        conn = PinnedConnection(host, port, addresses, parsed.scheme.lower() == "https")
         payload = {"jsonrpc": "2.0", "method": method, "params": params or {}}
         if ident is not None:
             payload["id"] = ident
@@ -208,7 +205,7 @@ def list_tools(body):
         fail("MCP catalogue exceeds 20 pages.", "mcp_page_limit", 413)
     finally:
         if session:
-            conn = _Connection(host, port, addresses, parsed.scheme.lower() == "https")
+            conn = PinnedConnection(host, port, addresses, parsed.scheme.lower() == "https")
             try:
                 conn.request("DELETE", path, headers=headers)
                 conn.getresponse().close()
