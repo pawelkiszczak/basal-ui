@@ -4,6 +4,7 @@ Every change is a read-modify-write of one JSON file under a thread and inter-pr
 temp file renamed over the old one), so concurrent requests and processes never lose each other's changes. The file and
 the basal-serve key file hold SHA-256 digests of API keys only and are readable by the owner alone (0600)."""
 
+import errno
 import functools
 import hashlib
 import json
@@ -981,6 +982,33 @@ def update_schedules(change, reset_state_id=None):
             states[reset_state_id].pop("scan", None)
     save(data)
     return result
+
+
+def try_schedule_lock():
+    """Take an exclusive scheduler lease, released on close or process exit."""
+    path = _settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path) + ".scheduler.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            raise RuntimeError("scheduled Batch requires OS file locking")
+        return os.fdopen(fd, "rb")
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return None
+        raise
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 @_locked

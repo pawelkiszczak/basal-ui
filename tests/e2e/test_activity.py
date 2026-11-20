@@ -527,8 +527,6 @@ def test_calibration_tracks_real_saved_and_active_layout(page, ui, text_model):
 
 
 def test_calibration_error_and_mismatch_states_keep_focus(page):
-    test_pages.manager_tab(page, "calibration")
-    page.wait_for_function("() => document.querySelector('#calibrationModel').value")
     data = {
         "selected": "fitted.json",
         "calibrate_layout": False,
@@ -537,17 +535,19 @@ def test_calibration_error_and_mismatch_states_keep_focus(page):
         "shipped": {"file": "shipped.json", "context": {"layout": "qfirst", "mode": "eager", "active": True}},
         "files": [{"file": "fitted.json", "layout": "canonical", "rows": "fitted.rows.jsonl", "when": 1}],
     }
-    page.evaluate("data => renderCalibrationFiles(document.querySelector('#calibrationModel').value,data)", data)
+    page.route("**/api/calibrations?*", lambda route: route.fulfill(json=data))
+    test_pages.manager_tab(page, "calibration")
+    files = page.locator("#calibrationFiles")
+    test_pages.sync_api.expect(files).to_contain_text("certified thresholds will not apply")
     assert page.locator("#runCalibration").is_disabled()
-    assert "certified thresholds will not apply" in page.locator("#calibrationFiles").inner_text()
-    radio = page.locator('input[name="calibrationUse"][value="fitted.json"]')
+    radio = files.locator('input[name="calibrationUse"][value="fitted.json"]')
     radio.focus()
-    page.evaluate("data => renderCalibrationFiles(document.querySelector('#calibrationModel').value,data)", data)
+    page.evaluate("() => loadCalibrations()")
     assert radio.evaluate("el => document.activeElement === el")
     page.screenshot(path="/tmp/basal-issue19-ui-synthetic-mismatch.png")
     data["shipped"] = {"error": "Invalid model metadata"}
     data["layout_mismatch_code"] = None
-    page.evaluate("data => renderCalibrationFiles(document.querySelector('#calibrationModel').value,data)", data)
+    page.evaluate("() => loadCalibrations()")
     assert page.locator("#runCalibration").is_disabled()
     assert "Invalid model metadata" in page.locator("#calibrationFiles").inner_text()
     assert page.locator('input[name="calibrationUse"]').count() == 1

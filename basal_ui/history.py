@@ -269,11 +269,12 @@ class History:
 
         records = [*candidate, record]
         expired = []
-        if self.lines + 1 > self.keep + 500:
+        rotate = self.lines + 1 > self.keep + 500
+        if rotate:
             expired = existing[: max(0, len(existing) + 1 - self.keep)]
             records = records[-self.keep :]
         history_audio.journal_add(self.path, [*evicted, *expired])
-        if evicted or expired:
+        if evicted or rotate:
             settings._write_private(self.path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
             self.lines = len(records)
         else:

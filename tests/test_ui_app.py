@@ -2793,7 +2793,11 @@ def test_cascade_start_refuses_unloaded_member(tmp_path, monkeypatch):
         assert client.post("/api/cascades", json=body).status_code == 201
         response = client.post("/api/cascades/tri/start")
         assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "CASCADE_MEMBER_NOT_LOADED"
+        assert response.json()["detail"] == {
+            "code": "CASCADE_MEMBER_NOT_LOADED",
+            "detail": "cascade member a/one is not loaded",
+            "params": {"model": "a/one"},
+        }
 
 
 def test_cascade_routes_explain_engine_compatibility(tmp_path, monkeypatch):

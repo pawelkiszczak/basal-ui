@@ -37,7 +37,7 @@ from . import backends, catalog, engine, hardware, history_audio, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fetch import FetchError, FetchManager
-from .fleet import Fleet
+from .fleet import CascadeMemberNotLoaded, Fleet
 from .gateway import Gateway
 from .history import History
 from .history_audio import BUDGET as HISTORY_AUDIO_BUDGET
@@ -141,7 +141,7 @@ def create_app(
     preset_fetch_manager = preset_fetch_manager or FetchManager(presets=True)
     mcp_importer = mcp_importer or FetchManager("basal_ui.mcp_import")
     from . import batch, paths
-    from .schedules import Schedules
+    from .schedules import SchedulerBusy, Schedules
 
     def start_scheduled_batch(spec, source, output, signature, runner, row):
         snapshot = None
@@ -389,10 +389,7 @@ def create_app(
         # Inspection's worker and pending load callbacks need this event loop to finish while shutdown waits.
         await asyncio.to_thread(inspector.stop)
         await asyncio.to_thread(fleet.shutdown)
-        active = schedules.active
-        if active is not None and active[2].thread is not None:
-            await asyncio.to_thread(active[2].thread.join)
-        await asyncio.to_thread(schedules._finish_active)
+        await asyncio.to_thread(schedules.shutdown)
         stats.close()
         settings_mod.remove_keys_file()
 
@@ -1395,9 +1392,14 @@ def create_app(
             return fleet.start_cascade(name)
         except KeyError as exc:
             raise HTTPException(404, f"cascade {name!r} not found") from exc
+        except CascadeMemberNotLoaded as exc:
+            raise HTTPException(
+                409, {"code": "CASCADE_MEMBER_NOT_LOADED", "detail": str(exc), "params": {"model": exc.model}}
+            ) from exc
         except RuntimeError as exc:
-            code = "CASCADE_MEMBER_NOT_LOADED" if "member" in str(exc) else "CASCADE_START_FAILED"
-            raise HTTPException(409, {"code": code, "detail": str(exc)}) from exc
+            raise HTTPException(
+                409, {"code": "CASCADE_START_FAILED", "detail": str(exc), "params": {"message": str(exc)}}
+            ) from exc
 
     @app.post("/api/cascades/{name}/stop")
     def stop_cascade(name: str):
@@ -2720,6 +2722,8 @@ def create_app(
     def run_schedule(schedule_id: str):
         try:
             return schedules.run_now(schedule_id)
+        except SchedulerBusy as exc:
+            raise HTTPException(409, {"code": "schedule_owned", "detail": str(exc)}) from exc
         except KeyError as exc:
             raise HTTPException(404, "schedule not found") from exc
         except ValueError as exc:
