@@ -724,7 +724,7 @@ def test_media_rename_and_preset_url_dialogs(page):
     field.fill("renamed.png")
     field.press("Enter")
     sync_api.expect(dialog).to_be_hidden()
-    assert page.evaluate("() => selectedMedia[0].file.name") == "renamed.png"
+    sync_api.expect(page.locator(".media-name").first).to_have_text("renamed.png")
 
     page.evaluate("() => document.querySelector('#importPresetsUrl').click()")
     dialog = page.get_by_role("dialog", name="Enter the presets URL")
