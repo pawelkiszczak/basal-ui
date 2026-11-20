@@ -2186,7 +2186,7 @@ def test_attached_record_survives_engine_without_attach(tmp_path, monkeypatch):
         assert settings.attached_models()[0]["id"] == model
 
 
-def test_attach_cancellation_drains_inflight_download(tmp_path, monkeypatch):
+def test_attach_cancellation_stops_waiting_for_shared_download(tmp_path, monkeypatch):
     from basal_ui import engine
 
     settings.set_models_dir(str(tmp_path / "models"))
@@ -2203,10 +2203,9 @@ def test_attach_cancellation_drains_inflight_download(tmp_path, monkeypatch):
             assert entered.wait(5)
             client.delete("/api/attach")
             job = fleet.jobs.get("attach")
-            assert job.running and thread.is_alive()
-            release.set()
-            job.thread.join(5)
-            assert not thread.is_alive() and job.phase == "cancelled"
+            job.thread.join(2)
+            assert not job.thread.is_alive() and job.phase == "cancelled"
+            assert thread.is_alive()
             assert settings.attached_models() == []
     finally:
         release.set()
@@ -2484,12 +2483,13 @@ def test_attached_partial_cleanup_reports_retained_staging(tmp_path, monkeypatch
     def fail_after_partial(path, *args, **kwargs):
         path = Path(path)
         if path.name.startswith(".removing-"):
+            assert not fleet.lock._is_owned()
             (path / out.name / "deleted").unlink()
             raise OSError("cleanup failed")
         return real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(app_module.shutil, "rmtree", fail_after_partial)
-    app, _ = app_for(tmp_path, [MINI])
+    app, fleet = app_for(tmp_path, [MINI])
     with TestClient(app, base_url="http://127.0.0.1") as client:
         response = client.delete(f"/api/attach/{model}")
         assert response.status_code == 200
@@ -2707,8 +2707,7 @@ def test_audio_policy_read_failure_keeps_successful_sync_decision(tmp_path, monk
         settings, "_audio_policy_data", lambda: (_ for _ in ()).throw(settings.HistoryAudioPolicyError())
     )
     assert fleet.decide("mini", {"state": "ordinary"}).status_code == 200
-    assert fleet.history.list() == []
-    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    assert [row["state_preview"] for row in fleet.history.list()] == ["ordinary"]
 
 
 @pytest.mark.parametrize("damage", [b"{broken", b"[]", b"\xff"])

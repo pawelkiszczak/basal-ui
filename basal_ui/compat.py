@@ -419,7 +419,8 @@ def comparison_request(body, image_input=False, option_limit=26, hosted=False):
         try:
             systemone_to_decisions(normalized)
         except (TypeError, ValueError, KeyError) as exc:
-            return refuse(str(exc))
+            _, message, _, _ = _error_args(exc)
+            return refuse(message)
     return None
 
 
@@ -602,7 +603,10 @@ def systemone_to_decisions(body):
         for item in media:
             value = item["data"]
             if not value.startswith("data:image/"):
-                raw = base64.b64decode(value, validate=True)
+                try:
+                    raw = base64.b64decode(value[:16], validate=True)
+                except ValueError as exc:
+                    raise ValueError("Decisions servers require a base64 image") from exc
                 mime = (
                     "image/png"
                     if raw.startswith(b"\x89PNG\r\n\x1a\n")

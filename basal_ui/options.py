@@ -686,7 +686,8 @@ def check_combination(v, hw, options, default_mode, media=False):
             elif getattr(native, "long_lane_gdn", "off") == "on" and native.long_lane != "on":
                 raise ValueError("--long-lane-gdn on needs --long-lane on")
         except SystemExit as exc:
-            raise ValueError(str(exc)) from None
+            message = "The installed Engine rejected these load options" if isinstance(exc.code, int) else str(exc)
+            raise ValueError(message) from None
     if options["mlx_packed"]:
         reason = mlx_packed_unavailable(v, hw)
         if media or mode not in ("mlx", "mlx-q8"):

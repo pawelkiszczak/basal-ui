@@ -26,9 +26,21 @@ REPORT_FIELDS = (
 )
 
 
+class FineTuneInputError(ValueError):
+    def __init__(self, message, code, **params):
+        super().__init__(message)
+        self.code, self.params = code, params
+
+
+class FineTuneConflict(RuntimeError):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+
+
 def _name(value):
     if not isinstance(value, str) or not NAME.fullmatch(value) or value in (".", ".."):
-        raise ValueError("out_name must be a safe single path segment")
+        raise FineTuneInputError("out_name must be a safe single path segment", "finetune_name")
     return value
 
 
@@ -38,29 +50,29 @@ def _slug(model_id):
     return model_id.replace("/", "--")
 
 
-def _directory(record):
+def output_directory(record):
     root = record.get("root")
     if not isinstance(root, str) or not Path(root).is_absolute():
-        raise ValueError("invalid fine-tune output root")
+        raise FineTuneInputError("invalid fine-tune output root", "finetune_ownership")
     return Path(root) / "adapters" / _slug(record.get("id")) / _name(record.get("name"))
 
 
 def _safe_directory(record, missing=False):
-    path = _directory(record)
+    path = output_directory(record)
     root = Path(record["root"])
     if root.resolve() != root:
-        raise ValueError("fine-tune output root changed or contains a symlink")
+        raise FineTuneInputError("fine-tune output root changed or contains a symlink", "finetune_ownership")
     for part in (root / "adapters", root / "adapters" / _slug(record["id"]), path):
         if part.is_symlink():
-            raise ValueError("fine-tune output contains a symlink")
+            raise FineTuneInputError("fine-tune output contains a symlink", "finetune_ownership")
         if part.exists() and not part.is_dir():
             raise ValueError("fine-tune output path is not a directory")
     if path.exists():
         stat = path.stat(follow_symlinks=False)
         if (stat.st_dev, stat.st_ino) != (record.get("device"), record.get("inode")):
-            raise ValueError("fine-tune output ownership no longer matches")
+            raise FineTuneInputError("fine-tune output ownership no longer matches", "finetune_ownership")
     if not missing and not path.is_dir():
-        raise ValueError("fine-tune output is missing")
+        raise FineTuneInputError("fine-tune output is missing", "finetune_missing")
     return path
 
 
@@ -76,9 +88,12 @@ def _parent_fd(record, create=False):
     try:
         info = os.fstat(fd)
         if (before.st_dev, before.st_ino) != (info.st_dev, info.st_ino):
-            raise ValueError("models directory changed")
+            raise FineTuneInputError("models directory changed", "finetune_ownership")
         if info.st_uid != os.geteuid() or info.st_mode & 0o022:
-            raise ValueError("models directory must be owned by the current user and not writable by others")
+            raise FineTuneInputError(
+                "models directory must be owned by the current user and not writable by others. Choose a private models directory",
+                "finetune_ownership",
+            )
         for name in ("adapters", _slug(record["id"])):
             if create:
                 with suppress(FileExistsError):
@@ -91,7 +106,7 @@ def _parent_fd(record, create=False):
             fd = child
             info = os.fstat(fd)
             if (before.st_dev, before.st_ino) != (info.st_dev, info.st_ino):
-                raise ValueError("fine-tune directory changed")
+                raise FineTuneInputError("fine-tune directory changed", "finetune_ownership")
             if info.st_uid != os.geteuid() or info.st_mode & 0o022:
                 raise ValueError("fine-tune directories must be owned by the current user and not writable by others")
         return fd
@@ -112,7 +127,7 @@ def _private_directories_supported():
 def _owned_stat(fd, name, record):
     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
     if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != (record.get("device"), record.get("inode")):
-        raise ValueError("fine-tune output ownership no longer matches")
+        raise FineTuneInputError("fine-tune output ownership no longer matches", "finetune_ownership")
     return info
 
 
@@ -135,11 +150,11 @@ def _remove_contents(fd):
             try:
                 opened = os.fstat(child)
                 if (info.st_dev, info.st_ino) != (opened.st_dev, opened.st_ino):
-                    raise ValueError("fine-tune directory changed during deletion")
+                    raise FineTuneInputError("fine-tune directory changed during deletion", "finetune_ownership")
                 _remove_contents(child)
                 current = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
                 if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
-                    raise ValueError("fine-tune directory changed during deletion")
+                    raise FineTuneInputError("fine-tune directory changed during deletion", "finetune_ownership")
                 os.rmdir(entry.name, dir_fd=fd)
             finally:
                 os.close(child)
@@ -149,7 +164,7 @@ def _remove_contents(fd):
 
 def _report(path):
     if path.is_symlink():
-        raise ValueError("fine-tune report is a symlink")
+        raise FineTuneInputError("fine-tune report is a symlink", "finetune_ownership")
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or any(key not in data for key in REPORT_FIELDS):
         raise ValueError("fine-tune report is incomplete")
@@ -183,7 +198,7 @@ def _adapter(path):
     if adapter.is_symlink() or not adapter.is_dir() or not (adapter / "adapter_config.json").is_file():
         raise ValueError("adapter is missing")
     if any(p.is_symlink() for p in adapter.iterdir()):
-        raise ValueError("adapter contains a symlink")
+        raise FineTuneInputError("adapter contains a symlink", "finetune_ownership")
     if not any(p.is_file() and not p.is_symlink() and p.stat().st_size for p in adapter.glob("adapter_model.*")):
         raise ValueError("adapter weights are missing")
     from basal.adapter import validate
@@ -206,7 +221,7 @@ def _complete(path):
         raise ValueError("fine-tune output is missing its tokenizer")
     index = path / "model.safetensors.index.json"
     if index.is_symlink():
-        raise ValueError("fine-tune weights index is a symlink")
+        raise FineTuneInputError("fine-tune weights index is a symlink", "finetune_ownership")
     if index.is_file():
         data = json.loads(index.read_text(encoding="utf-8"))
         mapping = data.get("weight_map") if isinstance(data, dict) else None
@@ -233,29 +248,31 @@ def _parameters(body):
         if (type(value) is not int if integer else type(value) not in (int, float)) or (
             isinstance(value, float) and not math.isfinite(value)
         ):
-            raise ValueError(f"{key} has an invalid value")
+            raise FineTuneInputError(f"{key} has an invalid value", "finetune_parameter", parameter=key)
         if value <= 0 or (key == "holdout" and value >= 1):
-            raise ValueError(f"{key} has an invalid value")
+            raise FineTuneInputError(f"{key} has an invalid value", "finetune_parameter", parameter=key)
         out[key] = value
     if "max_steps" in body:
         value = body["max_steps"]
         if type(value) is not int or value <= 0:
-            raise ValueError("max_steps has an invalid value")
+            raise FineTuneInputError("max_steps has an invalid value", "finetune_parameter", parameter="max_steps")
         out["max_steps"] = value
     value = body.get("grad_checkpointing", False)
     if type(value) is not bool:
-        raise ValueError("grad_checkpointing must be a boolean")
+        raise FineTuneInputError(
+            "grad_checkpointing must be a boolean", "finetune_parameter", parameter="grad_checkpointing"
+        )
     out["grad_checkpointing"] = value
     return out
 
 
 def _snapshot(source, holdout):
     if not isinstance(source, str) or not source.strip():
-        raise ValueError("input must be a labelled JSONL path")
+        raise FineTuneInputError("input must be a labelled JSONL path", "finetune_input")
     try:
         text = Path(source).expanduser().read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        raise ValueError(f"cannot read labelled input: {exc}") from exc
+        raise FineTuneInputError(f"cannot read labelled input: {exc}", "finetune_input") from exc
     for number, line in enumerate(text.splitlines(), 1):
         if line.strip():
             try:
@@ -270,7 +287,7 @@ def _snapshot(source, holdout):
                     line, parse_float=finite, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value))
                 )
             except ValueError as exc:
-                raise ValueError(f"line {number}: invalid JSON ({exc})") from exc
+                raise FineTuneInputError(f"line {number}: invalid JSON ({exc})", "finetune_input") from exc
     temp = tempfile.TemporaryDirectory(prefix="basal-ui-finetune-")
     try:
         path = Path(temp.name) / "labelled.jsonl"
@@ -285,7 +302,9 @@ def _snapshot(source, holdout):
         except calibrate.InputError as exc:
             raise ValueError(str(exc)) from exc
         if not train or not held:
-            raise ValueError(f"need training decisions and held-out groups; got {len(train)} and {len(held)}")
+            raise FineTuneInputError(
+                f"need training decisions and held-out groups; got {len(train)} and {len(held)}", "finetune_input"
+            )
         return (
             temp,
             path,
@@ -351,7 +370,7 @@ class FineTune:
                 try:
                     row = {
                         "name": _name(record.get("name")),
-                        "output": str(_directory(record)),
+                        "output": str(output_directory(record)),
                         "adapter": None,
                         "ready": False,
                         "error": str(exc),
@@ -367,7 +386,7 @@ class FineTune:
         selected = Path(adapter).expanduser().resolve()
         for record in self.settings.finetune_results():
             try:
-                output = _directory(record).resolve()
+                output = output_directory(record).resolve()
             except (ValueError, OSError):
                 continue
             quarantine = output.with_name(f".{output.name}.deleting")
@@ -389,7 +408,7 @@ class FineTune:
         if not available:
             raise ValueError(reason)
         if variant.port != "bf16" or not (variant.family.startswith("basal-") or variant.family == "attached"):
-            raise ValueError("fine-tuning requires a downloaded bf16 basal or Attached model")
+            raise FineTuneInputError("fine-tuning requires a downloaded bf16 basal or Attached model", "finetune_model")
         name, params = _name(body.get("out_name")), _parameters(body)
         local_dir = Path(local_dir).resolve(strict=True)
         if not (local_dir / "basal.json").is_file():
@@ -412,7 +431,7 @@ class FineTune:
             with self.fleet.lock:
                 self.fleet._check_addon_maintenance()
                 if self.fleet.stopping:
-                    raise RuntimeError("the app is shutting down")
+                    raise FineTuneConflict("the app is shutting down", "finetune_jobs_busy")
                 if Path(self.settings.models_dir()).resolve() != Path(record["root"]):
                     raise RuntimeError("models directory changed before training")
                 if (variant.id, name) in self.deleting:
@@ -422,12 +441,12 @@ class FineTune:
                 if current is None or current.resolve() != local_dir:
                     raise RuntimeError("downloaded model changed before training")
                 if any(r.get("id") == variant.id and r.get("name") == name for r in self.settings.finetune_results()):
-                    raise RuntimeError("fine-tune output already exists")
+                    raise FineTuneConflict("fine-tune output already exists", "finetune_duplicate")
                 self.fleet.reserve("finetune", 2 * needed)
                 reserved = True
-                output = _directory(record)
+                output = output_directory(record)
                 if output.exists() or output.is_symlink():
-                    raise RuntimeError("fine-tune output already exists")
+                    raise FineTuneConflict("fine-tune output already exists", "finetune_duplicate")
                 _safe_directory(record, missing=True)
                 if output == local_dir or local_dir in output.parents:
                     raise ValueError("fine-tune output cannot be inside the base model")
@@ -513,11 +532,11 @@ class FineTune:
                 (r for r in self.settings.finetune_results() if r.get("id") == model_id and r.get("name") == name), None
             )
             if record is None:
-                raise ValueError("unknown fine-tune output")
+                raise FineTuneInputError("unknown fine-tune output", "finetune_missing")
             path = _safe_directory(record, missing=True)
             quarantine = path.with_name(f".{path.name}.deleting")
-            if self.fleet.jobs.running() or self.fleet.reserved:
-                raise RuntimeError("wait for active jobs before deleting fine-tune output")
+            if self.fleet.jobs.running() or self.fleet.reserved or self.fleet.finetune_deleting:
+                raise FineTuneConflict("wait for active jobs before deleting fine-tune output", "finetune_jobs_busy")
             for runner in {
                 *self.fleet.runners.values(),
                 *self.fleet.temporary.values(),
@@ -530,9 +549,11 @@ class FineTune:
                         resolved = Path(value).expanduser().resolve()
                         roots = (path.resolve(), quarantine.resolve())
                         if any(resolved == root or root in resolved.parents for root in roots):
-                            raise RuntimeError("unload the active adapter before deleting its output")
+                            raise FineTuneConflict(
+                                "unload the active adapter before deleting its output", "finetune_active_adapter"
+                            )
             if quarantine.is_symlink():
-                raise ValueError("fine-tune cleanup location is a symlink")
+                raise FineTuneInputError("fine-tune cleanup location is a symlink", "finetune_ownership")
             if not path.exists() and not quarantine.exists():
                 self.settings.remove_finetune(model_id, name)
                 return {"removed_bytes": 0, "missing": True}
@@ -561,7 +582,7 @@ class FineTune:
                 os.close(parent_fd)
                 raise
             self.deleting.add((model_id, name))
-            self.fleet.reserved["finetune-delete"] = 0
+            self.fleet.finetune_deleting = True
         try:
             pending = {**record, "state": "cleanup_pending"}
             if record.get("state") != "cleanup_pending":
@@ -584,7 +605,7 @@ class FineTune:
                 try:
                     opened = os.fstat(output_fd)
                     if (opened.st_dev, opened.st_ino) != (record["device"], record["inode"]):
-                        raise ValueError("fine-tune output ownership no longer matches")
+                        raise FineTuneInputError("fine-tune output ownership no longer matches", "finetune_ownership")
                     _remove_contents(output_fd)
                     _owned_stat(parent_fd, quarantine.name, record)
                     os.rmdir(quarantine.name, dir_fd=parent_fd)
@@ -608,4 +629,4 @@ class FineTune:
             os.close(parent_fd)
             with self.fleet.lock:
                 self.deleting.discard((model_id, name))
-                self.fleet.reserved.pop("finetune-delete", None)
+                self.fleet.finetune_deleting = False

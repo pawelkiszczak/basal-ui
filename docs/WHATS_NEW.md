@@ -5,6 +5,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Serialize Scheduled Batch across instances sharing settings, compact malformed History rows at rotation, and improve
   Cascade name validation, dialog accessibility, and Polish start errors.
 - Require OpenTelemetry API 1.45.2 or newer to address CVE-2026-126360.
+- Cancel Attach while it waits for a base download, recover History through Clear when rows are malformed, and
+  keep Comparison model labels out of gateway metrics. Scheduled Batch retains interrupted inputs for restart.
 
 ## Models and inference
 
@@ -36,7 +38,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 ## Engine, calibration, and operations
 
 - Support Engine `>=2.4.1,<2.9` with a source pin of **2.8.0**. Capabilities are probed at runtime. Release CI covers
-  Engine 2.4.1, 2.5.0, 2.5.1, 2.6.0, and 2.8.0 on Ubuntu and macOS.
+  Engine 2.4.1, 2.5.0, 2.5.1, 2.6.0, and 2.8.0 on Ubuntu and macOS. Other Engine versions admitted by
+  the range are outside this matrix.
+- Hardware and model profiles without release validation include CUDA fast-exit, vLLM Thinking, and Pico BF16.
 - Load options follow the installed Engine's CLI. They include long-lane and SOAM choices, server limits, second reads,
   prepared kernels, graph memory, quantization, cache controls, and MLX options where supported. Earlier Saved settings
   and presets are migrated. Prepared kernels are optional for a cached model. [Load options](USAGE.md#load-options)

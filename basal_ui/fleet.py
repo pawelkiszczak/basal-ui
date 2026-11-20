@@ -153,6 +153,12 @@ class Downloads:
         return out
 
 
+def _child_process_group():
+    if os.name == "posix":
+        return {"start_new_session": True}
+    return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+
+
 def _child_settings(serve, calibration=None):
     """The settings a basal-serve child is started with (the rest belongs to the API server): the decision log, the
     vLLM / SGLang context and the calibration file selected for the model (None: the shipped one)."""
@@ -420,11 +426,6 @@ class Runner:
                 port = s.getsockname()[1]
             calibration = self._calibration(v)
             command = self._build_command(v, path, assessment, media, port, serve, calibration or False)
-            options = (
-                {"start_new_session": True}
-                if os.name == "posix"
-                else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
-            )
             with self.lock:
                 if gen != self.gen:
                     return
@@ -445,7 +446,7 @@ class Runner:
                         **os.environ,
                         **({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"} if self.local_only else {}),
                     },
-                    **options,
+                    **_child_process_group(),
                 )
                 self.log_thread = log_thread = threading.Thread(target=self._read_logs, args=(proc,), daemon=True)
                 log_thread.start()
@@ -651,7 +652,16 @@ class CascadeRunner:
                     raise RuntimeError("cascade start cancelled")
                 self.command, self.base_url = argv, base_url
                 self.process = proc = subprocess.Popen(
-                    argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, start_new_session=True
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    **_child_process_group(),
                 )
             threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
             deadline = time.monotonic() + START_TIMEOUT_S
@@ -876,12 +886,13 @@ class ComparisonRunner:
         url = self.server.get("decisions_url") or self.base_url + "/v1/systemone"
         return self._reply(httpx.post(url, json=payload, headers=headers, timeout=120), body)
 
-    async def adecide(self, client, body, path="/v1/systemone"):
+    async def adecide(self, client, body, path="/v1/systemone", timeout=None):
         refusal, payload, headers = await asyncio.to_thread(self._prepare, body)
         if refusal is not None:
             return refusal
         url = self.server.get("decisions_url") or self.base_url + "/v1/systemone"
-        return self._reply(await client.post(url, json=payload, headers=headers, timeout=120), body)
+        response = await client.post(url, json=payload, headers=headers, timeout=120 if timeout is None else timeout)
+        return await asyncio.to_thread(self._reply, response, body)
 
 
 class Fleet:
@@ -897,11 +908,18 @@ class Fleet:
         self.decision_servers: dict[str, dict] = {}
         self.logs: dict[str, LogBuffer] = {"basal-ui": LogBuffer()}
         self.engine_addon_installing = False
+        self.finetune_deleting = False
         self._engine_addon_job_target = None
         self.downloads = Downloads(self.event)
-        self.jobs = Jobs(self.logs, self.event, start_lock=self.lock, start_guard=self._check_job_start)
-        self.jobs.model_guard = self._check_job_model
+        self.jobs = Jobs(
+            self.logs,
+            self.event,
+            start_lock=self.lock,
+            start_guard=self._check_job_start,
+            model_guard=self._check_job_model,
+        )
         self.draining: set[str] = set()
+        self.editing_cascades: set[str] = set()
         self.leases: dict[Runner, int] = {}
         self.inflight: dict[object, tuple[str, str, float]] = {}  # each request being answered: (model, source, start)
         self.stopping = False
@@ -1025,15 +1043,15 @@ class Fleet:
             raise RuntimeError("model operations are unavailable during Engine add-on installation")
 
     def _check_finetune_delete(self):
-        if "finetune-delete" in self.reserved:
+        if self.finetune_deleting:
             raise RuntimeError("model operations are unavailable during fine-tune output deletion")
 
     def _check_pending_adapter(self, options):
-        from .finetune import _directory
+        from .finetune import output_directory
 
         for record in getattr(self.settings_mod, "finetune_results", lambda: [])():
             try:
-                path = _directory(record)
+                path = output_directory(record)
                 quarantine = path.with_name(f".{path.name}.deleting").resolve()
             except (ValueError, OSError):
                 continue
@@ -1174,8 +1192,6 @@ class Fleet:
             self._check_pending_adapter(options)
             if assessment.variant.family == "attached":
                 self._check_job_model("load", model_id)
-                if not any(r.get("id") == model_id for r in self.settings_mod.attached_models()):
-                    raise RuntimeError("attached model is no longer registered")
                 if not catalog.is_downloaded(assessment.variant, self.models_dir_fn()):
                     raise RuntimeError("attached model files are missing")
             if self.stopping or (model_id in self.draining and _reservation is None):
@@ -1213,6 +1229,18 @@ class Fleet:
         for key in unloaded[: max(0, len(self.logs) - 1 - MODEL_LOGS_KEPT)]:
             del self.logs[key]
 
+    @contextmanager
+    def edit_cascade(self, name):
+        with self.lock:
+            if name in self.runners or name in self.draining or name in self.editing_cascades:
+                raise RuntimeError("Stop the Cascade and finish any pending change first")
+            self.editing_cascades.add(name)
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.editing_cascades.discard(name)
+
     def start_cascade(self, name):
         from .engine import feature
 
@@ -1220,7 +1248,7 @@ class Fleet:
             raise RuntimeError("Cascades need engine 2.5")
         with self.lock:
             self._check_addon_maintenance()
-            if self.stopping or name in self.draining or name in self.runners:
+            if self.stopping or name in self.draining or name in self.runners or name in self.editing_cascades:
                 raise RuntimeError("model is unavailable during maintenance or already loaded")
             self.draining.add(name)
         try:
@@ -1276,7 +1304,7 @@ class Fleet:
                 if model_id is not None
                 else [name for name, runner in self.runners.items() if not isinstance(runner, ComparisonRunner)]
             )
-            dependents = self._dependent_cascades(model_id) if model_id is not None else []
+            dependents = self.dependent_cascades(model_id) if model_id is not None else []
             ids = dependents + ids
             if not self.stopping and any(i in self.draining for i in ids):
                 raise RuntimeError("model is unavailable during maintenance")
@@ -1307,16 +1335,17 @@ class Fleet:
                 self.stop_temporary(kind)
         return self.status()
 
-    def _dependent_cascades(self, model_id):
-        return [
-            name
-            for name, runner in self.runners.items()
-            if isinstance(runner, CascadeRunner) and any(level["model"] == model_id for level in runner.levels)
-        ]
+    def dependent_cascades(self, model_id):
+        with self.lock:
+            return [
+                name
+                for name, runner in self.runners.items()
+                if isinstance(runner, CascadeRunner) and any(level["model"] == model_id for level in runner.levels)
+            ]
 
     def _detach_cascades(self, model_id, reason):
         stopped = []
-        for name in self._dependent_cascades(model_id):
+        for name in self.dependent_cascades(model_id):
             stopped.append((name, *self._detach_runner(name)))
             self.event("info", f"cascade {name} stopped because member {model_id} was {reason}")
         return stopped
@@ -1350,24 +1379,30 @@ class Fleet:
         if self.idle_thread is not None:
             self.idle_thread.join()
 
-    def refresh_idle_settings(self):
-        def observe(timeout, revision):
-            if revision != self.idle_settings_generation:
-                self.idle_settings_generation = revision
-                self.idle_settings_changed = time.monotonic()
-            return timeout, revision
+    def _observe_idle_revision(self, revision):
+        if revision != self.idle_settings_generation:
+            self.idle_settings_generation = revision
+            self.idle_settings_changed = time.monotonic()
 
+    def refresh_idle_settings(self):
         with self.lock:
-            return self.settings_mod.with_idle_unload_state(observe)
+            self.settings_mod.with_idle_unload_state(lambda _timeout, revision: self._observe_idle_revision(revision))
 
     def unload_idle(self, now):
         with self.lock:
+            observed_revision = self.idle_settings_generation
+        timeout, settings_generation = self.settings_mod.with_idle_unload_state(
+            lambda timeout, revision: (timeout, revision)
+        )
+        with self.lock:
+            if observed_revision != self.idle_settings_generation:
+                return
+            self._observe_idle_revision(settings_generation)
             candidates = list(self.runners.items())
         for model_id, runner in candidates:
             if not isinstance(runner, Runner):
                 continue
             with self.lock, runner.lock:
-                timeout, settings_generation = self.refresh_idle_settings()
                 if (
                     not timeout
                     or self.idle_stop.is_set()
@@ -1405,9 +1440,7 @@ class Fleet:
                     settings_generation=settings_generation,
                     health=health,
                 ):
-                    if revision != self.idle_settings_generation:
-                        self.idle_settings_generation = revision
-                        self.idle_settings_changed = time.monotonic()
+                    self._observe_idle_revision(revision)
                     if (
                         not timeout
                         or timeout != expected_timeout
@@ -1561,7 +1594,7 @@ class Fleet:
                     with runner.lock:
                         if runner.state == "ready" and (runner.process is None or runner.process.poll() is None):
                             ready.append((model, runner, runner.gen, runner.base_url))
-                elif runner.state == "ready":
+                elif runner.state == "ready" and (runner.models_entry or {}).get("kind") != "comparison":
                     ready.append((model, runner, None, None))
             return len(ready), [item for item in ready if isinstance(item[1], Runner) and item[3]]
 
@@ -1603,6 +1636,7 @@ class Fleet:
                 or self.temporary
                 or self.downloads.any_alive()
                 or self.reserved
+                or self.finetune_deleting
                 or self.jobs.running()
             ):
                 raise RuntimeError("unload every model before changing the models directory")
@@ -1865,12 +1899,6 @@ class Fleet:
         left = self.jobs.join(JOB_SHUTDOWN_S)
         if left:
             self.event("warn", f"shutdown: jobs still running: {', '.join(left)}")
-        attach = self.jobs.get("attach")
-        if attach and attach.thread and attach.thread.is_alive():
-            attach.thread.join()
-        finetune = self.jobs.get("finetune")
-        if finetune and finetune.thread and finetune.thread.is_alive():
-            finetune.thread.join()
         self.unload(forget=False)
 
 

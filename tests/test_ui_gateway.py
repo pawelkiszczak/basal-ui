@@ -478,14 +478,17 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
         method="POST",
     )
     fleet.stats.record("b/two", {"answers": {}, "usage": {"input_tokens": 4}}, 500, endpoint="/v1/other")
+    fleet.stats.record("comparison:external/model", {"answers": {}}, 10)
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         response = client.get("/metrics")
+        assert "comparison:external/model" not in response.text
+        assert "comparison:external/model" not in client.get("/v1/stats").text
         assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
         lines = response.text.splitlines()
         for key in ("requests", "questions", "errors", "input_tokens"):
             assert lines.count(f"# TYPE basal_ui_{key}_total counter") == 1
         for key in ("requests", "errors"):
-            assert lines.count(f"# TYPE basal_ui_traffic_{key}_total gauge") == 1
+            assert lines.count(f"# TYPE basal_ui_traffic_{key}_15m gauge") == 1
         label = r'model="a/\"one\\line\nnext"'
         assert f"basal_ui_requests_total{{{label}}} 1" in lines
         assert f"basal_ui_questions_total{{{label}}} 1" in lines
@@ -493,10 +496,10 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
         assert f"basal_ui_input_tokens_total{{{label}}} 7" in lines
         assert 'basal_ui_requests_total{model="b/two"} 1' in lines
         assert 'basal_ui_input_tokens_total{model="b/two"} 4' in lines
-        assert f'basal_ui_latency_seconds{{{label},quantile="0.95"}} 0.25' in lines
+        assert f'basal_ui_latency_quantile_seconds{{{label},quantile="0.95"}} 0.25' in lines
         assert f"basal_ui_latency_seconds_avg{{{label}}} 0.25" in lines
-        assert r'basal_ui_traffic_requests_total{endpoint="/v1/\"test",method="POST"} 1' in lines
-        assert 'basal_ui_traffic_requests_total{endpoint="/v1/other",method="POST"} 1' in lines
+        assert r'basal_ui_traffic_requests_15m{endpoint="/v1/\"test",method="POST"} 1' in lines
+        assert 'basal_ui_traffic_requests_15m{endpoint="/v1/other",method="POST"} 1' in lines
         assert "basal_ui_models_loaded 2" in lines
         assert f'engine_hits{{kind="a}}b",{label}}} 3' in lines
         assert 'engine_active{model="b/two"} 1' in lines
@@ -511,7 +514,7 @@ def test_metrics_combines_stats_and_ready_children(fleet, child):
 
         families = {
             **{f"basal_ui_{key}_total": ("counter",) for key in ("requests", "questions", "errors", "input_tokens")},
-            **{f"basal_ui_traffic_{key}_total": ("gauge",) for key in ("requests", "errors")},
+            **{f"basal_ui_traffic_{key}_15m": ("gauge",) for key in ("requests", "errors")},
             "engine_hits": ("counter", "HELP"),
             "engine_duration": ("histogram", "HELP"),
         }
@@ -590,7 +593,7 @@ def test_metrics_skip_composites_and_stale_child(fleet, child):
             release.set()
             thread.join(5)
             assert not thread.is_alive()
-            assert "basal_ui_models_loaded 4" in result[0].text
+            assert "basal_ui_models_loaded 3" in result[0].text
             assert "engine_value" not in result[0].text
             assert child.metrics_seen == 1
             assert not child.seen
@@ -1016,8 +1019,7 @@ def test_audio_policy_read_failure_keeps_successful_gateway_decision(fleet, monk
     with TestClient(build_app(fleet, fleet.stats), base_url="http://127.0.0.1") as client:
         reply = client.post("/v1/systemone", json={"model": "b/two", "state": "s", "questions": {}})
     assert reply.status_code == 200
-    assert fleet.history.list() == []
-    assert "decision not recorded" in fleet.logs["basal-ui"].text()
+    assert [row["state_preview"] for row in fleet.history.list()] == ["s"]
 
 
 def test_cascade_gateway_protocols_and_missing_fallback_probabilities(tmp_path, monkeypatch):

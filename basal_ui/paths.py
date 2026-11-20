@@ -18,7 +18,7 @@ PREVIEW_CHARS = 300
 PREVIEW_FIELDS = ("id", "state", "question", "type", "options", "questions", "gold", "expected")
 
 
-def _open(path):
+def open_input(path):
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -47,7 +47,7 @@ def _count(file, lines, pending, budget, decoder):
     return LINE_CAP, True
 
 
-def _row_shape(item, preset=None):
+def row_shape(item, preset=None):
     if "state" not in item:
         return None, "row must contain state"
     questions = item.get("questions")
@@ -133,7 +133,7 @@ def _read_jsonl(file, result, preset=None):
     if not isinstance(item, dict):
         return "not_json"
     try:
-        shape, error = _row_shape(item, preset)
+        shape, error = row_shape(item, preset)
     except RecursionError:
         result["schema_error"] = "request nesting exceeds the parser limit"
         return "invalid_schema"
@@ -174,7 +174,7 @@ def _problem(path, kind, result, preset=None):
     if not os.access(path, os.R_OK):
         return "unreadable"
     try:
-        with _open(path) as file:
+        with open_input(path) as file:
             result["size"] = os.fstat(file.fileno()).st_size
             return _read_jsonl(file, result, preset)
     except UnicodeDecodeError:
