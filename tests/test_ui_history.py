@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from basal_ui.history import History, make_record, replay_fields
@@ -258,6 +260,17 @@ def test_persistence_rotation_and_clear(tmp_path):
     assert History(path, keep=3).get(newest["id"])["state_preview"] == "after malformed row"
     assert reloaded.clear() == 3
     assert reloaded.list() == [] and History(path).list() == []
+
+
+def test_rotation_discards_malformed_rows_without_evicting_valid_ones(tmp_path):
+    path = tmp_path / "history.jsonl"
+    kept = record(state="keep")
+    path.write_text("{invalid\n" * 501 + json.dumps(kept) + "\n")
+    history = History(path, keep=2)
+    newest = record(state="new")
+    history.append(newest)
+    assert [json.loads(line)["id"] for line in path.read_text().splitlines()] == [kept["id"], newest["id"]]
+    assert [row["id"] for row in history.list()] == [newest["id"], kept["id"]]
 
 
 def test_ordinary_append_does_not_reread_unchanged_history(tmp_path, monkeypatch):

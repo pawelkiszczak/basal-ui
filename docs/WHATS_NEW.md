@@ -2,6 +2,10 @@
 
 This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
+- Serialize Scheduled Batch across instances sharing settings, compact malformed History rows at rotation, and improve
+  Cascade name validation, dialog accessibility, and Polish start errors.
+- Require OpenTelemetry API 1.45.2 or newer to address CVE-2026-126360.
+
 ## Models and inference
 
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an

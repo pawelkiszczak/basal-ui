@@ -1806,7 +1806,7 @@ def test_downloaded_model_loads_from_dashboard_and_batch_without_losing_input(br
                 row.locator(".load-model:not([data-media])").click()
             assert loaded.value.status == 202
             page.wait_for_function(
-                "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+                "id => statusCache?.models?.some(model => model.id === id && model.state === 'ready')",
                 arg=model_id,
                 timeout=WAIT,
             )
@@ -1839,7 +1839,9 @@ def test_downloaded_model_loads_from_dashboard_and_batch_without_losing_input(br
         view(page, "batch")
         page.fill("#batchInput", "/tmp/preserved-requests.jsonl")
         isolated_ui.unload(model_id)
-        page.wait_for_function("id => !statusCache.models.some(model => model.id === id)", arg=model_id)
+        page.wait_for_function(
+            "id => statusCache?.models && !statusCache.models.some(model => model.id === id)", arg=model_id
+        )
         load_here()
         assert page.input_value("#batchModel") == model_id
         assert page.input_value("#batchInput") == "/tmp/preserved-requests.jsonl"
@@ -2904,6 +2906,52 @@ def test_editing_only_rank_groups_preserves_candidate_keys_and_text(browser, ui)
             "key": "north america",
             "text": "First\nsecond",
         }
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    ("language", "title", "missing"),
+    [
+        ("en", "New cascade", "cascade member missing/one is not loaded"),
+        ("pl", "Nowa kaskada", "Model missing/one w kaskadzie nie jest załadowany."),
+    ],
+)
+def test_cascade_name_validation_and_accessibility(browser, isolated_ui, language, title, missing):
+    if not feature("router"):
+        pytest.skip("the installed Engine has no router")
+    isolated_ui.post(
+        "/api/cascades",
+        {
+            "name": "missing",
+            "kind": "escalate",
+            "levels": [{"model": "missing/one", "below": 0.8}, {"model": "missing/two"}],
+        },
+    )
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.add_init_script(f"localStorage.setItem('basal-ui.lang', '{language}')")
+        page.goto(isolated_ui.url + "/")
+        manager_tab(page, "library")
+        trigger = page.get_by_role("button", name=title, exact=True)
+        trigger.focus()
+        page.keyboard.press("Enter")
+        dialog = page.get_by_role("dialog", name=title)
+        sync_api.expect(dialog).to_be_visible()
+        name = dialog.locator("#cascadeName")
+        sync_api.expect(name).to_have_accessible_description(re.compile("a–z.*0–9"))
+        for value in ("", "-name", "Name", "łódź", "a" * 41, "two words"):
+            name.fill(value)
+            assert not name.evaluate("(input) => input.checkValidity()"), value
+        for value in ("0", "a-0", "a" * 40):
+            name.fill(value)
+            assert name.evaluate("(input) => input.checkValidity()"), value
+        page.keyboard.press("Escape")
+        sync_api.expect(dialog).to_be_hidden()
+        sync_api.expect(trigger).to_be_focused()
+        page.locator('[data-cascade="missing"]').click()
+        sync_api.expect(page.locator("#toastStack")).to_contain_text(missing)
     finally:
         context.close()
 

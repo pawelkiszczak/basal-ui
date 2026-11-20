@@ -577,6 +577,12 @@ class Runner:
         return response
 
 
+class CascadeMemberNotLoaded(RuntimeError):
+    def __init__(self, model):
+        super().__init__(f"cascade member {model} is not loaded")
+        self.model = model
+
+
 class CascadeRunner:
     """A basal-router process exposing loaded model members as one decision model."""
 
@@ -1228,7 +1234,7 @@ class Fleet:
                 for level in spec["levels"]:
                     member = self.runners.get(level["model"])
                     if member is None or member.status()["state"] != "ready" or level["model"] in self.draining:
-                        raise RuntimeError(f"cascade member {level['model']} is not loaded")
+                        raise CascadeMemberNotLoaded(level["model"])
                     if not isinstance(member, Runner):
                         raise RuntimeError(f"cascade member {level['model']} must be a native model")
                     members[level["model"]] = member.base_url

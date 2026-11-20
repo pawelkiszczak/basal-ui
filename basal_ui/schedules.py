@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -81,12 +82,17 @@ def candidates(spec):
     )
 
 
+class SchedulerBusy(RuntimeError):
+    """Another instance owns Scheduled Batch for this settings file."""
+
+
 class Schedules:
     def __init__(self, settings_mod, fleet, start_batch):
         self.settings, self.fleet, self.start_batch = settings_mod, fleet, start_batch
         self.lock = threading.RLock()
         self.run_lock = threading.Lock()
         self.active = None
+        self._lease = None
         self.pending = {}
         self.settings.recover_schedule_publications()
 
@@ -250,10 +256,43 @@ class Schedules:
         self.active = None
         return False
 
+    def _release_lease(self):
+        if self._lease is not None:
+            self._lease.close()
+            self._lease = None
+
+    @contextmanager
+    def _shared_run(self):
+        if self._lease is None:
+            self._lease = self.settings.try_schedule_lock()
+            if self._lease is None:
+                yield False
+                return
+            # Another instance may have settled our cached scan while we were idle.
+            self.pending.clear()
+        try:
+            yield True
+        finally:
+            if self.active is None:
+                self._release_lease()
+
+    def shutdown(self):
+        with self.run_lock, self.lock:
+            try:
+                if self.active is not None and self.active[2].thread is not None:
+                    self.active[2].thread.join()
+                self._finish_active()
+            finally:
+                self._release_lease()
+
     def run_due(self, now=None, schedule_id=None, force=False):
         now = time.time() if now is None else now
         timestamp = self._time(now).timestamp()
-        with self.run_lock, self.lock:
+        with self.run_lock, self.lock, self._shared_run() as owned:
+            if not owned:
+                if force:
+                    raise SchedulerBusy("Scheduled Batch is busy in another basal-ui instance. Retry when it finishes.")
+                return {"status": "queued"}
             self.settings.recover_schedule_publications()
             running = self._finish_active()
             outcome = "no_new_files"
