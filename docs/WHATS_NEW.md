@@ -2,6 +2,10 @@
 
 This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
+## Interface
+
+- Align checkbox sizing and menu surfaces across Tools and Appearance while preserving native checkbox and menu keyboard behavior ([screenshot](images/issue-144-controls.png)).
+
 ## Models and inference
 
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
