@@ -85,14 +85,13 @@ function applyTheme(theme) {
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
-document.querySelectorAll('.appearance-controls [data-theme-choice]').forEach(b=>b.onclick=()=>{const menu=$('.appearance-controls details');applyTheme(b.dataset.themeChoice);menu.open=false;menu.querySelector('summary').focus();});
+document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);const menu=b.closest('.appearance-controls details');if(menu){menu.open=false;menu.querySelector('summary').focus();}});
 applyTheme(localStorage.getItem('basal-ui.theme')||'system');
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
 document.addEventListener('keydown',event=>{
   const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
-  if(event.key==='Escape'&&menu){event.preventDefault();menu.open=false;menu.querySelector('summary').focus();}
-  else if(event.key==='Tab'&&!event.shiftKey&&event.target===menu?.querySelector('summary')){
+  if(event.key==='Tab'&&!event.shiftKey&&event.target===menu?.querySelector('summary')){
     const first=menu.querySelector('.header-menu-panel button:not(:disabled)');
     if(first){event.preventDefault();requestAnimationFrame(()=>first.focus());}
   }
@@ -543,6 +542,12 @@ async function startRecording() {
 }
 $('#recordAudio').addEventListener('click',startRecording);
 document.addEventListener('keydown',event=>{if(event.key==='Escape' && recording){event.preventDefault();if(recording.phase==='recording')finishRecording(recording);else cancelRecording();}});
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Escape'&&menu?.contains(event.target)&&!event.defaultPrevented&&!document.querySelector('dialog[open]')){
+    event.preventDefault();menu.open=false;menu.querySelector('summary').focus();
+  }
+});
 
 function renderDashboard() {
   window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
