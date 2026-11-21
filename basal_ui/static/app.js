@@ -153,10 +153,27 @@ function renderModels(data) {
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
   const older = $('#olderToggle').checked, showBad = $('#notRunnableToggle').checked, downloadedOnly = $('#downloadedToggle').checked;
-  const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable || m.media_mode) && (!downloadedOnly || m.downloaded));
+  const query=$('#modelSearch').value.trim().toLowerCase(), downloadFilter=$('#modelDownloadFilter').value,
+    loadFilter=$('#modelLoadFilter').value, compatibilityFilter=$('#modelCompatibilityFilter').value, fitFilter=$('#modelFitFilter').value;
+  const activeFilters=Boolean(query||downloadFilter||loadFilter||compatibilityFilter||fitFilter||older||showBad||downloadedOnly);
+  $('#clearModelFilters').disabled=!activeFilters;
+  const list = modelData.filter(m => {
+    const download=statusCache?.downloads?.[m.repo], downloading=statusCache?Boolean(download&&!download.error):null;
+    const loaded=statusCache?statusCache.models.some(x=>x.id===m.id):null;
+    const compatible=typeof m.runnable==='boolean'?(m.runnable||Boolean(m.media_mode)):m.media_mode?true:null;
+    return (!backendModelFilter||backendModelFilter.ids.has(m.id))
+      && (older || !['basal-1.0','basal-1.5'].includes(m.family))
+      && (showBad || compatibilityFilter==='unavailable' || compatible)
+      && (!downloadedOnly || m.downloaded)
+      && (!query || [m.id,m.repo,m.family,m.tier,m.label].some(value=>String(value||'').toLowerCase().includes(query)))
+      && (!downloadFilter || (downloadFilter==='downloaded'?m.downloaded:downloadFilter==='downloading'?downloading===true:m.downloaded===false&&downloading===false))
+      && (!loadFilter || (loadFilter==='loaded'?loaded===true:loaded===false))
+      && (!compatibilityFilter || (compatibilityFilter==='runnable'?compatible===true:compatible===false))
+      && (!fitFilter || (m.fit||'unknown')===fitFilter);
+  });
   list.sort((a,b) => familyOrder(b.family)-familyOrder(a.family) || tierOrder(a.tier)-tierOrder(b.tier) || a.port.localeCompare(b.port));
   const groups = new Map(); for (const m of list) { if (!groups.has(m.family)) groups.set(m.family, []); groups.get(m.family).push(m); }
-  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty">${t('No models match these filters.')}</div>`; return; }
+  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty"><p>${t('No models match these filters.')}</p><button type="button" class="outline-action" data-clear-model-filters>${t('Clear filters')}</button></div>`; return; }
   let html = '';
   const tableHead=`<table class="model-variants"><colgroup><col style="width:20%"><col style="width:13%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:9%"><col style="width:30%"></colgroup><thead><tr><th>${t('Tier')}</th><th>${t('Format')}</th><th>${t('Size')}</th><th>${t('Est. memory')}</th><th>${t('Fit')}</th><th>${t('Fit now')}</th><th>${t('Action')}</th></tr></thead><tbody>`;
   for (const [family, rows] of groups) {
@@ -256,7 +273,7 @@ function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} 
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
-  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model" data-id="${esc(m.id)}">${t('Unload')}</button>`;
+  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model outline-action" data-id="${esc(m.id)}">${t('Unload')}</button>`;
   if(!m.runnable&&!m.media_mode){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
@@ -1623,6 +1640,15 @@ renderModels=function(data){catalogData=data; originalRenderModels(data);};
 function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===recommendationBackend) originalRenderModels(catalogData);}
 $('#olderToggle').addEventListener('change',rerenderFilters);
 $('#notRunnableToggle').addEventListener('change',rerenderFilters);
+['modelSearch','modelDownloadFilter','modelLoadFilter','modelCompatibilityFilter','modelFitFilter'].forEach(id=>{$(`#${id}`).addEventListener(id==='modelSearch'?'input':'change',rerenderFilters);});
+function clearModelFilters(){
+  $('#modelSearch').value=''; $('#modelDownloadFilter').value=''; $('#modelLoadFilter').value='';
+  $('#modelCompatibilityFilter').value=''; $('#modelFitFilter').value='';
+  ['olderToggle','notRunnableToggle','downloadedToggle'].forEach(id=>setChecked($(`#${id}`),false));
+  rerenderFilters(); $('#modelSearch').focus();
+}
+$('#clearModelFilters').addEventListener('click',clearModelFilters);
+document.addEventListener('click',event=>{if(event.target.closest('[data-clear-model-filters]'))clearModelFilters();});
 $('#addQuestion').addEventListener('click',()=>addQuestion());
 $('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
@@ -2442,7 +2468,7 @@ const OPTION_FIELDS={
   global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],graphOnly:true},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
-const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
+const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model outline-action" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
 document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');

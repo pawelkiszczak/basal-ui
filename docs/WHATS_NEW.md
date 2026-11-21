@@ -4,6 +4,7 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 
 ## Models and inference
 
+- Filter **All models** by name, download/load state, run availability, and budget memory fit; clear all filters in one action. Setup and Unload now use the shared secondary-action styling.
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
   optional chat fallback. Playground and API responses identify the answering tier. Blend and fallback answers carry
   no automation certificate. Escalation without fallback also works in Batch.
