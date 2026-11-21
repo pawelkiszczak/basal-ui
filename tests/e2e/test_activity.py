@@ -212,9 +212,13 @@ def test_answer_set_editor_and_error_cards_without_model(page):
     assert "Skipped" in page.locator("#results").inner_text()
 
 
-def test_gate_editor_special_names_aliases_and_live_options(page):
-    if not page.evaluate("() => statusCache.features.conditional_questions"):
+def test_gate_editor_special_names_aliases_and_live_options(page, ui):
+    status = ui.get("/api/status")
+    if not status["features"]["conditional_questions"]:
         pytest.skip("Engine does not support conditional questions")
+    status["models"] = [{"id": "synthetic", "state": "ready", "media": [], "entry": {}}]
+    page.route("**/api/status", lambda route: route.fulfill(json=status))
+    page.evaluate("() => refreshStatus()")
     test_pages.view(page, "playground")
     request = {
         "state": "s",
@@ -224,7 +228,6 @@ def test_gate_editor_special_names_aliases_and_live_options(page):
         },
     }
     page.evaluate("request => setRequest(JSON.parse(request))", json.dumps(request))
-    page.evaluate("() => $('#playgroundForm').disabled = false")
     target = page.locator(".question").nth(1)
     target.locator(".q-gates summary").click()
     test_pages.sync_api.expect(target.locator('[data-gate-question="__proto__"]:checked')).to_have_count(2)
