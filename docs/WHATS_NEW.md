@@ -1,14 +1,61 @@
-# Unreleased
+# 0.2.0
 
-- Add contributor names and GitHub nicknames to the main README, with full attribution linked in CONTRIBUTORS.
-- Confirm the published 0.1.0 installation instructions and record the final stable stage, main CI and publication
-  evidence. These documentation-only updates do not replace the v0.1.0 tag or its PyPI artifacts.
+This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
-- Correct the Backend Inference test persistence regression to distinguish user data from read-lock sidecars.
-  Read-only Stats polling must not count private Decisions or change settings, history or persisted statistics.
-  Runtime behavior is unchanged.
+- Serialize Scheduled Batch across instances sharing settings, compact malformed History rows at rotation, and improve
+  Cascade name validation, dialog accessibility, and Polish start errors.
+- Require OpenTelemetry API 1.45.2 or newer to address CVE-2026-126360.
+- Cancel Attach while it waits for a base download, recover History through Clear when rows are malformed, and
+  keep Comparison model labels out of gateway metrics. Scheduled Batch retains interrupted inputs for restart.
 
-- Run the CI matrix after merges to `stage` and `main`.
+## Models and inference
+
+- Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
+  optional chat fallback. Playground and API responses identify the answering tier. Blend and fallback answers carry
+  no automation certificate. Escalation without fallback also works in Batch.
+- Attach [external Decision servers](USAGE.md#decision-servers-and-comparison-models) for Comparison in the Playground
+  and Batch. History records the originating server, and Comparison confidence is uncalibrated.
+- Attach curated chat models such as `Qwen/Qwen3-4B` using the Engine. Attached models appear in the Library while
+  their calibration and compatibility are validated separately. [Attached models](USAGE.md#attached-models)
+- Fine-tune on labelled Decisions with private inputs and outputs, cancellable training, held-out reports,
+  base-associated adapter selection, and guarded cleanup. The host must support private adapter output.
+- Schedule Batch over folders of JSONL files with local-time intervals, protected outputs, and run history. On Engines
+  with Batch resume support, choose Resume or Restart after an interruption. Set the unanswered-line limit and use
+  Engine question presets with automatic, Polish or English wording. [Batch](USAGE.md#batch)
+
+## Playground and History
+
+- Build Decisions with editable Engine question sets, conditional questions, answer sets, abstention targets,
+  and experimental rank questions when the installed Engine provides them.
+- Fetch a public HTTP(S) page into editable State with provenance. Replay restores the recorded State without a
+  second fetch and preserves native question fields and truncation details.
+- Record a microphone clip as PCM WAV in the Playground. History can retain bounded audio copies when explicitly
+  enabled, and Replay retrieves retained clips on demand. [Recording audio](USAGE.md#recording-audio-in-the-playground)
+- Import MCP tool catalogues into tool questions and shortlist locally. Import request and load presets from public URLs.
+- Keep Load options tied to the latest model and dialog, including immediate reopen. Send Engine errors to the matching
+  question cards, distinguish overload, and retain persistent error toasts.
+
+## Engine, calibration, and operations
+
+- Support Engine `>=2.4.1,<2.9` with a source pin of **2.8.0**. Capabilities are probed at runtime. Release CI covers
+  Engine 2.4.1, 2.5.0, 2.5.1, 2.6.0, and 2.8.0 on Ubuntu and macOS. Other Engine versions admitted by
+  the range are outside this matrix.
+- Hardware and model profiles without release validation include CUDA fast-exit, vLLM Thinking, and Pico BF16.
+- Load options follow the installed Engine's CLI. They include long-lane and SOAM choices, server limits, second reads,
+  prepared kernels, graph memory, quantization, cache controls, and MLX options where supported. Earlier Saved settings
+  and presets are migrated. Prepared kernels are optional for a cached model. [Load options](USAGE.md#load-options)
+- Fit Calibration using one snapshot of the model revision, Execution mode, and prompt layout. Keep compatible shipped
+  thresholds, inspect conformal levels, and preserve layout when refitting saved rows. Calibration warnings identify
+  mismatches and invalid metadata. Benchmarks include the Identity gate, option-order checks, and active adapter/MLX
+  settings where supported. [Calibration and benchmarks](USAGE.md#custom-calibration)
+- Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
+  reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
+  lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
+- Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
+  detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
+- Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
+  Inspect follows the saved language and supports keyboard History activation, reduced motion, and forced colors.
+- Run the release CI matrix after merges to `stage` and `main`. [Release process](../CONTRIBUTING.md#releasing)
 
 # 0.1.0
 

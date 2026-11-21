@@ -6,7 +6,7 @@ run, load it, ask typed questions with calibrated confidence, and serve it to yo
 [![Release CI](https://github.com/pawelkiszczak/basal-ui/actions/workflows/release-ci.yml/badge.svg?branch=stage)](https://github.com/pawelkiszczak/basal-ui/actions/workflows/release-ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/basal-ui)](https://pypi.org/project/basal-ui/)
 [![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)](https://pypi.org/project/basal-ui/)
-[![Engine](https://img.shields.io/badge/engine-basal%20%3E%3D2.4.1%2C%3C2.5-6b5b95)](https://github.com/rkinas/basal)
+[![Engine](https://img.shields.io/badge/engine-basal%20%3E%3D2.4.1%2C%3C2.9-6b5b95)](https://github.com/rkinas/basal)
 [![License](https://img.shields.io/github/license/pawelkiszczak/basal-ui)](LICENSE)
 
 ![basal-ui tour: load basal-2.0-mini in Model manager, then ask it a question in the Playground](https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/tour.gif)
@@ -32,17 +32,18 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
   request on two loaded models, or copy System One curl, Python, OpenAI curl and MCP examples without silently
   dropping unsupported fields. Images and voice clips support basal-omni, with numbered elements marked on a screenshot.
 
-  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground: a choice question answered with calibrated confidence">
+  <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/playground.png" width="900" alt="Playground request editor with a source URL and estimated State context">
 
 - a **Model manager** with separate **Library**, **Usage by model**, **Benchmarks** and **Calibration** tabs.
-  Loaded models, memory and on-disk variants stay in Library; measurement and tuning controls no longer crowd it.
+  The Library manages local models, [named Cascades](docs/USAGE.md#cascades), and external Decision servers.
+  Benchmarks and Calibration provide measurement and tuning controls.
 
   <img src="https://raw.githubusercontent.com/pawelkiszczak/basal-ui/main/docs/images/model-manager.png" width="900" alt="Studio Model manager: Library with live inference, memory and loaded models">
 
 - **Backends → Engine add-ons**: explicitly install the current Engine's `media` or `gguf` dependencies with `uv`,
   logs and cancellation. Existing package versions and the Engine are preserved; stop models/jobs first and restart afterward.
   [Installation safety and prerequisites](docs/BACKENDS.md#installing-engine-add-ons).
-- **Batch** inference over JSONL, with explicit read-only path checks and a first-request preview before running;
+- **Batch** inference over JSONL, with read-only path checks, first-request previews, and [folder schedules](docs/USAGE.md#batch);
 - **Inspect**, which embeds `basal-viz` to show how a decision is made, layer by layer;
 - an **API server** with named API keys, CORS, request ids, typed errors, OpenAI Decisions translation and MCP — one
   port for every loaded model.
@@ -54,11 +55,13 @@ machine can run, downloads the one you choose and starts a private `basal-serve`
 
 ## Install
 
-Stable release: **0.1.0** (tag `v0.1.0`). Install from source with
-[uv](https://docs.astral.sh/uv/) and `make`:
+### Release candidate from source
+
+The release candidate builds **0.2.0** with Engine **2.8.0**. See [What's new in 0.2.0](docs/WHATS_NEW.md#020).
+Install the candidate from `stage` with [uv](https://docs.astral.sh/uv/) and `make`:
 
 ```bash
-git clone --branch main https://github.com/pawelkiszczak/basal-ui.git
+git clone --branch stage https://github.com/pawelkiszczak/basal-ui.git
 cd basal-ui
 make install
 make run                    # then open http://127.0.0.1:7860
@@ -67,7 +70,7 @@ make run                    # then open http://127.0.0.1:7860
 Engine extras are optional. For MLX on Apple Silicon, install the extra after `make install`:
 
 ```bash
-uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"
+uv pip install "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.8.0.tar.gz"
 ```
 
 ### PyPI package
@@ -95,7 +98,7 @@ basal-ui checks for the Engine at startup and refuses to start without it, print
 
 ## Supported engine range
 
-basal-ui runs on upstream engine releases `>=2.4.1,<2.5` (see `basal_ui/engine.py`). An engine outside that range is
+basal-ui runs on upstream engine releases `>=2.4.1,<2.9` (see `basal_ui/engine.py`). An engine outside that range is
 refused with the install command of a supported release.
 
 ## Experimental engine
@@ -117,7 +120,7 @@ commit). Features the engine does not provide yet stay hidden or greyed out with
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | the browser app end to end |
 | [docs/API.md](docs/API.md) | basal-ui's API server: keys, CORS, errors, OpenAI Decisions, MCP, clients |
-| [docs/E2E.md](docs/E2E.md) | setup, coverage and the [stable release verification](docs/E2E.md#stable-release-gate-2026-11-02) |
+| [docs/E2E.md](docs/E2E.md) | real-model release gate, coverage, and verification history |
 | [docs/BACKENDS.md](docs/BACKENDS.md) | Backend inventory, compatibility, isolated Inference tests and Engine add-on installation |
 | [docs/WHATS_NEW.md](docs/WHATS_NEW.md) | the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | dev setup, code style, tests, [branches and CI](CONTRIBUTING.md#branches-and-ci) (`dev` → `stage` → `main`), pull requests, the Engine-proposal pipeline, [releasing](CONTRIBUTING.md#releasing) |

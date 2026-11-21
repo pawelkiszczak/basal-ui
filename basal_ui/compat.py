@@ -1,6 +1,7 @@
 """System One request validation and OpenAI Decisions translation for basal-ui's API server."""
 
 import base64
+import math
 import re
 import time
 import uuid
@@ -40,13 +41,16 @@ def _error_args(e):
 
 
 def _child_error(response):
-    """(status, message, code) of a failed basal-serve reply ({"error": message} with its http_status)."""
+    """(status, message, code) of a failed basal-serve reply: {"error": message} with its http_status (2.4.1), plus
+    the engine's own "code" (2.5.0), which wins over the code derived from the status."""
     try:
-        message = response.json()["error"]
+        data = response.json()
+        message = data["error"]
     except (ValueError, KeyError, TypeError):
-        message = response.text
+        data, message = {}, response.text
     status = response.status_code
-    return status, str(message), STATUS_CODES.get(status, "UPSTREAM_ERROR")
+    code = data.get("code") if isinstance(data, dict) else None
+    return status, str(message), code if isinstance(code, str) and code else STATUS_CODES.get(status, "UPSTREAM_ERROR")
 
 
 def child_request(path, body):
@@ -63,8 +67,12 @@ def child_request(path, body):
         def decisions_reply(response):
             if response.status_code != 200:
                 status, message, code = _child_error(response)
-                return httpx.Response(status, json=openai_error_body(status, message, code))
-            return httpx.Response(200, json=decision_response(response.json(), spec, values))
+                headers = {"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else {}
+                return httpx.Response(status, json=openai_error_body(status, message, code), headers=headers)
+            try:
+                return httpx.Response(200, json=decision_response(response.json(), spec, values))
+            except (AttributeError, KeyError, TypeError, ValueError):
+                return httpx.Response(502, json=openai_error_body(502, "invalid decision response", "UPSTREAM_ERROR"))
 
         return internal, decisions_reply
     try:
@@ -78,7 +86,8 @@ def child_request(path, body):
         if response.status_code == 200:
             return response
         status, message, code = _child_error(response)
-        return httpx.Response(status, json=systemone_error_body(status, message, code))
+        headers = {"Retry-After": response.headers["Retry-After"]} if "Retry-After" in response.headers else {}
+        return httpx.Response(status, json=systemone_error_body(status, message, code), headers=headers)
 
     return internal, systemone_reply
 
@@ -290,11 +299,26 @@ def decision_response(result, spec, values):
         if typ == "predicate":
             answers.append({"type": typ, "name": name, "probability": ans["noul"]})
         elif typ == "choice":
-            probs = [
-                {"value": v, "probability": ans["probabilities"][str(v).lower() if isinstance(v, bool) else str(v)]}
-                for v in values[key]
-            ]
-            chosen = max(probs, key=lambda p: p["probability"])["value"]
+            probabilities = ans["probabilities"]
+            fallback = ans.get("answered_by") == "fallback"
+            if fallback and ans.get("calibrated") is not False:
+                raise ValueError("fallback answer must be uncalibrated")
+            choices = {str(v).lower() if isinstance(v, bool) else str(v): v for v in values[key]}
+            if probabilities is None:
+                if not fallback or ans["confidence"] is not None:
+                    raise ValueError("missing choice probabilities")
+                probs = None
+            else:
+                probs = [
+                    {"value": v, "probability": probabilities[str(v).lower() if isinstance(v, bool) else str(v)]}
+                    for v in values[key]
+                ]
+            if fallback:
+                if ans.get("choice") not in choices:
+                    raise ValueError("choice is not in the request")
+                chosen = choices[ans["choice"]]
+            else:
+                chosen = max(probs, key=lambda p: p["probability"])["value"]
             answers.append(
                 {"type": typ, "name": name, "choice": chosen, "probabilities": probs, "confidence": ans["confidence"]}
             )
@@ -312,6 +336,9 @@ def decision_response(result, spec, values):
                     "confidence": ans["confidence"],
                 }
             )
+        answers[-1].update(
+            {field: ans[field] for field in ("answered_by", "level", "model", "calibrated") if field in ans}
+        )
     usage = result.get("usage", {})
     total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
     return {
@@ -328,3 +355,317 @@ def decision_response(result, spec, values):
             "total_tokens": total,
         },
     }
+
+
+COMPARISON_UNSUPPORTED_TYPES = {"multi", "act", "tool", "classify", "verify", "compress", "extract"}
+COMPARISON_UNSUPPORTED_FIELDS = {
+    "facts",
+    "evidence",
+    "max_error",
+    "coverage",
+    "ask_if",
+    "depends_on",
+    "multi",
+    "think",
+    "think_text",
+    "early_exit",
+}
+
+
+# Allow rounding drift in upstream probability distributions without modifying them.
+COMPARISON_PROBABILITY_TOLERANCE = 1e-3
+
+
+def _comparison_options(question):
+    return question.get("criteria") or (question.get("levels") if question.get("type") == "score" else None)
+
+
+def comparison_request(body, image_input=False, option_limit=26, hosted=False):
+    """Validate the comparison subset before forwarding, including the normal System One boundary."""
+
+    def refuse(detail, code="UNSUPPORTED_FOR_COMPARISON", status=400):
+        return httpx.Response(status, json={"error": detail, "code": code})
+
+    try:
+        validate_systemone(body)
+        normalized = systemone_media(body)
+    except (TypeError, ValueError, KeyError) as exc:
+        status, message, code, _ = _error_args(exc)
+        return refuse(message, code, status)
+    for field in COMPARISON_UNSUPPORTED_FIELDS:
+        if field in body:
+            return refuse(f"Comparison models do not support {field}")
+    for name, question in body["questions"].items():
+        if question.get("type") not in ("choice", "noul", "score"):
+            return refuse(f"Comparison models do not support questions.{name}.type")
+        for field in COMPARISON_UNSUPPORTED_FIELDS:
+            if field in question:
+                return refuse(f"Comparison models do not support questions.{name}.{field}")
+        options = _comparison_options(question)
+        if (
+            question.get("type") in ("choice", "score")
+            and isinstance(options, (dict, list))
+            and len(options) > option_limit
+        ):
+            return refuse(
+                f"questions.{name} has {len(options)} options; this Comparison model's limit is {option_limit}"
+            )
+    media = normalized.get("media", [])
+    if any(item.get("type") == "audio" for item in media):
+        return refuse("Comparison models do not support audio")
+    if media and not image_input:
+        return refuse("This Comparison model does not report image input")
+    if hosted:
+        try:
+            systemone_to_decisions(normalized)
+        except (TypeError, ValueError, KeyError) as exc:
+            _, message, _, _ = _error_args(exc)
+            return refuse(message)
+    return None
+
+
+def comparison_response(data, request, model):
+    """Keep supported Decision values only; diagnostics can echo upstream credentials."""
+
+    def number(value):
+        return type(value) in (int, float) and math.isfinite(value)
+
+    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+        raise ValueError("invalid answers")
+    answers = {}
+    for name, question in request["questions"].items():
+        answer = data["answers"].get(name)
+        kind = question["type"]
+        if not isinstance(answer, dict) or answer.get("type", kind) != kind:
+            raise ValueError("missing or invalid answer")
+        result = {"type": kind, "calibrated": False}
+        probabilities = answer.get("probabilities")
+        options = _comparison_options(question)
+        if kind in ("choice", "score"):
+            if isinstance(options, dict):
+                keys = set(options)
+            elif isinstance(options, list):
+                keys = (
+                    {str(i) for i in range(len(options))}
+                    if kind == "score"
+                    else {str(value).lower() if isinstance(value, bool) else str(value) for value in options}
+                )
+            else:
+                raise ValueError("missing options")
+            if not keys or any(not isinstance(key, str) for key in keys):
+                raise ValueError("invalid options")
+        else:
+            keys = {"true", "false"}
+        if probabilities is not None:
+            if (
+                not isinstance(probabilities, dict)
+                or set(probabilities) != keys
+                or any(not number(value) or not 0 <= value <= 1 for value in probabilities.values())
+                or not math.isclose(
+                    math.fsum(probabilities.values()), 1.0, rel_tol=0.0, abs_tol=COMPARISON_PROBABILITY_TOLERANCE
+                )
+            ):
+                raise ValueError("invalid probabilities")
+            result["probabilities"] = probabilities
+        if kind == "choice":
+            if probabilities is None:
+                raise ValueError("missing probabilities")
+            choice, alias = answer.get("choice"), answer.get("answer")
+            if choice is not None and alias is not None and choice != alias:
+                raise ValueError("inconsistent choice")
+            choice = choice if choice is not None else alias
+            if choice is None:
+                highest = max(probabilities.values())
+                winners = [key for key, value in probabilities.items() if value == highest]
+                if len(winners) != 1:
+                    raise ValueError("ambiguous choice")
+                choice = winners[0]
+            if isinstance(choice, str):
+                selected_key = choice
+            elif isinstance(options, list) and any(
+                type(choice) is type(value) and choice == value for value in options
+            ):
+                selected_key = str(choice).lower() if isinstance(choice, bool) else str(choice)
+            else:
+                raise ValueError("invalid choice")
+            if selected_key not in keys:
+                raise ValueError("invalid choice")
+            result["choice"] = choice
+        else:
+            field = "noul" if kind == "noul" else "score"
+            value = answer.get(field)
+            if value is None and kind == "noul" and probabilities is not None:
+                value = probabilities["true"]
+            if not number(value) or (kind == "noul" and not 0 <= value <= 1):
+                raise ValueError("invalid answer value")
+            if kind == "score" and (probabilities is None or not 0 <= value <= len(keys) - 1):
+                raise ValueError("invalid score")
+            if (
+                kind == "noul"
+                and probabilities is not None
+                and not math.isclose(
+                    value, probabilities["true"], rel_tol=0.0, abs_tol=COMPARISON_PROBABILITY_TOLERANCE
+                )
+            ):
+                raise ValueError("inconsistent noul")
+            result[field] = value
+        confidence = answer.get("confidence")
+        if confidence is not None:
+            if not number(confidence) or not 0 <= confidence <= 1:
+                raise ValueError("invalid confidence")
+            result["confidence"] = confidence
+        answers[name] = result
+    usage = data.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    fields = (
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "questions",
+        "branches",
+        "second_order_branches",
+        "longest_prompt_tokens",
+    )
+    clean_usage = {k: usage[k] for k in fields if k in usage and number(usage[k])}
+    truncated = usage.get("truncated")
+    if truncated is not None and truncated is not False:
+        required = ("dropped_tokens", "state_tokens", "head_tokens", "tail_tokens")
+        if not isinstance(truncated, dict) or any(
+            type(truncated.get(key)) is not int or truncated[key] < 0 for key in required
+        ):
+            raise ValueError("invalid truncation information")
+        clean_usage["truncated"] = {key: truncated[key] for key in required}
+    return {"model": model, "answers": answers, "usage": clean_usage}
+
+
+def systemone_to_decisions(body):
+    """Translate only semantics the Decisions API can carry, refusing all other fields."""
+    extra = set(body) - {"model", "state", "questions", "media", "detail"}
+    if extra:
+        raise ValueError(f"Decisions servers cannot preserve {sorted(extra)[0]}")
+    if body.get("detail", "default") != "default":
+        raise ValueError("Decisions servers cannot preserve detail")
+    if not isinstance(body.get("state", ""), str):
+        raise ValueError("Decisions servers require a text state")
+    questions = []
+    for name, question in body["questions"].items():
+        allowed = {"type", "instructions", "criteria", "option_keys"}
+        if question.get("type") == "score":
+            allowed.add("levels")
+        extra = set(question) - allowed
+        if extra:
+            raise ValueError(f"Decisions servers cannot preserve questions.{name}.{sorted(extra)[0]}")
+        if "option_keys" in question and question["option_keys"] not in ("show", "hide"):
+            raise ValueError(f"Decisions servers cannot preserve questions.{name}.option_keys")
+        instructions = question.get("instructions")
+        if not isinstance(instructions, str) or not instructions.strip():
+            raise ValueError(f"questions.{name}.instructions must be text for a Decisions server")
+        kind = question.get("type")
+        item = {"name": name, "instructions": instructions}
+        criteria = _comparison_options(question) if kind == "score" else question.get("criteria")
+        if kind == "choice":
+            if question.get("option_keys") == "hide" and isinstance(criteria, dict):
+                if any(not isinstance(v, str) or not v for v in criteria.values()) or len(
+                    set(criteria.values())
+                ) != len(criteria):
+                    raise ValueError(f"questions.{name} needs distinct text options for a Decisions server")
+                choices = [{"value": v} for v in criteria.values()]
+            elif isinstance(criteria, dict):
+                choices = [{"value": k, **({"description": v} if v is not None else {})} for k, v in criteria.items()]
+            elif isinstance(criteria, list):
+                choices = [{"value": v} for v in criteria]
+            else:
+                raise ValueError(f"questions.{name}.criteria must list choices")
+            if any("description" in choice and not isinstance(choice["description"], str) for choice in choices):
+                raise ValueError(f"Decisions servers require text descriptions in questions.{name}.criteria")
+            item.update(type="choice", choices=choices)
+        elif kind == "noul":
+            if criteria:
+                raise ValueError(f"Decisions servers cannot preserve questions.{name}.criteria")
+            item["type"] = "predicate"
+        elif kind == "score":
+            if isinstance(criteria, dict):
+                levels = [{"label": k, **({"description": v} if v is not None else {})} for k, v in criteria.items()]
+            elif isinstance(criteria, list):
+                levels = [{"label": v} for v in criteria]
+            else:
+                raise ValueError(f"questions.{name}.criteria must list score levels")
+            if any("description" in level and not isinstance(level["description"], str) for level in levels):
+                raise ValueError(f"Decisions servers require text descriptions in questions.{name}.criteria")
+            item.update(type="score", levels=levels)
+        else:
+            raise ValueError(f"unsupported comparison question type: {kind}")
+        questions.append(item)
+    source = body.get("state", "")
+    media = body.get("media", [])
+    if media:
+        parts = [{"type": "input_text", "text": source}]
+        for item in media:
+            value = item["data"]
+            if not value.startswith("data:image/"):
+                try:
+                    raw = base64.b64decode(value[:16], validate=True)
+                except ValueError as exc:
+                    raise ValueError("Decisions servers require a base64 image") from exc
+                mime = (
+                    "image/png"
+                    if raw.startswith(b"\x89PNG\r\n\x1a\n")
+                    else "image/jpeg"
+                    if raw.startswith(b"\xff\xd8\xff")
+                    else "image/gif"
+                    if raw.startswith((b"GIF87a", b"GIF89a"))
+                    else "image/webp"
+                    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"
+                    else None
+                )
+                if mime is None:
+                    raise ValueError("Decisions servers require a recognized image format")
+                value = f"data:{mime};base64,{value}"
+            parts.append({"type": "input_image", "image_url": value})
+        source = [{"role": "user", "content": parts}]
+    result = {"model": body.get("model"), "input": source, "questions": questions}
+    decision_body(result)  # share the Decisions boundary's validation
+    return result
+
+
+def decisions_to_systemone(response, original):
+    """Convert Decisions answers using the same names and score keys used by decision_body."""
+    _, spec, values = decision_body(systemone_to_decisions(original))
+    answers = {}
+    by_name = {answer.get("name"): answer for answer in response["answers"]}
+    for name, kind, key in spec:
+        answer = by_name[name]
+        if kind == "predicate":
+            probability = answer["probability"]
+            answers[key] = {
+                "type": "noul",
+                "noul": probability,
+                "probabilities": {"true": probability, "false": 1 - probability},
+                "confidence": max(probability, 1 - probability),
+            }
+        elif kind == "choice":
+            criteria = original["questions"][key].get("criteria")
+            hidden = original["questions"][key].get("option_keys") == "hide" and isinstance(criteria, dict)
+            reverse = {value: name for name, value in criteria.items()} if hidden else {}
+
+            def choice_key(value, reverse=reverse, hidden=hidden):
+                return reverse[value] if hidden else str(value).lower() if isinstance(value, bool) else str(value)
+
+            probabilities = {choice_key(x["value"]): x["probability"] for x in answer["probabilities"]}
+            choice = answer.get("choice")
+            answers[key] = {
+                "type": "choice",
+                "choice": choice_key(choice) if choice is not None else None,
+                "probabilities": probabilities,
+                "confidence": answer.get("confidence"),
+            }
+        else:
+            labels = dict(zip(values[key]["labels"], values[key]["keys"], strict=True))
+            probabilities = {labels[x["label"]]: x["probability"] for x in answer["probabilities"]}
+            answers[key] = {
+                "type": "score",
+                "score": answer.get("score"),
+                "probabilities": probabilities,
+                "confidence": answer.get("confidence"),
+            }
+    return {"model": response.get("model"), "answers": answers, "usage": response.get("usage", {})}

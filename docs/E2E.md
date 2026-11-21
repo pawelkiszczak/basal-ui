@@ -10,7 +10,7 @@ They are skipped unless `BASAL_E2E=1`, so `pytest` stays fast.
 
 ```bash
 uv sync --group dev --extra mcp --extra e2e      # the dev group pins the engine release basal-ui is tested with
-uv pip install --reinstall-package basal "basal[mlx] @ https://github.com/rkinas/basal/archive/refs/tags/v2.4.1.tar.gz"  # optional: the engine extras of the machine under test (mlx, vllm, media)
+uv pip install --reinstall-package basal "basal[mlx,media] @ https://github.com/rkinas/basal/archive/refs/tags/v2.8.0.tar.gz"  # Apple Silicon with text and media coverage
 uv run --no-sync playwright install chromium     # once: the page tests drive Chromium
 BASAL_E2E=1 uv run --no-sync pytest tests/e2e -v -rs  # minutes; -rs lists what this machine skipped and why
 ```
@@ -28,13 +28,16 @@ or another Engine backend. Keep subsequent test commands `--no-sync` so the prep
 | `text_model` | the smallest downloaded, runnable text model, basal-2.0 first (`BASAL_E2E_MODEL`) | almost everything |
 | `second_model` | another one (`BASAL_E2E_SECOND_MODEL`) | several models on one API port, memory budget, restart |
 | `bf16_model` | bf16 PyTorch weights of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_BF16_MODEL`) | Inspect, mode comparison |
+| `mlx_model` | an MLX port of basal-2.0 / 1.5 / 1.0 (`BASAL_E2E_MLX_MODEL`) | Inspect with basal-viz `--mode mlx` (engine 2.5.0, Apple Silicon) |
+| `pico_model` | basal-omni-pico in bf16 (`BASAL_E2E_PICO_MODEL`) | basal-omni-pico with `--mode mlx` (engine 2.5.0, Apple Silicon) |
+| Audio-capable model | a downloaded model with an available media Backend (`BASAL_E2E_MEDIA_MODEL`, e.g. `Remek/basal-omni-1.0-max`) | Playground microphone capture and real audio inference with the Engine media extra |
 
 A fixture with no model on disk skips its tests; `BASAL_E2E_DOWNLOAD=1` downloads `Remek/basal-2.0-mini` (bf16,
 3.2 GB: runnable on CUDA, Apple Silicon and the CPU) through basal-ui's Download button instead. Other variables:
 `BASAL_E2E_MODELS_DIR` (the models directory to use; default: basal-ui's default, the Hugging Face cache) and
 `BASAL_E2E_LOAD_TIMEOUT` (seconds for a model start or a job; default 1800, since `--mode fast` compiles for minutes).
-On a fresh Apple Silicon machine, `Remek/basal-2.0-mini-MLX-8bit` and `Remek/basal-2.0-mini` cover every test that
-the hardware allows.
+On Apple Silicon, `Remek/basal-2.0-mini-MLX-8bit` and `Remek/basal-2.0-mini` cover the common text fixtures.
+For the recording test, install the Engine media extra and make an audio-capable model available in the same cache.
 
 ## What is tested
 
@@ -46,13 +49,15 @@ the hardware allows.
 | `test_question_types.py` | every question type | each `advanced.jsonl` request (multi, act, tool, classify, verify, compress, extract) answers in its own shape: keys, sets, costs, verdicts, kept units and their offsets, extracted values and their spans; per-type statistics; `facts` and `lang`; evidence spans or its refusal |
 | `test_calibration.py` | custom calibration | task questions (classify) fitted with the engine in basal-ui's process and its memory released; a file of another model imported with basal-serve's warning and its report; a fit against a temporary uncalibrated child, its report and listing, the child's memory released; selecting the file: Restart to apply, `--calibration`, no calibration warning; back to the shipped file; cancel; refused inputs (with the problem line) |
 | `test_engine_features.py` | 2.3.1 integration | real CPU packed and MLX packed loads, inference and restart; child health idle counters; Chromium with explicitly simulated 422/503/500 responses, missing/unreachable counters, warning rendering, packed and cache help |
-| `test_load_options.py` | load options | every mode of `MODE_ORDER` with reasons for the unavailable ones and the default available; options in the command; `--context-overflow refuse` returning 422; invalid / unavailable options refused; basal-serve's own refusal (prefix cache with `--deterministic`) on the model's row; remembered options used by a plain load |
+| `test_load_options.py` | load options | every mode of `MODE_ORDER` with reasons for the unavailable ones and the default available; options in the command; `--context-overflow refuse` returning 422; invalid / unavailable options refused; the Engine's refusal of prefix cache with `--deterministic`, before restart when the parser supports preflight or on the model's row after start; remembered options used by a plain load |
 | `test_backends.py` | the backend manager | an explicit inference test of a downloaded model on an installed backend in an isolated app; browser navigation, filtering and dialogs ([BACKENDS.md](BACKENDS.md#verification)) |
+| `test_recording.py` | audio Decisions | Chromium captures a synthetic microphone clip, submits mono 16 kHz PCM WAV, and a real audio-capable Engine returns a Decision with audio token usage |
 | `test_batch.py` | batch | every line answered in order, the summary, paging, the download; not counted in the statistics; cancel without an output file; refused files |
 | `test_measurements.py` | benchmarks | the preset (44 items), a load test (questions per request), a determinism check on a model loaded with `deterministic` (identical answers), two engine modes in process agreeing on 90% or more with the memory released |
-| `test_inspect.py` | Inspect | basal-viz at `/viz` for a bf16 model: info, an explanation that matches basal-serve's probabilities, memory counted then released; other ports refused |
+| `test_inspect.py` | Inspect | basal-viz at `/viz` for a bf16 model: info, an explanation that matches basal-serve's probabilities, memory counted then released |
 | `test_experimental.py` | thinking, early exit | refused where they cannot run; with basal-2.0 4.5B and vLLM: forced reasoning with its text, and `think: off`; with basal-1.0 bf16 on CUDA: every early-exit level |
 | `test_pages.py` | the pages (Chromium) | every view without a script error; WCAG contrast of visible text in both themes; the Playground building each advanced request exactly as written, sending it and rendering its type's view (source highlighting, claim tables); the builder keeping what its fields cannot write (rubric labels, `option_keys`) until edited; no automation claim on media or unvalidated answers; a media example on a text model (its file names, the notice, the element probabilities over the screenshot, the audio player); the builder's type switch, cost matrix, multi-tool set options and inline errors; the safety strip; the load options dialog with each switch scoped to its backend, load-option presets, the Setup note and the revision chip; Model manager section order and the two Models tabs; the Playground draft kept across the language switch (including invalid JSON and the media notice); Batch; History and Logs, including real-model recording, browser Replay and resubmission preserving structured state and choice descriptions named `data`; importing a calibration in the Calibration block; Inspect embedding basal-viz and explaining a Playground decision with what differs, and the handoff's notes and refusals; the model card, the theme switch, keyboard shortcuts and the usage line's branches / lane; Polish and English server-coded model reasons (including unavailable older families), suggestion explanations and options-mode reasons; no dictionary string left in English in the Polish UI |
+| `test_pages.py::test_cascade_router_keyboard_focus_protocol_and_attribution` | Cascades (two native models and Chromium) | real router lifecycle, polling focus, gateway request shapes and MCP where available, History/Usage/traffic, and a controlled loopback fallback |
 | `test_elements.py` | marked image elements (Chromium) | natural-pixel box coordinates despite display scaling; drawing, tiny-box rejection, movement, resizing, edge clamping, deletion/renumbering and the 26-box limit; labels, linked choice question, read-only options, clear/delete cleanup, original-image restore, marked PNG badge and re-edit; one-image restriction; clean decide payload and probability overlay; saved-request round trip; evidence disabled with media and re-enabled without it |
 | `test_activity.py` | history, calibration and logs polling (Chromium) | oldest-first history draining of more than one page per poll; the 500-row live-only limit and older-page pagination across idle polls; delayed calibration responses never replacing the selected model's controls; the Logs view clearing old lines when a buffer's generation changes |
 | `test_visual.py` | responsive presentation (Chromium) | all twelve views and every Manager tab fit 1440–390 px in both themes; loaded calibration tables scroll locally; phone header and question controls stay contained and named |
@@ -60,6 +65,107 @@ the hardware allows.
 
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
+
+## Stage acceptance for Engine 2.8, 2026-11-21
+
+Tested stage commit [`2ca295c`](https://github.com/pawelkiszczak/basal-ui/commit/2ca295c17d885373fed06b3152ce6458720fda5e)
+on an Apple M4 Max (128 GB, macOS 27.0.1 arm64), Python 3.13.11, Engine 2.8.0 with MLX 0.32.4 and the media extra,
+and Chromium 156.0.8078.4. Tests used isolated settings and existing snapshots in offline mode. The normal
+`python -m basal_ui` entry point returned HTTP 200 from `/api/status` without `BASAL_UI_ENGINE_UNCHECKED` on
+each tested Engine release (2.4.1, 2.5.0, 2.5.1, 2.6.0 and 2.8.0). The
+[release CI matrix](https://github.com/pawelkiszczak/basal-ui/actions/runs/44716845001) passed all 20 jobs and `ci-ok`.
+
+| Check | Result |
+| --- | --- |
+| Offline E2E, automatic text-fixture selection | 59 passed, 1 failed, 163 skipped out of 223 cases in 5m 22s. Backend inference and real audio recording passed. |
+| Conditional-question browser fixture | Status polling disabled the editor mid-test because the fixture had no ready model. A stable synthetic ready status fixed the race. The affected test and two neighboring tests passed on the focused rerun. |
+| Targeted real-model E2E with cached `Remek/basal-omni-1.0-max` | 3 passed, covering answer sets and conditional skips, browser Replay, and Batch resume. |
+| Engine features, catalog, options, and Polish i18n | 129 passed, including simulated SM120 and SM121 mode predictions. |
+
+Of the 163 skips, 156 required a runnable text fixture and three required a BF16 text fixture. One each required an
+MLX text port, Pico BF16, basal-2.0 4.5B with vLLM for Thinking, or basal-1.0 BF16 on CUDA for fast-exit.
+The local basal-2.0-mini and Pico snapshots had missing weight files. The first run, which explicitly selected
+basal-2.0-mini, was stopped after repeated fixture setup errors. The counts above are from the completed run using
+automatic text-fixture selection and the cached audio model.
+
+Full acceptance for [#63](https://github.com/pawelkiszczak/basal-ui/issues/63) still needs complete text, MLX,
+and Pico fixtures for the offline suite and hardware evidence for Pico on SM120 with FLA and on GB10/SM121.
+The simulated predictions leave both hardware cases open.
+
+## Focused Engine 2.8 load-options check, 2026-11-18
+
+On macOS Apple Silicon with Engine 2.8.0 and MLX, an offline cached `Remek/basal-2.0-mini` ran
+`tests/e2e/test_load_options.py`: 6 passed and the pico-only test skipped because pico was not downloaded.
+The browser load-options and synthetic calibration-warning row checks each passed in Chromium; the load-options
+screenshot was captured from that real model. A separate load used copied metadata with a synthetic foreign
+calibration and read the shared weights through a symlink: Engine 2.8 emitted its origin warning and the model row
+showed it. Settings and auxiliary caches were isolated. This is not the complete release E2E gate; CUDA and other
+hardware remain untested.
+
+## Stage gate, engine 2.5.1, 2026-11-02
+
+`stage` at [`9e96e4b`](https://github.com/pawelkiszczak/basal-ui/commit/9e96e4b) (merged
+[#35](https://github.com/pawelkiszczak/basal-ui/pull/35); its tree is identical to the tested `dev` commit
+`38e53f1`). Pin 2.5.1, range `>=2.4.1,<2.6`, package version still `0.1.0`: no version bump, tag, `main` promotion
+or publication. Host and models as in the [Engine 2.5.0 gate](#engine-250-gate-2026-11-02); offline
+(`HF_HUB_OFFLINE=1`).
+
+| Check | Engine 2.5.1 | Engine 2.5.0 | Engine 2.4.1 |
+|---|---|---|---|
+| Full e2e (`make e2e`) | 129 passed, 2 skipped | 129 passed, 2 skipped | 124 passed, 7 skipped |
+| Unit suite (`make test`), 4 runs on 2.5.1 and 2.4.1 | 385 passed, 1 skipped each | 385 passed, 1 skipped | 381 passed, 5 skipped each |
+| Feature probes on | 6 / 6 | 6 / 6 | 0 / 6 |
+| Unit coverage, three engines combined (`--cov-branch`) | 86.23% (baseline `caf98d9`: 85.88%); no uncovered line or branch among the lines changed since `caf98d9` | | |
+| PR CI (`ci-ok`, Ubuntu/macOS × Python 3.10/3.13 × three engines) | passed on [#35](https://github.com/pawelkiszczak/basal-ui/pull/35) | | |
+
+The skips are those of the 2.5.0 gate: thinking and early exit (hardware), and on 2.4.1 by design the three
+context-policy checks, Inspect of an MLX port and basal-omni-pico on `--mode mlx`.
+
+Also checked on this tree:
+
+- Wheel and sdist built; `twine check` passed; installed with engine 2.5.1 in a clean Python 3.10 venv and run from
+  outside the checkout: all 20 static assets referenced by `/` plus `/` and `/viz/` answered 200 with `no-cache`; the
+  engine reported 2.5.1, not experimental, latest supported; `Remek/basal-2.0-mini` (local copy without `prepared/`)
+  listed as downloaded, loaded in `mps` and answered.
+- The API server of that install with a required key and MCP: System One (with `x-request-id` echoed), OpenAI
+  Decisions, an empty `questions` refused with 422 `INVALID_REQUEST` and `detail`, 401 `UNAUTHORIZED` without a key,
+  `/v1/models` with the child's `certified` and `context`, MCP `list_models`; the engine's stdio bridge
+  (`basal-mcp --url … --model … --api-key …`) answered with the named model and reported the gateway's 401 for a
+  wrong key.
+- Chromium over all eleven views in English and Polish, light and dark, without a script error; the Playground's MCP
+  example named the selected model, and a decision rendered the safety strip and the context meter.
+- `catalog.download` of `Remek/basal-2.0-mini` fetched `prepared/8ec427959bcceb5504f4/` into the snapshot.
+- The unit suite against upstream `main` (2.5.1, `1605082`) with `BASAL_UI_ENGINE_UNCHECKED=1`: 385 passed, 1 skipped.
+- 86 local links across 22 Markdown files: none broken.
+
+Not validated: `--mode int8` and `--prepared auto` loading shipped kernels need a CUDA GPU (unit tests only for int8);
+NVIDIA/Strix/TPU hardware.
+
+## Engine 2.5.0 gate 2026-11-02
+
+Branch `pawelkiszczak/update-2.5` (engine range `>=2.4.1,<2.6`, pin 2.5.0), the same tree run on both tested engine
+releases. A development verification record, not a release.
+
+Host: Apple M4 Max (arm64), macOS 27.0.1, Python 3.13.11, MLX 0.32.4, Chromium (Playwright 1.64.1), the engine with
+its MLX extra. Cached `Remek/basal-2.0-mini-MLX-8bit` (`text_model`, `mlx_model`), `Remek/basal-2.0-mini` bf16
+(`second_model`, `bf16_model`) and `Remek/basal-omni-pico` (`pico_model`; its 2 November snapshot was fetched once).
+Run offline (`HF_HUB_OFFLINE=1`).
+
+| Check | Engine 2.5.0 | Engine 2.4.1 |
+|---|---|---|
+| Full e2e (`make e2e`) | 129 passed, 2 skipped | 124 passed, 7 skipped |
+| Unit suite (`make test`) | 385 passed, 1 skipped | 381 passed, 5 skipped |
+| Feature probes on (`engine.FEATURES`) | 6 / 6 | 0 / 6 |
+| Unit coverage, both runs combined (`--cov-branch`) | 86.17% (baseline at `caf98d9`: 85.88%); no uncovered line or branch among the changed lines of `basal_ui/` | |
+
+Skips on 2.5.0: thinking (needs basal-2.0 4.5B and vLLM) and early exit (basal-1.0 bf16 on CUDA). On 2.4.1 also, by
+design: the three context-policy checks (its `GET /v1/models` reports no context), Inspect of an MLX port (no MLX modes
+in its basal-viz) and basal-omni-pico on `--mode mlx` (its MLX engine does not serve Qwen3.5). New on 2.5.0 and passing:
+MCP `list_models` and `model` routing behind one API port, the Playground's MCP example for the selected model,
+basal-viz `--mode mlx` on `basal-2.0-mini-MLX-8bit` (device `mlx`), basal-omni-pico loaded with `--mode mlx` and
+answering, the `int8` row with its reason, the context and certified-threshold checks against the child's own values.
+The first 2.5.0 run failed one page test that counted 16 modes (17 with `int8`); it now counts `MODE_ORDER`.
+Not validated here: `--mode int8` on an NVIDIA GPU (unit tests only), NVIDIA/Strix/TPU hardware.
 
 ## Stable release gate 2026-11-02
 

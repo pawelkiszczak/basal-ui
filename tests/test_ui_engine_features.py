@@ -22,6 +22,25 @@ APPLE = Hardware("apple", "Apple", 64 * 1024**3, None, None, frozenset({"mlx", "
 BODY = {"state": "Invoice 1240 PLN.", "questions": {"q": {"type": "noul", "instructions": "Is it an invoice?"}}}
 
 
+@pytest.mark.parametrize("deadline,expected", [(None, 300), (800, 830)])
+def test_benchmark_timeout_keeps_policy_and_honors_deadline(deadline, expected):
+    reads = []
+
+    def reply(request):
+        reads.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={})
+
+    async def run():
+        runner = Runner()
+        runner.state, runner.base_url = "ready", "http://child"
+        runner.options = {"request_timeout": deadline}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply), timeout=300) as client:
+            await runner.adecide(client, BODY, timeout=client.timeout)
+
+    asyncio.run(run())
+    assert reads == [expected]
+
+
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
@@ -65,11 +84,11 @@ def test_packed_batches_flags_and_validation():
     for mode in ("mlx", "mlx-q8"):
         chosen = options.validate({"mode": mode, "mlx_packed": True})
         options.check_combination(BF16, APPLE, chosen, "mlx")
-        assert options.args(chosen) == ["--mlx-packed"]
+        assert options.args(chosen, mode) == ["--mlx-packed"]
     for batches in ("compact", "default", "auto", "fine"):
         chosen = options.validate({"mode": "fast", "batches": batches, "state_cache_gb": 1.5})
         options.check_combination(BF16, CUDA, chosen, "fast")
-        parsed = parser().parse_args(options.args(chosen))
+        parsed = parser().parse_args(options.args(chosen, "fast"))
         assert parsed.batches == batches and parsed.state_cache_gb == 1.5
     with pytest.raises(ValueError, match="CUDA graph"):
         options.check_combination(BF16, CPU, options.validate({"batches": "fine"}), "eager")
@@ -117,6 +136,28 @@ def test_unreachable_and_old_generation_health_are_not_idle(monkeypatch):
     runner.detach()
     runner._poll_health(old, "http://old")
     assert runner.health["reachable"] is None
+
+
+def test_stalled_health_preserves_call_age_and_long_lane(child):
+    payload = {
+        "status": "stalled",
+        "engine_call_s": 42.5,
+        "running": 3,
+        "queued": 2,
+        "long": {"running": 1, "queued": 1},
+    }
+    child.health_status, child.health = 503, payload
+    runner = Runner()
+    runner.state = "ready"
+    runner._poll_health(runner.gen, child.url)
+    assert runner.status()["health"] == {
+        "reachable": True,
+        "status": "stalled",
+        "engine_call_s": 42.5,
+        "running": 3,
+        "queued": 2,
+        "long": {"running": 1, "queued": 1},
+    }
 
 
 @pytest.mark.parametrize("status,code", [(422, "INVALID_REQUEST"), (503, "OUT_OF_MEMORY"), (500, "INTERNAL_ERROR")])
