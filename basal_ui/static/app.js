@@ -1806,11 +1806,11 @@ const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 let pendingActions=0, pendingDecisions=0, initialLoading=false;
-function setPendingStatus(text=''){$('#pendingStatus').textContent=text;}
+function setPendingStatus(text=''){const status=$('#pendingStatus');if(status.textContent!==text)status.textContent=text;}
 function updatePendingStatus(){
   const status=$('#pendingStatus'),dialog=pendingActions&&document.querySelector('dialog[open]');
   setPendingStatus(pendingDecisions?t('Sending a Decision…'):pendingActions?t('Working…'):initialLoading?t('Loading basal-ui…'):'');
-  if(dialog){dialog.prepend(status);status.classList.add('in-dialog');}
+  if(dialog){if(status.parentElement!==dialog)dialog.prepend(status);status.classList.add('in-dialog');}
   else if(status.parentElement!==$('#main-content')){$('#main-content').prepend(status);status.classList.remove('in-dialog');}
 }
 async function withPending(action,fn){
@@ -2081,8 +2081,8 @@ async function loadStats() {
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
   $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}${id.startsWith('comparison:')?comparisonBadge():''}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
-  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
-  const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
+  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true}))await act(async()=>{await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});});
+  const all=$('#resetAllStats'); if(all)all.onclick=async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true}))await act(async()=>{await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});};
 }
 const BENCH_HINTS={benchmark:t('5 warm-up, 30 sequential and 120 concurrent requests (8 at a time); items with a gold answer are scored. Own set: {link}.',{link:'<code>docs/BENCHMARK_SETS.md</code>'}),
   loadtest:t('basal-loadtest against the model: 10 warm-up, sequential requests for the latency, then the concurrent ones for the throughput. Synthetic states of about N tokens replace the set when given.'),
@@ -2699,10 +2699,10 @@ $('#historyModel').onchange=resetHistory;
 $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.toggle('active',b.dataset.source===historySource));
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
-$('#clearHistory').onclick=()=>act(async()=>{
+$('#clearHistory').onclick=async()=>{
   if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted, including scheduled Batch.'),confirmLabel:t('Clear history'),destructive:true}))return;
-  const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
-});
+  await act(async()=>{const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();});
+};
 async function loadLogs() {
   clearTimeout(logTimer);
   if($('#logs').hidden)return;

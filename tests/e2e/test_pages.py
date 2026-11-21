@@ -358,6 +358,95 @@ def test_foreground_pending_feedback(browser, isolated_ui, tmp_path):
         context.close()
 
 
+def test_pending_status_is_stable_and_does_not_block_narrow_controls(browser, isolated_ui):
+    context = browser.new_context(viewport={"width": 390, "height": 844}, service_workers="block")
+    page = context.new_page()
+    page.set_default_timeout(10_000)
+    try:
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        page.evaluate("localStorage.setItem('basal-ui.lang','pl')")
+        page.reload()
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        page.evaluate("""() => {
+          const status=$('#pendingStatus'),descriptor=Object.getOwnPropertyDescriptor(Node.prototype,'textContent'),prepend=Element.prototype.prepend;
+          window.__statusTextWrites=0;window.__statusMoveCalls=0;
+          Object.defineProperty(status,'textContent',{get(){return descriptor.get.call(this)},set(value){window.__statusTextWrites++;descriptor.set.call(this,value)}});
+          Element.prototype.prepend=function(...nodes){if(nodes.includes(status))window.__statusMoveCalls++;return prepend.apply(this,nodes)};
+        }""")
+        page.evaluate(
+            "window.__firstPending=withPending('',()=>new Promise(resolve=>window.__firstResolve=resolve));undefined"
+        )
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa przetwarzanie…")
+        page.evaluate("""() => {
+          const status=$('#pendingStatus'),button=$('#openSettings'),box=status.getBoundingClientRect();
+          button.style.cssText=`position:fixed;z-index:39;left:${box.left+8}px;top:${box.top+8}px;width:32px;height:28px;padding:0`;
+        }""")
+        box = page.locator("#openSettings").bounding_box()
+        assert box
+        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.evaluate(
+            "window.__secondPending=withPending('',()=>new Promise(resolve=>window.__secondResolve=resolve));undefined"
+        )
+        assert page.evaluate("window.__statusTextWrites === 1 && window.__statusMoveCalls === 0")
+        page.evaluate("window.__firstResolve()")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa przetwarzanie…")
+        page.evaluate("window.__secondResolve()")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        assert page.evaluate("window.__statusTextWrites === 2 && window.__statusMoveCalls === 0")
+    finally:
+        context.close()
+
+
+def test_confirming_destructive_actions_does_not_show_pending_until_accepted(browser, isolated_ui):
+    context = browser.new_context(service_workers="block")
+    page = context.new_page()
+    page.set_default_timeout(10_000)
+    deletes = []
+    page.on("request", lambda request: deletes.append(request.url) if request.method == "DELETE" else None)
+    try:
+        page.route(
+            "**/api/stats",
+            lambda route: route.fulfill(
+                json={
+                    "models": {
+                        "public/pending-test": {
+                            "requests": 1,
+                            "questions": 1,
+                            "avg_best_prob": None,
+                            "avg_latency_ms": None,
+                            "p95_ms": None,
+                            "input_tokens": 1,
+                            "last_used": None,
+                            "by_type": {},
+                        }
+                    },
+                    "benchmarks": {},
+                }
+            ),
+        )
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        manager_tab(page, "usage")
+        page.locator('#statsTable [data-reset="public/pending-test"]').click()
+        sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        page.locator("#confirmCancel").click()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        view(page, "history")
+        page.locator("#clearHistory").click()
+        sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        page.locator("#confirmCancel").click()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        assert deletes == []
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("width", [390, 1099, 1100, 1440, 1920])
 def test_polish_navigation_hit_targets_and_keyboard(browser, isolated_ui, width):
     context = browser.new_context(viewport={"width": width, "height": 900})
