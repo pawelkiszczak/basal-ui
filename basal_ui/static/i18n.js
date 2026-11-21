@@ -173,7 +173,7 @@ const PL = {
   "Stopped, resumable.": "Zatrzymano; można wznowić.",
   "code:phase_stopped_resumable": "zatrzymano; można wznowić",
   "Working…": "Trwa przetwarzanie…",
-  "Working: {action}": "Trwa: {action}",
+  "Sending a Decision…": "Wysyłanie Decyzji…",
   "Loading basal-ui…": "Ładowanie basal-ui…",
   "A tool name clashes with another enabled option.": "Nazwa narzędzia koliduje z inną włączoną opcją.",
   "Import or refresh MCP tools": "Importuj lub odśwież narzędzia MCP",
