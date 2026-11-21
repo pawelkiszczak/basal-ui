@@ -66,6 +66,32 @@ For the recording test, install the Engine media extra and make an audio-capable
 A test that needs hardware or a model this machine does not have is skipped with the reason (for example the CUDA
 graph modes on Apple Silicon, thinking without vLLM, early exit without a CUDA GPU).
 
+## Stage acceptance for Engine 2.8, 2026-11-21
+
+Tested stage commit [`2ca295c`](https://github.com/pawelkiszczak/basal-ui/commit/2ca295c17d885373fed06b3152ce6458720fda5e)
+on an Apple M4 Max (128 GB, macOS 27.0.1 arm64), Python 3.13.11, Engine 2.8.0 with MLX 0.32.4 and the media extra,
+and Chromium 156.0.8078.4. Tests used isolated settings and existing snapshots in offline mode. The normal
+`python -m basal_ui` entry point returned HTTP 200 from `/api/status` without `BASAL_UI_ENGINE_UNCHECKED` on
+each tested Engine release (2.4.1, 2.5.0, 2.5.1, 2.6.0 and 2.8.0). The
+[release CI matrix](https://github.com/pawelkiszczak/basal-ui/actions/runs/44716845001) passed all 20 jobs and `ci-ok`.
+
+| Check | Result |
+| --- | --- |
+| Offline E2E, automatic text-fixture selection | 59 passed, 1 failed, 163 skipped out of 223 cases in 5m 22s. Backend inference and real audio recording passed. |
+| Conditional-question browser fixture | Status polling disabled the editor mid-test because the fixture had no ready model. A stable synthetic ready status fixed the race. The affected test and two neighboring tests passed on the focused rerun. |
+| Targeted real-model E2E with cached `Remek/basal-omni-1.0-max` | 3 passed, covering answer sets and conditional skips, browser Replay, and Batch resume. |
+| Engine features, catalog, options, and Polish i18n | 129 passed, including simulated SM120 and SM121 mode predictions. |
+
+Of the 163 skips, 156 required a runnable text fixture and three required a BF16 text fixture. One each required an
+MLX text port, Pico BF16, basal-2.0 4.5B with vLLM for Thinking, or basal-1.0 BF16 on CUDA for fast-exit.
+The local basal-2.0-mini and Pico snapshots had missing weight files. The first run, which explicitly selected
+basal-2.0-mini, was stopped after repeated fixture setup errors. The counts above are from the completed run using
+automatic text-fixture selection and the cached audio model.
+
+Full acceptance for [#63](https://github.com/pawelkiszczak/basal-ui/issues/63) still needs complete text, MLX,
+and Pico fixtures for the offline suite and hardware evidence for Pico on SM120 with FLA and on GB10/SM121.
+The simulated predictions leave both hardware cases open.
+
 ## Focused Engine 2.8 load-options check, 2026-11-18
 
 On macOS Apple Silicon with Engine 2.8.0 and MLX, an offline cached `Remek/basal-2.0-mini` ran
