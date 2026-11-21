@@ -85,16 +85,18 @@ function applyTheme(theme) {
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
-document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);$('.appearance-controls details').open=false;});
+document.querySelectorAll('.appearance-controls [data-theme-choice]').forEach(b=>b.onclick=()=>{const menu=$('.appearance-controls details');applyTheme(b.dataset.themeChoice);menu.open=false;menu.querySelector('summary').focus();});
 applyTheme(localStorage.getItem('basal-ui.theme')||'system');
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
-document.querySelectorAll('.nav-tools,.appearance-controls details').forEach(menu=>menu.querySelector('summary').addEventListener('keydown',event=>{
-  if(event.key==='Tab'&&!event.shiftKey&&menu.open){
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Escape'&&menu){event.preventDefault();menu.open=false;menu.querySelector('summary').focus();}
+  else if(event.key==='Tab'&&!event.shiftKey&&event.target===menu?.querySelector('summary')){
     const first=menu.querySelector('.header-menu-panel button:not(:disabled)');
     if(first){event.preventDefault();requestAnimationFrame(()=>first.focus());}
   }
-}));
+});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
   if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('#sendButton').click();}
@@ -1826,6 +1828,9 @@ function decisionServerConsent(){
   $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
 }
 $('#decisionServerUrl').addEventListener('input',decisionServerConsent);
+$('#decisionServerForm').addEventListener('keydown',event=>{
+  if(event.key==='Enter'&&event.target.matches('input[type="checkbox"]'))event.preventDefault();
+});
 $('#decisionServerForm').addEventListener('submit',async event=>{
   event.preventDefault();const error=$('#decisionServerError');error.hidden=true;
   const button=$('#addDecisionServer');let added=false;button.disabled=true;

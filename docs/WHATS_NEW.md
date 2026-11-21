@@ -4,7 +4,7 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 
 ## Interface
 
-- Align checkbox sizing and menu surfaces across Tools and Appearance while preserving native checkbox and menu keyboard behavior ([screenshot](images/issue-144-controls.png)).
+- Share popover surfaces across Tools, Appearance and Playground Request settings. Escape closes either header menu and restores focus, theme selection returns focus to Appearance, Space remains the native checkbox toggle, and Enter on a form checkbox does not submit the form. [Tools in light English](images/issue-144-controls.png) and [Appearance in dark Polish](images/issue-144-appearance-dark-pl.png).
 
 ## Models and inference
 
