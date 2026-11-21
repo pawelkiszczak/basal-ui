@@ -1605,7 +1605,7 @@ async function sendDecision() {
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   const evidenceStamp=modelEvidenceStamp(request.model);
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
+  try { const response=await withPending(t('Send decision'),()=>api('/api/decide',{method:'POST',body:JSON.stringify(request)})); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) {
     if(e.status===422&&!jsonMode)showQuestionErrors(String(e.detail||''),request);
     showDecideError(e.message); toast(e.message,'error');
@@ -1805,7 +1805,17 @@ const pct=v=>v==null?'—':`${(Number(v)*100).toFixed(1)}%`;
 const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
-async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+let pendingActions=0, initialLoading=false;
+function setPendingStatus(text=''){$('#pendingStatus').textContent=text;}
+async function withPending(action,fn){
+  pendingActions++;
+  setPendingStatus(action?t('Working: {action}',{action}):t('Working…'));
+  try{return await fn();}finally{if(!--pendingActions)setPendingStatus(initialLoading?t('Loading basal-ui…'):'');}
+}
+async function act(fn){
+  const control=document.activeElement, action=control?.getAttribute('aria-label')||control?.textContent?.trim().replace(/\s+/g,' ');
+  try{await withPending(action,fn);}catch(e){toast(e.message,'error');}
+}
 
 function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
 let decisionServerSignature='';
@@ -2978,4 +2988,5 @@ $('#saveMemory').onclick=async()=>{
 showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();
- (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();})();
+initialLoading=true;setPendingStatus(t('Loading basal-ui…'));
+ (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}try{await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();}finally{initialLoading=false;if(!pendingActions)setPendingStatus();}})();

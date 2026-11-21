@@ -4,6 +4,7 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 
 ## Models and inference
 
+- Show a translated, screen-reader-announced pending status during initial loading and foreground actions, including while sending a Decision.
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
   optional chat fallback. Playground and API responses identify the answering tier. Blend and fallback answers carry
   no automation certificate. Escalation without fallback also works in Batch.

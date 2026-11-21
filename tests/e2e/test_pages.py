@@ -201,6 +201,96 @@ def test_calibration_file_messages_are_separate_and_escaped(browser, tmp_path):
         assert not app.stop()
 
 
+def test_foreground_pending_feedback(browser, isolated_ui):
+    context = browser.new_context(reduced_motion="reduce", service_workers="block")
+    page = context.new_page()
+    try:
+        page.add_init_script("""(() => {
+          const fetch=window.fetch.bind(window);
+          window.fetch=(input,...args)=>String(input)==='/api/hardware'&&!sessionStorage.getItem('heldHardware')
+            ?(sessionStorage.setItem('heldHardware','1'),new Promise(resolve=>window.releaseHardware=()=>resolve(fetch(input,...args))))
+            :fetch(input,...args);
+        })()""")
+        page.goto(isolated_ui.url)
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Loading basal-ui…")
+        page.evaluate("window.releaseHardware()")
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        page.evaluate("""() => {
+          const button=document.createElement('button');
+          button.type='button'; button.className='download-model'; button.dataset.id='public/example-model';
+          button.textContent='Download'; document.querySelector('#main-content').append(button);
+          const realApi=api;
+          window.api=async(path,options={})=>{
+            if(path==='/api/download'){
+              await new Promise(resolve=>setTimeout(resolve,1200));
+              if(window.failDownload)throw new Error('Synthetic download failure');
+              return {};
+            }
+            if(path==='/api/batch'&&options.method==='DELETE'){
+              await new Promise(resolve=>setTimeout(resolve,1200)); return {};
+            }
+            return realApi(path,options);
+          };
+        }""")
+        button = page.get_by_role("button", name="Download", exact=True)
+        button.focus()
+        button.press("Enter")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Working: Download")
+        assert page.locator("#pendingStatus").evaluate("el => getComputedStyle(el).animationName === 'none'")
+        assert page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        page.locator("#pendingStatus").evaluate(
+            "el => {document.querySelector('#quickActionsRail').hidden=true;el.scrollIntoView({block:'center'})}"
+        )
+        page.screenshot(path=str(Path(__file__).resolve().parents[2] / "docs/images/loading-progress.png"))
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        page.evaluate("window.failDownload=true")
+        button.focus()
+        button.press("Enter")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Working: Download")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        page.evaluate("localStorage.setItem('basal-ui.lang','pl')")
+        page.reload()
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        page.evaluate("""() => {
+          const button=document.createElement('button');
+          button.type='button'; button.className='download-model'; button.dataset.id='public/example-model';
+          button.textContent='Pobierz'; document.querySelector('#main-content').append(button);
+          const realApi=api;
+          window.api=async(path,options={})=>{
+            if(path==='/api/download'){
+              await new Promise(resolve=>setTimeout(resolve,1200));
+              if(window.failDownload)throw new Error('Synthetic download failure');
+              return {};
+            }
+            if(path==='/api/batch'&&options.method==='DELETE'){
+              await new Promise(resolve=>setTimeout(resolve,1200)); return {};
+            }
+            return realApi(path,options);
+          };
+        }""")
+        button = page.get_by_role("button", name="Pobierz")
+        button.focus()
+        button.press("Enter")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa: Pobierz")
+        page.locator("#pendingStatus").evaluate(
+            "el => {document.querySelector('#quickActionsRail').hidden=true;el.scrollIntoView({block:'center'})}"
+        )
+        page.screenshot(path=str(Path(__file__).resolve().parents[2] / "docs/images/loading-progress-pl.png"))
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        view(page, "batch")
+        page.locator("#cancelBatch").evaluate("el => el.hidden=false")
+        cancel = page.locator("#cancelBatch")
+        cancel.focus()
+        cancel.press("Enter")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa: Anuluj")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("width", [390, 1099, 1100, 1440, 1920])
 def test_polish_navigation_hit_targets_and_keyboard(browser, isolated_ui, width):
     context = browser.new_context(viewport={"width": width, "height": 900})
