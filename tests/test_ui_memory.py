@@ -129,3 +129,12 @@ def test_remainder_subtracts_measured_process_of_runtime_with_api_down(monkeypat
     result = memory.snapshot(_fleet(), [lambda: down], hardware_fn=lambda: None)
 
     assert result["other"] == 60
+
+
+def test_failed_provider_makes_remainder_unknown(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    def fail():
+        raise RuntimeError("offline")
+
+    assert memory.snapshot(_fleet(), [fail], hardware_fn=lambda: None)["other"] is None

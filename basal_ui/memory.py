@@ -167,12 +167,13 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
         if observation is not None:
             runtimes.append(observation)
 
-    # Subtract every runtime with measured bytes, whatever its API status; measured zero needs no shared basis.
+    # Subtract every measured runtime whatever its API status; any unknown runtime total makes the remainder unknown.
+    # Measured zero needs no shared basis.
     measured = [runtime for runtime in runtimes if runtime["process_bytes"]]
     other = (
         max(0, host["ram_used"] - sum(runtime["process_bytes"] for runtime in measured))
         if host["ram_used"] is not None
-        and all(runtime["process_bytes"] is not None for runtime in runtimes if runtime["status"] == "ok")
+        and all(runtime["process_bytes"] is not None for runtime in runtimes)
         and all(runtime["accounting"] == host["accounting"] for runtime in measured)
         else None
     )

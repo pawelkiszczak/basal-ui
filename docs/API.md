@@ -24,7 +24,7 @@ discrete GPUs and accounting basis), `runtimes` (per-model process bytes and mea
 Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. On
 unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include Metal/MLX GPU allocations.
 `other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
-those totals share the host's accounting basis and no ready runtime has an unknown total. `cache_bytes` is the Engine state cache
+those totals share the host's accounting basis and no listed runtime has an unknown total. `cache_bytes` is the Engine state cache
 only while active; context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context token
 limits are not byte measurements. The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
 
