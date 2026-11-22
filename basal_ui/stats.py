@@ -13,6 +13,9 @@ from .traffic import Traffic
 SAMPLES = 1000  # latencies kept per model for the percentiles
 BENCHMARKS = 20  # results kept per model (benchmarks, load tests, determinism checks, mode comparisons)
 FLUSH_S = 5
+HISTORY_MINUTE_S = 24 * 60 * 60
+HISTORY_HOUR_S = 90 * 24 * 60 * 60
+HISTORY_RETENTION_S = 5 * 365 * 24 * 60 * 60
 
 
 def answer_items(answers) -> list[tuple[str, dict]]:
@@ -74,10 +77,81 @@ def _read(path: Path) -> dict:
         if isinstance(loaded.get("models"), dict) and isinstance(loaded.get("benchmarks"), dict):
             if not isinstance(loaded.get("reset_at"), dict):
                 loaded["reset_at"] = {}
+            _history(loaded)
             return loaded
     except (OSError, ValueError, AttributeError):
         pass
-    return {"models": {}, "benchmarks": {}, "reset_at": {}}
+    return {
+        "models": {},
+        "benchmarks": {},
+        "reset_at": {},
+        "traffic_history": {"collection_started": None, "buckets": {}},
+    }
+
+
+def _history(data):
+    value = data.get("traffic_history")
+    if not isinstance(value, dict) or not isinstance(value.get("buckets"), dict):
+        value = {"collection_started": None, "buckets": {}}
+        data["traffic_history"] = value
+    return value
+
+
+def _bucket_start(key: str) -> int:
+    return int(key[1:] if key[:1] in ("h", "d") else key)
+
+
+def _traffic_row(first_used):
+    return {
+        "requests": 0,
+        "errors": 0,
+        "input_tokens": 0,
+        "latency_ms_sum": 0.0,
+        "latency_ms_max": 0.0,
+        "first_used": first_used,
+    }
+
+
+def _add_traffic(target, row):
+    for key in ("requests", "errors", "input_tokens", "latency_ms_sum"):
+        target[key] += row[key]
+    target["latency_ms_max"] = max(target["latency_ms_max"], row["latency_ms_max"])
+
+
+def _merge_traffic(data, delta):
+    history = _history(data)
+    if delta and history["collection_started"] is None:
+        history["collection_started"] = min(row["first_used"] for models in delta.values() for row in models.values())
+    reset_at = data["reset_at"]
+    buckets = history["buckets"]
+    for start, models in delta.items():
+        target = buckets.setdefault(str(start), {})
+        for model_id, row in models.items():
+            if not _cleared(reset_at, model_id, row):
+                entry = target.setdefault(model_id, _traffic_row(row["first_used"]))
+                _add_traffic(entry, row)
+    now = time.time()
+    retention_cutoff = now - HISTORY_RETENTION_S
+    hourly_cutoff = now - HISTORY_HOUR_S
+    minute_cutoff = now - HISTORY_MINUTE_S
+    for key in sorted(tuple(buckets), key=_bucket_start):
+        start = _bucket_start(key)
+        if start < retention_cutoff:
+            del buckets[key]
+            continue
+        if start < hourly_cutoff and key[:1] != "d":
+            target = buckets.setdefault(f"d{start // 86400 * 86400}", {})
+        elif start < minute_cutoff and key[:1] not in ("h", "d"):
+            target = buckets.setdefault(f"h{start // 3600 * 3600}", {})
+        else:
+            continue
+        for model_id, row in buckets[key].items():
+            entry = target.setdefault(model_id, _traffic_row(row.get("first_used")))
+            _add_traffic(entry, row)
+        del buckets[key]
+    for models in buckets.values():
+        for row in models.values():
+            row.pop("first_used", None)
 
 
 def _cleared(reset_at: dict, model_id: str, entry: dict) -> bool:
@@ -109,6 +183,7 @@ class Stats:
         self.write_lock = threading.Lock()
         self.data = _read(self.path)
         self.delta: dict = {}
+        self.traffic_delta: dict = {}
         self.traffic = Traffic()
         self._stop = threading.Event()
         self._flusher = threading.Thread(target=self._flush_loop, daemon=True)
@@ -126,10 +201,27 @@ class Stats:
             reset_at = _read(self.path)["reset_at"]
             with self.lock:
                 now = time.time()
+                start = int(now // 60) * 60
                 if endpoint is not None:
                     self.traffic.record(
                         model_id, endpoint, method, latency_ms, 200 if ok else 500, response_json, now=now
                     )
+                row = self.traffic_delta.setdefault(start, {}).setdefault(model_id, _traffic_row(now))
+                row["first_used"] = min(row["first_used"], now)
+                usage = response_json.get("usage") if isinstance(response_json, dict) else None
+                tokens = usage.get("input_tokens", 0) if isinstance(usage, dict) else 0
+                _add_traffic(
+                    row,
+                    {
+                        "requests": 1,
+                        "errors": int(not ok),
+                        "input_tokens": (
+                            tokens if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0 else 0
+                        ),
+                        "latency_ms_sum": latency_ms,
+                        "latency_ms_max": latency_ms,
+                    },
+                )
                 entry = self.delta.get(model_id)
                 if entry is None or _cleared(reset_at, model_id, entry):
                     entry = self.delta[model_id] = _empty()
@@ -166,17 +258,28 @@ class Stats:
         def go():
             with self.lock:
                 delta, self.delta = self.delta, {}
+                traffic_delta, self.traffic_delta = self.traffic_delta, {}
             data = _read(self.path)
             try:
                 for model_id, entry in delta.items():
                     if not _cleared(data["reset_at"], model_id, entry):
                         _merge(data["models"].setdefault(model_id, _empty()), entry)
+                _merge_traffic(data, traffic_delta)
                 change(data)
                 settings._write_private(self.path, json.dumps(data))
             except BaseException:
-                with self.lock:  # keep the counts for the next flush
+                with self.lock:
                     for model_id, entry in delta.items():
                         _merge(self.delta.setdefault(model_id, _empty()), entry)
+                    for start, models in traffic_delta.items():
+                        target = self.traffic_delta.setdefault(start, {})
+                        for model_id, row in models.items():
+                            current = target.get(model_id)
+                            if current is None:
+                                target[model_id] = row
+                            else:
+                                current["first_used"] = min(current["first_used"], row["first_used"])
+                                _add_traffic(current, row)
                 raise
             with self.lock:
                 self.data = data
@@ -230,25 +333,39 @@ class Stats:
         def go():
             with self.lock:
                 previous = (
-                    self.delta
+                    (self.delta, self.traffic_delta)
                     if model_id is None
-                    else {model_id: self.delta.pop(model_id)}
-                    if model_id in self.delta
-                    else {}
+                    else (
+                        {model_id: self.delta.pop(model_id)} if model_id in self.delta else {},
+                        {
+                            start: {model_id: rows.pop(model_id)}
+                            for start, rows in self.traffic_delta.items()
+                            if model_id in rows
+                        },
+                    )
                 )
                 if model_id is None:
-                    self.delta = {}
+                    self.delta, self.traffic_delta = {}, {}
                 try:
                     data = _read(self.path)
                     if model_id is None:
                         data["models"].clear()
+                        history = _history(data)
+                        history["buckets"].clear()
+                        history["collection_started"] = time.time()
                     else:
                         data["models"].pop(model_id, None)
+                        for models in _history(data)["buckets"].values():
+                            models.pop(model_id, None)
                     data["reset_at"]["*" if model_id is None else model_id] = time.time()
                     settings._write_private(self.path, json.dumps(data))
                 except BaseException:
-                    for key, entry in previous.items():
-                        _merge(self.delta.setdefault(key, _empty()), entry)
+                    if model_id is None:
+                        self.delta, self.traffic_delta = previous
+                    else:
+                        self.delta.update(previous[0])
+                        for start, rows in previous[1].items():
+                            self.traffic_delta.setdefault(start, {}).update(rows)
                     raise
                 self.data = data
                 self.traffic.reset(model_id, now=time.time())
@@ -259,9 +376,77 @@ class Stats:
     def traffic_snapshot(self, minutes: int) -> dict:
         return self.traffic.snapshot(minutes)
 
+    def traffic_history(self, time_range: str) -> dict:
+        from . import settings
+
+        if time_range not in ("1h", "24h", "7d", "30d", "all"):
+            raise ValueError("range must be 1h, 24h, 7d, 30d, or all")
+        now = time.time()
+        duration = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}.get(time_range)
+
+        def read():
+            data = _read(self.path)
+            history = _history(data)
+            with self.lock:
+                for start, models in self.traffic_delta.items():
+                    target = history["buckets"].setdefault(str(start), {})
+                    for model_id, row in models.items():
+                        entry = target.setdefault(model_id, _traffic_row(row["first_used"]))
+                        _add_traffic(entry, row)
+                if history["collection_started"] is None and self.traffic_delta:
+                    history["collection_started"] = min(
+                        row["first_used"] for models in self.traffic_delta.values() for row in models.values()
+                    )
+            return data
+
+        data = settings._locked(read)()
+        history = _history(data)
+        collection_started = history["collection_started"]
+        window_start = max(collection_started or now, now - duration) if duration else collection_started
+        series = []
+        for key, models in sorted(history["buckets"].items(), key=lambda item: _bucket_start(item[0])):
+            start = _bucket_start(key)
+            bucket_seconds = {"h": 3600, "d": 86400}.get(key[:1], 60)
+            if window_start is not None and start + bucket_seconds < window_start:
+                continue
+            if start > now:
+                continue
+            rows = list(models.values())
+            requests = sum(row["requests"] for row in rows)
+            if not requests:
+                continue
+            latency_sum = sum(row["latency_ms_sum"] for row in rows)
+            series.append(
+                {
+                    "start": start,
+                    "bucket_seconds": bucket_seconds,
+                    "requests": requests,
+                    "errors": sum(row["errors"] for row in rows),
+                    "input_tokens": sum(row["input_tokens"] for row in rows),
+                    "avg_latency_ms": latency_sum / requests,
+                    "max_latency_ms": max(row["latency_ms_max"] for row in rows),
+                }
+            )
+        usage = self.snapshot()["models"].values()
+        lifetime = {"requests": 0, "errors": 0, "input_tokens": 0, "latency_ms_sum": 0.0}
+        for model in usage:
+            for key in ("requests", "errors", "input_tokens"):
+                lifetime[key] += model[key]
+            lifetime["latency_ms_sum"] += (model["avg_latency_ms"] or 0) * model["requests"]
+        latency_sum = lifetime.pop("latency_ms_sum")
+        lifetime["avg_latency_ms"] = latency_sum / lifetime["requests"] if lifetime["requests"] else None
+        return {
+            "range": time_range,
+            "collection_started": collection_started,
+            "window_start": window_start,
+            "window_end": now,
+            "series": series,
+            "lifetime": lifetime,
+        }
+
     def flush(self) -> None:
         with self.lock:
-            if not self.delta:
+            if not self.delta and not self.traffic_delta:
                 return
         self._update_file(lambda data: None)
 
