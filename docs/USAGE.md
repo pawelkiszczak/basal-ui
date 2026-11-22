@@ -509,6 +509,18 @@ otherwise Saved load settings. Reports show available identity digests, kept sou
 design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
 [Advanced calibration controls](images/calibration-advanced.png).
 
+The help beside the calibration choices explains the labelled JSONL input, shows how a Selected calibration changes a
+choice's confidence using the Engine's temperature scaling, and explains when it applies and how to return to the
+Shipped calibration.
+
+The input accepts one labelled Decision per JSONL line with a non-empty `questions` object, a `state`, and a `gold`
+answer for each question (simple `basal-run` records with `gold` are also accepted). For example, with choice
+probabilities 0.80 and 0.20 and a Selected calibration temperature of 2, basal-serve maps each probability to
+`p^(1/T) / Σp^(1/T)`: the top confidence becomes `√0.80 / (√0.80 + √0.20) = 0.667` (66.7%) instead of 80%, while the
+top choice stays the same. This illustrates the method, not a promised fit result. Select **Shipped calibration** in
+the **Use** column to return to the calibration supplied for the execution configuration; a loaded model needs a
+restart after changing the selection.
+
 ## Fine-tuning on labelled Decisions
 
 In **Model manager → Calibration → Fine-tune**, select a downloaded bf16 basal or Attached model, enter the path to labelled JSONL and a new output name, then choose epochs, learning rate, LoRA rank and alpha, held-out share, maximum sequence length, gradient checkpointing and an optional optimizer-step limit. The Engine must expose fine-tuning and its declared `finetune` add-on must be installed; use **Backends → Engine add-ons** and restart when prompted. The input format is the same labelled request format as Calibration. Native trains choice, noul, score and act questions and skips multi and task decisions. The preflight reports skipped types and requires both training decisions and held-out groups; the file is copied privately and never rewritten.
