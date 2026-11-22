@@ -45,6 +45,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
 - Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
   without treating Engine context token limits as bytes or double-counting unified memory.
+- Show confirmed vLLM model ids and available process RSS and KV-cache usage on Dashboard without treating cache
+  percentages as bytes. [Live memory](API.md#local-app-management-api)
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.

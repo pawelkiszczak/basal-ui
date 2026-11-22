@@ -23,6 +23,16 @@ The model options endpoint reports availability of each server limit in `limits_
 discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
 Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. On
 unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include Metal/MLX GPU allocations.
+`other` is present only when host and runtime totals share an accounting basis. For vLLM, `BASAL_UI_VLLM_URL` selects
+the loopback server base URL (default `http://127.0.0.1:8000`): `GET /v1/models` confirms served `id` values when entries
+include [`max_model_len`](https://github.com/vllm-project/vllm/pull/4643), and `GET /metrics` supplies a
+`vllm:gpu_cache_usage_perc` or `vllm:kv_cache_usage_perc` fraction
+([vLLM metrics docs](https://docs.vllm.ai/en/stable/design/metrics/)).
+That percentage is shown in `note`; it is not converted to `cache_bytes`. `process_bytes` is a process RSS fallback
+that includes vLLM runtime overhead. The vLLM observation uses `rss_excludes_gpu` on Apple Silicon and `resident`
+elsewhere. `cache_bytes` is the Engine state cache only while active; context bytes and disk-backed cold-cache bytes
+remain `null` when unavailable. Engine and vLLM context limits are tokens, not byte measurements. The existing `GET`
+and `PUT /api/memory` routes continue to manage memory settings.
 `other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
 those totals share the host's accounting basis and no ready runtime has an unknown total. `cache_bytes` is the Engine state cache
 only while active; context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context token
