@@ -561,7 +561,7 @@ the statistics above (admin key only when keys are required — that is, basal-u
 | Max context length | `4096` | Passed to each vLLM and SGLang `basal-serve` (`512`–`131072`). |
 | CORS origins | Empty | Optional allowed browser origins, one per line; `*` allows every origin. |
 | Decision log | Empty (off) | Every `basal-serve` appends its decisions (propensity records) to this writable file. |
-| MCP at `/mcp` | Off | Adds the MCP streamable-HTTP endpoint when the MCP extra is installed. |
+| MCP at `/mcp` | Off | Adds the MCP streamable-HTTP endpoint when the optional MCP extra is installed. The API server's MCP group shows availability, endpoint URL and the client connection snippet. If the extra is missing, the checkbox is disabled with installation guidance. |
 
 **Security.** The server is loopback-only by default. Local-network exposure is unauthenticated unless **Require an API
 key** is enabled; use a key before selecting **Local network**. Keys are generated with the `bsl_` prefix, stored as
@@ -577,14 +577,15 @@ Library row, which reloads only that model. The app checks the chosen bind port 
 `port <port> on <host> is in use` if another process owns it.
 
 The **Connect** panel provides copy-ready examples for curl (both `/v1/systemone` and `/v1/decisions`), Python
-(httpx), TypeSafe and OpenAI SDKs, LiteLLM's `hosted_vllm` provider, and MCP. HTTP inference examples include the
-selected model's `"model"` id; when authentication is disabled they omit API-key headers. MCP configuration is
-available only while the API server is running with MCP enabled, and uses its streamable-HTTP `/mcp` endpoint.
-With Engine 2.5.0, MCP `decide` and `decide_many` take a `model` argument (`list_models` names the loaded ids) and
-answer with the first loaded model without one; with Engine 2.4.1 they always use the **first loaded model**: their
-schemas have no model argument or model-listing tool. Use the ordinary HTTP routes when you need named-model routing
-on 2.4.1. The Engine's stdio bridge needs `--model` (2.5.0) to reach the gateway, so the UI does not advertise it.
-Full request and response shapes, error envelopes and compatibility details are in the [HTTP API reference](API.md).
+(httpx), TypeSafe and OpenAI SDKs, and LiteLLM's `hosted_vllm` provider. MCP has its own group with availability,
+the `/mcp` endpoint and a client configuration snippet. The snippet is available while the API server is running with
+MCP enabled; saved settings apply after **Restart server**. HTTP inference examples include the selected model's
+`"model"` id; when authentication is disabled they omit API-key headers. With Engine 2.5.0, MCP `decide` and
+`decide_many` take a `model` argument (`list_models` names the loaded ids) and answer with the first loaded model
+without one; with Engine 2.4.1 they always use the **first loaded model**: their schemas have no model argument or
+model-listing tool. Use the ordinary HTTP routes when you need named-model routing on 2.4.1. The Engine's stdio
+bridge needs `--model` (2.5.0) to reach the gateway, so the UI does not advertise it. Full request and response shapes,
+error envelopes and compatibility details are in the [HTTP API reference](API.md).
 
 ## Serving models from basal-ui
 

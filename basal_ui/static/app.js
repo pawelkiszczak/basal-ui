@@ -8,6 +8,18 @@ let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0,
 let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
+const mcpGroup=document.createElement('fieldset');
+mcpGroup.className='mcp-settings';
+ mcpGroup.innerHTML=`<legend>${t('MCP')}</legend><div class="mcp-setting"></div><p id="mcpAvailability" class="muted" role="status"></p><div class="mcp-hint"></div><div class="field"><span>${t('Endpoint')}</span><code id="mcpEndpoint"></code></div><div class="field" id="mcpClient"><span>${t('Client connection')}</span><pre><code id="connectMcp"></code></pre><div class="mcp-connect-hint"></div><button id="copyMcpConnect" class="btn ghost icon-button" type="button" data-variant="outline">${t('Copy snippet')}</button></div>`;
+$('.serve-actions').before(mcpGroup);
+const mcpSetting=$('#serveMcp').closest('label');
+mcpGroup.querySelector('.mcp-setting').append(mcpSetting);
+mcpSetting.querySelector('input').setAttribute('aria-describedby','mcpHint');
+mcpGroup.querySelector('.mcp-hint').append($('#mcpHint'));
+mcpGroup.querySelectorAll('.field')[1].querySelector('pre code').replaceWith($('#connectMcp'));
+mcpGroup.querySelector('.mcp-connect-hint').append($('#mcpConnectHint'));
+$('#connectTabs [data-connect="mcp"]').remove();
+$('[data-connect-panel="mcp"]').remove();
 let rankAvailable=false;
 function httpFailure(status,message,code) {
   const hint={422:t('Invalid request: revise the input.'),503:code==='OVERLOADED'?t('Model is busy. Wait and retry.'):t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
@@ -1701,16 +1713,21 @@ decision = client.decisions.create(
       model: hosted_vllm/${name}
       api_base: ${endpoint}
       api_key: ${key||'local'}`,
-    mcp:mcpHttp,
   };
   $('#connectCurl').textContent=snippets.curl;
   $('#connectPython').textContent=snippets.python;
   $('#connectTypesafe').textContent=snippets.typesafe;
   $('#connectOpenai').textContent=snippets.openai;
   $('#connectLitellm').textContent=snippets.litellm;
-  $('#connectMcp').textContent=snippets.mcp;
-  $('#mcpConnectHint').hidden=Boolean(mcpHttp);
-  $('#copyServeConnect').disabled=connectTab==='mcp'&&!mcpHttp;
+  $('#connectMcp').textContent=mcpHttp;
+  $('#mcpEndpoint').textContent=`${endpoint}/mcp`;
+  $('#mcpAvailability').textContent=serveData.mcp_available?t('The optional MCP extra is installed.'):t('The optional MCP extra is missing.');
+  $('#mcpHint').textContent=serveData.mcp_available?t('Save MCP settings, then restart the API server to apply changes.'):t('Install the optional MCP extra with uv sync --extra mcp, then restart basal-ui.');
+  $('#mcpClient').hidden=!serveData.mcp_available;
+  $('#mcpConnectHint').textContent=mcpHttp?'':t('Start the API server with MCP enabled to use this example.');
+  $('#mcpConnectHint').hidden=!serveData.mcp_available||Boolean(mcpHttp);
+  $('#copyMcpConnect').disabled=!mcpHttp;
+  $('#copyServeConnect').disabled=false;
   $('#runningServerNote').hidden=!statusCache?.serving?.restart_required;
   $('#connectTabs').querySelectorAll('[data-connect]').forEach(tab=>{
     const active=tab.dataset.connect===connectTab;
@@ -1795,6 +1812,7 @@ async function copyText(text, success=t('Copied to clipboard')) {
 }
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
+$('#copyMcpConnect').onclick=()=>copyText($('#connectMcp').textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
