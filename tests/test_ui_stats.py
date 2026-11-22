@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 
@@ -231,3 +232,133 @@ def test_stats_resets_clear_only_matching_process_traffic(stats):
     reset = stats.traffic_snapshot(15)
     assert reset["requests"] == 0 and reset["p95_ms"] is None
     assert reset["requests_per_s"] == 0
+
+
+def test_dated_traffic_persists_across_restart_without_filling_gaps(tmp_path, monkeypatch):
+    from basal_ui.stats import Stats
+
+    now = [1000.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    path = tmp_path / "stats.json"
+    first = Stats(path)
+    first.record("m", {"usage": {"input_tokens": 4}}, 10, endpoint="/api/decide")
+    now[0] = 1240.0
+    first.record("m", {"usage": {"input_tokens": 5}}, 30, ok=False, endpoint="/api/decide")
+    first.flush()
+    first.close()
+
+    restarted = Stats(path)
+    try:
+        history = restarted.traffic_history("all")
+        usage = restarted.snapshot()["models"]["m"]
+        assert history["collection_started"] == 1000.0
+        assert [row["start"] for row in history["series"]] == [960, 1200]
+        assert [row["requests"] for row in history["series"]] == [1, 1]
+        assert [row["errors"] for row in history["series"]] == [0, 1]
+        assert history["lifetime"] == {"requests": 2, "errors": 1, "input_tokens": 4, "avg_latency_ms": 20.0}
+        assert (usage["requests"], usage["errors"], usage["input_tokens"]) == (2, 1, 4)
+    finally:
+        restarted.close()
+
+
+def test_dated_traffic_rolls_up_to_hour_and_day(stats, monkeypatch):
+    now = 200 * 86400 + 12 * 3600
+    current_time = [now]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: current_time[0])
+    events = (
+        (now - 91 * 86400 - 120, 100, 30),
+        (now - 91 * 86400, 200, 90),
+        (now - 25 * 3600 + 60, 1, 10),
+        (now - 25 * 3600 + 300, 3, 50),
+    )
+    for timestamp, tokens, latency in events:
+        current_time[0] = timestamp
+        stats.record("m", {"usage": {"input_tokens": tokens}}, latency)
+
+    current_time[0] = now
+    stats.flush()
+    history = json.loads(stats.path.read_text())["traffic_history"]
+    buckets = history["buckets"]
+    hour_start = (now - 25 * 3600 + 60) // 3600 * 3600
+    day_start = (now - 91 * 86400) // 86400 * 86400
+    hourly = buckets[f"h{hour_start}"]["m"]
+    daily = buckets[f"d{day_start}"]["m"]
+
+    assert set(buckets) == {f"h{hour_start}", f"d{day_start}"}
+    assert (hourly["requests"], hourly["input_tokens"], hourly["latency_ms_sum"], hourly["latency_ms_max"]) == (
+        2,
+        4,
+        60.0,
+        50.0,
+    )
+    assert (daily["requests"], daily["input_tokens"], daily["latency_ms_sum"], daily["latency_ms_max"]) == (
+        2,
+        300,
+        120.0,
+        90.0,
+    )
+    assert "first_used" not in hourly and "first_used" not in daily
+
+
+def test_memory_sampler_records_compact_history_across_restart_and_gaps(tmp_path, monkeypatch):
+    from basal_ui.memory_sampler import MemorySampler
+
+    now = [1_700_000_000.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    path = tmp_path / "stats.json"
+    first = Stats(path)
+    sample = {
+        "time": now[0],
+        "host": {"ram_used": 70},
+        "other": 40,
+        "runtimes": [
+            {"runtime": "alpha", "status": "ok", "process_bytes": 10, "models": [{"id": "sensitive-model"}]},
+            {"runtime": "beta", "status": "ok", "process_bytes": 20, "models": [{"id": "sensitive-model"}]},
+        ],
+    }
+    sampler = MemorySampler(first, lambda: sample)
+    sampler.tick()
+    now[0] += 30
+    sample = {
+        **sample,
+        "time": now[0],
+        "host": {"ram_used": 80},
+        "other": 50,
+        "runtimes": [
+            {"runtime": "beta", "status": "ok", "process_bytes": 40},
+            {"runtime": "alpha", "status": "ok", "process_bytes": 30},
+        ],
+    }
+    sampler.tick()
+    now[0] += 180
+    sample = {
+        **sample,
+        "time": now[0],
+        "host": {"ram_used": 0},
+        "other": None,
+        "runtimes": [{"runtime": "alpha", "status": "ok", "process_bytes": 0}],
+    }
+    sampler.tick()
+    first.close()
+
+    restarted = Stats(path)
+    try:
+        history = restarted.memory_history("all")
+        assert history["collection_started"] == 1_700_000_000.0
+        assert len(history["series"]) == 2
+        first_bucket, later_bucket = history["series"]
+        assert later_bucket["start"] - first_bucket["start"] > first_bucket["bucket_seconds"]
+        assert first_bucket["runtimes"]["alpha"] == {
+            "avg_bytes": 20,
+            "max_bytes": 30,
+            "samples": 2,
+        }
+        assert first_bucket["runtimes"]["beta"] == {"avg_bytes": 30, "max_bytes": 40, "samples": 2}
+        assert first_bucket["host"] == {"avg_bytes": 75, "max_bytes": 80, "samples": 2}
+        assert later_bucket["runtimes"]["alpha"] == {"avg_bytes": 0, "max_bytes": 0, "samples": 1}
+        assert "beta" not in later_bucket["runtimes"]
+        assert later_bucket["host"] == {"avg_bytes": 0, "max_bytes": 0, "samples": 1}
+        assert later_bucket["other"] is None
+        assert "sensitive-model" not in path.read_text()
+    finally:
+        restarted.close()

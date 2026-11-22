@@ -79,3 +79,12 @@ A named router over ordered, ready native models, using escalation or a weighted
 
 **Blend**:
 A Cascade kind that combines eligible answers using weighted probabilities; its blended answers are uncalibrated.
+
+**Memory sample**:
+A dated server-side observation of measured host RAM, per-runtime process bytes, and the compatible system remainder. It contains no model names.
+
+**Coverage**:
+The time from which basal-ui has retained samples for a history; it does not imply that every interval has a measurement.
+
+**Offline gap**:
+A displayed interval with no recorded bucket. It is unknown, not zero, and can include times when basal-ui was not running.

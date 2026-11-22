@@ -70,6 +70,16 @@ def test_unified_fleet_rss_is_counted_once_and_remainder_is_unavailable(monkeypa
     assert result["other"] is None
 
 
+def test_unified_empty_fleet_leaves_all_host_memory_to_other_apps(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: {**HOST, "unified": True})
+
+    result = memory.snapshot(_fleet(), [], hardware_fn=lambda: None)
+
+    assert result["runtimes"][0]["status"] == "empty"
+    assert result["runtimes"][0]["accounting"] == "rss_excludes_gpu"
+    assert result["other"] == 90  # measured zero needs no shared accounting basis
+
+
 def test_failed_provider_isolated_and_zero_remains_measured(monkeypatch):
     monkeypatch.setattr(memory, "_host", lambda _: HOST)
 
@@ -83,6 +93,7 @@ def test_failed_provider_isolated_and_zero_remains_measured(monkeypatch):
     assert result["runtimes"][2]["process_bytes"] == 0
     assert result["runtimes"][2]["models"][0]["bytes"] == 0
     assert result["runtimes"][2]["models"][0]["cache_bytes"] == 0
+    assert result["other"] is None
 
 
 def test_unknown_component_stays_none_and_disables_remainder(monkeypatch):
@@ -106,8 +117,13 @@ def test_live_route_returns_snapshot_without_changing_memory_settings(tmp_path, 
 
     with TestClient(app, base_url="http://127.0.0.1") as client:
         live = client.get("/api/memory/live").json()
+        history = client.get("/api/memory/history?range=all")
+        invalid_history = client.get("/api/memory/history?range=invalid")
         settings = client.get("/api/memory").json()
-
+    assert history.status_code == 200
+    assert history.json()["range"] == "all"
+    assert history.json()["series"] == []
+    assert invalid_history.status_code == 400
     assert set(live) == {"time", "host", "runtimes", "other"}
     assert live["runtimes"][1]["runtime"] == "sample"
     assert live["runtimes"][1]["models"][0]["bytes"] == 10
