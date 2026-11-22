@@ -120,3 +120,12 @@ def test_process_rss_sums_matching_commands_and_reports_absence(monkeypatch):
 
     assert memory.process_rss(r"\bollama\b") == 3072 * 1024
     assert memory.process_rss(r"\bvllm\b") is None
+
+
+def test_remainder_subtracts_measured_process_of_runtime_with_api_down(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+    down = {**_observation(process_bytes=30), "status": "unreachable", "models": []}
+
+    result = memory.snapshot(_fleet(), [down], hardware_fn=lambda: None)
+
+    assert result["other"] == 60

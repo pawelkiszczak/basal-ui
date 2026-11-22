@@ -32,6 +32,11 @@ def process_rss(pattern: str) -> int | None:
     return sum(sizes) if sizes else None
 
 
+def rss_accounting() -> str:
+    """Accounting basis of process RSS here: on Apple unified memory RSS omits Metal/MLX GPU allocations."""
+    return "rss_excludes_gpu" if platform.system() == "Darwin" and platform.machine() == "arm64" else "resident"
+
+
 def _host(hardware_fn):
     hw = hardware_fn()
     unified = hw.platform == "apple" and platform.machine() == "arm64"
@@ -162,12 +167,13 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
         if observation is not None:
             runtimes.append(observation)
 
-    totals = [runtime["process_bytes"] for runtime in runtimes if runtime["status"] == "ok"]
+    # Subtract every runtime with measured bytes, whatever its API status; measured zero needs no shared basis.
+    measured = [runtime for runtime in runtimes if runtime["process_bytes"]]
     other = (
-        max(0, host["ram_used"] - sum(totals))
+        max(0, host["ram_used"] - sum(runtime["process_bytes"] for runtime in measured))
         if host["ram_used"] is not None
-        and all(total is not None for total in totals)
-        and all(runtime["accounting"] == host["accounting"] for runtime in runtimes if runtime["status"] == "ok")
+        and all(runtime["process_bytes"] is not None for runtime in runtimes if runtime["status"] == "ok")
+        and all(runtime["accounting"] == host["accounting"] for runtime in measured)
         else None
     )
     return {"time": time.time(), "host": host, "runtimes": runtimes, "other": other}
