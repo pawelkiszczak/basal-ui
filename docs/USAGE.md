@@ -56,6 +56,21 @@ unavailable; Engine context limits are tokens, not bytes. The System and other a
 and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
 is unavailable; GPU allocations are not counted in both RAM and GPU totals.
 
+The Dashboard recognizes oMLX on its configured loopback port (`server.port` in `~/.omlx/settings.json`, default
+8000). When its admin API is available, it confirms loaded model IDs and displays measured hot-cache and disk-backed
+cache bytes. Otherwise, the unauthenticated `/health` endpoint supplies a loaded-model count and oMLX's aggregate
+planned resident-size estimate; model identities and cache details remain unavailable. This estimate is separate
+from process RSS, which includes oMLX runtime overhead and excludes GPU allocations on Apple unified-memory hosts.
+
+### Live runtime checks
+
+oMLX 0.8.3 was checked live without loading or unloading models. `GET /admin/api/stats` returned HTTP 401; the
+unauthenticated `GET /health` returned `status: healthy`, `loaded_count: 3`, and
+`current_model_memory: 77,995,381,990`. `GET /api/memory/live` returned HTTP 200 with that same total in the
+`unified` model-like row and `process_bytes: 793,657,344` (`rss_excludes_gpu`); model identities and cache fields
+were unavailable, and `other` was `null`. Fixture-only checks covered admin-API model/cache data, zero values, and
+unavailable or non-oMLX responses.
+
 **Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
 Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load
 options. Keep it open to see startup, then choose **Use** when ready; the current view's model selector is updated

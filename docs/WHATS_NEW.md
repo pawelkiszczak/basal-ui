@@ -45,6 +45,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
 - Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
   without treating Engine context token limits as bytes or double-counting unified memory.
+- Show oMLX's confirmed loaded models and measured hot and disk-backed cache when its admin API is available. Fall back
+  to its loaded-model count and memory estimate from health. Label process RSS as including runtime overhead and mark
+  unavailable details explicitly.
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.

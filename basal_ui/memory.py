@@ -178,3 +178,8 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
         else None
     )
     return {"time": time.time(), "host": host, "runtimes": runtimes, "other": other}
+
+
+from .runtimes import omlx  # noqa: E402  (runtime providers call process_rss defined above)
+
+PROVIDERS.append(omlx.observe)

@@ -28,6 +28,20 @@ those totals share the host's accounting basis and no listed runtime has an unkn
 only while active; context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context token
 limits are not byte measurements. The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
 
+The oMLX provider reads `server.port` from `~/.omlx/settings.json` (default `8000`) and contacts only `127.0.0.1`.
+It tries `GET /admin/api/stats` for loaded IDs and `runtime_cache.models.hot_cache_size_bytes` / `total_size_bytes`
+first. If that admin endpoint is unavailable or unauthorized, it falls back to the unauthenticated `GET /health` and
+validates the oMLX `engine_pool` shape (`model_count`, `loaded_count`, `current_model_memory`) to avoid mistaking the
+basal-ui gateway on the same port for oMLX. Health provides a loaded count and an aggregate memory total but no model
+identities, so the Dashboard shows one row named for the loaded count. `current_model_memory` maps to its `bytes` and
+`pool: unified`; it is oMLX's planned resident-size estimate, not process RSS or a per-model physical-memory
+measurement. `process_bytes` remains locally measured RSS, including runtime overhead, with `rss_excludes_gpu`
+accounting on Apple unified-memory hosts. Context and unavailable cache details remain `null`; zero stays measured.
+See oMLX [`GET /health`](https://github.com/jundot/omlx/blob/main/omlx/server.py#L3362),
+[`current_model_memory`](https://github.com/jundot/omlx/blob/main/omlx/engine_pool.py#L1118),
+[planned resident size](https://github.com/jundot/omlx/blob/main/omlx/engine_pool.py#L588), and
+[`GET /admin/api/stats`](https://github.com/jundot/omlx/blob/main/omlx/admin/routes.py#L7244).
+
 
 
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.
