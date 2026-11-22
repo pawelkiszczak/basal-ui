@@ -25,6 +25,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   second fetch and preserves native question fields and truncation details.
 - Record a microphone clip as PCM WAV in the Playground. History can retain bounded audio copies when explicitly
   enabled, and Replay retrieves retained clips on demand. [Recording audio](USAGE.md#recording-audio-in-the-playground)
+- Keep the Playground media picker within its panel and wrap full selected filenames; style **Compare models** as a
+  secondary action.
 - Import MCP tool catalogues into tool questions and shortlist locally. Import request and load presets from public URLs.
 - Keep Load options tied to the latest model and dialog, including immediate reopen. Send Engine errors to the matching
   question cards, distinguish overload, and retain persistent error toasts.
