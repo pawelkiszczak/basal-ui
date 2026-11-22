@@ -19,6 +19,14 @@ The model options endpoint reports availability of each server limit in `limits_
 ## Local app management API
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
+`GET /api/memory/live` returns the live observation snapshot: `time`, `host` (RAM, unified-memory flag, measured
+discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
+Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. On
+unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include Metal/MLX GPU allocations.
+`other` is present only when host and runtime totals share an accounting basis. `cache_bytes` is the Engine state cache
+only while active; context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context token
+limits are not byte measurements. The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
+
 
 
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.

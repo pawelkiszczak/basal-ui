@@ -5,6 +5,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
 let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
+let memoryData=null,memoryError=null,memorySequence=0,memoryInFlight=false;
 let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
@@ -548,8 +549,22 @@ $('#recordAudio').addEventListener('click',startRecording);
 document.addEventListener('keydown',event=>{if(event.key==='Escape' && recording){event.preventDefault();if(recording.phase==='recording')finishRecording(recording);else cancelRecording();}});
 
 function renderDashboard() {
-  window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
+  window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError,memory:memoryData,memoryError});
 }
+async function refreshMemory() {
+  if ($('#dashboard').hidden || memoryInFlight) return;
+  memoryInFlight=true;
+  const sequence=++memorySequence;
+  try {
+    const data=await api('/api/memory/live');
+    if(sequence===memorySequence&&!$('#dashboard').hidden){memoryData=data;memoryError=null;renderDashboard();}
+  } catch(error) {
+    if(sequence===memorySequence&&!$('#dashboard').hidden){memoryData=null;memoryError=error.message;renderDashboard();}
+  } finally {
+    memoryInFlight=false;
+  }
+}
+
 async function refreshTraffic() {
   if ($('#dashboard').hidden) return;
   if (trafficInFlight) { trafficPending=true; return; }
@@ -565,6 +580,7 @@ async function refreshTraffic() {
     if(trafficPending&&!$('#dashboard').hidden)refreshTraffic();
   }
 }
+
 document.addEventListener('dashboard:window',event=>{
   if(![15,60].includes(event.detail?.minutes))return;
   if(trafficMinutes!==event.detail.minutes){trafficMinutes=event.detail.minutes;trafficGeneration++;trafficPending=true;trafficData=null;trafficError=null;renderDashboard();}
@@ -574,7 +590,7 @@ async function refreshStatus() {
   const sequence = ++statusSequence;
   try {
     const status = await api('/api/status');
-    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden){refreshTraffic();refreshMemory();} }
   } catch(e) {
     if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }

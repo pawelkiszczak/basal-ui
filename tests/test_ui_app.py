@@ -72,7 +72,7 @@ def make_fleet(tmp_path, hw=HW):
     )
 
 
-def app_for(tmp_path, items, hw=HW, fleet=None):
+def app_for(tmp_path, items, hw=HW, fleet=None, memory_providers=None):
     fleet = fleet or make_fleet(tmp_path, hw)
     app = create_app(
         catalog_fn=lambda **_: (items, "hub"),
@@ -80,6 +80,7 @@ def app_for(tmp_path, items, hw=HW, fleet=None):
         fleet=fleet,
         stats=fleet.stats,
         history=fleet.history,
+        memory_providers=memory_providers,
     )
     return app, fleet
 
