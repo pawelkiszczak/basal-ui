@@ -194,6 +194,22 @@ def test_suggestions_by_hardware_and_available_memory():
     assert media_card["media_setup"] is None and media_card["media_reason_code"] is None
 
 
+def test_single_multimodal_suggestion_when_no_text_model_is_runnable():
+    host = hw("cpu", "CPU", None, frozenset({"media"}), 16 * 1024**3, 12 * 1024**3)
+    repo = "Remek/basal-omni-1.0-mini"
+    model = _variants(repo, {"model.safetensors": variant(repo).weights_bytes})[0]
+    candidate = assess(model, host)
+
+    cards = suggest([candidate], host)
+
+    assert candidate.variant.media == ("image", "audio")
+    assert not candidate.runnable and candidate.media_mode == "eager" and candidate.media_reason is None
+    assert [(card["slot"], card["id"]) for card in cards] == [("multimodal", repo)]
+    assert cards[0]["reasons"][-1] == (
+        "Largest image/audio-capable checkpoint; a tight fit may be selected when none fits comfortably."
+    )
+
+
 def test_suggestion_codes_reproduce_english_text_with_structured_params():
     apple = hw("apple", "M4 Max", None, frozenset({"mlx"}), 24 * 1024**3, 6 * 1024**3)
     repos = ["Remek/basal-2.0-mini-MLX-8bit", "Remek/basal-2.0-4.5B-MLX-8bit"]

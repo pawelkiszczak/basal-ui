@@ -1273,7 +1273,9 @@ def create_app(
             "recommendation_backend": backend,
             "recommendation_note": (
                 "Recommendation slots use catalog format and tier heuristics, not measured benchmarks. "
-                "Best quality means the largest fitting tier; fastest means the smallest tier."
+                "Best quality means the largest fitting tier; fastest means the smallest tier. "
+                "Up to five slots appear; a slot is omitted when no candidate qualifies, and Best quality or Fastest "
+                "is omitted when it duplicates another core slot."
             ),
             "suggestions": suggestions,
             "models_dir": str(Path(cache_dir).resolve()),

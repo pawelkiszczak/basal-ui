@@ -206,20 +206,26 @@ function downloadControl(m, progress) {
   return `<button class="download-model" data-id="${esc(m.id)}">${t('Download')}</button>${progress?.error?`<span class="reason">${esc(progress.error)}</span>`:''}`;
 }
 function renderSuggestions(suggestions) {
-  if (!suggestions.length) { $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>`; return; }
+  const browseAll = `<button type="button" class="dashboard-link suggestion-catalog-link">${t('Browse all models')} →</button>`;
+  if (!suggestions.length) {
+    $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>${browseAll}`;
+    return;
+  }
   const models = new Map(modelData.map(m => [m.id, m]));
   $('#suggested').innerHTML = `<div class="suggestion-grid">${suggestions.map(s => {
     const m=models.get(s.id);if(!m)return '';
     const why=esc(ts(s.why,s.why_code,s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g,'<code>$1</code>');
+    const reasons=(s.reasons||[]).map(reason=>`<li>${esc(t(reason))}</li>`).join('');
     const loaded=statusCache?.models?.find(x=>x.id===m.id), chosenMode=recommendationBackend!=='automatic'||s.media?s.mode:null, mode=chosenMode?` data-mode="${esc(chosenMode)}"`:'';
     const media=s.media&&s.media_available!==false, estimate=s.est_memory_bytes;
     const fit=s.fit_now||s.fit;
     const load=m.downloaded&&!loaded&&(s.media?media:m.runnable||s.mode)?`<button type="button" class="load-model primary" data-id="${esc(m.id)}" data-media="${media}"${mode}>${t(media?'Load with media':'Load')}</button>`:'';
     const setup=s.media_available===false?`<p class="reason">${esc(ts(s.media_reason,s.media_reason_code,s.media_reason_params))}</p><a class="dashboard-link" href="#backends">${t('Install media add-on')} →</a>`:'';
     const action=`<div class="controls">${loaded?diskActions(m):!m.downloaded?downloadControl(m,statusCache?.downloads?.[m.repo]):load}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>`;
-    return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
-  }).join('')}</div>`;
+    return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p><ul class="suggestion-reasons">${reasons}</ul><p class="suggestion-estimate-note">${t('Memory fit is an estimate, not a reservation or an Inference test.')}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
+  }).join('')}</div>${browseAll}`;
 }
+$('#suggested').addEventListener('click',event=>{if(event.target.closest('.suggestion-catalog-link'))selectModelsTab('all');});
 document.addEventListener('click',e=>{const b=e.target.closest('.model-card-open');if(b)act(()=>openModelCard(b.dataset.id));});
 async function openModelCard(id) {
   const c=await api(`/api/models/card?id=${encodeURIComponent(id)}`);
