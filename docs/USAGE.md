@@ -54,7 +54,19 @@ Manager does not add requests. **Models** opens Suggested (default) and All mode
 and Engine state-cache bytes when active. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when
 unavailable; Engine context limits are tokens, not bytes. The System and other apps remainder appears only when host
 and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
-is unavailable; GPU allocations are not counted in both RAM and GPU totals.
+is unavailable; GPU allocations are not counted in both RAM and GPU totals. LM Studio model identity is read from its
+local API when available. Its process RSS includes runtime overhead and remains available when the API is off, while
+model identity, context bytes and cache usage are unknown.
+
+### Live runtime checks
+
+On LM Studio 0.4.28+2, the server was ON at configured port 1235 with no model loaded. After `lms load glm-ocr`
+(1.34 GiB), `GET /api/memory/live` returned `status: ok`, model `glm-ocr`, and `process_bytes: 5496700928`; the model's
+memory, context-byte and cache fields were `null`. After `lms server stop`, the route returned `status: unreachable`,
+`process_bytes: 5503107072`, and no model rows, with identity, context bytes and cache usage marked unknown. Restoring
+with `lms unload --all` and `lms server start --port 1235` returned the server to ON/no-model state; `lms status` and
+`GET /api/memory/live` confirmed it (`status: empty`, `process_bytes: 411435008`). Fixtures cover missing/invalid port
+fallback and non-loopback interface settings; the provider always requests `127.0.0.1`.
 
 **Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
 Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load

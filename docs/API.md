@@ -20,13 +20,20 @@ The model options endpoint reports availability of each server limit in `limits_
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
 `GET /api/memory/live` returns the live observation snapshot: `time`, `host` (RAM, unified-memory flag, measured
-discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
-Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. On
-unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include Metal/MLX GPU allocations.
-`other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
-those totals share the host's accounting basis and no ready runtime has an unknown total. `cache_bytes` is the Engine state cache
-only while active; context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context token
-limits are not byte measurements. The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
+discrete GPUs and accounting basis), `runtimes` (process bytes and optional per-model memory, cache and context bytes)
+and `other`. Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported
+separately. On unified-memory hosts Fleet and LM Studio use `rss_excludes_gpu`, so `other` is `null`; RSS does not
+include Metal/MLX GPU allocations. `other` subtracts every runtime with measured process bytes, including one whose API
+is down, and is present only when those totals share the host's accounting basis and no ready runtime has an unknown
+total. `cache_bytes` is the Engine state cache only while active; context bytes and disk-backed cold-cache bytes remain
+`null` when unavailable. Engine and LM Studio context lengths are tokens, not byte measurements.
+
+LM Studio's local `GET /api/v1/models` response identifies loaded models. Its API port is read from
+`~/.lmstudio/.internal/http-server-config.json` and requests always use `127.0.0.1`; a missing or invalid port falls
+back to `1234`. Process RSS includes runtime overhead; model memory and cache usage are not exposed, and context
+lengths are not byte measurements. If the API is unavailable, process RSS remains available when the LM Studio process
+is present, while model identity and model-specific measurements are unknown. The existing `GET` and `PUT /api/memory`
+routes continue to manage memory settings.
 
 
 

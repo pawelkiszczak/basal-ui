@@ -44,7 +44,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
 - Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
-  without treating Engine context token limits as bytes or double-counting unified memory.
+  without treating Engine context token limits as bytes or double-counting unified memory. LM Studio adds loaded model
+  identity from its local API and process RSS, including runtime overhead when the API is unavailable.
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
