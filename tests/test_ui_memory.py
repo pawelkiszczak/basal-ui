@@ -126,6 +126,6 @@ def test_remainder_subtracts_measured_process_of_runtime_with_api_down(monkeypat
     monkeypatch.setattr(memory, "_host", lambda _: HOST)
     down = {**_observation(process_bytes=30), "status": "unreachable", "models": []}
 
-    result = memory.snapshot(_fleet(), [down], hardware_fn=lambda: None)
+    result = memory.snapshot(_fleet(), [lambda: down], hardware_fn=lambda: None)
 
     assert result["other"] == 60
