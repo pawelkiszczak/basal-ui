@@ -1871,6 +1871,13 @@ const PL = {
   "Fleet memory could not be read.": "Nie można odczytać pamięci Fleet.",
   "Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
   "Process RSS excludes GPU allocations on unified-memory hosts. Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć RSS procesu nie obejmuje alokacji GPU na hostach z pamięcią zunifikowaną. Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
+  "Process RSS includes runtime overhead. Ollama reports total loaded model size; size_vram is its VRAM portion. Context length is in tokens, not bytes; cache bytes are not measured.": "RSS procesu obejmuje narzut środowiska. Ollama podaje całkowity rozmiar załadowanego modelu; size_vram to jego część w VRAM. Długość kontekstu jest podawana w tokenach, nie bajtach; bajty pamięci podręcznej nie są mierzone.",
+  "Ollama API is unreachable. Process RSS includes runtime overhead.": "API Ollama jest nieosiągalne. RSS procesu obejmuje narzut środowiska.",
+  "Ollama API is unavailable. Process RSS includes runtime overhead.": "API Ollama jest niedostępne. RSS procesu obejmuje narzut środowiska.",
+  "Ollama API returned an invalid response.": "API Ollama zwróciło nieprawidłową odpowiedź.",
+  "Ollama API returned an invalid response. Process RSS includes runtime overhead.": "API Ollama zwróciło nieprawidłową odpowiedź. RSS procesu obejmuje narzut środowiska.",
+  "OLLAMA_HOST must point to a local Ollama server.": "OLLAMA_HOST musi wskazywać lokalny serwer Ollama.",
+  "OLLAMA_HOST must point to a local Ollama server. Process RSS includes runtime overhead.": "OLLAMA_HOST musi wskazywać lokalny serwer Ollama. RSS procesu obejmuje narzut środowiska.",
 };  // 'English text': 'tekst po polsku'
 const PL_PLURAL = {
   "Unloaded after {n} idle minute at {time}": ["Wyładowano po {n} minucie bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}"],

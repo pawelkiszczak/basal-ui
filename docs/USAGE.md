@@ -51,10 +51,19 @@ after the view, matching keyboard navigation order. [Mobile example](images/quic
 Manager does not add requests. **Models** opens Suggested (default) and All models.
 
 **Live memory** on Dashboard shows host RAM and measured discrete GPU usage alongside each loaded runtime's process RSS
-and Engine state-cache bytes when active. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when
-unavailable; Engine context limits are tokens, not bytes. The System and other apps remainder appears only when host
-and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
-is unavailable; GPU allocations are not counted in both RAM and GPU totals.
+and model memory. Ollama confirms loaded models through its local `GET /api/ps` response: `size` is total loaded
+model size and `size_vram` is its VRAM portion. Model rows show total size; the observation's `pool` field identifies
+unified, fully RAM, or fully GPU placement, and remains unknown when placement is mixed or unavailable. Runtime process
+and include runtime overhead; the accounting basis follows the host, and unified-memory RSS excludes GPU allocations.
+Ollama's `context_length` is in tokens, not bytes; context-byte and cache measurements are unavailable. If the API
+cannot be reached but an Ollama process is identifiable, its RSS remains visible with an **unreachable** status. An
+empty model list is distinct from an unavailable measurement. The System and other apps remainder appears only when
+host and runtime accounting can be compared.
+
+### Live runtime checks
+
+Ollama was not installed on the validation host, so no live Ollama checks or Ollama version check ran; provider behavior
+was checked only with fixture responses and a local `/api/ps` browser stub.
 
 **Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
 Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load
