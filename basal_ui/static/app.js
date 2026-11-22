@@ -152,23 +152,23 @@ function renderModels(data) {
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
-  const older = $('#olderToggle').checked, showBad = $('#notRunnableToggle').checked, downloadedOnly = $('#downloadedToggle').checked;
+  const older = $('#olderToggle').checked, runAvailabilityFilter = $('#modelRunAvailabilityFilter').value;
   const query=$('#modelSearch').value.trim().toLowerCase(), downloadFilter=$('#modelDownloadFilter').value,
     loadFilter=$('#modelLoadFilter').value, compatibilityFilter=$('#modelCompatibilityFilter').value, fitFilter=$('#modelFitFilter').value;
-  const activeFilters=Boolean(query||downloadFilter||loadFilter||compatibilityFilter||fitFilter||older||showBad||downloadedOnly);
+  const activeFilters=Boolean(query||downloadFilter||loadFilter||compatibilityFilter||fitFilter||older||runAvailabilityFilter!=='available');
   $('#clearModelFilters').disabled=!activeFilters;
   const list = modelData.filter(m => {
-    const download=statusCache?.downloads?.[m.repo], downloading=statusCache?Boolean(download&&!download.error):null;
-    const loaded=statusCache?statusCache.models.some(x=>x.id===m.id):null;
-    const compatible=typeof m.runnable==='boolean'?(m.runnable||Boolean(m.media_mode)):m.media_mode?true:null;
+    const download=statusAvailable?statusCache?.downloads?.[m.repo]:null, downloading=statusAvailable?Boolean(download&&!download.error):null;
+    const loaded=statusAvailable?statusCache?.models.some(x=>x.id===m.id):null;
+    const compatible=m.model_compatible;
+    const runAvailable=Boolean(m.runnable||m.media_mode);
     return (!backendModelFilter||backendModelFilter.ids.has(m.id))
       && (older || !['basal-1.0','basal-1.5'].includes(m.family))
-      && (showBad || compatibilityFilter==='unavailable' || compatible)
-      && (!downloadedOnly || m.downloaded)
+      && (runAvailabilityFilter==='any' || runAvailable===(runAvailabilityFilter==='available'))
       && (!query || [m.id,m.repo,m.family,m.tier,m.label].some(value=>String(value||'').toLowerCase().includes(query)))
       && (!downloadFilter || (downloadFilter==='downloaded'?m.downloaded:downloadFilter==='downloading'?downloading===true:m.downloaded===false&&downloading===false))
       && (!loadFilter || (loadFilter==='loaded'?loaded===true:loaded===false))
-      && (!compatibilityFilter || (compatibilityFilter==='runnable'?compatible===true:compatible===false))
+      && (!compatibilityFilter || (compatibilityFilter==='compatible'?compatible===true:compatible===false))
       && (!fitFilter || (m.fit||'unknown')===fitFilter);
   });
   list.sort((a,b) => familyOrder(b.family)-familyOrder(a.family) || tierOrder(a.tier)-tierOrder(b.tier) || a.port.localeCompare(b.port));
@@ -186,9 +186,9 @@ function renderModels(data) {
       const slot = slots.get(m.id);
       const mediaReasonText = ts(m.media_reason, m.media_reason_code, m.media_reason_params);
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
-      const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
+      const downloadStatus=statusAvailable?statusCache?.downloads?.[m.repo]:null, loaded=statusAvailable?statusCache?.models?.find(x=>x.id===m.id):null;
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:statusAvailable&&!loaded&&m.downloaded?deleteButton(m.id):''}`;
       html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
@@ -272,7 +272,7 @@ function idleUnloadText(reason){return reason?.code==='idle_unload'?`<span class
 function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} idle minute at {time}','Unloaded after {n} idle minutes at {time}',{time:new Date(reason.at*1000).toLocaleString()});}
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
-  const loaded=statusCache?.models?.find(x=>x.id===m.id);
+  const loaded=statusAvailable?statusCache?.models?.find(x=>x.id===m.id):null;
   if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model outline-action" data-id="${esc(m.id)}">${t('Unload')}</button>`;
   if(!m.runnable&&!m.media_mode){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
@@ -593,7 +593,7 @@ async function refreshStatus() {
     const status = await api('/api/status');
     if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { statusAvailable=false; rerenderFilters(); $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {
@@ -1631,7 +1631,6 @@ async function sendDecision() {
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
 $('#recommendationBackend').onchange=event=>{recommendationBackend=event.target.value;loadModels();};
-$('#downloadedToggle').addEventListener('change',rerenderFilters);
 $('#saveModelsDir').addEventListener('click',()=>saveModelsDir($('#modelsDir').value));
 $('#defaultModelsDir').addEventListener('click',()=>saveModelsDir(null));
 let catalogData=null;
@@ -1639,12 +1638,12 @@ const originalRenderModels=renderModels;
 renderModels=function(data){catalogData=data; originalRenderModels(data);};
 function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===recommendationBackend) originalRenderModels(catalogData);}
 $('#olderToggle').addEventListener('change',rerenderFilters);
-$('#notRunnableToggle').addEventListener('change',rerenderFilters);
-['modelSearch','modelDownloadFilter','modelLoadFilter','modelCompatibilityFilter','modelFitFilter'].forEach(id=>{$(`#${id}`).addEventListener(id==='modelSearch'?'input':'change',rerenderFilters);});
+['modelSearch','modelDownloadFilter','modelLoadFilter','modelCompatibilityFilter','modelRunAvailabilityFilter','modelFitFilter'].forEach(id=>{$(`#${id}`).addEventListener(id==='modelSearch'?'input':'change',rerenderFilters);});
 function clearModelFilters(){
   $('#modelSearch').value=''; $('#modelDownloadFilter').value=''; $('#modelLoadFilter').value='';
-  $('#modelCompatibilityFilter').value=''; $('#modelFitFilter').value='';
-  ['olderToggle','notRunnableToggle','downloadedToggle'].forEach(id=>setChecked($(`#${id}`),false));
+  $('#modelCompatibilityFilter').value=''; $('#modelRunAvailabilityFilter').value='available'; $('#modelFitFilter').value='';
+  setChecked($('#olderToggle'),false);
+  backendModelFilter=null; $('#backendModelFilterNotice').hidden=true;
   rerenderFilters(); $('#modelSearch').focus();
 }
 $('#clearModelFilters').addEventListener('click',clearModelFilters);
