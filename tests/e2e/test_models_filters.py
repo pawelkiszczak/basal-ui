@@ -123,17 +123,39 @@ def test_catalog_filters_keep_compatibility_and_status_distinct(browser, synthet
     assert ids() == []  # failed polling makes the retained status snapshot unknown, not current
     page.select_option("#modelDownloadFilter", "downloading")
     assert ids() == []
+    page.evaluate(
+        """() => {
+          window.modelFilterMutations = 0;
+          new MutationObserver(() => window.modelFilterMutations++).observe($('#modelsTable'), {childList: true, subtree: true});
+        }"""
+    )
+    page.evaluate("refreshStatus()")
+    assert page.evaluate("window.modelFilterMutations") == 0  # repeated unavailable polls do not rerender the table
     page.select_option("#modelDownloadFilter", "not-downloaded")
     assert ids() == []
-    page.select_option("#modelLoadFilter", "")
-    page.select_option("#modelDownloadFilter", "")
-    assert ids() == ["missing-gguf"]
+    page.select_option("#modelDownloadFilter", "downloading")
+    assert ids() == []
+    page.unroute("**/api/status")
+    page.route("**/api/status", lambda route: route.fulfill(json=status))
+    page.evaluate("refreshStatus()")
+    page.wait_for_function("() => statusAvailable")
+    assert ids() == ["missing-gguf"]  # same status signature restores the selected filters without input
     assert page.locator('#modelsTable .delete-model[data-id="missing-gguf"]').count() == 0
 
+    page.select_option("#modelDownloadFilter", "not-downloaded")
     page.evaluate(
-        """() => { backendModelFilter = {name: 'Synthetic backend', ids: new Set(['missing-gguf'])};
-          document.querySelector('#backendModelFilterNotice').hidden = false; }"""
+        """() => {
+          backendInventory = {backends: [{id: 'gguf', name: 'Synthetic llama.cpp', compatible: true,
+            reason: '', versions: {'llama-cpp-python': null}, modes: ['gguf'], status: 'not_installed',
+            models: [{id: 'missing-gguf', downloaded: true}],
+            setup: {command: '', note: '', documentation: 'https://example.invalid'}}]};
+          renderBackends();
+        }"""
     )
+    page.evaluate("showView('backends', true)")
+    page.locator('#backendInventory [data-backend-models="gguf"]').click()
+    assert page.locator("#modelDownloadFilter").input_value() == ""
+    assert ids() == ["missing-gguf"]  # Backends entry clears stale download selection
     page.locator("#modelSearch").fill("no-such-model")
     page.locator("#modelsTable [data-clear-model-filters]").click()
     assert page.evaluate("backendModelFilter") is None

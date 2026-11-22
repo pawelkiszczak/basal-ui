@@ -593,7 +593,7 @@ async function refreshStatus() {
     const status = await api('/api/status');
     if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; rerenderFilters(); $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {
@@ -1873,7 +1873,7 @@ function renderManagerSummary() {
 }
 let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
-  const oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
+  const recovered=!statusAvailable, oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
   if(oldFeatures!==JSON.stringify(s.features))document.querySelectorAll('.question').forEach(card=>{renderSharedFields(card);updateCardVisibility(card);});
   invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
   const attachJob=s.jobs?.attach;
@@ -1897,7 +1897,8 @@ function renderStatus(s) {
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
   const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
-  if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(finished)loadModels();
+  if(recovered||signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
   if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
   lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;

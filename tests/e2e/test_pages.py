@@ -693,7 +693,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     assert unavailable["family"] in {"basal-1.0", "basal-1.5"}
     view(page, "models")
     page.click("#allModelsTab")
-    page.check("#notRunnableToggle")
+    page.select_option("#modelRunAvailabilityFilter", "unavailable")
     page.check("#olderToggle")
     translated_reason = page.evaluate("m => ts(m.reason, m.reason_code, m.reason_params)", unavailable)
     assert translated_reason != unavailable["reason"]
@@ -740,7 +740,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     view(page, "models")
     page.click("#allModelsTab")
-    page.check("#notRunnableToggle")
+    page.select_option("#modelRunAvailabilityFilter", "unavailable")
     page.check("#olderToggle")
     sync_api.expect(page.locator("#modelsTable .reason").filter(has_text=unavailable["reason"]).first).to_be_visible()
     page.click("#suggestedTab")
