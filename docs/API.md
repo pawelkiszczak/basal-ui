@@ -34,6 +34,16 @@ back to `1234`. Process RSS includes runtime overhead; model memory and cache us
 lengths are not byte measurements. If the API is unavailable, process RSS remains available when the LM Studio process
 is present, while model identity and model-specific measurements are unknown. The existing `GET` and `PUT /api/memory`
 routes continue to manage memory settings.
+discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
+On non-unified hosts process RSS and host RAM are compared only where their basis is known to agree. Linux
+`ram_used` and `other` are `null` because `MemAvailable` and RSS account for reclaimable pages differently. On
+unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include GPU allocations.
+`other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
+those totals share the host's accounting basis and no listed runtime has an unknown total. Fleet totals include every
+measured process, while model breakdowns list ready models only. `cache_bytes` is the Engine state cache only while
+active, and `cache_pool` identifies its memory pool (`vram`, `ram`, or `unified`); context bytes and disk-backed
+cold-cache bytes remain `null` when unavailable. Engine context token limits are not byte measurements. The existing
+`GET` and `PUT /api/memory` routes continue to manage memory settings.
 
 
 

@@ -1,10 +1,12 @@
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from basal_ui import memory
-from basal_ui.runtimes import lmstudio
+from basal_ui.runtimes import _probe, lmstudio
 
 
 @pytest.fixture(autouse=True)
@@ -12,153 +14,108 @@ def isolate_config(monkeypatch, tmp_path):
     monkeypatch.setattr(lmstudio, "CONFIG_PATH", tmp_path / "http-server-config.json")
 
 
-class Response:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def raise_for_status(self):
-        return None
-
-    def json(self):
-        return self.payload
-
-
 def _set_process(monkeypatch, size=42):
     monkeypatch.setattr(memory, "rss_accounting", lambda: "rss_excludes_gpu")
-    monkeypatch.setattr(memory, "process_rss", lambda pattern: size)
+    monkeypatch.setattr(lmstudio, "_root_pid", lambda: 100)
+    monkeypatch.setattr(_probe, "process_tree_rss", lambda pid: size)
 
 
-@pytest.mark.parametrize("accounting", ["rss_excludes_gpu", "resident"])
-def test_accounting_basis_tracks_memory_helper(monkeypatch, accounting):
-    _set_process(monkeypatch)
-    monkeypatch.setattr(memory, "rss_accounting", lambda: accounting)
-    monkeypatch.setattr(
-        lmstudio.httpx,
-        "get",
-        lambda *args, **kwargs: Response({"models": [{"key": "sample", "loaded_instances": [{}]}]}),
+def _set_api(monkeypatch, payload):
+    monkeypatch.setattr(_probe, "get_json", lambda url, deadline, started: payload)
+
+
+def test_provider_can_import_before_memory():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import basal_ui.runtimes.lmstudio; import basal_ui.memory; "
+            "assert 'basal_ui.runtimes.lmstudio.observe' in basal_ui.memory.PROVIDERS",
+        ],
+        check=True,
+    )
+
+
+def test_loaded_instances_keep_distinct_ids_and_unknown_pool(monkeypatch):
+    _set_process(monkeypatch, 8_000)
+    _set_api(
+        monkeypatch,
+        {
+            "models": [
+                {
+                    "key": "publisher/local-model",
+                    "loaded_instances": [{"instance_id": "one"}, {"identifier": "two"}],
+                }
+            ]
+        },
     )
 
     result = lmstudio.observe()
 
-    assert result["accounting"] == accounting
-    assert result["models"][0]["pool"] == ("unified" if accounting == "rss_excludes_gpu" else "ram")
+    assert result["status"] == "ok"
+    assert result["process_bytes"] == 8_000
+    assert [model["id"] for model in result["models"]] == ["one", "two"]
+    assert all(model["name"] == "publisher/local-model" for model in result["models"])
+    assert all(model["pool"] is None for model in result["models"])
 
 
-def test_api_port_uses_config_but_stays_on_loopback(monkeypatch):
-    _set_process(monkeypatch)
+def test_api_port_uses_configured_loopback_and_probes_without_process(monkeypatch):
+    _set_process(monkeypatch, None)
     lmstudio.CONFIG_PATH.write_text('{"port": 1235, "networkInterface": "0.0.0.0"}', encoding="utf-8")
     requests = []
 
-    def get(url, timeout, trust_env):
-        requests.append((url, timeout, trust_env))
-        return Response({"models": []})
+    def get_json(url, deadline, started):
+        requests.append((url, deadline))
+        return {"models": []}
 
-    monkeypatch.setattr(lmstudio.httpx, "get", get)
-
-    lmstudio.observe()
-
-    assert requests == [("http://127.0.0.1:1235/api/v1/models", 0.5, False)]
-
-
-def test_invalid_port_config_uses_default_port(monkeypatch):
-    _set_process(monkeypatch)
-    lmstudio.CONFIG_PATH.write_text('{"port": true}', encoding="utf-8")
-    requests = []
-    monkeypatch.setattr(
-        lmstudio.httpx,
-        "get",
-        lambda url, timeout, trust_env: requests.append(url) or Response({"models": []}),
-    )
-
-    lmstudio.observe()
-
-    assert requests == [lmstudio.API_URL]
-
-
-def test_loaded_model_uses_api_identity_and_process_rss(monkeypatch):
-    _set_process(monkeypatch, 8_000)
-    assert lmstudio.observe in memory.PROVIDERS
-    requests = []
-
-    def get(url, timeout, trust_env):
-        requests.append((url, timeout, trust_env))
-        return Response(
-            {
-                "models": [
-                    {
-                        "key": "publisher/local-model",
-                        "loaded_instances": [{"id": "instance-1", "config": {"context_length": 4096}}],
-                    },
-                    {"key": "not-loaded", "loaded_instances": []},
-                ]
-            }
-        )
-
-    monkeypatch.setattr(lmstudio.httpx, "get", get)
-
+    monkeypatch.setattr(_probe, "get_json", get_json)
     result = lmstudio.observe()
 
-    assert requests == [(lmstudio.API_URL, 0.5, False)]
-    assert result["runtime"] == "lmstudio"
+    assert requests == [("http://127.0.0.1:1235/api/v1/models", 1.0)]
+    assert result["process_bytes"] is None
     assert result["status"] == "ok"
-    assert result["accounting"] == "rss_excludes_gpu"
-    assert result["process_bytes"] == 8_000
-    assert result["models"] == [
-        {
-            "id": "publisher/local-model",
-            "bytes": None,
-            "pool": "unified",
-            "context_bytes": None,
-            "cache_bytes": None,
-            "cold_cache_bytes": None,
-        }
-    ]
-    assert "Process RSS includes runtime overhead." in result["note"]
-
-
-def test_empty_model_list_reports_measured_process_memory(monkeypatch):
-    _set_process(monkeypatch, 0)
-    monkeypatch.setattr(lmstudio.httpx, "get", lambda *args, **kwargs: Response({"models": []}))
-
-    result = lmstudio.observe()
-
-    assert result["status"] == "empty"
-    assert result["process_bytes"] == 0
     assert result["models"] == []
-    assert result["accounting"] == "rss_excludes_gpu"
 
 
-def test_unreachable_api_keeps_process_rss_and_unknown_model_fields(monkeypatch):
+def test_transport_failure_is_unreachable_but_http_failure_is_unavailable(monkeypatch):
     _set_process(monkeypatch, 3_000)
 
-    def fail(*args, **kwargs):
+    def fail(*args):
         raise httpx.ConnectError("refused")
 
-    monkeypatch.setattr(lmstudio.httpx, "get", fail)
+    monkeypatch.setattr(_probe, "get_json", fail)
+    assert lmstudio.observe()["status"] == "unreachable"
 
+    def unauthorized(*args):
+        raise httpx.HTTPStatusError("unauthorized", request=None, response=None)
+
+    monkeypatch.setattr(_probe, "get_json", unauthorized)
     result = lmstudio.observe()
-
-    assert result["status"] == "unreachable"
+    assert result["status"] == "unavailable"
     assert result["process_bytes"] == 3_000
-    assert result["models"] == []
-    assert result["accounting"] == "rss_excludes_gpu"
-    assert "model identity, context bytes, and cache usage are unknown" in result["note"]
-    assert "Process RSS includes runtime overhead." in result["note"]
 
 
-def test_absent_process_omits_runtime_without_http_request(monkeypatch):
-    _set_process(monkeypatch, None)
-    monkeypatch.setattr(lmstudio.httpx, "get", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
+def test_unreadable_models_do_not_claim_empty(monkeypatch):
+    _set_process(monkeypatch)
+    _set_api(monkeypatch, {"models": [{"key": None, "loaded_instances": "bad"}]})
 
-    assert lmstudio.observe() is None
+    assert lmstudio.observe()["status"] == "unavailable"
 
 
-def test_process_rss_matches_lm_studio_process_names(monkeypatch):
+def test_process_root_matches_names_not_command_arguments(monkeypatch):
     output = (
-        "  512 /Applications/LM Studio.app/Contents/MacOS/LM Studio --run-as-service\n"
-        "1024 /Users/example/.lmstudio/.internal/utils/node\n"
-        "  256 /bin/zsh\n"
+        "  512 /Applications/LM Studio.app/Contents/MacOS/LM Studio\\n"
+        "1024 /Users/example/.lmstudio/.internal/utils/node\\n"
+        "  256 /bin/zsh\\n"
+        "2048 /usr/local/bin/lmstudio-worker\\n"
     )
-    monkeypatch.setattr(memory.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=output))
+    monkeypatch.setattr(lmstudio.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=output))
 
-    assert memory.process_rss(lmstudio.PROCESS_PATTERN) == 1_536 * 1024
+    assert lmstudio._root_pid() == 512
+
+
+def test_failed_process_lookup_does_not_suppress_api_probe(monkeypatch):
+    monkeypatch.setattr(lmstudio, "_root_pid", lambda: None)
+    _set_api(monkeypatch, {"models": []})
+
+    assert lmstudio.observe()["status"] == "ok"
