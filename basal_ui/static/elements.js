@@ -2,7 +2,7 @@ function updateMediaEvidence() {
   const disabled=selectedMedia.length>0;
   document.querySelectorAll('.question').forEach(card=>{
     const evidence=$('[data-f="evidence"]',card);
-    if(disabled&&evidence.checked){evidence.checked=false;evidence.setAttribute('aria-checked','false');}
+    if(disabled&&evidence.checked)setChecked(evidence,false);
     evidence.disabled=disabled;
     evidence.title=disabled?t('Evidence spans are read from the state text; remove media to enable them'):'';
     let note=$('.media-evidence-note',card);

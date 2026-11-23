@@ -6,6 +6,7 @@ import platform
 import re
 import subprocess
 import time
+from contextlib import suppress
 
 import httpx
 
@@ -159,6 +160,11 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
     except Exception:  # noqa: BLE001 — host probes are best-effort
         host = {"ram_total": None, "ram_used": None, "unified": False, "gpu": [], "accounting": "resident"}
     runtimes = [_fleet(fleet, host["unified"])]
+    excluded_pids = set()
+    with suppress(Exception):
+        excluded_pids = {
+            model["pid"] for model in fleet.memory_snapshot() if type(model.get("pid")) is int and model["pid"] > 0
+        }
     for provider in providers:
         name = (
             provider.rsplit(".", 1)[-1]
@@ -166,9 +172,13 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
             else getattr(provider, "runtime", getattr(provider, "__name__", "runtime"))
         )
         try:
-            provider_path = provider if isinstance(provider, str) else None
-            provider = _provider(provider)
-            observation = provider(fleet) if provider_path == "basal_ui.runtimes.ollama.observe" else provider()
+            runtime_provider = _provider(provider)
+            if provider == "basal_ui.runtimes.sglang.observe":
+                observation = runtime_provider(excluded_pids=excluded_pids)
+            elif provider == "basal_ui.runtimes.ollama.observe":
+                observation = runtime_provider(fleet)
+            else:
+                observation = runtime_provider()
         except Exception:  # noqa: BLE001 — isolate optional runtime failures
             runtimes.append(
                 {
@@ -198,4 +208,6 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
     return {"time": time.time(), "host": host, "runtimes": runtimes, "other": other}
 
 
-PROVIDERS.append("basal_ui.runtimes.ollama.observe")
+register_provider("basal_ui.runtimes.vllm.observe")
+register_provider("basal_ui.runtimes.sglang.observe")
+register_provider("basal_ui.runtimes.ollama.observe")
