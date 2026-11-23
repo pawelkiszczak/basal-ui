@@ -78,8 +78,9 @@ def test_process_fallback_is_identifiable_when_model_info_is_unavailable(monkeyp
     monkeypatch.setattr(
         sglang._probe, "get_json", lambda *args: (_ for _ in ()).throw(httpx.ConnectError("server unavailable"))
     )
-    observation = sglang.observe()
+    monkeypatch.setattr(sglang, "_process_bytes", lambda excluded: 1234)
 
+    observation = sglang.observe()
     assert observation["runtime"] == "sglang"
     assert observation["status"] == "unreachable"
     assert observation["process_bytes"] == 1234
