@@ -520,7 +520,7 @@ async function startRecording() {
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     if(recording!==session){stream.getTracks().forEach(track=>track.stop());return;}
     session.stream=stream;stream.getAudioTracks().forEach(track=>track.addEventListener('ended',()=>{if(recording===session && session.phase==='recording'){cancelRecording();showMediaError(t('Microphone access was interrupted. Try again.'));}}));session.context=new AudioContext();session.source=session.context.createMediaStreamSource(stream);session.analyser=session.context.createAnalyser();session.source.connect(session.analyser);
-    session.recorder=new MediaRecorder(stream);session.recorder.ondataavailable=e=>{if(e.data.size)session.chunks.push(e.data);};
+    session.recorder=new MediaRecorder(stream);session.bytes=0;session.recorder.ondataavailable=e=>{if(recording!==session || !e.data.size)return;session.bytes+=e.data.size;if(session.bytes>20*1024*1024){cancelRecording();showMediaError(t('Recording is empty or exceeds the 30-second or 20 MiB limit.'));return;}session.chunks.push(e.data);};
     session.recorder.onerror=()=>{if(recording===session){cancelRecording();showMediaError(t('Recording failed. Check your microphone and try again.'));}};
     session.recorder.onstop=async()=>{
       session.recorder.ondataavailable=null;session.recorder.onstop=null;session.recorder.onerror=null;

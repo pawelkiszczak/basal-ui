@@ -47,6 +47,7 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   Decision servers. Reject symlinked scheduled inputs and outputs.
 - Keep status snapshots coherent across model unloads, return Cascade error codes at the API top level, and reject
   unsupported text codecs at the Fetch boundary.
+- Enforce the microphone recording size limit while chunks arrive, before buffering and decoding the full recording.
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
