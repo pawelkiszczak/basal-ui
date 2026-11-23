@@ -158,8 +158,8 @@ function renderModels(data) {
   const activeFilters=Boolean(query||downloadFilter||loadFilter||compatibilityFilter||fitFilter||older||runAvailabilityFilter!=='available');
   $('#clearModelFilters').disabled=!activeFilters;
   const list = modelData.filter(m => {
-    const download=statusAvailable?statusCache?.downloads?.[m.repo]:null, downloading=statusAvailable?Boolean(download&&!download.error):null;
-    const loaded=statusAvailable?statusCache?.models.some(x=>x.id===m.id):null;
+    const download=statusAvailable?statusCache?.downloads?.[m.repo]:null, downloading=statusAvailable?Boolean(download&&!download.error&&download.id===m.id):null;
+    const runner=statusCache?.models?.find(x=>x.id===m.id), loaded=statusAvailable?Boolean(runner&&['ready','starting','downloading'].includes(runner.state)):null;
     const compatible=m.model_compatible;
     const runAvailable=Boolean(m.runnable||m.media_mode);
     return (!backendModelFilter||backendModelFilter.ids.has(m.id))
@@ -272,9 +272,10 @@ function idleUnloadText(reason){return reason?.code==='idle_unload'?`<span class
 function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} idle minute at {time}','Unloaded after {n} idle minutes at {time}',{time:new Date(reason.at*1000).toLocaleString()});}
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
-  const loaded=statusAvailable?statusCache?.models?.find(x=>x.id===m.id):null;
-  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model outline-action" data-id="${esc(m.id)}">${t('Unload')}</button>`;
+  const loaded=statusCache?.models?.find(x=>x.id===m.id);
+  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}${statusAvailable?'':` · ${t('stale')}`}</span><button type="button" class="unload-model outline-action" data-id="${esc(m.id)}">${t('Unload')}${statusAvailable?'':` · ${t('stale')}`}</button>`;
   if(!m.runnable&&!m.media_mode){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
+  if(!statusAvailable)return `<span class="muted">${t('Model status unavailable')}</span>`;
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
   const noMedia=!m.media_mode&&(m.media||[]).length?`<small class="muted">${esc(noMediaText||'')}</small>`:'';
@@ -593,7 +594,7 @@ async function refreshStatus() {
     const status = await api('/api/status');
     if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
-    if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
 }
 async function loadExamples() {
@@ -1897,8 +1898,8 @@ function renderStatus(s) {
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
   const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
-  if(finished)loadModels();
-  if(recovered||signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if((recovered||signature!==rowsSignature)&&!finished)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(finished)loadModels();  // refresh catalog before rendering downloaded-state filters
   if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
   lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;

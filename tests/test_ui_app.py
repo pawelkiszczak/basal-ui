@@ -416,6 +416,7 @@ def test_download_runs_without_a_model_and_reports_progress_then_errors(tmp_path
         assert status.json()["models"] == []
         wait_for(lambda: client.get("/api/status").json()["downloads"][MINI.repo]["done_bytes"] == 40)
         assert client.get("/api/status").json()["downloads"][MINI.repo] == {
+            "id": MINI.id,
             "done_bytes": 40,
             "total_bytes": 100,
             "error": None,
