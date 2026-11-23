@@ -57,6 +57,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
 - Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
+  without treating Engine context token limits as bytes or double-counting unified memory. Show confirmed SGLang models
+  and process RSS, without treating KV-pool token counts or memory fractions as byte measurements.
+  [Live memory](USAGE.md#sglang-memory-observation)
   without treating Engine context token limits as bytes or double-counting unified memory.
 - Show confirmed vLLM model ids and available process RSS and KV-cache usage on Dashboard without treating cache
   percentages as bytes. [Live memory](API.md#local-app-management-api)

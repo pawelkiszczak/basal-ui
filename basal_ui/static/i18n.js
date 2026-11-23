@@ -1948,6 +1948,8 @@ const PL = {
   "Fleet memory could not be read.": "Nie można odczytać pamięci Fleet.",
   "Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
   "Process RSS excludes GPU allocations on unified-memory hosts. Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć RSS procesu nie obejmuje alokacji GPU na hostach z pamięcią zunifikowaną. Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
+  "SGLang model information is unavailable. Process RSS includes runtime overhead.": "Informacje o modelu SGLang są niedostępne. Pamięć RSS procesu obejmuje narzut środowiska uruchomieniowego.",
+  "Byte-valued SGLang model memory is not available. Process RSS includes runtime overhead.": "Pomiary pamięci modelu SGLang w bajtach są niedostępne. Pamięć RSS procesu obejmuje narzut środowiska uruchomieniowego.",
   "vLLM KV-cache usage: {usage}%. Process RSS includes vLLM runtime overhead.": "Użycie pamięci podręcznej KV vLLM: {usage}%. RSS procesu obejmuje narzut środowiska vLLM.",
   "vLLM KV-cache usage by engine: {usage}. Process RSS includes vLLM runtime overhead.": "Użycie pamięci podręcznej KV vLLM według silnika: {usage}. RSS procesu obejmuje narzut środowiska vLLM.",
   "vLLM KV-cache usage is not reported in bytes. Process RSS includes vLLM runtime overhead.": "Użycie pamięci podręcznej KV vLLM nie jest podawane w bajtach. RSS procesu obejmuje narzut środowiska vLLM.",

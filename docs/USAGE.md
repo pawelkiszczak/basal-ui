@@ -51,7 +51,9 @@ after the view, matching keyboard navigation order. [Mobile example](images/quic
 Manager does not add requests. **Models** opens Suggested (default) and All models.
 
 **Live memory** on Dashboard shows host RAM and measured discrete GPU usage alongside each loaded runtime's process RSS
-and Engine state-cache bytes when active. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when
+and Engine state-cache bytes when active. SGLang's confirmed `model_path` is shown as a loaded model, with process RSS
+including runtime overhead; model, context and cache byte fields remain **Not measured**. SGLang KV-pool token counts and
+memory fractions are not bytes. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when
 unavailable; Engine context limits are tokens, not bytes. The System and other apps remainder appears only when host
 and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
 is unavailable; GPU allocations are not counted in both RAM and GPU totals. vLLM is observed read-only through its
@@ -66,6 +68,19 @@ Process RSS includes vLLM runtime overhead and excludes basal-ui Fleet processes
 No live vLLM checks ran. Unit fixtures cover independent API identity, base and adapter model cards, per-engine
 KV-cache metrics, metrics collection when model discovery returns 401, malformed URL fallback, Fleet-process exclusion
 and external vLLM worker matching. Browser screenshots use a local fixture server, not vLLM.
+
+### SGLang memory observation
+
+SGLang was not installed on the host, so no live runtime checks ran and no runtime version was observed. Provider fixtures
+cover read-only `GET /get_model_info` (`model_path` confirms the loaded model), unavailable byte fields, process RSS fallback
+for `sglang.launch_server`, and rejection of non-loopback URLs. The Dashboard was checked against a local HTTP stub returning
+a fixture `model_path`; it was not a live SGLang server. The official [native API documentation](https://docs.sglang.ai/docs/basic_usage/native_api.md)
+documents `/get_model_info` and `/server_info`; `/v1/models` is implemented in the official
+[HTTP server source](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py).
+The provider does not query either server-info endpoint, `/v1/models` or `/metrics`; it only uses `/get_model_info` for
+model identity and local process RSS for memory. The official docs describe `/server_info` and optional Prometheus metrics,
+including token counts and fractions, not byte-valued process memory. Pool token limits such as `max_total_num_tokens` and
+fractions such as `mem_fraction_static` are not bytes. No fixture checks queried `/server_info`, `/v1/models` or `/metrics`.
 
 **Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
 Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load

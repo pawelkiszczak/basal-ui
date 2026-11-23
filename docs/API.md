@@ -20,6 +20,19 @@ The model options endpoint reports availability of each server limit in `limits_
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
 `GET /api/memory/live` returns the live observation snapshot: `time`, `host` (RAM, unified-memory flag, measured
+discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
+Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. On
+unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include Metal/MLX GPU allocations.
+`other` is present only when host and runtime totals share an accounting basis. SGLang is confirmed by the non-empty
+`model_path` from loopback `GET /get_model_info` and its process RSS is matched against `sglang.launch_server` (including
+runtime overhead). The URL defaults to `http://127.0.0.1:30000` and can be changed with `BASAL_UI_SGLANG_URL`; only
+loopback URLs are accepted. Model, context and cache bytes remain `null` when unavailable. The provider does not infer
+bytes from SGLang server-info token limits / memory fractions or optional Prometheus metrics. See SGLang's
+[native APIs](https://docs.sglang.ai/docs/basic_usage/native_api.md),
+[server implementation](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py)
+and [metrics reference](https://docs.sglang.ai/docs/references/production_metrics.md). Engine context token limits are
+not byte measurements. The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
+On non-unified hosts process RSS and host RAM are compared only where their basis is known to agree. Linux
 discrete GPUs and accounting basis), `runtimes` (per-runtime process bytes and model/cache measurements) and `other`.
 Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. Linux
 `ram_used` and `other` are `null` because `MemAvailable` and RSS account for reclaimable pages differently. On
