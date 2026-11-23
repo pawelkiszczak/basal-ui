@@ -186,8 +186,11 @@ def _content(data, content_type, *, presets=False):
     message["content-type"] = content_type
     kind = message.get_content_type().lower()
     try:
-        encoding = codecs.lookup(message.get_content_charset() or "utf-8").name
-    except LookupError as exc:
+        codec = codecs.lookup(message.get_content_charset() or "utf-8")
+        encoding = codec.name
+        if not isinstance(codec.decode(b"")[0], str):
+            raise LookupError("charset is not a text encoding")
+    except (LookupError, TypeError, ValueError) as exc:
         if presets:
             raise FetchError("Unsupported JSON charset.", "fetch_unsupported_encoding", 415) from exc
         encoding = "utf-8"
