@@ -46,6 +46,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   thresholds, inspect conformal levels, and preserve layout when refitting saved rows. Calibration warnings identify
   mismatches and invalid metadata. Benchmarks include the Identity gate, option-order checks, and active adapter/MLX
   settings where supported. [Calibration and benchmarks](USAGE.md#custom-calibration)
+- Explain the choice between Shipped and Selected calibration with an accessible worked example of the Engine's
+  temperature scaling, labelled input and how to return to Shipped calibration.
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
