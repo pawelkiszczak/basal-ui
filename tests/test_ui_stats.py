@@ -300,6 +300,82 @@ def test_dated_traffic_rolls_up_to_hour_and_day(stats, monkeypatch):
     assert "first_used" not in hourly and "first_used" not in daily
 
 
+def test_memory_sampler_records_compact_history_across_restart_and_gaps(tmp_path, monkeypatch):
+    from basal_ui.memory_sampler import MemorySampler
+
+    now = [1_700_000_000.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    path = tmp_path / "stats.json"
+    first = Stats(path)
+    sample = {
+        "time": now[0],
+        "host": {"ram_used": 70},
+        "other": 40,
+        "runtimes": [
+            {"runtime": "alpha", "status": "ok", "process_bytes": 10, "models": [{"id": "sensitive-model"}]},
+            {"runtime": "beta", "status": "ok", "process_bytes": 20, "models": [{"id": "sensitive-model"}]},
+        ],
+    }
+    sampler = MemorySampler(first, lambda: sample)
+    sampler.tick()
+    now[0] += 30
+    sample = {
+        **sample,
+        "time": now[0],
+        "host": {"ram_used": 80},
+        "other": 50,
+        "runtimes": [
+            {"runtime": "beta", "status": "ok", "process_bytes": 40},
+            {"runtime": "alpha", "status": "ok", "process_bytes": 30},
+        ],
+    }
+    sampler.tick()
+    now[0] += 180
+    sample = {
+        **sample,
+        "time": now[0],
+        "host": {"ram_used": 0},
+        "other": None,
+        "runtimes": [{"runtime": "alpha", "status": "ok", "process_bytes": 0}],
+    }
+    sampler.tick()
+    first.close()
+
+    restarted = Stats(path)
+    try:
+        history = restarted.memory_history("all")
+        assert history["collection_started"] == 1_700_000_000.0
+        assert len(history["series"]) == 2
+        first_bucket, later_bucket = history["series"]
+        assert later_bucket["start"] - first_bucket["start"] > first_bucket["bucket_seconds"]
+        assert first_bucket["runtimes"]["alpha"] == {
+            "avg_bytes": 20,
+            "max_bytes": 30,
+            "samples": 2,
+        }
+        assert first_bucket["runtimes"]["beta"] == {"avg_bytes": 30, "max_bytes": 40, "samples": 2}
+        assert first_bucket["host"] == {"avg_bytes": 75, "max_bytes": 80, "samples": 2}
+        assert later_bucket["runtimes"]["alpha"] == {"avg_bytes": 0, "max_bytes": 0, "samples": 1}
+        assert "beta" not in later_bucket["runtimes"]
+        assert later_bucket["host"] == {"avg_bytes": 0, "max_bytes": 0, "samples": 1}
+        assert later_bucket["other"] is None
+        assert "sensitive-model" not in path.read_text()
+    finally:
+        restarted.close()
+
+
+def test_memory_history_survives_reset_of_only_pending_model(stats, monkeypatch):
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: 1000.0)
+    stats.record("m", {"usage": {}}, 1)
+    stats.record_memory_sample({"time": 1000.0, "host": {"ram_used": 10}, "other": 5, "runtimes": []})
+
+    stats.reset("m")
+    stats.flush()
+
+    history = stats.memory_history("all")
+    assert history["series"][0]["host"]["avg_bytes"] == 10
+
+
 def test_reset_pending_model_removes_empty_history_bucket(stats, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
@@ -395,3 +471,15 @@ def test_failed_flush_rolls_up_traffic_backlog(stats, monkeypatch):
             now[0] += 60
 
     assert len(stats.traffic_delta) <= 4
+
+
+def test_traffic_history_reuses_its_decoded_snapshot(stats, monkeypatch):
+    from basal_ui import stats as stats_module
+
+    original_read = stats_module._read
+    reads = []
+    monkeypatch.setattr(stats_module, "_read", lambda path: (reads.append(path), original_read(path))[1])
+
+    stats.traffic_history("all")
+
+    assert len(reads) == 1

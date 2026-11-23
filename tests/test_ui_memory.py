@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from basal_ui import memory
@@ -70,6 +71,16 @@ def test_unified_fleet_rss_is_counted_once_and_remainder_is_unavailable(monkeypa
     assert result["other"] is None
 
 
+def test_unified_empty_fleet_leaves_all_host_memory_to_other_apps(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: {**HOST, "unified": True})
+
+    result = memory.snapshot(_fleet(), [], hardware_fn=lambda: None)
+
+    assert result["runtimes"][0]["status"] == "empty"
+    assert result["runtimes"][0]["accounting"] == "rss_excludes_gpu"
+    assert result["other"] == 90  # measured zero needs no shared accounting basis
+
+
 def test_failed_provider_isolated_and_zero_remains_measured(monkeypatch):
     monkeypatch.setattr(memory, "_host", lambda _: HOST)
 
@@ -83,6 +94,7 @@ def test_failed_provider_isolated_and_zero_remains_measured(monkeypatch):
     assert result["runtimes"][2]["process_bytes"] == 0
     assert result["runtimes"][2]["models"][0]["bytes"] == 0
     assert result["runtimes"][2]["models"][0]["cache_bytes"] == 0
+    assert result["other"] is None
 
 
 def test_unknown_component_stays_none_and_disables_remainder(monkeypatch):
@@ -106,8 +118,13 @@ def test_live_route_returns_snapshot_without_changing_memory_settings(tmp_path, 
 
     with TestClient(app, base_url="http://127.0.0.1") as client:
         live = client.get("/api/memory/live").json()
+        history = client.get("/api/memory/history?range=all")
+        invalid_history = client.get("/api/memory/history?range=invalid")
         settings = client.get("/api/memory").json()
-
+    assert history.status_code == 200
+    assert history.json()["range"] == "all"
+    assert history.json()["series"] == []
+    assert invalid_history.status_code == 400
     assert set(live) == {"time", "host", "runtimes", "other"}
     assert live["runtimes"][1]["runtime"] == "sample"
     assert live["runtimes"][1]["models"][0]["bytes"] == 10
@@ -169,3 +186,74 @@ def test_runtime_providers_import_before_memory_module():
         capture_output=True,
         text=True,
     )
+
+
+def test_history_memory_snapshot_skips_per_model_metrics(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+    monkeypatch.setattr(memory, "_cache_bytes", lambda _url: (_ for _ in ()).throw(AssertionError("unexpected probe")))
+    fleet = _fleet(
+        [{"kind": "basal", "state": "ready", "id": "model", "rss_bytes": 10, "base_url": "http://127.0.0.1"}]
+    )
+
+    result = memory.snapshot(fleet, [], hardware_fn=lambda: None, include_models=False)
+
+    assert result["runtimes"][0]["process_bytes"] == 10
+    assert result["runtimes"][0]["models"] == []
+
+
+def test_memory_sampler_uses_fixed_sample_deadlines():
+    import threading
+    import time
+
+    from basal_ui.memory_sampler import MemorySampler
+
+    samples = []
+    sampled = threading.Event()
+
+    class StatsStub:
+        def record_memory_sample(self, sample):
+            samples.append(sample["time"])
+            if len(samples) == 3:
+                sampled.set()
+
+    def snapshot():
+        time.sleep(0.02)
+        return {}
+
+    sampler = MemorySampler(StatsStub(), snapshot, interval=0.05)
+    sampler.start()
+    try:
+        assert sampled.wait(1)
+    finally:
+        sampler.stop()
+
+    assert samples[1] - samples[0] == pytest.approx(0.05, abs=0.005)
+    assert samples[2] - samples[1] == pytest.approx(0.05, abs=0.005)
+
+
+def test_memory_sampler_stop_does_not_wait_for_or_record_blocked_probe(monkeypatch):
+    import threading
+
+    import basal_ui.memory_sampler as memory_sampler
+
+    monkeypatch.setattr(memory_sampler, "STOP_JOIN_S", 0.01)
+    started, release = threading.Event(), threading.Event()
+    recorded = []
+
+    def snapshot():
+        started.set()
+        release.wait()
+        return {"time": 0}
+
+    class StatsStub:
+        def record_memory_sample(self, sample):
+            recorded.append(sample)
+
+    sampler = memory_sampler.MemorySampler(StatsStub(), snapshot, interval=0.01)
+    sampler.start()
+    assert started.wait(1)
+    sampler.stop()
+    release.set()
+    sampler._thread.join(1)
+
+    assert recorded == []

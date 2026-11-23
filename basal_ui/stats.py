@@ -1,6 +1,5 @@
-"""Per-model statistics of the decisions basal-ui answered (playground, API, MCP) and the benchmark results, kept in
-<settings stem>.stats.json next to the settings file (merged under the settings lock: several basal-ui processes on
-one settings file add up)."""
+"""Per-model Decision statistics, benchmarks, and dated traffic and memory history in `<settings stem>.stats.json`.
+Several basal-ui processes sharing one settings file merge updates under its lock."""
 
 import contextlib
 import json
@@ -78,6 +77,7 @@ def _read(path: Path) -> dict:
             if not isinstance(loaded.get("reset_at"), dict):
                 loaded["reset_at"] = {}
             _history(loaded)
+            _memory_history(loaded)
             return loaded
     except (OSError, ValueError, AttributeError):
         pass
@@ -86,6 +86,7 @@ def _read(path: Path) -> dict:
         "benchmarks": {},
         "reset_at": {},
         "traffic_history": {"collection_started": None, "buckets": {}},
+        "memory_history": {"collection_started": None, "buckets": {}},
     }
 
 
@@ -100,6 +101,108 @@ def _history(data):
 def _bucket_start(key) -> int:
     value = str(key)
     return int(value[1:] if value[:1] in ("h", "d") else value)
+
+
+def _rollup_buckets(buckets: dict, now: float, merge) -> None:
+    retention_cutoff, hourly_cutoff, minute_cutoff = (
+        now - HISTORY_RETENTION_S,
+        now - HISTORY_HOUR_S,
+        now - HISTORY_MINUTE_S,
+    )
+    for key in sorted(tuple(buckets), key=_bucket_start):
+        start = _bucket_start(key)
+        if start < retention_cutoff:
+            del buckets[key]
+            continue
+        if start < hourly_cutoff and key[:1] != "d":
+            target = buckets.setdefault(f"d{start // 86400 * 86400}", {})
+        elif start < minute_cutoff and key[:1] not in ("h", "d"):
+            target = buckets.setdefault(f"h{start // 3600 * 3600}", {})
+        else:
+            continue
+        merge(target, buckets[key])
+        del buckets[key]
+
+
+def _traffic_bucket(target, source):
+    for model_id, row in source.items():
+        entry = target.setdefault(model_id, _traffic_row(row.get("first_used")))
+        entry["first_used"] = min(filter(None, (entry.get("first_used"), row.get("first_used"))), default=None)
+        _add_traffic(entry, row)
+
+
+def _memory_row():
+    return {"total_bytes": 0, "max_bytes": 0, "samples": 0}
+
+
+def _add_memory(target, row):
+    target["total_bytes"] += row["total_bytes"]
+    target["max_bytes"] = max(target["max_bytes"], row["max_bytes"])
+    target["samples"] += row["samples"]
+
+
+def _memory_bucket(target, source):
+    for name, row in source.items():
+        _add_memory(target.setdefault(name, _memory_row()), row)
+
+
+def _memory_history(data):
+    value = data.get("memory_history")
+    if not isinstance(value, dict) or not isinstance(value.get("buckets"), dict):
+        value = {"collection_started": None, "buckets": {}}
+        data["memory_history"] = value
+    return value
+
+
+def _memory_measurement(row, value):
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        row["total_bytes"] += value
+        row["max_bytes"] = max(row["max_bytes"], value)
+        row["samples"] += 1
+
+
+def _recorded_memory(sample):
+    time_s = sample.get("time", time.time())
+    start = int(time_s // 60) * 60
+    rows = {}
+    host = sample.get("host") or {}
+    _memory_measurement(rows.setdefault("host", _memory_row()), host.get("ram_used"))
+    _memory_measurement(rows.setdefault("other", _memory_row()), sample.get("other"))
+    for runtime in sample.get("runtimes", ()):  # a measured total counts whatever the runtime's API status
+        _memory_measurement(
+            rows.setdefault(f"runtime:{runtime['runtime']}", _memory_row()), runtime.get("process_bytes")
+        )
+    return start, time_s, rows
+
+
+def _merge_traffic(data, delta):
+    history = _history(data)
+    if delta and history["collection_started"] is None:
+        history["collection_started"] = min(row["first_used"] for models in delta.values() for row in models.values())
+    reset_at, buckets = data["reset_at"], history["buckets"]
+    for start, models in delta.items():
+        target = buckets.setdefault(str(start), {})
+        for model_id, row in models.items():
+            if not _cleared(reset_at, model_id, row):
+                _traffic_bucket(target, {model_id: row})
+    now = time.time()
+    _rollup_buckets(buckets, now, _traffic_bucket)
+    for models in buckets.values():
+        for row in models.values():
+            row.pop("first_used", None)
+
+
+def _merge_memory(data, delta):
+    history = _memory_history(data)
+    if delta:
+        history["collection_started"] = min(
+            filter(None, (history["collection_started"], min(sample["time"] for sample in delta.values()))),
+            default=None,
+        )
+    buckets = history["buckets"]
+    for start, sample in delta.items():
+        _memory_bucket(buckets.setdefault(str(start), {}), sample["rows"])
+    _rollup_buckets(buckets, time.time(), _memory_bucket)
 
 
 def _traffic_row(first_used):
@@ -206,6 +309,7 @@ class Stats:
         self.data = _read(self.path)
         self.delta: dict = {}
         self.traffic_delta: dict = {}
+        self.memory_delta: dict = {}
         self.traffic = Traffic()
         self._stop = threading.Event()
         self._flusher = threading.Thread(target=self._flush_loop, daemon=True)
@@ -276,20 +380,29 @@ class Stats:
 
         record()
 
+    def record_memory_sample(self, sample: dict) -> None:
+        start, time_s, rows = _recorded_memory(sample)
+        with self.lock:
+            bucket = self.memory_delta.setdefault(start, {"time": time_s, "rows": {}})
+            bucket["time"] = min(bucket["time"], time_s)
+            _memory_bucket(bucket["rows"], rows)
+
     def _update_file(self, change) -> None:
-        """Under the settings lock: read the file, merge this process's delta, apply change(data), write, mirror."""
+        """Under the settings lock: merge pending counters and histories, apply change, then write atomically."""
         from . import settings
 
         def go():
             with self.lock:
                 delta, self.delta = self.delta, {}
                 traffic_delta, self.traffic_delta = self.traffic_delta, {}
+                memory_delta, self.memory_delta = self.memory_delta, {}
             data = _read(self.path)
             try:
                 for model_id, entry in delta.items():
                     if not _cleared(data["reset_at"], model_id, entry):
                         _merge(data["models"].setdefault(model_id, _empty()), entry)
                 _merge_traffic(data, traffic_delta)
+                _merge_memory(data, memory_delta)
                 change(data)
                 settings._write_private(self.path, json.dumps(data))
             except BaseException:
@@ -306,6 +419,10 @@ class Stats:
                                 current["first_used"] = min(current["first_used"], row["first_used"])
                                 _add_traffic(current, row)
                     _age_traffic(self.traffic_delta, time.time(), keep_first_used=True)
+                    for start, sample in memory_delta.items():
+                        target = self.memory_delta.setdefault(start, {"time": sample["time"], "rows": {}})
+                        target["time"] = min(target["time"], sample["time"])
+                        _memory_bucket(target["rows"], sample["rows"])
                 raise
             with self.lock:
                 self.data = data
@@ -474,9 +591,62 @@ class Stats:
             "lifetime": lifetime,
         }
 
+    def memory_history(self, time_range: str) -> dict:
+        from . import settings
+
+        if time_range not in ("1h", "24h", "7d", "30d", "all"):
+            raise ValueError("range must be 1h, 24h, 7d, 30d, or all")
+        now = time.time()
+        duration = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}.get(time_range)
+
+        def read():
+            data = _read(self.path)
+            with self.lock:
+                delta = json.loads(json.dumps(self.memory_delta))
+            return data, delta
+
+        data, delta = settings._locked(read)()
+        _merge_memory(data, delta)
+        history = _memory_history(data)
+        collection_started = history["collection_started"]
+        window_start = max(collection_started or now, now - duration) if duration else collection_started
+        series = []
+        for key, values in sorted(history["buckets"].items(), key=lambda item: _bucket_start(item[0])):
+            start = _bucket_start(key)
+            bucket_seconds = {"h": 3600, "d": 86400}.get(key[:1], 60)
+            if (window_start is not None and start + bucket_seconds < window_start) or start > now:
+                continue
+            rows = {
+                name: {
+                    "avg_bytes": row["total_bytes"] / row["samples"],
+                    "max_bytes": row["max_bytes"],
+                    "samples": row["samples"],
+                }
+                for name, row in values.items()
+                if row.get("samples")
+            }
+            runtimes = {name.removeprefix("runtime:"): row for name, row in rows.items() if name.startswith("runtime:")}
+            if rows:
+                series.append(
+                    {
+                        "start": start,
+                        "bucket_seconds": bucket_seconds,
+                        "host": rows.get("host"),
+                        "other": rows.get("other"),
+                        "runtimes": runtimes,
+                    }
+                )
+        return {
+            "range": time_range,
+            "collection_started": collection_started,
+            "window_start": window_start,
+            "window_end": now,
+            "series": series,
+        }
+
     def flush(self) -> None:
         with self.lock:
-            if not self.delta and not self.traffic_delta:
+            if not self.delta and not self.traffic_delta and not self.memory_delta:
                 return
         self._update_file(lambda data: None)
 

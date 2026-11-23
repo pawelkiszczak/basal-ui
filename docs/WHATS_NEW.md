@@ -66,6 +66,10 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   and process RSS, without treating KV-pool token counts or memory fractions as byte measurements.
   [Live memory](USAGE.md#sglang-memory-observation)
   without treating Engine context token limits as bytes or double-counting unified memory.
+- Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Keep lifetime Usage as
+  the source of All time totals, and remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.
+- Sample dated memory totals by runtime on the server while Dashboard is closed; view coverage and gaps beside traffic
+  using the same saved time range. [Memory history](USAGE.md#dashboard)
 - Show oMLX's confirmed loaded models and measured hot and disk-backed cache when its admin API is available. Fall back
   to its loaded-model count and memory estimate from health. Label process RSS as including runtime overhead and mark
   unavailable details explicitly.

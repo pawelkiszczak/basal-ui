@@ -75,6 +75,20 @@ On non-unified hosts process RSS and host RAM are compared only where their basi
 discrete GPUs and accounting basis), `runtimes` (per-runtime process bytes and model/cache measurements) and `other`.
 Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. Linux
 `ram_used` and `other` are `null` because `MemAvailable` and RSS account for reclaimable pages differently. On
+unified-memory hosts Fleet uses `rss_excludes_gpu`; RSS does not include GPU allocations.
+`other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
+no runtime total is unknown and every nonzero runtime total shares the host's accounting basis. A measured zero total
+needs no shared accounting basis; for example, an empty Fleet on a unified-memory host leaves measured host usage in
+`other`. `cache_bytes` is the Engine state cache only while active; context bytes and disk-backed cold-cache bytes
+remain `null` when unavailable. Engine context token limits are not byte measurements.
+`GET /api/memory/history?range=1h|24h|7d|30d|all` returns persisted totals in the same time ranges as traffic.
+Each series bucket has `start`, `bucket_seconds`, nullable `host` and `other` totals, and a `runtimes` map keyed by
+runtime; measured totals contain `avg_bytes`, `max_bytes` and `samples`. Model names are never stored in this history.
+Buckets without measurements are omitted, so a missing bucket is an offline gap, not a zero. `collection_started`
+marks history coverage and `window_start`/`window_end` bound the selected range. The server samples every 60 seconds,
+including when no browser is connected. Dashboard display refresh changes only the browser poll cadence. Fleet totals
+include every measured process, while model breakdowns list ready models only. `cache_pool` identifies a model's
+memory pool (`vram`, `ram`, or `unified`).
 unified-memory hosts process RSS excludes GPU allocations, so `other` is `null`.
 `other` subtracts every runtime with measured process bytes, regardless of API status, and is present only when host
 and runtime accounting bases match and every runtime total is known. Fleet totals include every measured process,

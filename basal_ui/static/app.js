@@ -4,7 +4,7 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
-let trafficData=null, trafficHistory=null, trafficError=null, trafficRecentError=null, trafficRange=['1h','24h','7d','30d','all'].includes(localStorage.getItem('basal-ui.dashboard-range'))?localStorage.getItem('basal-ui.dashboard-range'):'24h', refreshSeconds=[1,2,5,15,30].includes(Number(localStorage.getItem('basal-ui.dashboard-refresh')))?Number(localStorage.getItem('basal-ui.dashboard-refresh')):1, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
+let trafficData=null, trafficHistory=null, trafficError=null, trafficRecentError=null, memoryHistory=null, memoryHistoryError=null, trafficRange=['1h','24h','7d','30d','all'].includes(localStorage.getItem('basal-ui.dashboard-range'))?localStorage.getItem('basal-ui.dashboard-range'):'24h', refreshSeconds=[1,2,5,15,30].includes(Number(localStorage.getItem('basal-ui.dashboard-refresh')))?Number(localStorage.getItem('basal-ui.dashboard-refresh')):1, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
 let memoryData=null,memoryError=null,memorySequence=0,memoryInFlight=false;
 let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
@@ -589,7 +589,7 @@ document.addEventListener('keydown',event=>{
 });
 
 function renderDashboard() {
-  window.updateDashboard({traffic:trafficData,history:trafficHistory,range:trafficRange,refreshSeconds,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError,recentError:trafficRecentError,memory:memoryData,memoryError});
+  window.updateDashboard({traffic:trafficData,history:trafficHistory,memoryHistory,memoryHistoryError,range:trafficRange,refreshSeconds,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError,recentError:trafficRecentError,memory:memoryData,memoryError});
 }
 async function refreshMemory() {
   if ($('#dashboard').hidden || memoryInFlight) return;
@@ -611,12 +611,14 @@ async function refreshTraffic() {
   trafficInFlight=true; trafficPending=false;
   const sequence=++trafficGeneration, range=trafficRange;
   try {
-    const [recent,history]=await Promise.allSettled([api('/api/traffic?minutes=15'),api(`/api/traffic/history?range=${range}`)]);
+    const [recent,history,memory]=await Promise.allSettled([api('/api/traffic?minutes=15'),api(`/api/traffic/history?range=${range}`),api(`/api/memory/history?range=${range}`)]);
     if(sequence===trafficGeneration&&range===trafficRange&&!$('#dashboard').hidden){
       trafficRecentError=recent.status==='rejected'?recent.reason.message:null;
       trafficError=history.status==='rejected'?history.reason.message:null;
+      memoryHistoryError=memory.status==='rejected'?memory.reason.message:null;
       if(recent.status==='fulfilled')trafficData=recent.value;
       if(history.status==='fulfilled')trafficHistory=history.value;
+      if(memory.status==='fulfilled')memoryHistory=memory.value;
       renderDashboard();
     }
   } finally {
@@ -626,7 +628,7 @@ async function refreshTraffic() {
 }
 document.addEventListener('dashboard:range',event=>{
   if(!['1h','24h','7d','30d','all'].includes(event.detail?.range))return;
-  if(trafficRange!==event.detail.range){trafficRange=event.detail.range;localStorage.setItem('basal-ui.dashboard-range',trafficRange);trafficGeneration++;trafficPending=true;trafficHistory=null;trafficError=null;renderDashboard();}
+  if(trafficRange!==event.detail.range){trafficRange=event.detail.range;localStorage.setItem('basal-ui.dashboard-range',trafficRange);trafficGeneration++;trafficPending=true;trafficHistory=null;memoryHistory=null;trafficError=null;memoryHistoryError=null;renderDashboard();}
   refreshTraffic();
 });
 document.addEventListener('dashboard:refresh',event=>{

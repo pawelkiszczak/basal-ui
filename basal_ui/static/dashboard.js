@@ -5,7 +5,7 @@
   const decimal = new Intl.NumberFormat(LANG, {maximumSignificantDigits:3});
   const clock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit'});
   const preciseClock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  let state = {traffic:null,history:null,stats:null,status:null,error:null,recentError:null,range:'24h',memory:null,memoryError:null}, metric = 'input_tokens_per_s';
+  let state = {traffic:null,history:null,memoryHistory:null,stats:null,status:null,error:null,recentError:null,memory:null,memoryError:null,memoryHistoryError:null,range:'24h',refreshSeconds:2}, metric = 'input_tokens_per_s';
   const q = selector => root.querySelector(selector);
   const number = (value, fractional=false) => Number.isFinite(value) ? (fractional ? decimal : integer).format(value) : '—';
   const setText = (selector, text) => {const node=q(selector);if(node.textContent!==text)node.textContent=text;};
@@ -13,6 +13,7 @@
   const html = (node,value) => {if(node.innerHTML!==value)node.innerHTML=value;};
 
   root.innerHTML = `<section class="card memory-panel" aria-labelledby="memoryTitle"><div class="traffic-heading"><div><h2 id="memoryTitle">${t('Live memory')}</h2><p>${t('Host and loaded runtime measurements')}</p></div><span id="memoryTime" class="traffic-scope"></span></div><div id="memoryContent"></div></section>
+  <section class="card memory-history-panel"><div class="traffic-heading"><div><h2>${t('Memory over time')}</h2><p>${t('Peak per display bucket')}</p></div><span id="memoryCollection" class="traffic-scope"></span></div><p id="memoryHistoryNotice" class="traffic-notice" role="status"></p><div id="memoryHistoryChart"></div></section>
   <div class="traffic-toolbar">
     <div><strong>${t('Recorded Decision traffic')}</strong><p>${t('Recorded traffic collected from this app')}</p></div>
     <div class="traffic-controls">
@@ -62,6 +63,36 @@
     html(target,`<div class="memory-host"><div class="memory-runtime-head"><strong>${t('Host RAM')}</strong><span>${bytes(used)} / ${bytes(total)}</span></div><div class="memory-track" role="img" aria-label="${escape(`${t('Host RAM')}: ${bytes(used)} / ${bytes(total)}; ${barDescription}`)}">${barContent}</div><p>${memory.other==null?t('System and other apps: breakdown unavailable'):`${t('System and other apps')}: ${bytes(memory.other)}`}</p></div><section class="memory-gpu"><h3>${t('Discrete GPU memory')}</h3>${gpu||`<p class="memory-unavailable">${t('Not measured')}</p>`}</section>${host?.unified?`<p class="memory-note">${t('Unified memory is shared; allocations are counted once.')}</p>`:''}<div class="memory-runtimes">${runtimeRows}</div>`);
   }
 
+  function renderMemoryHistory() {
+    const history=state.memoryHistory?.range===state.range?state.memoryHistory:null, container=q('#memoryHistoryChart');
+    const started=history?.collection_started;
+    setText('#memoryCollection',started?t('Collection started {time}',{time:new Intl.DateTimeFormat(LANG,{dateStyle:'medium',timeStyle:'short'}).format(new Date(started*1000))}):t('Collection has not started.'));
+    setText('#memoryHistoryNotice',state.memoryHistoryError?t('Memory history unavailable: {message}',{message:state.memoryHistoryError}):'');
+    const start=history?.window_start,end=history?.window_end,span=end-start,rows=history?.series||[];
+    const names=['host','other',...new Set(rows.flatMap(row=>Object.keys(row.runtimes||{})))].filter(name=>
+      rows.some(row=>name==='host'?row.host:name==='other'?row.other:row.runtimes?.[name])
+    );
+    if(!history||!names.length||!(span>0)){html(container,`<p class="traffic-empty">${t(state.memoryHistoryError?'Memory history unavailable':history?'No memory measurements in this time range.':'Waiting for memory samples…')}</p>`);return;}
+    const values=row=>names.map(name=>name==='host'?row.host:name==='other'?row.other:row.runtimes?.[name]).filter(Boolean);
+    const maxBytes=Math.max(1024**3,...rows.flatMap(row=>values(row).map(value=>value.max_bytes||0)))*1.15;
+    const paths=names.map((name,index)=>{
+      let d='',markers='',last=false,previousEnd=null;
+      for(const row of rows){
+        const value=name==='host'?row.host:name==='other'?row.other:row.runtimes?.[name];
+        if(!value){last=false;continue;}
+        if(previousEnd!=null&&row.start>previousEnd)last=false;
+        const x=48+Math.max(0,Math.min(1,(row.start+row.bucket_seconds/2-start)/span))*604;
+        const y=164-value.max_bytes/maxBytes*138;
+        d+=`${last?'L':'M'}${x},${y} `;
+        markers+=`<circle cx="${x}" cy="${y}" r="2.5" fill="currentColor"/>`;
+        last=true;previousEnd=row.start+row.bucket_seconds;
+      }
+      return `<g class="memory-history-line memory-history-line-${index%4}"><path d="${d}"/>${markers}</g>`;
+    }).join('');
+    const formatter=span<86400?preciseClock:new Intl.DateTimeFormat(LANG,{month:'short',day:'numeric'});
+    const label=name=>name==='host'?t('Host RAM'):name==='other'?t('System and other apps'):name;
+    html(container,`<svg class="traffic-chart memory-history-chart" viewBox="0 0 680 204" role="img" aria-label="${t('Memory over time')}"><line x1="48" x2="652" y1="164" y2="164" stroke="var(--line)"/><text class="traffic-axis" x="0" y="168" fill="var(--muted)">0</text><text class="traffic-axis" x="0" y="30" fill="var(--muted)">${bytes(maxBytes/1.15)}</text>${paths}<text class="traffic-start" x="48" y="194" fill="var(--muted)">${formatter.format(new Date(start*1000))}</text><text class="traffic-end" x="652" y="194" text-anchor="end" fill="var(--muted)">${formatter.format(new Date(end*1000))}</text></svg><div class="memory-history-legend">${names.map((name,index)=>`<span class="memory-history-legend-${index%4}">${escape(label(name))}</span>`).join('')}</div>`);
+  }
   function renderChart(history) {
     const container=q('#trafficChart');
     if(!container.querySelector('svg'))container.innerHTML=`<p class="traffic-empty"></p><svg class="traffic-chart" viewBox="0 0 680 204" role="img" hidden>
@@ -170,6 +201,7 @@
     setText('#trafficNotice',state.error?t('Traffic unavailable: {message}',{message:state.error}):available?'':t('Waiting for traffic data…'));
     q('#trafficNotice').classList.toggle('traffic-error',Boolean(state.error));
     renderMemory();
+    renderMemoryHistory();
     const started=history?.collection_started;
     setText('#trafficCollection',started?t('Collection started {time}',{time:new Intl.DateTimeFormat(LANG,{dateStyle:'medium',timeStyle:'short'}).format(new Date(started*1000))}):t('Collection will start when the first Decision is recorded.'));
     renderChart(history);

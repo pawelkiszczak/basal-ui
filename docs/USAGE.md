@@ -69,6 +69,20 @@ including runtime overhead; model, context and cache byte fields remain **Not me
 memory fractions are not bytes. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when
 unavailable; Engine context limits are tokens, not bytes. The System and other apps remainder appears only when host
 and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
+is unavailable; GPU allocations are not counted in both RAM and GPU totals.
+**Memory history** shares Dashboard's time range with traffic and shows measured per-runtime totals, host RAM and the
+compatible **System and other apps** remainder. Samples run once per minute while basal-ui is running, even when all
+browser tabs are closed; closing the app stops sampling. Collection coverage is shown, and missing buckets remain
+gaps. The range includes **All time**. The **Display refresh** setting changes only how often the Dashboard polls.
+
+### Live runtime checks
+
+On 2026-11-22, `GET /api/memory/live` on the Apple unified-memory host reported Fleet `status: empty`,
+`process_bytes: 0` and `other: null`. No model-serving runtime was active, so no external runtime version or provider
+endpoint was available for a live runtime check. The server recorded memory history while every browser tab was closed
+for 130 seconds, and the samples remained available after an app restart. Runtime observation/accounting cases,
+provider order, aggregation, and gap behavior were checked only with fixtures in `tests/test_ui_memory.py` and
+`tests/test_ui_stats.py`.
 is unavailable; GPU allocations are not counted in both RAM and GPU totals. LM Studio model identity is read from its
 local API when available. Its process RSS includes runtime overhead and remains available when the API is off, while
 model identity, context bytes and cache usage are unknown.

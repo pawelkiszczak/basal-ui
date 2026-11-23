@@ -42,6 +42,7 @@ from .gateway import Gateway
 from .history import History
 from .history_audio import BUDGET as HISTORY_AUDIO_BUDGET
 from .mcp_import import shortlist
+from .memory_sampler import MemorySampler
 from .stats import Stats
 
 STATIC = Path(__file__).parent / "static"
@@ -122,8 +123,22 @@ def create_app(
     mcp_importer=None,
     schedules=None,
     memory_providers=None,
+    memory_sampler=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
+    sampler = (
+        memory_sampler
+        if memory_sampler is not None
+        else MemorySampler(
+            stats,
+            lambda: memory.snapshot(
+                fleet,
+                memory.PROVIDERS if memory_providers is None else memory_providers,
+                hardware_fn,
+                include_models=False,
+            ),
+        )
+    )
     history = history or History(settings_mod.history_path())
     fleet = fleet or Fleet(
         models_dir_fn=settings_mod.models_dir,
@@ -374,7 +389,12 @@ def create_app(
         schedule_thread = threading.Thread(target=schedule_timer, name="basal-ui-schedules", daemon=True)
         schedule_thread.start()
         _app.state.schedule_thread = schedule_thread
+        if sampler is not False:
+            sampler.start()
+            _app.state.memory_sampler = sampler
         yield
+        if sampler is not False:
+            await asyncio.to_thread(sampler.stop)
         schedule_stop.set()
         await mcp_importer.close()
         await preset_fetch_manager.close()
@@ -785,6 +805,13 @@ def create_app(
     @app.get("/api/memory/live")
     def live_memory():
         return memory.snapshot(fleet, memory.PROVIDERS if memory_providers is None else memory_providers, hardware_fn)
+
+    @app.get("/api/memory/history")
+    def memory_history(range: str = "24h"):
+        try:
+            return stats.memory_history(range)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.get("/api/memory")
     def get_memory():

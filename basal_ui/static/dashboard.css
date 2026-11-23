@@ -82,6 +82,19 @@
 .memory-model dl > div { min-width: 0; }
 .memory-model dt { color: var(--muted); font-size: 10px; }
 .memory-model dd { margin: 2px 0 0; font: 10px var(--mono); overflow-wrap: anywhere; }
+.memory-history-panel { min-width: 0; }
+.memory-history-chart { overflow: hidden; }
+.memory-history-line { fill: none; stroke-width: 2.5; }
+.memory-history-line-0, .memory-history-legend-0 { stroke: var(--accent); color: var(--accent); }
+.memory-history-line-1, .memory-history-legend-1 { stroke: var(--blue); color: var(--blue); }
+.memory-history-line-2, .memory-history-legend-2 { stroke: var(--amber); color: var(--amber); }
+.memory-history-line-3, .memory-history-legend-3 { stroke: var(--green); color: var(--green); }
+.memory-history-line-0 { stroke-dasharray: 12 4; }
+.memory-history-line-1 { stroke-dasharray: 6 4; }
+.memory-history-line-2 { stroke-dasharray: 2 4; }
+.memory-history-line-3 { stroke-dasharray: 10 4 2 4; }
+.memory-history-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted); font-size: 11px; }
+.memory-history-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-inline-end: 6px; border-radius: 50%; background: currentColor; }
 @media (prefers-reduced-motion: reduce) {
   .traffic-chart, .traffic-chart * { animation: none !important; transition: none !important; }
 }
