@@ -30,6 +30,8 @@ def test_recording_attaches_wav_and_sends_it(ui, audio_model):
         )
         page.locator("#recordAudio").click()
         playwright.expect(page.locator("#recordLevel")).to_be_visible()
+        page.locator("#recordLevel").click()
+        playwright.expect(page.locator("#recordLevel")).to_be_visible()
         page.wait_for_timeout(1200)
         page.locator("#recordAudio").click()
         playwright.expect(page.locator("#mediaItems audio")).to_have_count(1, timeout=15000)

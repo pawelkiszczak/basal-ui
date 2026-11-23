@@ -211,6 +211,7 @@ class Job:
         self.running, self.started, self.result = True, time.time(), None
         self.finished = None
         self.cancel = threading.Event()
+        self.cancel_reason = None
         self.lock = threading.Lock()
         self.thread = None
 
@@ -222,9 +223,10 @@ class Job:
         if self.cancel.is_set():
             raise Cancelled()
 
-    def request_cancel(self):
+    def request_cancel(self, reason="user"):
         with self.lock:
-            if self.running:
+            if self.running and not self.cancel.is_set():
+                self.cancel_reason = reason
                 self.cancel.set()
 
     def finish(self, phase, result=None, error=None):
@@ -255,13 +257,13 @@ class Job:
 class Jobs:
     """The last job of each kind; `logs` is the fleet's log buffers (a job's output goes to logs["job:<kind>"])."""
 
-    def __init__(self, logs: dict, event=None, start_lock=None, start_guard=None):
+    def __init__(self, logs: dict, event=None, start_lock=None, start_guard=None, model_guard=None):
         self.logs = logs
         self.event = event or (lambda level, message: None)
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
         self.start_lock, self.start_guard = start_lock, start_guard
-        self.model_guard = None
+        self.model_guard = model_guard
 
     def start(self, kind, model, label, target, *args) -> dict:
         """Run target(job, *args) in a daemon thread; its return value is the job's result. RuntimeError when a job of
@@ -330,7 +332,7 @@ class Jobs:
         with self.lock:
             jobs = list(self.jobs.values())
         for job in jobs:
-            job.request_cancel()
+            job.request_cancel("shutdown")
 
     def join(self, timeout: float) -> list[str]:
         """Wait up to timeout seconds for running jobs; -> the kinds still running."""

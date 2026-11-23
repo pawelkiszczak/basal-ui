@@ -344,6 +344,7 @@ class AddonManager:
             or fleet.downloads.any_alive()
             or fleet.inflight
             or fleet.reserved
+            or getattr(fleet, "finetune_deleting", False)
             or fleet.retiring
             or fleet.leases
         ):

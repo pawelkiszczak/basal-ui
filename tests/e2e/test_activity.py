@@ -212,9 +212,13 @@ def test_answer_set_editor_and_error_cards_without_model(page):
     assert "Skipped" in page.locator("#results").inner_text()
 
 
-def test_gate_editor_special_names_aliases_and_live_options(page):
-    if not page.evaluate("() => statusCache.features.conditional_questions"):
+def test_gate_editor_special_names_aliases_and_live_options(page, ui):
+    status = ui.get("/api/status")
+    if not status["features"]["conditional_questions"]:
         pytest.skip("Engine does not support conditional questions")
+    status["models"] = [{"id": "synthetic", "state": "ready", "media": [], "entry": {}}]
+    page.route("**/api/status", lambda route: route.fulfill(json=status))
+    page.evaluate("() => refreshStatus()")
     test_pages.view(page, "playground")
     request = {
         "state": "s",
@@ -224,7 +228,6 @@ def test_gate_editor_special_names_aliases_and_live_options(page):
         },
     }
     page.evaluate("request => setRequest(JSON.parse(request))", json.dumps(request))
-    page.evaluate("() => $('#playgroundForm').disabled = false")
     target = page.locator(".question").nth(1)
     target.locator(".q-gates summary").click()
     test_pages.sync_api.expect(target.locator('[data-gate-question="__proto__"]:checked')).to_have_count(2)
@@ -527,8 +530,6 @@ def test_calibration_tracks_real_saved_and_active_layout(page, ui, text_model):
 
 
 def test_calibration_error_and_mismatch_states_keep_focus(page):
-    test_pages.manager_tab(page, "calibration")
-    page.wait_for_function("() => document.querySelector('#calibrationModel').value")
     data = {
         "selected": "fitted.json",
         "calibrate_layout": False,
@@ -537,17 +538,19 @@ def test_calibration_error_and_mismatch_states_keep_focus(page):
         "shipped": {"file": "shipped.json", "context": {"layout": "qfirst", "mode": "eager", "active": True}},
         "files": [{"file": "fitted.json", "layout": "canonical", "rows": "fitted.rows.jsonl", "when": 1}],
     }
-    page.evaluate("data => renderCalibrationFiles(document.querySelector('#calibrationModel').value,data)", data)
+    page.route("**/api/calibrations?*", lambda route: route.fulfill(json=data))
+    test_pages.manager_tab(page, "calibration")
+    files = page.locator("#calibrationFiles")
+    test_pages.sync_api.expect(files).to_contain_text("certified thresholds will not apply")
     assert page.locator("#runCalibration").is_disabled()
-    assert "certified thresholds will not apply" in page.locator("#calibrationFiles").inner_text()
-    radio = page.locator('input[name="calibrationUse"][value="fitted.json"]')
+    radio = files.locator('input[name="calibrationUse"][value="fitted.json"]')
     radio.focus()
-    page.evaluate("data => renderCalibrationFiles(document.querySelector('#calibrationModel').value,data)", data)
+    page.evaluate("() => loadCalibrations()")
     assert radio.evaluate("el => document.activeElement === el")
     page.screenshot(path="/tmp/basal-issue19-ui-synthetic-mismatch.png")
     data["shipped"] = {"error": "Invalid model metadata"}
     data["layout_mismatch_code"] = None
-    page.evaluate("data => renderCalibrationFiles(document.querySelector('#calibrationModel').value,data)", data)
+    page.evaluate("() => loadCalibrations()")
     assert page.locator("#runCalibration").is_disabled()
     assert "Invalid model metadata" in page.locator("#calibrationFiles").inner_text()
     assert page.locator('input[name="calibrationUse"]').count() == 1

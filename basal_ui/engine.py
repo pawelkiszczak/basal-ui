@@ -84,9 +84,9 @@ def _parameter(module, attribute, name):
         target = importlib.import_module(module)
         for part in attribute.split("."):
             target = getattr(target, part)
-    except (ImportError, AttributeError):
+        return name in inspect.signature(target).parameters
+    except (ImportError, AttributeError, TypeError, ValueError):
         return False
-    return name in inspect.signature(target).parameters
 
 
 FEATURES = {
@@ -161,8 +161,10 @@ def serve_option(flag):
 def bench_flags():
     """Long options declared by the installed basal-bench parser."""
     try:
-        source = inspect.getsource(importlib.import_module("basal.bench").main)
-        tree = ast.parse(source)
+        bench = importlib.import_module("basal.bench")
+        if callable(getattr(bench, "parser", None)):
+            return _flags("basal.bench")
+        tree = ast.parse(inspect.getsource(bench.main))
     except (ImportError, AttributeError, OSError, TypeError, SyntaxError):
         return frozenset()
     return frozenset(
