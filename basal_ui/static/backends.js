@@ -100,7 +100,7 @@ $('#backendInventory').onclick=e=>{
     const b=backendInventory.backends.find(x=>x.id===models.dataset.backendModels);
     backendModelFilter={name:b.name,ids:new Set(b.models.map(m=>m.id))};
     $('#backendModelFilterNotice').hidden=false;$('#backendModelFilterNotice span').textContent=t('Models compatible with {name} after its dependencies are installed.',{name:b.name});
-    setChecked($('#olderToggle'),true);setChecked($('#notRunnableToggle'),true);setChecked($('#downloadedToggle'),false);
+    setChecked($('#olderToggle'),true);$('#modelSearch').value='';$('#modelDownloadFilter').value='';$('#modelLoadFilter').value='';$('#modelCompatibilityFilter').value='';$('#modelFitFilter').value='';$('#modelRunAvailabilityFilter').value='any';
     rerenderFilters();showView('models',true);selectModelsTab('all');
   }
   if(test)act(()=>openBackendTest(test.dataset.backendTest));

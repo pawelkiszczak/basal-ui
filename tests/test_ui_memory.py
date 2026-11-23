@@ -154,7 +154,7 @@ def test_dotted_provider_is_imported_lazily(monkeypatch):
     assert result["runtimes"][1]["runtime"] == "sample"
 
 
-def test_runtime_provider_imports_before_memory_module():
+def test_runtime_providers_import_before_memory_module():
     import subprocess
     import sys
 
@@ -162,7 +162,7 @@ def test_runtime_provider_imports_before_memory_module():
         [
             sys.executable,
             "-c",
-            "import basal_ui.runtimes.omlx; import basal_ui.memory; "
+            "import basal_ui.runtimes.omlx, basal_ui.runtimes.ollama; import basal_ui.memory; "
             "assert 'basal_ui.runtimes.omlx.observe' in basal_ui.memory.PROVIDERS",
         ],
         check=True,
