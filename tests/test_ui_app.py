@@ -1043,7 +1043,6 @@ def test_status_skips_runner_detached_during_rss_snapshot(tmp_path, instant_star
         thread.join(5)
 
 
-
 def test_status_lists_the_requests_being_answered_per_model_until_each_returns_or_fails(
     tmp_path, monkeypatch, instant_start
 ):
@@ -1908,6 +1907,7 @@ def test_attach_route_downloads_attaches_and_lists_the_local_variant(tmp_path, m
         fleet.runners[variant["id"]] = loaded
         assert client.delete(f"/api/attach/{variant['id']}").status_code == 409
         del fleet.runners[variant["id"]]
+        settings.set_models_dir(str(tmp_path / "relocated-models"))
         assert client.delete(f"/api/attach/{variant['id']}").status_code == 200
         assert not Path(variant["local_dir"]).exists() and target_weights.exists()
         assert settings.attached_models() == []
@@ -2795,7 +2795,13 @@ def test_cascade_api_start_routes_models_and_stops_when_member_unloads(tmp_path,
 
     monkeypatch.setattr(fleet_module, "rss_by_pgid", lambda: {})
     monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda argv, **kwargs: (launched.append(argv), Process())[1])
-    monkeypatch.setattr(fleet_module.httpx, "get", lambda *args, **kwargs: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(
+        fleet_module.httpx,
+        "get",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok", "ready": 1, "replicas": 1, "pools": {"main": 1}}
+        ),
+    )
     monkeypatch.setattr(fleet_module.Runner, "_terminate", lambda proc: None)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
@@ -2921,7 +2927,9 @@ def test_cascade_unloaded_during_health_check_does_not_become_ready(tmp_path, mo
     def health(*args, **kwargs):
         entered.set()
         assert release.wait(5)
-        return SimpleNamespace(status_code=200)
+        return SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok", "ready": 1, "replicas": 1, "pools": {"main": 1}}
+        )
 
     monkeypatch.setattr(fleet_module.httpx, "get", health)
     errors = []
@@ -3061,5 +3069,5 @@ def test_existing_blend_with_fallback_cannot_start(tmp_path, monkeypatch):
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         response = client.post("/api/cascades/route/start")
-        assert response.status_code == 409 and "Blend cannot use" in response.json()["detail"]["detail"]
+        assert response.status_code == 409 and "Blend cannot use" in response.json()["detail"]
         assert "route" not in fleet.runners and "route" not in fleet.draining

@@ -817,6 +817,18 @@ def test_nested_json_is_recorded_at_physical_line_without_inference(client, chil
     assert child.seen == [] and list(outputs.iterdir()) == []
 
 
+def test_every_scheduled_row_is_validated_before_inference(client, child, tmp_path):
+    inputs, outputs = tmp_path / "i", tmp_path / "o"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "a.jsonl").write_text(item("valid") + json.dumps({"state": "missing question", "options": ["a", "b"]}))
+    assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
+    assert client.app.state.schedules.run_due(1000)["status"] == "failed"
+    run = client.get("/api/schedules/nightly/runs").json()["runs"][0]
+    assert "line 2" in run["error"] and "question must be a string" in run["error"]
+    assert child.seen == [] and not list(outputs.iterdir())
+
+
 def test_schedule_reads_fail_closed_for_corrupt_and_transient_unreadable_settings(tmp_path, monkeypatch):
     config = tmp_path / "settings.json"
     monkeypatch.setenv("BASAL_UI_CONFIG", str(config))
@@ -935,7 +947,7 @@ def test_cancel_drains_incomplete_proxy_connections_without_abandoning_inference
     try:
         header.sendall(b"POST /v1/systemone HTTP/1.1\r\nHost: 127.0.0.1")
         body.sendall(
-            f"POST /v1/systemone HTTP/1.1\r\nHost: 127.0.0.1:{target.port}\r\nContent-Length: 100\r\n\r\n{{".encode()
+            f"POST {target.path}/v1/systemone HTTP/1.1\r\nHost: 127.0.0.1:{target.port}\r\nContent-Length: 100\r\n\r\n{{".encode()
         )
         assert httpx.post(url + "/v1/systemone", headers={"Host": "evil.example"}, json={}).status_code == 403
         client.delete("/api/batch")
@@ -1075,7 +1087,7 @@ def test_restart_does_not_readmit_settled_skip_when_output_disappears(client, ch
     assert [body["state"] for _, body in child.seen][-2:] == ["c", "b"]
 
 
-def test_restart_does_not_readmit_changed_settled_symlink_before_remaining_queue(client, child, tmp_path):
+def test_changed_symlink_target_is_not_read_as_scheduled_input(client, child, tmp_path):
     inputs, outputs = tmp_path / "i", tmp_path / "o"
     inputs.mkdir()
     outputs.mkdir()
@@ -1093,20 +1105,11 @@ def test_restart_does_not_readmit_changed_settled_symlink_before_remaining_queue
     assert scheduler.run_due(1000)["status"] == "started"
     scheduler.active[2].thread.join(30)
     scheduler._finish_active()
-    assert settings.schedule_state("nightly")["scan"]["items"] == [str(inputs / "c.jsonl")]
     target.write_text(item("changed b"))
     restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
-    assert restarted.run_due(1100)["status"] == "started"
-    restarted.active[2].thread.join(30)
-    restarted.run_due(1101)
-    assert [body["state"] for _, body in child.seen] == ["b", "c"]
-    assert restarted.run_due(1102)["status"] == "no_new_files"
-    assert restarted.run_due(4600)["status"] == "started"
-    restarted.active[2].thread.join(30)
-    restarted.run_due(4601)
-    assert [body["state"] for _, body in child.seen] == ["b", "c", "changed b"]
-    assert (outputs / "b.answers.jsonl").is_file()
-    assert all("_matched" not in row for row in settings.schedule_history())
+    assert restarted.run_due(1100)["status"] == "no_new_files"
+    assert [body["state"] for _, body in child.seen] == ["c"]
+    assert not (outputs / "b.answers.jsonl").exists()
 
 
 def test_stalled_response_delivery_is_drained_after_inference(monkeypatch):
@@ -1143,7 +1146,7 @@ def test_stalled_response_delivery_is_drained_after_inference(monkeypatch):
     connection.connect((target.hostname, target.port))
     try:
         connection.sendall(
-            f"POST /v1/systemone HTTP/1.1\r\nHost: 127.0.0.1:{target.port}\r\nContent-Length: 2\r\n\r\n{{}}".encode()
+            f"POST {target.path}/v1/systemone HTTP/1.1\r\nHost: 127.0.0.1:{target.port}\r\nContent-Length: 2\r\n\r\n{{}}".encode()
         )
         assert completed.wait(5)
         assert connection.recv(1)

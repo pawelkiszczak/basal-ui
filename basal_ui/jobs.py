@@ -151,6 +151,7 @@ def run_tool(job, module, argv, out_path=None, on_json=None, env=None):
         errors="replace",
         bufsize=1,
         env=child_environment(env, inherit=env is None),
+        **options,
     )
     finished = threading.Event()
 

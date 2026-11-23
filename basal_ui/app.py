@@ -186,16 +186,15 @@ def create_app(
                         error = batch.validate_comparison_item(item, runner)
                         if error:
                             raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
-                    if first:
-                        try:
-                            _, reason = paths._row_shape(item)
-                        except RecursionError as exc:
-                            raise RuntimeError(
-                                f"{source.name}: line {number}: request nesting exceeds the parser limit"
-                            ) from exc
-                        if reason:
-                            raise RuntimeError(f"{source.name}: line {number}: {reason}")
-                        first = False
+                    try:
+                        _, reason = paths._row_shape(item)
+                    except RecursionError as exc:
+                        raise RuntimeError(
+                            f"{source.name}: line {number}: request nesting exceeds the parser limit"
+                        ) from exc
+                    if reason:
+                        raise RuntimeError(f"{source.name}: line {number}: {reason}")
+                    first = False
                 after = os.fstat(raw.fileno())
                 if [after.st_size, after.st_mtime_ns] != signature:
                     raise RuntimeError("input changed while preparing the Batch")
@@ -913,11 +912,18 @@ def create_app(
             base = record.get("base")
             if base not in catalog.ATTACHABLE or model_id != "attached/" + base.lower().replace("/", "-"):
                 raise HTTPException(409, "invalid attached model record")
-            attached_root = settings_mod.models_dir() / "attached"
-            out_dir = attached_root / model_id.split("/", 1)[1]
-            if record.get("out_dir") != str(out_dir):
+            raw_out_dir = record.get("out_dir")
+            if not isinstance(raw_out_dir, str) or not Path(raw_out_dir).is_absolute():
+                raise HTTPException(409, "invalid attached model directory")
+            out_dir = Path(raw_out_dir)
+            attached_root = out_dir.parent
+            if attached_root.name != "attached" or out_dir.name != model_id.split("/", 1)[1]:
                 raise HTTPException(409, "invalid attached model directory")
             unsafe = attached_root.is_symlink() or out_dir.is_symlink()
+            try:
+                unsafe = unsafe or attached_root.resolve() != attached_root or out_dir.resolve() != out_dir
+            except (OSError, RuntimeError):
+                unsafe = True
             with fleet.jobs.lock:
                 working = any(j.running and j.model == model_id for j in fleet.jobs.jobs.values())
             if (

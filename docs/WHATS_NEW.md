@@ -43,8 +43,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
-- Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bypass environment proxies for
-  Decision servers. Reject symlinked scheduled inputs and outputs.
+- Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bound Comparison requests by
+  time and response size. Reserve Cascade ports through spawn and validate router health. Reject symlinked scheduled
+  inputs and outputs, and keep Attached models removable after changing the models directory.
 - Keep status snapshots coherent across model unloads, return Cascade error codes at the API top level, and reject
   unsupported text codecs at the Fetch boundary.
 - Enforce the microphone recording size limit while chunks arrive, before buffering and decoding the full recording.

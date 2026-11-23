@@ -27,6 +27,8 @@ MODEL_LOGS_KEPT = 10  # log buffers of unloaded models kept for the Logs view
 RSS_INTERVAL_S = 2  # `ps` runs at most this often for the resident memory of the children
 JOB_SHUTDOWN_S = 30  # shutdown waits this long for cancelled jobs before unloading the models
 READ_TIMEOUT_S = 600
+COMPARISON_TIMEOUT_S = 120
+COMPARISON_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 ENGINE_TIMEOUT_MARGIN_S = 30
 
 
@@ -601,9 +603,13 @@ class CascadeRunner:
             gen = self.gen
             if self.state != "starting":
                 raise RuntimeError("cascade start cancelled")
-        with socket.socket() as sock:
+        sock = socket.socket()
+        try:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
+        except Exception:
+            sock.close()
+            raise
         base_url = f"http://127.0.0.1:{port}"
         argv = [
             sys.executable,
@@ -648,6 +654,7 @@ class CascadeRunner:
                 self.process = proc = subprocess.Popen(
                     argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, start_new_session=True
                 )
+                sock.close()
             threading.Thread(target=self._read_logs, args=(proc,), daemon=True).start()
             deadline = time.monotonic() + START_TIMEOUT_S
             while time.monotonic() < deadline:
@@ -657,17 +664,30 @@ class CascadeRunner:
                 if proc.poll() is not None:
                     raise RuntimeError(f"basal-router exited ({proc.returncode}): {self.log.last() or ''}")
                 try:
-                    if httpx.get(base_url + "/health", timeout=0.5, trust_env=False).status_code == 200:
-                        with self.lock:
-                            if gen != self.gen:
-                                raise RuntimeError("cascade start cancelled")
-                            self.state, self.ready_at = "ready", time.time()
-                        return self
-                except httpx.HTTPError:
+                    response = httpx.get(base_url + "/health", timeout=0.5, trust_env=False)
+                    if response.status_code == 200:
+                        health = response.json()
+                        if (
+                            isinstance(health, dict)
+                            and health.get("status") == "ok"
+                            and isinstance(health.get("ready"), int)
+                            and health["ready"] > 0
+                            and isinstance(health.get("pools"), dict)
+                            and isinstance(health["pools"].get("main"), int)
+                            and health["pools"]["main"] > 0
+                            and health.get("pid") in (None, proc.pid)
+                        ):
+                            with self.lock:
+                                if gen != self.gen:
+                                    raise RuntimeError("cascade start cancelled")
+                                self.state, self.ready_at = "ready", time.time()
+                            return self
+                except (httpx.HTTPError, ValueError):
                     pass
                 time.sleep(0.2)
             raise RuntimeError(f"basal-router did not become healthy within {START_TIMEOUT_S} s")
         except Exception as exc:
+            sock.close()
             proc = None
             with self.lock:
                 if gen == self.gen:
@@ -871,14 +891,50 @@ class ComparisonRunner:
         if refusal is not None:
             return refusal
         url = self.server.get("decisions_url") or self.base_url + "/v1/systemone"
-        return self._reply(httpx.post(url, json=payload, headers=headers, timeout=120, trust_env=False), body)
+        request = httpx.Request("POST", url)
+        try:
+            deadline = time.monotonic() + COMPARISON_TIMEOUT_S
+            timeout = httpx.Timeout(1, connect=1, write=1, pool=1)
+            with httpx.stream("POST", url, json=payload, headers=headers, timeout=timeout, trust_env=False) as upstream:
+                content = bytearray()
+                for chunk in upstream.iter_bytes():
+                    if time.monotonic() >= deadline:
+                        return self._reply(httpx.Response(502, request=request), body)
+                    if len(content) + len(chunk) > COMPARISON_RESPONSE_MAX_BYTES:
+                        return self._reply(httpx.Response(502, request=request), body)
+                    content.extend(chunk)
+                response = httpx.Response(
+                    upstream.status_code, headers=upstream.headers, content=bytes(content), request=request
+                )
+        except httpx.HTTPError:
+            response = httpx.Response(502, request=request)
+        return self._reply(response, body)
 
     async def adecide(self, client, body, path="/v1/systemone"):
         refusal, payload, headers = await asyncio.to_thread(self._prepare, body)
         if refusal is not None:
             return refusal
         url = self.server.get("decisions_url") or self.base_url + "/v1/systemone"
-        return self._reply(await client.post(url, json=payload, headers=headers, timeout=120), body)
+        request = httpx.Request("POST", url)
+
+        async def fetch():
+            async with client.stream(
+                "POST", url, json=payload, headers=headers, timeout=COMPARISON_TIMEOUT_S
+            ) as upstream:
+                content = bytearray()
+                async for chunk in upstream.aiter_bytes():
+                    if len(content) + len(chunk) > COMPARISON_RESPONSE_MAX_BYTES:
+                        return httpx.Response(502, request=request)
+                    content.extend(chunk)
+                return httpx.Response(
+                    upstream.status_code, headers=upstream.headers, content=bytes(content), request=request
+                )
+
+        try:
+            response = await asyncio.wait_for(fetch(), timeout=COMPARISON_TIMEOUT_S)
+        except (httpx.HTTPError, asyncio.TimeoutError):
+            response = httpx.Response(502, request=request)
+        return self._reply(response, body)
 
 
 class Fleet:

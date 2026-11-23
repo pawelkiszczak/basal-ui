@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -109,6 +110,10 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
         def log_message(self, *args):
             pass
 
+        def send_error(self, code, message=None, explain=None):
+            if not server.closing:
+                super().send_error(code, message, explain)
+
         def do_GET(self):
             if self.path != f"/{credential}/v1/models":
                 self.send_error(404)
@@ -168,6 +173,8 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 response = fleet.decide_runner(runner, model_id, body, source=source, endpoint=endpoint)
                 status, content = response.status_code, response.content
             except Exception:  # noqa: BLE001 — basal-run records an error for this item
+                if server.closing:
+                    return
                 status, content = 502, b'{"error":"Batch request failed","code":"UPSTREAM_ERROR"}'
             if inferred and not server.begin_delivery(self.connection):
                 return

@@ -313,13 +313,14 @@ class Schedules:
                         outcome = "failed"
                         continue
                     processed = self.settings.schedule_state(sid).get("processed", {})
+                    input_root = Path(spec["input_dir"]).resolve()
 
-                    def signature(path):
+                    def signature(path, input_root=input_root):
                         try:
                             if path.is_symlink():
                                 return str(path), None, None
                             resolved = path.resolve()
-                            if resolved.parent != Path(spec["input_dir"]).resolve():
+                            if resolved.parent != input_root:
                                 return str(path), None, None
                             stat = resolved.stat()
                             return str(resolved), stat.st_size, stat.st_mtime_ns

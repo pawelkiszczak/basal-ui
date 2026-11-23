@@ -2792,7 +2792,8 @@ $('#runBatch').onclick=()=>act(async()=>{
   const body={id:$('#batchModel').value,input:$('#batchInput').value.trim(),concurrency:Number($('#batchConcurrency').value)||16};
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
-  if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
+  body.preset=batchPresetAvailable&&$('#batchPreset').value?$('#batchPreset').value:null;
+  if(body.preset)body.lang=$('#batchLang').value;
   if(!$('#batchStopAfter').disabled){if(!$('#batchStopAfter').reportValidity())return; body.stop_after=Number($('#batchStopAfter').value);}
   try { await api('/api/batch',{method:'POST',body:JSON.stringify(body)}); }
   catch(e) {
