@@ -515,11 +515,13 @@ Shipped calibration.
 
 The input accepts one labelled Decision per JSONL line with a non-empty `questions` object, a `state`, and a `gold`
 answer for each question (simple `basal-run` records with `gold` are also accepted). For example, with choice
-probabilities 0.80 and 0.20 and a Selected calibration temperature of 2, basal-serve maps each probability to
-`p^(1/T) / Σp^(1/T)`: the top confidence becomes `√0.80 / (√0.80 + √0.20) = 0.667` (66.7%) instead of 80%, while the
-top choice stays the same. This illustrates the method, not a promised fit result. Select **Shipped calibration** in
-the **Use** column to return to the calibration supplied for the execution configuration; a loaded model needs a
-restart after changing the selection.
+probabilities 0.80 and 0.20 and a Selected calibration with effective temperature 2 for a two-option question, basal-serve maps each
+probability to `p^(1/T) / Σp^(1/T)`: the top confidence becomes `√0.80 / (√0.80 + √0.20) = 0.667` (66.7%) instead of
+80%, while the top choice stays the same. The Engine first selects the option-count bucket (2–10 options) and then uses
+its temperature; `temperature_per_prim` is only the fallback when no bucket applies. This illustrates the method, not a
+promised fit result. If a Shipped row is available, select it in the **Use** column to return to the calibration
+supplied for the execution configuration. When only saved rows are present and no local snapshot is available, no
+Shipped row appears. A loaded model needs a restart after changing the selection.
 
 ## Fine-tuning on labelled Decisions
 
