@@ -5,7 +5,7 @@
   const decimal = new Intl.NumberFormat(LANG, {maximumSignificantDigits:3});
   const clock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit'});
   const preciseClock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  let state = {traffic:null,history:null,memoryHistory:null,stats:null,status:null,error:null,memory:null,memoryError:null,memoryHistoryError:null,range:'24h',refreshSeconds:2}, metric = 'input_tokens_per_s';
+  let state = {traffic:null,history:null,memoryHistory:null,stats:null,status:null,error:null,recentError:null,memory:null,memoryError:null,memoryHistoryError:null,range:'24h',refreshSeconds:2}, metric = 'input_tokens_per_s';
   const q = selector => root.querySelector(selector);
   const number = (value, fractional=false) => Number.isFinite(value) ? (fractional ? decimal : integer).format(value) : '—';
   const setText = (selector, text) => {const node=q(selector);if(node.textContent!==text)node.textContent=text;};
@@ -63,26 +63,30 @@
     setText('#memoryCollection',started?t('Collection started {time}',{time:new Intl.DateTimeFormat(LANG,{dateStyle:'medium',timeStyle:'short'}).format(new Date(started*1000))}):t('Collection has not started.'));
     setText('#memoryHistoryNotice',state.memoryHistoryError?t('Memory history unavailable: {message}',{message:state.memoryHistoryError}):'');
     const start=history?.window_start,end=history?.window_end,span=end-start,rows=history?.series||[];
-    const names=[...new Set(rows.flatMap(row=>Object.keys(row.runtimes||{})))];
-    if(!history||!names.length||!(span>0)){html(container,`<p class="traffic-empty">${t(state.memoryHistoryError?'Memory history unavailable':history?'No runtime totals in this time range.':'Waiting for memory samples…')}</p>`);return;}
-    const maxBytes=Math.max(1024**3,...rows.flatMap(row=>Object.values(row.runtimes||{}).map(value=>value.max_bytes||0)))*1.15;
+    const names=['host','other',...new Set(rows.flatMap(row=>Object.keys(row.runtimes||{})))].filter(name=>
+      rows.some(row=>name==='host'?row.host:name==='other'?row.other:row.runtimes?.[name])
+    );
+    if(!history||!names.length||!(span>0)){html(container,`<p class="traffic-empty">${t(state.memoryHistoryError?'Memory history unavailable':history?'No memory measurements in this time range.':'Waiting for memory samples…')}</p>`);return;}
+    const values=row=>names.map(name=>name==='host'?row.host:name==='other'?row.other:row.runtimes?.[name]).filter(Boolean);
+    const maxBytes=Math.max(1024**3,...rows.flatMap(row=>values(row).map(value=>value.max_bytes||0)))*1.15;
     const paths=names.map((name,index)=>{
-      let d='',last=false,previousEnd=null;
+      let d='',markers='',last=false,previousEnd=null;
       for(const row of rows){
-        const value=row.runtimes?.[name];
+        const value=name==='host'?row.host:name==='other'?row.other:row.runtimes?.[name];
         if(!value){last=false;continue;}
         if(previousEnd!=null&&row.start>previousEnd)last=false;
         const x=48+Math.max(0,Math.min(1,(row.start+row.bucket_seconds/2-start)/span))*604;
         const y=164-value.max_bytes/maxBytes*138;
         d+=`${last?'L':'M'}${x},${y} `;
+        markers+=`<circle cx="${x}" cy="${y}" r="2.5" fill="currentColor"/>`;
         last=true;previousEnd=row.start+row.bucket_seconds;
       }
-      return `<path class="memory-history-line memory-history-line-${index%4}" d="${d}"/>`;
+      return `<g class="memory-history-line memory-history-line-${index%4}"><path d="${d}"/>${markers}</g>`;
     }).join('');
     const formatter=span<86400?preciseClock:new Intl.DateTimeFormat(LANG,{month:'short',day:'numeric'});
-    html(container,`<svg class="traffic-chart memory-history-chart" viewBox="0 0 680 204" role="img" aria-label="${t('Runtime memory over time')}"><line x1="48" x2="652" y1="164" y2="164" stroke="var(--line)"/><text class="traffic-axis" x="0" y="168" fill="var(--muted)">0</text><text class="traffic-axis" x="0" y="30" fill="var(--muted)">${bytes(maxBytes/1.15)}</text>${paths}<text class="traffic-start" x="48" y="194" fill="var(--muted)">${formatter.format(new Date(start*1000))}</text><text class="traffic-end" x="652" y="194" text-anchor="end" fill="var(--muted)">${formatter.format(new Date(end*1000))}</text></svg><div class="memory-history-legend">${names.map((name,index)=>`<span class="memory-history-legend-${index%4}">${escape(name)}</span>`).join('')}</div>`);
+    const label=name=>name==='host'?t('Host RAM'):name==='other'?t('System and other apps'):name;
+    html(container,`<svg class="traffic-chart memory-history-chart" viewBox="0 0 680 204" role="img" aria-label="${t('Memory over time')}"><line x1="48" x2="652" y1="164" y2="164" stroke="var(--line)"/><text class="traffic-axis" x="0" y="168" fill="var(--muted)">0</text><text class="traffic-axis" x="0" y="30" fill="var(--muted)">${bytes(maxBytes/1.15)}</text>${paths}<text class="traffic-start" x="48" y="194" fill="var(--muted)">${formatter.format(new Date(start*1000))}</text><text class="traffic-end" x="652" y="194" text-anchor="end" fill="var(--muted)">${formatter.format(new Date(end*1000))}</text></svg><div class="memory-history-legend">${names.map((name,index)=>`<span class="memory-history-legend-${index%4}">${escape(label(name))}</span>`).join('')}</div>`);
   }
-
   function renderChart(history) {
     const container=q('#trafficChart');
     if(!container.querySelector('svg'))container.innerHTML=`<p class="traffic-empty"></p><svg class="traffic-chart" viewBox="0 0 680 204" role="img" hidden>
@@ -100,9 +104,10 @@
     }
     const count=120, points=Array(count).fill(null), step=span/count;
     for(const sample of samples){
-      const index=Math.min(count-1,Math.max(0,Math.floor((sample.start-start)/step)));
       const value=(sample[metric==='input_tokens_per_s'?'input_tokens':'requests'])/sample.bucket_seconds;
-      points[index]=Math.max(points[index]??0,value);
+      const first=Math.max(0,Math.floor((sample.start-start)/step));
+      const last=Math.min(count-1,Math.ceil((sample.start+sample.bucket_seconds-start)/step)-1);
+      for(let index=first;index<=last;index++)points[index]=Math.max(points[index]??0,value);
     }
     let maximum=1;
     for(const value of points)if(value!==null)maximum=Math.max(maximum,value);
@@ -175,10 +180,10 @@
     q('#trafficWindow').value=state.range;
     q('#dashboardRefresh').value=String(state.refreshSeconds||2);
     const rows=history?.series||[], requests=rows.reduce((sum,row)=>sum+row.requests,0), errors=rows.reduce((sum,row)=>sum+row.errors,0);
-    const tokens=rows.reduce((sum,row)=>sum+row.input_tokens,0), latency=rows.reduce((sum,row)=>sum+row.avg_latency_ms*row.requests,0);
-    const allTime=state.range==='all', total=allTime?history?.lifetime?.requests:requests;
-    const totalErrors=allTime?history?.lifetime?.errors:errors, totalTokens=allTime?history?.lifetime?.input_tokens:tokens;
-    const meanLatency=allTime?history?.lifetime?.avg_latency_ms:requests?latency/requests:null;
+    const tokens=rows.reduce((sum,row)=>sum+row.input_tokens,0);
+    const latency=rows.reduce((sum,row)=>sum+row.avg_latency_ms*row.requests,0);
+    const total=requests,totalErrors=errors,totalTokens=tokens;
+    const meanLatency=requests?latency/requests:null;
     const elapsed=history?.window_start==null?0:Math.max(0,history.window_end-history.window_start);
     setText('#traffic-tokens',number(available&&elapsed?totalTokens/elapsed:null,true));
     setText('#traffic-requests',number(available&&elapsed?total/elapsed:null,true));
@@ -196,9 +201,9 @@
     setText('#trafficCollection',started?t('Collection started {time}',{time:new Intl.DateTimeFormat(LANG,{dateStyle:'medium',timeStyle:'short'}).format(new Date(started*1000))}):t('Collection will start when the first Decision is recorded.'));
     renderChart(history);
     renderModels();
-    const endpoints = recent && !state.error ? recent.endpoints || [] : [];
+    const endpoints = recent && !state.recentError ? recent.endpoints || [] : [];
     const container=q('#trafficEndpoints'), existing=new Map([...container.querySelectorAll('[data-endpoint]')].map(node=>[node.dataset.endpoint,node]));
-    if(!endpoints.length){html(container,`<tr><td colspan="5" class="traffic-no-endpoints">${t(state.error?'Traffic data unavailable':recent?'No Decisions recorded in this window.':'Waiting for traffic data…')}</td></tr>`);return;}
+    if(!endpoints.length){html(container,`<tr><td colspan="5" class="traffic-no-endpoints">${t(state.recentError?'Traffic data unavailable':recent?'No Decisions recorded in this window.':'Waiting for traffic data…')}</td></tr>`);return;}
     container.querySelectorAll('tr:not([data-endpoint])').forEach(node=>node.remove());
     endpoints.forEach((row,index)=>{
       const key=`${row.method} ${row.endpoint}`;let node=existing.get(key);existing.delete(key);

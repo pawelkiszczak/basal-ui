@@ -2,6 +2,9 @@
 
 import logging
 import threading
+import time
+
+STOP_JOIN_S = 5
 
 
 class MemorySampler:
@@ -16,11 +19,22 @@ class MemorySampler:
         self.stats.record_memory_sample(self.snapshot())
 
     def _run(self):
-        while not self._stop.wait(self.interval):
+        started = time.monotonic()
+        started_at = time.time()
+        deadline = started + self.interval
+        while not self._stop.wait(max(0, deadline - time.monotonic())):
             try:
-                self.tick()
+                sample = self.snapshot()
+                if self._stop.is_set():
+                    return
+                sample["time"] = started_at + (deadline - started)
+                self.stats.record_memory_sample(sample)
             except Exception:  # noqa: BLE001 — a failed sample leaves a gap; later samples still run
                 logging.getLogger(__name__).exception("memory sample failed")
+            deadline += self.interval
+            now = time.monotonic()
+            if deadline <= now:
+                deadline += (int((now - deadline) // self.interval) + 1) * self.interval
 
     def start(self):
         if self._thread is None or not self._thread.is_alive():
@@ -31,5 +45,6 @@ class MemorySampler:
     def stop(self):
         self._stop.set()
         if self._thread is not None:
-            self._thread.join()
-            self._thread = None
+            self._thread.join(STOP_JOIN_S)
+            if not self._thread.is_alive():
+                self._thread = None

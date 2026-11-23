@@ -96,7 +96,7 @@ def _cache_bytes(url):
     return None
 
 
-def _fleet(fleet, unified):
+def _fleet(fleet, unified, include_models=True):
     try:
         models = fleet.memory_snapshot()
     except Exception:  # noqa: BLE001 — one unavailable runtime must not hide other observations
@@ -112,18 +112,24 @@ def _fleet(fleet, unified):
     native = [model for model in models if model.get("kind") == "basal" and model.get("state") != "idle"]
     ready = [model for model in native if model.get("state") == "ready"]
     measured = [model for model in native if type(model.get("rss_bytes")) is int and model["rss_bytes"] >= 0]
-    observations = [
-        {
-            "id": model.get("id", ""),
-            "bytes": model["rss_bytes"] if type(model.get("rss_bytes")) is int and model["rss_bytes"] >= 0 else None,
-            "pool": "unified" if unified else "ram",
-            "context_bytes": None,
-            "cache_bytes": _cache_bytes(model["base_url"]) if model.get("base_url") else None,
-            "cache_pool": "vram" if model.get("mode") == "cuda" else ("unified" if unified else "ram"),
-            "cold_cache_bytes": None,
-        }
-        for model in ready
-    ]
+    observations = (
+        [
+            {
+                "id": model.get("id", ""),
+                "bytes": model["rss_bytes"]
+                if type(model.get("rss_bytes")) is int and model["rss_bytes"] >= 0
+                else None,
+                "pool": "unified" if unified else "ram",
+                "context_bytes": None,
+                "cache_bytes": _cache_bytes(model["base_url"]) if model.get("base_url") else None,
+                "cache_pool": "vram" if model.get("mode") == "cuda" else ("unified" if unified else "ram"),
+                "cold_cache_bytes": None,
+            }
+            for model in ready
+        ]
+        if include_models
+        else []
+    )
     process_bytes = sum(model["rss_bytes"] for model in measured) if measured else (0 if not native else None)
     status = (
         "ok"
@@ -152,13 +158,13 @@ def _fleet(fleet, unified):
     }
 
 
-def snapshot(fleet, providers, hardware_fn=hardware.detect):
-    """Return live host and runtime memory measurements, preserving unknown values as None."""
+def snapshot(fleet, providers, hardware_fn=hardware.detect, include_models=True):
+    """Return live memory observations; omit per-model probes for periodic history samples."""
     try:
         host = _host(hardware_fn)
     except Exception:  # noqa: BLE001 — host probes are best-effort
         host = {"ram_total": None, "ram_used": None, "unified": False, "gpu": [], "accounting": "resident"}
-    runtimes = [_fleet(fleet, host["unified"])]
+    runtimes = [_fleet(fleet, host["unified"], include_models)]
     for provider in providers:
         name = (
             provider.rsplit(".", 1)[-1]

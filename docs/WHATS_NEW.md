@@ -49,6 +49,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   the source of All time totals, and remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.
 - Sample dated memory totals by runtime on the server while Dashboard is closed; view coverage and gaps beside traffic
   using the same saved time range. [Memory history](USAGE.md#dashboard)
+- Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Use dated counts for
+  window rates, keep lifetime Usage separate, and show the effective time range for overlapping source buckets.
+  Remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.

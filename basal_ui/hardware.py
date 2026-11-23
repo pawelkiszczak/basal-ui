@@ -62,7 +62,7 @@ def _available_bytes() -> int | None:
             memory = _windows_memory()
             return memory[1] if memory else None
         if sys.platform == "darwin":
-            stats = subprocess.check_output(["vm_stat"], text=True)
+            stats = subprocess.check_output(["vm_stat"], text=True, timeout=5)
             page_size = int(re.search(r"page size of (\d+) bytes", stats).group(1))
             pages = {
                 name: int(re.search(rf"^{name}:\s+(\d+)\.", stats, re.MULTILINE).group(1))
@@ -84,9 +84,9 @@ def _ram() -> int | None:
         return memory[0] if memory else None
     try:
         if sys.platform == "darwin":
-            return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip())
+            return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, timeout=5).strip())
         return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
         return None
 
 

@@ -132,7 +132,10 @@ def create_app(
         else MemorySampler(
             stats,
             lambda: memory.snapshot(
-                fleet, memory.PROVIDERS if memory_providers is None else memory_providers, hardware_fn
+                fleet,
+                memory.PROVIDERS if memory_providers is None else memory_providers,
+                hardware_fn,
+                include_models=False,
             ),
         )
     )

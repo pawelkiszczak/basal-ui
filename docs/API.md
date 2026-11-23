@@ -23,24 +23,20 @@ The model options endpoint reports availability of each server limit in `limits_
 discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
 On non-unified hosts process RSS and host RAM are compared only where their basis is known to agree. Linux
 `ram_used` and `other` are `null` because `MemAvailable` and RSS account for reclaimable pages differently. On
-unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include GPU allocations.
+unified-memory hosts Fleet uses `rss_excludes_gpu`; RSS does not include GPU allocations.
 `other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
-those totals share the host's accounting basis and no listed runtime has an unknown total. `cache_bytes` is the Engine state cache
-only while active; context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context token
-limits are not byte measurements. The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
+no runtime total is unknown and every nonzero runtime total shares the host's accounting basis. A measured zero total
+needs no shared accounting basis; for example, an empty Fleet on a unified-memory host leaves measured host usage in
+`other`. `cache_bytes` is the Engine state cache only while active; context bytes and disk-backed cold-cache bytes
+remain `null` when unavailable. Engine context token limits are not byte measurements.
 `GET /api/memory/history?range=1h|24h|7d|30d|all` returns persisted totals in the same time ranges as traffic.
 Each series bucket has `start`, `bucket_seconds`, nullable `host` and `other` totals, and a `runtimes` map keyed by
 runtime; measured totals contain `avg_bytes`, `max_bytes` and `samples`. Model names are never stored in this history.
 Buckets without measurements are omitted, so a missing bucket is an offline gap, not a zero. `collection_started`
 marks history coverage and `window_start`/`window_end` bound the selected range. The server samples every 60 seconds,
-including when no browser is connected. Dashboard display refresh changes only the browser poll cadence.
-Host RAM remains resident memory. Runtime process bytes include runtime overhead and exclude GPU allocations on unified
-memory hosts. The system remainder is recorded only when host and runtime totals both use the `resident` basis.
-those totals share the host's accounting basis and no listed runtime has an unknown total. Fleet totals include every
-measured process, while model breakdowns list ready models only. `cache_bytes` is the Engine state cache only while
-active, and `cache_pool` identifies its memory pool (`vram`, `ram`, or `unified`); context bytes and disk-backed
-cold-cache bytes remain `null` when unavailable. Engine context token limits are not byte measurements. The existing
-`GET` and `PUT /api/memory` routes continue to manage memory settings.
+including when no browser is connected. Dashboard display refresh changes only the browser poll cadence. Fleet totals
+include every measured process, while model breakdowns list ready models only. `cache_pool` identifies a model's
+memory pool (`vram`, `ram`, or `unified`).
 
 
 
@@ -300,8 +296,10 @@ translated child path. MCP uses `CALL /mcp` (one invocation, not necessarily one
 `GET /api/traffic/history?range=24h` returns persisted dated aggregates for the Dashboard's shared time range.
 Supported values are `1h`, `24h`, `7d`, `30d` and `all`; unsupported values return HTTP 400. Aggregates are recorded
 at the same time as lifetime Usage, under the stats lock, and merge across app processes using the same settings file.
-The first recorded Decision sets `collection_started`; existing lifetime Usage is not backfilled. The `lifetime`
-object remains sourced from lifetime Usage and is not reconstructed from dated buckets.
+The earliest eligible recorded Decision sets `collection_started`; cross-process flushes may move it earlier, but it
+never precedes the most recent global Usage reset. Existing lifetime Usage is not backfilled. The `lifetime` object
+remains sourced from lifetime Usage and is not reconstructed from dated buckets; Dashboard rates and window totals use
+dated series counts, keeping pre-collection lifetime totals separate.
 
 ```json
 {
@@ -326,10 +324,12 @@ object remains sourced from lifetime Usage and is not reconstructed from dated b
 
 The series is sparse: only buckets containing Decisions are returned, so omitted intervals are offline gaps, not
 zero-traffic observations. Minute buckets cover the newest 24 hours; older history is compacted hourly through 90 days,
-then daily through the five-year retention limit. Roll-ups preserve counts, latency sums, and maximum latency. The
-Dashboard fills absent display intervals with gaps and downsamples with per-bucket peaks.
-Resetting a model removes its matching dated aggregates; resetting all Usage clears the series and restarts collection
-at the reset time.
+then daily through the five-year retention limit. Roll-ups preserve counts, latency sums, and maximum latency. For a
+bounded range, `window_start` moves back to the start of a bucket that overlaps the requested boundary; that entire
+bucket is counted, so the returned window matches the aggregates. Reads and writes both apply aging and retention.
+The Dashboard draws source-bucket coverage while leaving omitted buckets as gaps. Resetting a model removes its
+matching dated aggregates and ignores its other processes' pre-reset pending rows; resetting all Usage clears the
+series and restarts collection at the reset time.
 
 ```json
 {
