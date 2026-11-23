@@ -50,6 +50,7 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Enforce the microphone recording size limit while chunks arrive, before buffering and decoding the full recording.
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
+- Preserve discovered Comparison models when an upstream returns a malformed listing.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
   Inspect follows the saved language and supports keyboard History activation, reduced motion, and forced colors.
 - Run the release CI matrix after merges to `stage` and `main`. [Release process](../CONTRIBUTING.md#releasing)

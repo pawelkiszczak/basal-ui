@@ -575,6 +575,17 @@ def test_malformed_discovery_recovers_and_health_falls_back(app_client, child):
         )
         assert model["kind"] == "comparison"
 
+    child.models = [{"id": "valid"}, None]
+    with fleet.lock:
+        fleet.decision_servers[server_id]["next_poll"] = 0
+    wait_for(
+        lambda: next(
+            (s for s in client.get("/api/status").json()["decision_servers"] if s["state"] == "unavailable"), None
+        )
+    )
+    retained = fleet.runners[f"comparison:{server_id}/model-403"]
+    assert retained.state == "unavailable" and f"comparison:{server_id}/valid" not in fleet.runners
+
 
 def test_gateway_stats_exclude_attached_and_detached_comparisons(app_client, child):
     client, fleet = app_client

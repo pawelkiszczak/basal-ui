@@ -952,6 +952,13 @@ class Fleet:
                             payload = response.json()
                             entries = payload.get("data", payload.get("models")) if isinstance(payload, dict) else None
                             valid = isinstance(entries, list)
+                            if valid:
+                                valid = all(
+                                    isinstance(entry, dict)
+                                    and isinstance(entry.get("id") or entry.get("name"), str)
+                                    and bool(entry.get("id") or entry.get("name"))
+                                    for entry in entries
+                                )
                             if not valid:
                                 entries = []
                         elif response.status_code == 404 and server.get("decisions_url"):
