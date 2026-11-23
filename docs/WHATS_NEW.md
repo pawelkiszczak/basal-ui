@@ -2,8 +2,13 @@
 
 This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
+## Interface
+
+- Share popover surfaces across Tools, Appearance and Playground Request settings. Escape closes either header menu and restores focus, theme selection returns focus to Appearance, Space remains the native checkbox toggle, and Enter on a form checkbox does not submit the form. [Tools in light English](images/issue-144-controls.png) and [Appearance in dark Polish](images/issue-144-appearance-dark-pl.png).
+
 ## Models and inference
 
+- Show a translated, screen-reader-announced pending status during initial loading and foreground actions, including while sending a Decision. See the [English](images/loading-progress.png) and [Polish](images/loading-progress-pl.png) captures.
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
   optional chat fallback. Playground and API responses identify the answering tier. Blend and fallback answers carry
   no automation certificate. Escalation without fallback also works in Batch.
