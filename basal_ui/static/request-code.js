@@ -2,7 +2,7 @@
 
 window.RequestCode = (() => {
   const formats = [['curl','System One · curl'],['python','System One · Python'],['openai','OpenAI Decisions · curl'],['mcp','MCP']];
-  let root = null, format = 'curl', snippet = '', connectionSignature = '', copyFeedbackTimer = 0;
+  let root = null, format = 'curl', snippet = '', connectionSignature = '', copyFeedbackTimer = 0, generation = 0;
   const shell = value => `'${String(value).replaceAll("'", "'\\''")}'`;
   function request() {
     const json = $('#editJsonToggle').checked;
@@ -78,14 +78,13 @@ window.RequestCode = (() => {
     return {jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'decide_many',arguments:args}};
   }
   function invalidate() {
-    if (!root) return;
+    generation++;
     snippet = '';
     $('#requestCodeText').textContent = '';
     const copy = $('#copyRequestCode');
     copy.disabled = true;
     copy.textContent = t('Copy');
     copy.setAttribute('aria-label', t('Copy {snippet} code', {snippet: t(formats.find(([key]) => key === format)[1])}));
-    $('#requestCodeCopyStatus').textContent = '';
     clearTimeout(copyFeedbackTimer);
     $('#requestCodeNote').textContent = t('Generate an example from the current request before copying.');
     $('#requestCodeNote').className = 'muted';
@@ -142,6 +141,7 @@ window.RequestCode = (() => {
   function open() {
     if (!root) return;
     root.scrollIntoView({block:'start'});
+    $('#requestCodeTitle').focus();
     generate();
   }
   document.addEventListener('DOMContentLoaded', () => {
@@ -149,6 +149,8 @@ window.RequestCode = (() => {
     root.setAttribute('aria-labelledby','requestCodeTitle');
     root.innerHTML = `<div class="section-head"><div><h2 id="requestCodeTitle">${t('API examples')}</h2><p class="muted">${t('Export the current request without sending a Decision.')}</p></div></div><div class="tabs request-code-tabs" role="tablist" aria-label="${t('API example protocol')}">${formats.map(([key,label],index) => `<button type="button" role="tab" id="request-code-${key}" data-request-format="${key}" aria-controls="requestCodePanel" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}">${esc(t(label))}</button>`).join('')}</div><div id="requestCodePanel" role="tabpanel" aria-labelledby="request-code-curl"><p id="requestCodeNote" class="muted" role="status"></p><div class="request-code-snippet"><div class="request-code-copy"><button type="button" id="copyRequestCode" class="outline-action" aria-label="${t('Copy {snippet} code', {snippet: t(formats[0][1])})}" disabled>${t('Copy')}</button></div><pre><code id="requestCodeText"></code></pre></div><p id="requestCodeCopyStatus" class="sr-only" role="status"></p></div><p id="requestMcpNote" class="muted">${t('Start the API server with MCP enabled to use this example.')} <a href="#api">${t('API server')} →</a></p>`;
     $('#playground .playground-shell').insertAdjacentElement('afterend',root);
+    $('#requestCodeTitle').tabIndex = -1;
+    $('#requestCodeCopyStatus').remove();
     const tabs = [...root.querySelectorAll('[data-request-format]')];
     tabs.forEach((button,index) => {
       button.onclick = () => { setFormat(button.dataset.requestFormat); generate(); };
@@ -163,10 +165,10 @@ window.RequestCode = (() => {
     $('#generateRequestCode').onclick = generate;
     $('#copyRequestCode').onclick = async () => {
       if (!snippet) return;
-      if (!await copyText(snippet,t('Code copied'))) return;
+      const requestedSnippet = snippet, requestedGeneration = generation;
+      if (!await copyText(requestedSnippet,t('Code copied')) || generation !== requestedGeneration) return;
       const copy = $('#copyRequestCode');
       copy.textContent = t('Copied');
-      $('#requestCodeCopyStatus').textContent = t('Copied {snippet} code', {snippet: t(formats.find(([key]) => key === format)[1])});
       clearTimeout(copyFeedbackTimer);
       copyFeedbackTimer = setTimeout(() => { copy.textContent = t('Copy'); }, 2000);
     };
