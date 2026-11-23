@@ -4,7 +4,7 @@ const $ = (s, root=document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
-let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
+let trafficData=null, trafficHistory=null, trafficError=null, trafficRecentError=null, trafficRange=['1h','24h','7d','30d','all'].includes(localStorage.getItem('basal-ui.dashboard-range'))?localStorage.getItem('basal-ui.dashboard-range'):'24h', refreshSeconds=[1,2,5,15,30].includes(Number(localStorage.getItem('basal-ui.dashboard-refresh')))?Number(localStorage.getItem('basal-ui.dashboard-refresh')):1, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
 let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
@@ -588,28 +588,50 @@ document.addEventListener('keydown',event=>{
 });
 
 function renderDashboard() {
-  window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
+  window.updateDashboard({traffic:trafficData,history:trafficHistory,range:trafficRange,refreshSeconds,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError,recentError:trafficRecentError});
 }
 async function refreshTraffic() {
   if ($('#dashboard').hidden) return;
   if (trafficInFlight) { trafficPending=true; return; }
   trafficInFlight=true; trafficPending=false;
-  const sequence=++trafficGeneration, minutes=trafficMinutes;
+  const sequence=++trafficGeneration, range=trafficRange;
   try {
-    const data=await api(`/api/traffic?minutes=${minutes}`);
-    if(sequence===trafficGeneration&&minutes===trafficMinutes&&!$('#dashboard').hidden){trafficData=data;trafficError=null;renderDashboard();}
-  } catch(error) {
-    if(sequence===trafficGeneration&&minutes===trafficMinutes&&!$('#dashboard').hidden){trafficError=error.message;renderDashboard();}
+    const [recent,history]=await Promise.allSettled([api('/api/traffic?minutes=15'),api(`/api/traffic/history?range=${range}`)]);
+    if(sequence===trafficGeneration&&range===trafficRange&&!$('#dashboard').hidden){
+      trafficRecentError=recent.status==='rejected'?recent.reason.message:null;
+      trafficError=history.status==='rejected'?history.reason.message:null;
+      if(recent.status==='fulfilled')trafficData=recent.value;
+      if(history.status==='fulfilled')trafficHistory=history.value;
+      renderDashboard();
+    }
   } finally {
     trafficInFlight=false;
     if(trafficPending&&!$('#dashboard').hidden)refreshTraffic();
   }
 }
-document.addEventListener('dashboard:window',event=>{
-  if(![15,60].includes(event.detail?.minutes))return;
-  if(trafficMinutes!==event.detail.minutes){trafficMinutes=event.detail.minutes;trafficGeneration++;trafficPending=true;trafficData=null;trafficError=null;renderDashboard();}
+document.addEventListener('dashboard:range',event=>{
+  if(!['1h','24h','7d','30d','all'].includes(event.detail?.range))return;
+  if(trafficRange!==event.detail.range){trafficRange=event.detail.range;localStorage.setItem('basal-ui.dashboard-range',trafficRange);trafficGeneration++;trafficPending=true;trafficHistory=null;trafficError=null;renderDashboard();}
   refreshTraffic();
 });
+document.addEventListener('dashboard:refresh',event=>{
+  if(![1,2,5,15,30].includes(event.detail?.seconds))return;
+  refreshSeconds=event.detail.seconds;localStorage.setItem('basal-ui.dashboard-refresh',String(refreshSeconds));
+  scheduleStatusPoll();
+  renderDashboard();
+});
+function statusPollDelay() {
+  if(!$('#dashboard').hidden)return refreshSeconds*1000;
+  if(!$('#manager').hidden)return 1000;
+  const status=statusCache||{}, models=status.models||[];
+  const busy=models.some(model=>['starting','downloading'].includes(model.state));
+  const active=busy||Object.keys(status.downloads||{}).length>0||Object.values(status.jobs||{}).some(job=>job.running)||models.some(answering);
+  return active?1000:5000;
+}
+function scheduleStatusPoll() {
+  clearTimeout(pollTimer);
+  pollTimer=setTimeout(refreshStatus,statusPollDelay());
+}
 let statusRefresh=null;
 async function refreshStatus() {
   if(statusRefresh){await statusRefresh;return refreshStatus();}
@@ -619,7 +641,7 @@ async function refreshStatus() {
       const status = await api('/api/status');
       if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
     } catch(e) {
-      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); scheduleStatusPoll(); }
     }
   })();
   statusRefresh=request;
@@ -1986,10 +2008,8 @@ function renderStatus(s) {
   renderInspectState(s.inspect,s.jobs?.inspect);
   if(serveData)renderServeStatus(s);
   loadStats();
-  const jobsRunning=Object.values(s.jobs||{}).some(j=>j.running);
-  // Keep the existing status poll responsive while the Dashboard or Model manager is visible.
   document.dispatchEvent(new CustomEvent('app:status',{detail:s}));
-  clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,busy||repos.size||jobsRunning||models.some(answering)||!$('#dashboard').hidden||!$('#manager').hidden?1000:5000);
+  scheduleStatusPoll();
 }
 function renderMemoryBar(memory, models) {
   const budget=Number(memory.budget_bytes)||0, reserve=Number(memory.reserve_bytes)||0, limit=Math.max(1,budget-reserve);
@@ -2988,7 +3008,7 @@ function showView(hash, updateHash=false) {
   $('.nav-tools').open=false;
   $('.appearance-controls details').open=false;
   StudioShell.onView(name,arg);
-  if(name!=='dashboard'){trafficGeneration++;trafficPending=false;}
+  if(name!=='dashboard'){trafficGeneration++;trafficPending=false;if(changed)scheduleStatusPoll();}
   else if(!wasDashboard)refreshStatus();
   const target=`#${name}${arg?`/${arg}`:''}`;
   if(updateHash&&location.hash!==target)history.pushState(null,'',target);

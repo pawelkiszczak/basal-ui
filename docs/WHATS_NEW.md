@@ -56,6 +56,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
+- Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Use dated counts for
+  window rates, keep lifetime Usage separate, and show the effective time range for overlapping source buckets.
+  Remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.
 - Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bound Comparison requests by
   time and response size. Reserve Cascade ports through spawn and validate router health. Reject symlinked scheduled
   inputs and outputs, and keep Attached models removable after changing the models directory.

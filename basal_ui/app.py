@@ -1850,6 +1850,13 @@ def create_app(
             raise HTTPException(400, "minutes must be 15 or 60")
         return stats.traffic_snapshot(minutes)
 
+    @app.get("/api/traffic/history")
+    def get_traffic_history(range: str = "24h"):
+        try:
+            return stats.traffic_history(range)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @app.delete("/api/stats")
     def reset_stats():
         stats.reset()

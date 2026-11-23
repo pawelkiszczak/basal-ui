@@ -427,31 +427,30 @@ Optionally set **Unload idle models after minutes** in **Settings → Memory & s
 
 ### Dashboard
 
-The 15-minute or one-hour window shows **input tokens processed per second**, not generated output tokens, and
-requests/s, request-weighted mean latency, error rate, per-minute traffic and public endpoint attribution. These are
-recorded child-inference attempts from Playground, the API server and MCP, not all HTTP traffic: UI polling,
-pre-inference authentication/validation rejections, ordinary basal Batch, benchmarks and private Inference tests do not contribute. Comparison Batch Decisions do contribute.
+The Dashboard lets you select **1 hour**, **24 hours**, **7 days**, **30 days** or **All time** for recorded Decision
+traffic. The plot starts at the first Decision collected by this version and keeps offline periods as gaps. All time
+Decision totals still come from the shared lifetime Usage counters; dated chart history starts now and is persisted
+for up to five years: minute buckets cover the newest 24 hours, hourly buckets cover history through 90 days, then
+daily buckets retain older history. Resetting a model removes its dated traffic;
+resetting all Usage restarts collection at the reset time. Endpoint attribution remains a separate recent,
+process-local 15-minute view.
 
-Recent traffic is in memory in this app process only, starts at observation, and is not restored from lifetime
-statistics or merged from other processes. Rates use observed elapsed time rather than inventing a full prior
-window. Minute-bucket boundaries are approximate; at most 60 minute buckets are retained. Endpoint p95 is labelled
-**sampled** because retained latency samples are bounded. Missing Engine token usage contributes zero, not an estimate.
-Failed traffic fetches show an unavailable notice and dashes instead of stale live rates. Missing lifetime statistics
-show dashes without disabling valid recent traffic; a failed status poll clears live model activity until recovery.
-The [traffic API contract](API.md#recent-decision-traffic) describes fields and sampling limits.
+The Dashboard display refresh defaults to the existing 1-second cadence and can be changed to 2, 5, 15 or 30 seconds;
+the choice is remembered in that browser. The central `app.js` status poll owns refreshes; the Dashboard renderer
+does not start a separate timer. Rates use the elapsed range, including offline gaps. Chart downsampling keeps each
+display bucket's peak. Input tokens are Engine-reported usage when present; missing usage contributes zero and is
+never estimated. The [traffic API contract](API.md#recent-decision-traffic) describes the live and dated series.
 
 ### Lifetime usage
 
 **Model manager → Usage by model** lists the Decisions basal-ui recorded per model: requests, questions, errors,
 average best-answer probability (the answer's `confidence`; `set_confidence` for `multi`; the largest probability
 for `tool`), lifetime mean latency, p95 over the last 1000 retained latencies, input tokens, last use and question types.
-Dashboard's **Model activity** uses these same lifetime counters, not a second recording path. The window totals may
-differ by time range, process and the legacy lifetime treatment of pre-inference errors.
-
-These totals live in `<settings stem>.stats.json`, survive restarts and merge across apps sharing that settings file.
-A model or global reset affects the shared lifetime totals and clears matching recent traffic in this app process;
-another process's in-memory traffic is not cleared. A reset discards older unflushed lifetime counts from other
-instances, but Decisions recorded after the reset remain counted.
+Dashboard's **Model activity** uses these same lifetime counters, not a second recording path. All time totals continue
+to come from Usage; the dated traffic series begins when collection starts. These totals live in
+`<settings stem>.stats.json`, survive restarts and merge across apps sharing that settings file. Resetting a model
+removes its Usage and dated traffic; resetting all Usage also restarts the collection-start timestamp. A reset
+discards older unflushed lifetime counts from other instances, but Decisions recorded after the reset remain counted.
 
 ### Benchmarks
 
