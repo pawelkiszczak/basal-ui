@@ -85,10 +85,17 @@ function applyTheme(theme) {
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
-document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);$('.appearance-controls details').open=false;});
+document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);const menu=b.closest('.appearance-controls details');if(menu){menu.open=false;menu.querySelector('summary').focus();}});
 applyTheme(localStorage.getItem('basal-ui.theme')||'system');
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Tab'&&!event.shiftKey&&event.target===menu?.querySelector('summary')){
+    const first=menu.querySelector('.header-menu-panel button:not(:disabled)');
+    if(first){event.preventDefault();first.focus();}
+  }
+});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
   if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('#sendButton').click();}
@@ -98,15 +105,6 @@ document.addEventListener('keydown',e=>{
 document.addEventListener('click',event=>{if(recording && event.target.closest('#dt-run')){event.preventDefault();event.stopImmediatePropagation();$('#decisionCompare .dt-error').textContent=t('Finish recording before sending.');$('#decisionCompare .dt-error').hidden=false;}},true);
 document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;if(event.target.closest('#playground') && !event.target.closest('#recordAudio, #sendButton') && recording)cancelRecording();},true);
 document.addEventListener('input',event=>{if(event.target.closest('#playground')){replayIntent++;if(recording && !event.target.closest('#recordAudio'))cancelRecording();}});
-document.addEventListener('change',event=>{
-  if(event.target.matches('input[type=checkbox]'))event.target.setAttribute('aria-checked',String(event.target.checked));
-});
-document.addEventListener('keydown',event=>{
-  if(event.key==='Enter'&&event.target.matches('input[type=checkbox][role=switch]')) {
-    event.preventDefault(); setChecked(event.target,!event.target.checked);
-    event.target.dispatchEvent(new Event('change',{bubbles:true}));
-  }
-});
 ['overview','models','manager','playground','batch','inspect','api','history','logs'].forEach((view,index)=>{$(`.side-nav [data-view="${view}"]`).dataset.shortcut=String(index+1);});
 $('.side-nav [data-view=backends]').dataset.shortcut='0';
 $('#shortcutViews').innerHTML=[...document.querySelectorAll('.side-nav [data-shortcut]')]
@@ -114,9 +112,7 @@ $('#shortcutViews').innerHTML=[...document.querySelectorAll('.side-nav [data-sho
   .map(button=>`<p><kbd>Alt + ${button.dataset.shortcut}</kbd> ${esc(t(button.textContent.trim()))}</p>`).join('');
 function setChecked(input, value) {
   input.checked=Boolean(value);
-  input.setAttribute('aria-checked',String(input.checked));
 }
-document.querySelectorAll('input[type=checkbox]').forEach(input=>{input.setAttribute('role','switch');setChecked(input,input.checked);});
 document.querySelectorAll('.icon-button').forEach(button=>{
   const icon=button.id==='logsToggle'
     ?'<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v12H4zM7 8h6M7 11h6M7 14h3"/></svg>'
@@ -203,13 +199,13 @@ document.addEventListener('click',e=>{
   const id=b.dataset.id;
   if(b.classList.contains('download-model'))act(async()=>{await api('/api/download',{method:'POST',body:JSON.stringify({id})});await refreshStatus();});
   else if(b.classList.contains('unload-model'))act(()=>unloadOne(id));
-  else if(b.classList.contains('delete-model'))act(()=>deleteModel(id));
+  else if(b.classList.contains('delete-model'))deleteModel(id);
   else act(()=>loadModel(id,b.dataset.media==='true',b.dataset.mode||null));
 });
 async function deleteModel(id) {
   const model=modelData.find(m=>m.id===id);
   if(!model||!await confirmDialog({title:t('Delete model from disk?'),description:t('{model} will be removed from disk.',{model:`${model.family} ${model.tier} (${model.label})`}),confirmLabel:t('Delete'),destructive:true}))return;
-  await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})}); toast(t('Model deleted')); await loadModels();
+  await act(async()=>{await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})});toast(t('Model deleted'));await loadModels();});
 }
 // "basal-2.0" / "basal-omni-1.0" written the way basal.si5.pl writes the family names
 function familyMark(family) {
@@ -335,9 +331,9 @@ document.addEventListener('click',event=>{
   $('#modelLoaderDialog').close();
 });
 let audioSettingsVersion=0, audioSettingsRead=0, audioSettingsSaving=false;
-$('#keepHistoryAudio').indeterminate=true;$('#keepHistoryAudio').setAttribute('aria-checked','mixed');
+$('#keepHistoryAudio').indeterminate=true;
 function audioSettingsUnknown() {
-  const input=$('#keepHistoryAudio');input.indeterminate=true;input.setAttribute('aria-checked','mixed');input.disabled=true;
+  const input=$('#keepHistoryAudio');input.indeterminate=true;input.disabled=true;
   $('#historyAudioError').textContent=t('History audio setting is unknown. Reload the page to check it.');$('#historyAudioError').hidden=false;
 }
 function applyAudioSettings(settings) {
@@ -564,6 +560,12 @@ async function startRecording() {
 }
 $('#recordAudio').addEventListener('click',startRecording);
 document.addEventListener('keydown',event=>{if(event.key==='Escape' && recording){event.preventDefault();if(recording.phase==='recording')finishRecording(recording);else cancelRecording();}});
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Escape'&&menu?.contains(event.target)&&!event.defaultPrevented&&!document.querySelector('dialog[open]')){
+    event.preventDefault();menu.open=false;menu.querySelector('summary').focus();
+  }
+});
 
 function renderDashboard() {
   window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
@@ -588,14 +590,20 @@ document.addEventListener('dashboard:window',event=>{
   if(trafficMinutes!==event.detail.minutes){trafficMinutes=event.detail.minutes;trafficGeneration++;trafficPending=true;trafficData=null;trafficError=null;renderDashboard();}
   refreshTraffic();
 });
+let statusRefresh=null;
 async function refreshStatus() {
+  if(statusRefresh){await statusRefresh;return refreshStatus();}
   const sequence = ++statusSequence;
-  try {
-    const status = await api('/api/status');
-    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
-  } catch(e) {
-    if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
-  }
+  const request=(async()=>{
+    try {
+      const status = await api('/api/status');
+      if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    } catch(e) {
+      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    }
+  })();
+  statusRefresh=request;
+  try{await request;}finally{if(statusRefresh===request)statusRefresh=null;}
 }
 async function loadExamples() {
   try {
@@ -739,7 +747,7 @@ const qField=(label,input,help='',cls='')=>{const id=`question-field-${++questio
 const qNum=(f,v,attrs='')=>`<input class="input" type="number" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" ${attrs}>`;
 const qText=(f,v,ph='')=>`<input class="input" type="text" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" placeholder="${esc(t(ph))}">`;
 const qArea=(f,v,ph='',cls='')=>`<textarea class="textarea${cls?` ${cls}`:''}" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" placeholder="${esc(cls==='json'?ph:t(ph))}">${esc(v??'')}</textarea>`;
-const qSwitch=(f,v,label,cls='')=>`<label class="qf-switch${cls?` ${cls}`:''}"><input class="switch" type="checkbox" role="switch" data-f="${f}"${v?' checked aria-checked="true"':' aria-checked="false"'}> ${t(label)}</label>`;
+const qSwitch=(f,v,label,cls='')=>`<label class="qf-switch${cls?` ${cls}`:''}"><input class="switch" type="checkbox" data-f="${f}"${v?' checked':''}> ${t(label)}</label>`;
 const qSelect=(f,options,v)=>`<select class="select" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}">${options.map(([value,label])=>`<option value="${esc(value)}"${String(value)===String(v??'')?' selected':''}>${esc(t(label))}</option>`).join('')}</select>`;
 // the set options of multi, multi-label classify and multi tool; constraints: fallback and exclusive keys (multi and
 // tool only: classify takes objective, threshold, min and max)
@@ -771,7 +779,7 @@ function renderTypeFields(card, type, q) {
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
       +`<button type="button" class="mcp-open">${t('Import or refresh MCP tools')}</button>`
-      +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
+      +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" data-extra="${x}"${extra.includes(x)?' checked':''}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
   }
@@ -1623,7 +1631,7 @@ async function sendDecision() {
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   const evidenceStamp=modelEvidenceStamp(request.model);
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
+  try { const response=await withPending('decision',()=>api('/api/decide',{method:'POST',body:JSON.stringify(request)})); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) {
     if(e.status===422&&!jsonMode)showQuestionErrors(String(e.detail||''),request);
     showDecideError(e.message); toast(e.message,'error');
@@ -1831,7 +1839,24 @@ const pct=v=>v==null?'—':`${(Number(v)*100).toFixed(1)}%`;
 const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
-async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+let pendingActions=0, pendingDecisions=0, initialLoading=false;
+function setPendingStatus(text=''){const status=$('#pendingStatus');if(status.textContent!==text)status.textContent=text;}
+function updatePendingStatus(){
+  const status=$('#pendingStatus'),activeDialog=document.activeElement?.closest('dialog[open]');
+  const dialog=pendingActions?activeDialog||document.querySelector('dialog[open]'):null;
+  setPendingStatus(pendingDecisions?t('Sending a Decision…'):pendingActions?t('Working…'):initialLoading?t('Loading basal-ui…'):'');
+  if(dialog){if(status.parentElement!==dialog)dialog.prepend(status);status.classList.add('in-dialog');}
+  else if(status.parentElement!==$('#main-content')){$('#main-content').prepend(status);status.classList.remove('in-dialog');}
+}
+async function withPending(action,fn){
+  pendingActions++;
+  if(action==='decision')pendingDecisions++;
+  updatePendingStatus();
+  try{return await fn();}finally{pendingActions--;if(action==='decision')pendingDecisions--;updatePendingStatus();}
+}
+async function act(fn){try{await withPending('',fn);}catch(e){toast(e.message,'error');}}
+document.addEventListener('focusin',event=>{if(pendingActions&&event.target.closest('dialog[open]'))updatePendingStatus();});
+document.addEventListener('close',()=>{if(pendingActions)updatePendingStatus();},true);
 
 function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
 let decisionServerSignature='';
@@ -1857,6 +1882,9 @@ function decisionServerConsent(){
   $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
 }
 $('#decisionServerUrl').addEventListener('input',decisionServerConsent);
+$('#decisionServerForm').addEventListener('keydown',event=>{
+  if(event.key==='Enter'&&event.target.matches('input[type="checkbox"]'))event.preventDefault();
+});
 $('#decisionServerForm').addEventListener('submit',async event=>{
   event.preventDefault();const error=$('#decisionServerError');error.hidden=true;
   const button=$('#addDecisionServer');let added=false;button.disabled=true;
@@ -2090,8 +2118,8 @@ async function loadStats() {
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
   $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}${id.startsWith('comparison:')?comparisonBadge():''}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
-  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
-  const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
+  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true}))await act(async()=>{await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});});
+  const all=$('#resetAllStats'); if(all)all.onclick=async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true}))await act(async()=>{await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});};
 }
 const BENCH_HINTS={benchmark:t('5 warm-up, 30 sequential and 120 concurrent requests (8 at a time); items with a gold answer are scored. Own set: {link}.',{link:'<code>docs/BENCHMARK_SETS.md</code>'}),
   loadtest:t('basal-loadtest against the model: 10 warm-up, sequential requests for the latency, then the concurrent ones for the throughput. Synthetic states of about N tokens replace the set when given.'),
@@ -2141,7 +2169,7 @@ async function loadComparisonModes() {
   try{
     const d=await api(`/api/modes?id=${encodeURIComponent(id)}`);
     const preset=new Set(d.modes.filter(m=>!['ollama','llamacpp'].includes(m)).slice(0,2));  // external services: opt in
-    $('#bpModes').innerHTML=d.modes.map(m=>`<label><input type="checkbox" role="switch" data-mode="${esc(m)}"${preset.has(m)?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(m)}</label>`).join('')||`<span class="muted">${t('No mode can run this model here.')}</span>`;
+    $('#bpModes').innerHTML=d.modes.map(m=>`<label><input type="checkbox" data-mode="${esc(m)}"${preset.has(m)?' checked':''}> ${esc(m)}</label>`).join('')||`<span class="muted">${t('No mode can run this model here.')}</span>`;
   }catch(e){comparisonFor='';$('#bpModes').innerHTML=`<span class="reason">${esc(e.message)}</span>`;}
 }
 const intOf=sel=>$(sel).value===''?undefined:Number($(sel).value);
@@ -2222,10 +2250,8 @@ async function refreshKeepOptions(){
 $('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;refreshKeepOptions();};
 $('#calComparePath').oninput=refreshKeepOptions;
 $('#calCompare').onchange();
-['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
 $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInput',$('#calibrationInput').value);
-document.querySelectorAll('#calibrationBlock input[type=checkbox]').forEach(i=>{i.setAttribute('role','switch');setChecked(i,i.checked);});
 document.body.append($('#reportDialog'));  // a modal inside a hidden view would block the page without showing
 $('#reportClose').onclick=()=>$('#reportDialog').close();
 let calibrationRunning=false, calibrationBlocked=true, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0, lastCalibrationStatus='';
@@ -2470,7 +2496,7 @@ const OPTION_FIELDS={
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model outline-action" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
-document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
+document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
@@ -2480,7 +2506,7 @@ let optionsState=null, optionsSequence=0;
 const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
-  if(f.kind==='bool')return `<label><input type="checkbox" role="switch" id="${id}"${value?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(t(f.label))}</label>`;
+  if(f.kind==='bool')return `<label><input type="checkbox" id="${id}"${value?' checked':''}> ${esc(t(f.label))}</label>`;
   const listed=(optionsState.data.load_choices?.[key]||f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
@@ -2584,7 +2610,7 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   dialog.showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
-document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
+document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action).catch(error=>toast(error.message,'error'));}});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
@@ -2594,11 +2620,13 @@ $('#optionsApply').onclick=async()=>{
     const invalid=[...$('#optionsForm').querySelectorAll('input,select')].find(el=>!el.disabled&&!el.closest('[hidden]')&&(!el.checkValidity()||(['opt-reread','opt-graph_memory_gb'].includes(el.id)&&el.value!==''&&Number(el.value)<=0)));
     if(invalid){invalid.setAttribute('aria-invalid','true');invalid.focus();throw new Error(t('Check the value of {option}.',{option:OPTION_FIELDS[invalid.id.slice(4)]?.label?t(OPTION_FIELDS[invalid.id.slice(4)].label):invalid.id}));}
     for(const [key,reason] of Object.entries(data.unavailable||{}))if(Object.hasOwn(options,key))throw new Error(t('Load option {option}: {reason}',{option:key,reason:t(reason)}));
-    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
+    if(remember||data.saved&&!initialMode)await withPending('',async()=>{await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();});
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();const replacement=[...document.querySelectorAll('.options-model')].find(b=>b.dataset.id===id&&b.dataset.action==='save'&&b.dataset.media===String(media)&&b.getClientRects().length);(replacement|| (trigger?.isConnected?trigger:null))?.focus();return;}
-    if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
-    else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
-    $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    await withPending('',async()=>{
+      if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
+      else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
+      $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    });
   }catch(e){$('#optionsError').textContent=e.message;$('#optionsError').hidden=false;}
   finally{$('#optionsApply').disabled=false;}
 };
@@ -2702,16 +2730,16 @@ async function replayRequest(x) {
   showView('playground',true);
   if(model.kind==='comparison')DecisionTools.selectComparison(model.id);
 }
-function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
+function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;return loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
 $('#historyModel').onchange=resetHistory;
 $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.toggle('active',b.dataset.source===historySource));
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
-$('#clearHistory').onclick=()=>act(async()=>{
+$('#clearHistory').onclick=async()=>{
   if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted, including scheduled Batch.'),confirmLabel:t('Clear history'),destructive:true}))return;
-  const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
-});
+  await act(async()=>{const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); await resetHistory();});
+};
 async function loadLogs() {
   clearTimeout(logTimer);
   if($('#logs').hidden)return;
@@ -3005,4 +3033,5 @@ $('#saveMemory').onclick=async()=>{
 showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();
- (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();})();
+initialLoading=true;updatePendingStatus();
+ (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}try{await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();}finally{initialLoading=false;updatePendingStatus();}})();
