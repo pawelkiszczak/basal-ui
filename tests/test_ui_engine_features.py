@@ -119,7 +119,7 @@ def test_health_is_cached_and_missing_counters_are_not_idle(monkeypatch, payload
     runner.status()
     wait_for(lambda: not runner.health_polling)
     assert runner.status()["health"] == expected
-    assert len(calls) == 1 and calls[0][1] == {"timeout": 0.5}
+    assert len(calls) == 1 and calls[0][1] == {"timeout": 0.5, "trust_env": False}
 
 
 def test_unreachable_and_old_generation_health_are_not_idle(monkeypatch):

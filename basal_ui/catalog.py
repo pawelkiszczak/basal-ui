@@ -110,9 +110,49 @@ def message_fields(text: str | None, prefix: str) -> tuple[str | None, dict | No
     return _message_fields(text, tuple(code for code in ASSESSMENT_TEMPLATES if code.startswith(prefix)))
 
 
-def _suggestion(slot: str, model_id: str, code: str, **params) -> dict:
+def _suggestion(slot: str, model_id: str, code: str, *, reasons: list[str], **params) -> dict:
     text, code, params = _coded(code, **params)
-    return {"slot": slot, "id": model_id, "why": text, "why_code": code, "why_params": params}
+    return {"slot": slot, "id": model_id, "why": text, "why_code": code, "why_params": params, "reasons": reasons}
+
+
+def _suggestion_reasons(slot: str, item: "Assessment", *, preferred_format_selected: bool | None = None) -> list[str]:
+    reasons = []
+    mode_available = (
+        item.media_mode is not None and item.media_reason is None if slot == "multimodal" else item.runnable
+    )
+    if mode_available:
+        reasons.append("This model is compatible with an available Backend and Execution mode on this machine.")
+    if item.fit_now == "unknown":
+        memory_reason = {
+            "fits": "Available memory is unknown; estimated memory fits the hardware budget.",
+            "tight": "Available memory is unknown; estimated memory is a tight fit in the hardware budget.",
+            "unknown": "Memory fit cannot be estimated for this model.",
+        }.get(item.fit, "Estimated memory fits the hardware budget.")
+    else:
+        memory_reason = {
+            "fits": "Estimated memory fits the available memory now.",
+            "tight": "Estimated memory is a tight fit in the available memory now.",
+            "unknown": "Memory fit cannot be estimated for this model.",
+        }.get(item.fit_now, "Estimated memory fits the hardware budget.")
+    reasons.append(memory_reason)
+    reasons.append(
+        {
+            "recommended": (
+                "Preferred family and format; 4.5B is chosen when it fits comfortably, otherwise mini or the "
+                "smallest available tier."
+                if preferred_format_selected
+                else "Preferred family; selected for memory fit because the preferred format is unavailable or does "
+                "not fit."
+            ),
+            "best_quality": "Largest tier with a comfortable memory fit.",
+            "fastest": "Mini-tier heuristic, not measured throughput.",
+            "lightest": "Runnable recurrent model in the preferred available format.",
+            "multimodal": (
+                "Largest image/audio-capable checkpoint; a tight fit may be selected when none fits comfortably."
+            ),
+        }[slot]
+    )
+    return reasons
 
 
 # The basal-omni checkpoints that carry image / audio encoders (docs/OMNI.md); basal-omni-1.1-max is Gemma 4 Unified
@@ -574,10 +614,13 @@ def _gb(size: int | None) -> str:
 
 
 def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> list[dict]:
-    """Suggestion cards [{"slot", "id", "why"}] in slot order recommended, best_quality, fastest, lightest, multimodal;
-    a slot is left out when nothing qualifies. Only variants that fit both the memory budget and the memory available
-    now are candidates, and a comfortable fit wins over a tight one. Where the available memory is unknown, the budget
-    fit stands in for it."""
+    """Return up to five localized suggestion slots: recommended, best_quality, fastest, lightest and multimodal.
+
+    A slot is omitted when it has no eligible candidate; best_quality and fastest are also omitted when their
+    candidate duplicates another core slot. Lightest and multimodal are selected independently and may share a model.
+    Candidates must fit the memory budget and available memory now; a comfortable fit wins over a tight one. Where
+    available memory is unknown, the budget fit stands in for it.
+    """
 
     def now(a: Assessment) -> str:
         return a.fit if a.fit_now == "unknown" else a.fit_now
@@ -639,15 +682,35 @@ def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> li
                     if memory is not None
                     else "suggest_packed_unknown"
                 )
-            suggestions.append(_suggestion("recommended", v.id, code, **params))
+            suggestions.append(
+                _suggestion(
+                    "recommended",
+                    v.id,
+                    code,
+                    reasons=_suggestion_reasons(
+                        "recommended", recommended, preferred_format_selected=v.label == preferred_format(hw)
+                    ),
+                    **params,
+                )
+            )
         if best and best is not recommended:
             suggestions.append(
-                _suggestion("best_quality", best.variant.id, "suggest_best", estimate=_gb_number(best.est_memory_bytes))
+                _suggestion(
+                    "best_quality",
+                    best.variant.id,
+                    "suggest_best",
+                    reasons=_suggestion_reasons("best_quality", best),
+                    estimate=_gb_number(best.est_memory_bytes),
+                )
             )
         if fastest and fastest not in (recommended, best):
             suggestions.append(
                 _suggestion(
-                    "fastest", fastest.variant.id, "suggest_fastest", estimate=_gb_number(fastest.est_memory_bytes)
+                    "fastest",
+                    fastest.variant.id,
+                    "suggest_fastest",
+                    reasons=_suggestion_reasons("fastest", fastest),
+                    estimate=_gb_number(fastest.est_memory_bytes),
                 )
             )
     light = [a for a in fitting if a.runnable and a.variant.recurrent]
@@ -660,6 +723,7 @@ def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> li
                 "lightest",
                 pick.variant.id,
                 "suggest_lightest",
+                reasons=_suggestion_reasons("lightest", pick),
                 tier=pick.variant.tier,
                 estimate=_gb_number(pick.est_memory_bytes),
                 mode=pick.mode,
@@ -676,6 +740,7 @@ def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> li
                     "multimodal",
                     multimodal.variant.id,
                     "suggest_multimodal",
+                    reasons=_suggestion_reasons("multimodal", multimodal),
                     kinds=list(multimodal.variant.media),
                     mode=media_mode,
                 ),

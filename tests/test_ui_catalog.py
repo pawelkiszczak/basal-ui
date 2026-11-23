@@ -168,6 +168,10 @@ def test_suggestions_by_hardware_and_available_memory():
     assert cards[0]["slot"] == "recommended"
     assert cards[0]["id"] == "Remek/basal-2.0-mini-MLX-8bit"
     assert cards[0]["why"].endswith("; about 1.5x faster with --mlx-packed (Load options)")
+    bf16_fallback = suggest([assess(variant("Remek/basal-2.0-mini"), apple)], apple)
+    assert bf16_fallback[0]["slot"] == "recommended"
+    assert "Preferred family and format" not in bf16_fallback[0]["reasons"][-1]
+    assert "preferred format is unavailable or does not fit" in bf16_fallback[0]["reasons"][-1]
 
     dc = hw("cuda", "H100", (9, 0), frozenset({"cuda"}), 80 * 1024**3, 70 * 1024**3)
     cards = choices(dc, ["Remek/basal-2.0-mini", "Remek/basal-2.0-4.5B", "Remek/basal-2.0-max"])
@@ -184,6 +188,7 @@ def test_suggestions_by_hardware_and_available_memory():
     assert without_media[-1]["slot"] == "multimodal"
     assert without_media[-1]["media"] is True and without_media[-1]["media_available"] is False
     assert without_media[-1]["media_reason_code"] == "media_dependency"
+    assert "available Backend and Execution mode" not in without_media[-1]["reasons"]
     assert without_media[-1]["media_setup"] == "#backends"
     media_hw = hw("cuda", "H100", (9, 0), frozenset({"cuda", "media"}), 80 * 1024**3, 70 * 1024**3)
     media_cards = choices(media_hw, [omni])
@@ -192,6 +197,22 @@ def test_suggestions_by_hardware_and_available_memory():
     assert media_card["media"] is True and media_card["media_available"] is True
     assert media_card["mode"] == "eager"
     assert media_card["media_setup"] is None and media_card["media_reason_code"] is None
+
+
+def test_single_multimodal_suggestion_when_no_text_model_is_runnable():
+    host = hw("cpu", "CPU", None, frozenset({"media"}), 16 * 1024**3, 12 * 1024**3)
+    repo = "Remek/basal-omni-1.0-mini"
+    model = _variants(repo, {"model.safetensors": variant(repo).weights_bytes})[0]
+    candidate = assess(model, host)
+
+    cards = suggest([candidate], host)
+
+    assert candidate.variant.media == ("image", "audio")
+    assert not candidate.runnable and candidate.media_mode == "eager" and candidate.media_reason is None
+    assert [(card["slot"], card["id"]) for card in cards] == [("multimodal", repo)]
+    assert cards[0]["reasons"][-1] == (
+        "Largest image/audio-capable checkpoint; a tight fit may be selected when none fits comfortably."
+    )
 
 
 def test_suggestion_codes_reproduce_english_text_with_structured_params():
