@@ -5,7 +5,7 @@
   const decimal = new Intl.NumberFormat(LANG, {maximumSignificantDigits:3});
   const clock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit'});
   const preciseClock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  let state = {traffic:null,history:null,stats:null,status:null,error:null,range:'24h'}, metric = 'input_tokens_per_s';
+  let state = {traffic:null,history:null,stats:null,status:null,error:null,recentError:null,range:'24h'}, metric = 'input_tokens_per_s';
   const q = selector => root.querySelector(selector);
   const number = (value, fractional=false) => Number.isFinite(value) ? (fractional ? decimal : integer).format(value) : '—';
   const setText = (selector, text) => {const node=q(selector);if(node.textContent!==text)node.textContent=text;};
@@ -48,9 +48,10 @@
     }
     const count=120, points=Array(count).fill(null), step=span/count;
     for(const sample of samples){
-      const index=Math.min(count-1,Math.max(0,Math.floor((sample.start-start)/step)));
       const value=(sample[metric==='input_tokens_per_s'?'input_tokens':'requests'])/sample.bucket_seconds;
-      points[index]=Math.max(points[index]??0,value);
+      const first=Math.max(0,Math.floor((sample.start-start)/step));
+      const last=Math.min(count-1,Math.ceil((sample.start+sample.bucket_seconds-start)/step)-1);
+      for(let index=first;index<=last;index++)points[index]=Math.max(points[index]??0,value);
     }
     let maximum=1;
     for(const value of points)if(value!==null)maximum=Math.max(maximum,value);
@@ -123,10 +124,8 @@
     q('#trafficWindow').value=state.range;
     q('#dashboardRefresh').value=String(state.refreshSeconds||2);
     const rows=history?.series||[], requests=rows.reduce((sum,row)=>sum+row.requests,0), errors=rows.reduce((sum,row)=>sum+row.errors,0);
-    const tokens=rows.reduce((sum,row)=>sum+row.input_tokens,0), latency=rows.reduce((sum,row)=>sum+row.avg_latency_ms*row.requests,0);
-    const allTime=state.range==='all', total=allTime?history?.lifetime?.requests:requests;
-    const totalErrors=allTime?history?.lifetime?.errors:errors, totalTokens=allTime?history?.lifetime?.input_tokens:tokens;
-    const meanLatency=allTime?history?.lifetime?.avg_latency_ms:requests?latency/requests:null;
+    const total=requests, totalErrors=errors, totalTokens=tokens;
+    const meanLatency=requests?latency/requests:null;
     const elapsed=history?.window_start==null?0:Math.max(0,history.window_end-history.window_start);
     setText('#traffic-tokens',number(available&&elapsed?totalTokens/elapsed:null,true));
     setText('#traffic-requests',number(available&&elapsed?total/elapsed:null,true));
@@ -142,9 +141,9 @@
     setText('#trafficCollection',started?t('Collection started {time}',{time:new Intl.DateTimeFormat(LANG,{dateStyle:'medium',timeStyle:'short'}).format(new Date(started*1000))}):t('Collection will start when the first Decision is recorded.'));
     renderChart(history);
     renderModels();
-    const endpoints = recent && !state.error ? recent.endpoints || [] : [];
+    const endpoints = recent && !state.recentError ? recent.endpoints || [] : [];
     const container=q('#trafficEndpoints'), existing=new Map([...container.querySelectorAll('[data-endpoint]')].map(node=>[node.dataset.endpoint,node]));
-    if(!endpoints.length){html(container,`<tr><td colspan="5" class="traffic-no-endpoints">${t(state.error?'Traffic data unavailable':recent?'No Decisions recorded in this window.':'Waiting for traffic data…')}</td></tr>`);return;}
+    if(!endpoints.length){html(container,`<tr><td colspan="5" class="traffic-no-endpoints">${t(state.recentError?'Traffic data unavailable':recent?'No Decisions recorded in this window.':'Waiting for traffic data…')}</td></tr>`);return;}
     container.querySelectorAll('tr:not([data-endpoint])').forEach(node=>node.remove());
     endpoints.forEach((row,index)=>{
       const key=`${row.method} ${row.endpoint}`;let node=existing.get(key);existing.delete(key);

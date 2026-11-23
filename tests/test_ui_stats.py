@@ -298,3 +298,100 @@ def test_dated_traffic_rolls_up_to_hour_and_day(stats, monkeypatch):
         90.0,
     )
     assert "first_used" not in hourly and "first_used" not in daily
+
+
+def test_reset_pending_model_removes_empty_history_bucket(stats, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    stats.record("m", {"usage": {"input_tokens": 4}}, 10, endpoint="/api/decide")
+    stats.reset("m")
+
+    assert stats.traffic_delta == {}
+    assert stats.traffic_history("all")["series"] == []
+    stats.flush()
+
+
+def test_history_ignores_other_process_pending_rows_after_reset(tmp_path, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    a, b = Stats(tmp_path / "shared.json"), Stats(tmp_path / "shared.json")
+    try:
+        b.record("m", {"usage": {"input_tokens": 4}}, 10, endpoint="/api/decide")
+        now[0] = 1001.0
+        a.reset("m")
+        now[0] = 1002.0
+        b.record("m", {"usage": {"input_tokens": 7}}, 20, endpoint="/api/decide")
+
+        history = b.traffic_history("all")
+        assert sum(row["requests"] for row in history["series"]) == 1
+        assert sum(row["input_tokens"] for row in history["series"]) == 7
+        assert history["lifetime"]["requests"] == 1
+        assert history["lifetime"]["input_tokens"] == 7
+        b.flush()
+        assert a.traffic_history("all") == history
+    finally:
+        a.close()
+        b.close()
+
+
+def test_collection_started_moves_back_to_earlier_flushed_decision(tmp_path, monkeypatch):
+    now = [1200.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    a, b = Stats(tmp_path / "shared.json"), Stats(tmp_path / "shared.json")
+    try:
+        a.record("a", {"usage": {}}, 1)
+        a.flush()
+        now[0] = 1000.0
+        b.record("b", {"usage": {}}, 1)
+        b.flush()
+
+        assert a.traffic_history("all")["collection_started"] == 1000.0
+    finally:
+        a.close()
+        b.close()
+
+
+def test_twenty_four_hour_window_reports_hourly_bucket_boundary(stats, monkeypatch):
+    now = 200 * 86400 + 12 * 3600 + 30 * 60 + 30
+    current_time = [now - 24 * 3600 - 10 * 60]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: current_time[0])
+    stats.record("m", {"usage": {"input_tokens": 8}}, 5)
+    current_time[0] = now
+    stats.flush()
+
+    history = stats.traffic_history("24h")
+    assert history["series"][0]["bucket_seconds"] == 3600
+    assert history["window_start"] == history["series"][0]["start"]
+    assert history["series"][0]["requests"] == 1
+
+
+def test_history_reads_apply_aging_without_a_new_decision(stats, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    stats.record("m", {"usage": {"input_tokens": 8}}, 5)
+    stats.flush()
+    now[0] += 25 * 3600
+
+    history = stats.traffic_history("all")
+    assert history["series"][0]["bucket_seconds"] == 3600
+
+
+def test_failed_flush_rolls_up_traffic_backlog(stats, monkeypatch):
+    from basal_ui import settings
+
+    now = [1000.0]
+    monkeypatch.setattr("basal_ui.stats.time.time", lambda: now[0])
+    monkeypatch.setattr("basal_ui.stats.HISTORY_MINUTE_S", 120)
+
+    def fail_write(*_args):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(settings, "_write_private", fail_write)
+        for _ in range(8):
+            stats.record("m", {"usage": {"input_tokens": 1}}, 1)
+            with pytest.raises(OSError, match="disk full"):
+                stats.flush()
+            now[0] += 60
+
+    assert len(stats.traffic_delta) <= 4
