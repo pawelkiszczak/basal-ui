@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import secrets
 import socket
 import stat
 import subprocess
@@ -109,8 +110,12 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
         def log_message(self, *args):
             pass
 
+        def send_error(self, code, message=None, explain=None):
+            if not server.closing:
+                super().send_error(code, message, explain)
+
         def do_GET(self):
-            if self.path != "/v1/models":
+            if self.path != f"/{credential}/v1/models":
                 self.send_error(404)
                 return
             content = json.dumps(
@@ -129,7 +134,7 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 origin = urlsplit(self.headers.get("Origin", ""))
                 allowed = {"127.0.0.1", "localhost", "::1"}
                 if (
-                    self.path != "/v1/systemone"
+                    self.path != f"/{credential}/v1/systemone"
                     or host.hostname not in allowed
                     or host.username is not None
                     or host.password is not None
@@ -168,6 +173,8 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 response = fleet.decide_runner(runner, model_id, body, source=source, endpoint=endpoint)
                 status, content = response.status_code, response.content
             except Exception:  # noqa: BLE001 — basal-run records an error for this item
+                if server.closing:
+                    return
                 status, content = 502, b'{"error":"Batch request failed","code":"UPSTREAM_ERROR"}'
             if inferred and not server.begin_delivery(self.connection):
                 return
@@ -243,11 +250,12 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 with contextlib.suppress(OSError):
                     connection.shutdown(socket.SHUT_RDWR)
 
+    credential = secrets.token_urlsafe(32)
     server = Server(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, name="basal-ui-scheduled-batch", daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}"
+        yield f"http://127.0.0.1:{server.server_port}/{credential}"
     finally:
         server.shutdown()
         server.close_pending()

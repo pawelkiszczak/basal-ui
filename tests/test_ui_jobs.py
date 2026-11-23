@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from basal_ui.jobs import Job, Jobs, LogBuffer, run_tool, terminate
+from basal_ui.jobs import Job, Jobs, LogBuffer, child_environment, run_tool, terminate
 
 
 def wait_done(jobs, kind, timeout=3):
@@ -76,6 +76,13 @@ def test_log_buffer_generation_changes_when_sequence_restarts():
     new.append("new")
     assert old.generation != new.generation
     assert [line["seq"] for line in new.since(0)] == [1]
+
+
+def test_child_environment_never_inherits_admin_key(monkeypatch):
+    monkeypatch.setenv("BASAL_UI_ADMIN_KEY", "secret")
+    environment = child_environment({"BASAL_UI_ADMIN_KEY": "override", "OTHER": "value"})
+    assert "BASAL_UI_ADMIN_KEY" not in environment
+    assert environment["OTHER"] == "value"
 
 
 def test_shutdown_join_waits_for_a_cancelled_job_and_reports_the_stuck_one():

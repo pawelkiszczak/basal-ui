@@ -152,3 +152,13 @@ def test_dotted_provider_is_imported_lazily(monkeypatch):
     result = memory.snapshot(_fleet(), ["tests.fake_memory_provider.observe"], hardware_fn=lambda: None)
 
     assert result["runtimes"][1]["runtime"] == "sample"
+
+
+def test_ollama_imports_before_memory():
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [sys.executable, "-c", "import basal_ui.runtimes.ollama; import basal_ui.memory"],
+        check=True,
+    )
