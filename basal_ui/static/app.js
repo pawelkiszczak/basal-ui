@@ -681,7 +681,7 @@ async function refreshStatus() {
       const status = await api('/api/status');
       if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
     } catch(e) {
-      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); scheduleStatusPoll(); }
+      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); if(!$('#dashboard').hidden)refreshTraffic(); scheduleStatusPoll(); }
     }
   })();
   statusRefresh=request;

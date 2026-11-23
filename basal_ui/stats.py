@@ -114,21 +114,14 @@ def _rollup_buckets(buckets: dict, now: float, merge) -> None:
         if start < retention_cutoff:
             del buckets[key]
             continue
-        if start < hourly_cutoff and key[:1] != "d":
+        if key[:1] != "d" and (start // 86400 * 86400 + 86400) <= hourly_cutoff:
             target = buckets.setdefault(f"d{start // 86400 * 86400}", {})
-        elif start < minute_cutoff and key[:1] not in ("h", "d"):
+        elif key[:1] not in ("h", "d") and (start // 3600 * 3600 + 3600) <= minute_cutoff:
             target = buckets.setdefault(f"h{start // 3600 * 3600}", {})
         else:
             continue
         merge(target, buckets[key])
         del buckets[key]
-
-
-def _traffic_bucket(target, source):
-    for model_id, row in source.items():
-        entry = target.setdefault(model_id, _traffic_row(row.get("first_used")))
-        entry["first_used"] = min(filter(None, (entry.get("first_used"), row.get("first_used"))), default=None)
-        _add_traffic(entry, row)
 
 
 def _memory_row():
@@ -173,23 +166,6 @@ def _recorded_memory(sample):
             rows.setdefault(f"runtime:{runtime['runtime']}", _memory_row()), runtime.get("process_bytes")
         )
     return start, time_s, rows
-
-
-def _merge_traffic(data, delta):
-    history = _history(data)
-    if delta and history["collection_started"] is None:
-        history["collection_started"] = min(row["first_used"] for models in delta.values() for row in models.values())
-    reset_at, buckets = data["reset_at"], history["buckets"]
-    for start, models in delta.items():
-        target = buckets.setdefault(str(start), {})
-        for model_id, row in models.items():
-            if not _cleared(reset_at, model_id, row):
-                _traffic_bucket(target, {model_id: row})
-    now = time.time()
-    _rollup_buckets(buckets, now, _traffic_bucket)
-    for models in buckets.values():
-        for row in models.values():
-            row.pop("first_used", None)
 
 
 def _merge_memory(data, delta):

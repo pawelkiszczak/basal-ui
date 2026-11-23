@@ -1636,10 +1636,10 @@ class Fleet:
         }
 
     def memory_snapshot(self):
-        """Return cached child RSS and lightweight runner state without status probes or settings reads."""
+        """Return cached child RSS and lightweight native runner state without status probes or settings reads."""
         with self.lock:
-            runners = list(self.runners.values())
-            rss = dict(self._rss_cache[1])
+            runners = [runner for runner in self.runners.values() if isinstance(runner, Runner)]
+            rss = dict(self._rss())
         result = []
         for runner in runners:
             with runner.lock:

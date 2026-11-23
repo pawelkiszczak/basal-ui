@@ -37,9 +37,15 @@
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const memoryNote = (note, params) => {
     const usage = note.match(/^vLLM KV-cache usage by engine: (.+)\. Process RSS includes vLLM runtime overhead\.$/);
+    const lmStudio = note.match(/^LM Studio API (transport failed|response is unusable) \((.+)\)\. Process RSS includes runtime overhead\.$/);
     return usage
       ? t('vLLM KV-cache usage by engine: {usage}. Process RSS includes vLLM runtime overhead.', {usage: usage[1]})
-      : t(note, params);
+      : lmStudio
+        ? t(
+            `LM Studio API ${lmStudio[1] === 'transport failed' ? 'transport failure' : 'response error'} ({detail}). Process RSS includes runtime overhead.`,
+            {detail: lmStudio[2]},
+          )
+        : t(note, params);
   };
   function renderMemory() {
     const memory=state.memory, host=memory?.host, target=q('#memoryContent');
@@ -57,7 +63,7 @@
     const barContent=hasBreakdown?segments:`<span class="memory-host-used" style="width:${hostFill}%"></span>`;
     const runtimeRows=runtimes.map(runtime=>{
       const models=runtime.models||[];
-      return `<section class="memory-runtime"><div class="memory-runtime-head"><strong>${escape(runtime.label)}</strong><span>${bytes(runtime.process_bytes)}</span></div>${models.length?models.map(model=>{const label=model.aggregate!=null?tp(model.aggregate,'{n} loaded model','{n} loaded models'):model.id;const size=(model.size_estimated?`${bytes(model.bytes)} (${t('Estimated')})`:bytes(model.bytes))+` · ${t('Pool: {pool}').replace('{pool}',t(model.pool==='gpu'?'VRAM':model.pool==='ram'?'RAM':model.pool==='unified'?'Unified':'Mixed or unknown'))}`;return `<article class="memory-model"><div class="memory-model-head"><strong>${escape(label)}</strong><span>${size}</span></div><dl><div><dt>${t('Context bytes')}</dt><dd>${bytes(model.context_bytes)}</dd></div><div><dt>${t('Hot cache')} (${t('Hot cache pool: {pool}').replace('{pool}',model.cache_pool||'RAM')})</dt><dd>${bytes(model.cache_bytes)}</dd></div><div><dt>${t('Disk-backed cold cache')}</dt><dd>${bytes(model.cold_cache_bytes)}</dd></div></dl></article>`;}).join(''):`<p class="memory-unavailable">${runtime.status==='empty'||runtime.status==='ok'?t('No loaded models'):t('Runtime memory unavailable')}</p>`}${runtime.note?`<p class="memory-note">${escape(memoryNote(runtime.note,{count:models.find(model=>model.aggregate!=null)?.aggregate||0}))}</p>`:''}</section>`;
+      return `<section class="memory-runtime"><div class="memory-runtime-head"><strong>${escape(runtime.label)}</strong><span>${bytes(runtime.process_bytes)}</span></div>${models.length?models.map(model=>{const label=model.state==='loading'?`${model.id} (${t('Loading…')})`:model.aggregate!=null?tp(model.aggregate,'{n} loaded model','{n} loaded models'):model.id;const size=(model.size_estimated?`${bytes(model.bytes)} (${t('Estimated')})`:bytes(model.bytes))+(model.pool?` · ${t('Pool: {pool}').replace('{pool}',t(model.pool==='gpu'?'VRAM':model.pool==='ram'?'RAM':model.pool==='unified'?'Unified':'Mixed or unknown'))}`:'');const cachePool=model.cache_pool?` (${t('Hot cache pool: {pool}').replace('{pool}',t(model.cache_pool==='vram'?'VRAM':model.cache_pool==='ram'?'RAM':model.cache_pool==='unified'?'Unified':'Mixed or unknown'))})`:'';return `<article class="memory-model"><div class="memory-model-head"><strong>${escape(label)}</strong><span>${size}</span></div><dl><div><dt>${t('Context bytes')}</dt><dd>${bytes(model.context_bytes)}</dd></div><div><dt>${t('Hot cache')}${cachePool}</dt><dd>${bytes(model.cache_bytes)}</dd></div><div><dt>${t('Disk-backed cold cache')}</dt><dd>${bytes(model.cold_cache_bytes)}</dd></div></dl></article>`;}).join(''):`<p class="memory-unavailable">${runtime.status==='empty'||runtime.status==='ok'?t('No loaded models'):t('Runtime memory unavailable')}</p>`}${runtime.note?`<p class="memory-note">${escape(memoryNote(runtime.note,{count:models.find(model=>model.aggregate!=null)?.aggregate||0}))}</p>`:''}</section>`;
     }).join('');
     const gpu=(host?.gpu||[]).map(device=>`<div class="memory-device"><strong>${escape(device.name)}</strong><span>${bytes(device.used)} / ${bytes(device.total)}</span></div>`).join('');
     html(target,`<div class="memory-host"><div class="memory-runtime-head"><strong>${t('Host RAM')}</strong><span>${bytes(used)} / ${bytes(total)}</span></div><div class="memory-track" role="img" aria-label="${escape(`${t('Host RAM')}: ${bytes(used)} / ${bytes(total)}; ${barDescription}`)}">${barContent}</div><p>${memory.other==null?t('System and other apps: breakdown unavailable'):`${t('System and other apps')}: ${bytes(memory.other)}`}</p></div><section class="memory-gpu"><h3>${t('Discrete GPU memory')}</h3>${gpu||`<p class="memory-unavailable">${t('Not measured')}</p>`}</section>${host?.unified?`<p class="memory-note">${t('Unified memory is shared; allocations are counted once.')}</p>`:''}<div class="memory-runtimes">${runtimeRows}</div>`);
@@ -91,7 +97,7 @@
     }).join('');
     const formatter=span<86400?preciseClock:new Intl.DateTimeFormat(LANG,{month:'short',day:'numeric'});
     const label=name=>name==='host'?t('Host RAM'):name==='other'?t('System and other apps'):name;
-    html(container,`<svg class="traffic-chart memory-history-chart" viewBox="0 0 680 204" role="img" aria-label="${t('Memory over time')}"><line x1="48" x2="652" y1="164" y2="164" stroke="var(--line)"/><text class="traffic-axis" x="0" y="168" fill="var(--muted)">0</text><text class="traffic-axis" x="0" y="30" fill="var(--muted)">${bytes(maxBytes/1.15)}</text>${paths}<text class="traffic-start" x="48" y="194" fill="var(--muted)">${formatter.format(new Date(start*1000))}</text><text class="traffic-end" x="652" y="194" text-anchor="end" fill="var(--muted)">${formatter.format(new Date(end*1000))}</text></svg><div class="memory-history-legend">${names.map((name,index)=>`<span class="memory-history-legend-${index%4}">${escape(label(name))}</span>`).join('')}</div>`);
+    html(container,`<svg class="traffic-chart memory-history-chart" viewBox="0 0 680 204" role="img" aria-label="${t('Memory over time')}"><line x1="48" x2="652" y1="164" y2="164" stroke="var(--line)"/><text class="traffic-axis" x="0" y="168" fill="var(--muted)">0</text><text class="traffic-axis" x="0" y="30" fill="var(--muted)">${bytes(maxBytes)}</text>${paths}<text class="traffic-start" x="48" y="194" fill="var(--muted)">${formatter.format(new Date(start*1000))}</text><text class="traffic-end" x="652" y="194" text-anchor="end" fill="var(--muted)">${formatter.format(new Date(end*1000))}</text></svg><div class="memory-history-legend">${names.map((name,index)=>`<span class="memory-history-legend-${index%4}">${escape(label(name))}</span>`).join('')}</div>`);
   }
   function renderChart(history) {
     const container=q('#trafficChart');

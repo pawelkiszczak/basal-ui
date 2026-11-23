@@ -82,9 +82,6 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   unavailable details explicitly.
 - Show confirmed vLLM model ids and available process RSS and KV-cache usage on Dashboard without treating cache
   percentages as bytes. [Live memory](API.md#local-app-management-api)
-- Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Use dated counts for
-  window rates, keep lifetime Usage separate, and show the effective time range for overlapping source buckets.
-  Remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.
 - Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bound Comparison requests by
   time and response size. Reserve Cascade ports through spawn and validate router health. Reject symlinked scheduled
   inputs and outputs, and keep Attached models removable after changing the models directory.
