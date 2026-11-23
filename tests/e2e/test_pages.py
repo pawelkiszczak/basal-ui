@@ -533,7 +533,7 @@ def test_dashboard_default_records_real_decisions_and_resets_model_traffic(brows
         sync_api.expect(endpoint_row).to_contain_text("POST")
         sync_api.expect(endpoint_row).to_contain_text("1")
 
-        page.select_option("#trafficWindow", "60")
+        page.select_option("#trafficWindow", "1h")
         sync_api.expect(page.locator("#traffic-requests")).not_to_have_text("—", timeout=WAIT)
         sync_api.expect(page.locator("#traffic-requests-note")).to_contain_text("1")
         sync_api.expect(endpoint_row).to_be_visible()

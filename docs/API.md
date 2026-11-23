@@ -19,26 +19,26 @@ The model options endpoint reports availability of each server limit in `limits_
 ## Local app management API
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
-`GET /api/memory/live` returns the live observation snapshot: `time`, `host` (RAM, unified-memory flag, measured
-discrete GPUs and accounting basis), `runtimes` (process bytes and optional per-model memory, cache and context bytes)
-and `other`. Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported
-separately. On unified-memory hosts Fleet and LM Studio use `rss_excludes_gpu`, so `other` is `null`; RSS does not
-include Metal/MLX GPU allocations. `other` subtracts every runtime with measured process bytes, including one whose API
-is down, and is present only when those totals share the host's accounting basis and no ready runtime has an unknown
-total. `cache_bytes` is the Engine state cache only while active; context bytes and disk-backed cold-cache bytes remain
+`GET /api/memory/live` returns `time`, `host`, `runtimes` and `other`. Runtime records preserve unknown measurements as
+`null`; zero means measured zero. `other` subtracts all runtime process totals when host-used RAM is known, every
+runtime total is known, and every nonzero runtime total has the same accounting basis as host-used RAM. A measured zero
+needs no shared basis. This includes runtimes whose APIs are down when their process RSS was measured. On Apple
+unified-memory hosts host-used RAM includes GPU allocations while process RSS excludes them, so any nonzero process
+total makes `other` unavailable; an empty Fleet can still leave measured host usage in `other`. Linux host-used RAM
+and process RSS use incompatible accounting, so `other` is unavailable.
+
+The host object includes RAM totals, a unified-memory flag, measured discrete GPUs and its accounting basis. Runtime
+objects include process bytes and optional per-model memory measurements. A model's `pool` describes model placement
+(`gpu`, `ram`, `unified`, or unknown), while `cache_pool` describes the cache placement (`vram`, `ram`, or `unified`);
+they are independent. Fleet totals include every measured non-idle child, while model breakdowns list ready models.
+`cache_bytes` measures the Engine state cache only while active; context bytes and disk-backed cold-cache bytes remain
 `null` when unavailable. Engine and LM Studio context lengths are tokens, not byte measurements.
 
 LM Studio's local `GET /api/v1/models` response identifies loaded models. Its API port is read from
 `~/.lmstudio/.internal/http-server-config.json` and requests always use `127.0.0.1`; a missing or invalid port falls
 back to `1234`. Process RSS includes runtime overhead; model memory and cache usage are not exposed, and context
-lengths are not byte measurements. If the API is unavailable, process RSS remains available when the LM Studio process
-is present, while model identity and model-specific measurements are unknown. The existing `GET` and `PUT /api/memory`
-routes continue to manage memory settings.
-discrete GPUs and accounting basis), `runtimes` (process/model byte measurements) and `other`. Runtime records preserve
-unknown measurements as `null`; zero means measured zero. `other` subtracts every runtime with measured process bytes,
-including one whose API is down, and is present only when all included totals share the host accounting basis and no
-ready runtime has an unknown total. Host-used RAM and process RSS are both `resident` on non-unified hosts; on Apple
-unified-memory hosts RSS is `rss_excludes_gpu` and does not include Metal/MLX GPU allocations.
+lengths are not byte measurements. If the API is unavailable, measured process RSS remains available when an LM Studio
+process is present. Without a process or a valid API response, the provider is omitted.
 
 Ollama's local [`GET /api/ps`](https://docs.ollama.com/api/ps) reports running model names, `size` (total loaded model
 size in bytes), `size_vram` (VRAM portion in bytes), and `context_length` (tokens; see
@@ -113,10 +113,11 @@ HTTP budget with environment proxies disabled. It tries `GET /admin/api/stats` f
 `actual_size`, and `runtime_cache.models.hot_cache_size_bytes` / `total_size_bytes`. If that admin endpoint is
 unavailable or unauthorized, it falls back to the unauthenticated `GET /health` and validates the oMLX `engine_pool`
 shape (`model_count`, `loaded_count`, `current_model_memory`) to avoid mistaking the basal-ui gateway on the same
-port for oMLX. Health provides a loaded count and aggregate planned-resident-size estimate but no model identities;
-the estimate is labeled separately from measured RSS in the Dashboard. `process_bytes` remains locally measured RSS,
-including runtime overhead, with `rss_excludes_gpu` accounting on Apple unified-memory hosts. Context and unavailable
-cache details remain `null`; rank-local prompt-snapshot cache telemetry is not presented as system-wide tier data.
+port for oMLX. Health provides `aggregate` (the loaded-model count) without model identities and `size_estimated: true`
+with a planned-resident-size estimate in `bytes`; these fallback values are not per-model measurements. The Dashboard
+labels the estimated aggregate separately from measured process RSS, which includes runtime overhead and uses
+`rss_excludes_gpu` accounting on Apple unified-memory hosts. Context and unavailable cache details remain `null`;
+rank-local prompt-snapshot cache telemetry is not presented as system-wide tier data.
 Connection refusal and timeout produce `unreachable`, while a reachable but unusable API produces `unavailable`.
 See oMLX [`GET /health`](https://github.com/jundot/omlx/blob/main/omlx/server.py#L3362),
 [`current_model_memory`](https://github.com/jundot/omlx/blob/main/omlx/engine_pool.py#L1118),

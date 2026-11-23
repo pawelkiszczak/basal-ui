@@ -74,7 +74,7 @@ def _host(hardware_fn):
         "ram_used": ram_used,
         "unified": unified,
         "gpu": gpu,
-        "accounting": "rss_excludes_gpu" if unified else "resident",
+        "accounting": "host_used_includes_gpu" if unified else "resident",
     }
 
 

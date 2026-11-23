@@ -50,7 +50,7 @@ def _root_pid() -> int | None:
     return min(candidates) if candidates else None
 
 
-def observe() -> dict:
+def observe() -> dict | None:
     """Read loaded models and LM Studio process RSS without changing runtime state."""
     from .. import memory
 
@@ -69,12 +69,16 @@ def observe() -> dict:
         url = _probe.endpoint(_probe.loopback_origin(_api_origin()), "/api/v1/models")
         payload = _probe.get_json(url, 1.0, started)
     except (httpx.ConnectError, httpx.TimeoutException, TimeoutError) as exc:
+        if process_bytes is None:
+            return None
         return {
             **base,
             "status": "unreachable",
             "note": f"LM Studio API transport failed ({exc}). Process RSS includes runtime overhead.",
         }
     except (httpx.HTTPError, ValueError, TypeError) as exc:
+        if process_bytes is None:
+            return None
         return {
             **base,
             "status": "unavailable",
@@ -82,11 +86,19 @@ def observe() -> dict:
         }
 
     if not isinstance(payload, dict):
-        return {**base, "status": "unavailable", "note": "LM Studio returned an unreadable model list."}
+        return (
+            None
+            if process_bytes is None
+            else {**base, "status": "unavailable", "note": "LM Studio returned an unreadable model list."}
+        )
 
     records = payload.get("models")
     if not isinstance(records, list):
-        return {**base, "status": "unavailable", "note": "LM Studio returned an unreadable model list."}
+        return (
+            None
+            if process_bytes is None
+            else {**base, "status": "unavailable", "note": "LM Studio returned an unreadable model list."}
+        )
 
     models = []
     readable = 0

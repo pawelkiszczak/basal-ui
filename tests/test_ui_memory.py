@@ -1,7 +1,11 @@
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
 from basal_ui import memory
+from basal_ui.fleet import CascadeRunner, ComparisonRunner, Fleet
+from basal_ui.runtimes import lmstudio
 from tests.test_ui_app import app_for
 
 HOST = {"ram_total": 100, "ram_used": 90, "unified": False, "gpu": [], "accounting": "resident"}
@@ -33,6 +37,38 @@ def _fleet(models=()):
     return type("FleetStub", (), {"memory_snapshot": lambda self: list(models)})()
 
 
+def _fleet_with_runners(*runners):
+    fleet = Fleet.__new__(Fleet)
+    fleet.lock = threading.RLock()
+    fleet.runners = {str(index): runner for index, runner in enumerate(runners)}
+    fleet._rss_cache = (0.0, {})
+    return fleet
+
+
+def test_memory_snapshot_ignores_comparison_without_lock(monkeypatch):
+    monkeypatch.setattr("basal_ui.fleet.rss_by_pgid", lambda: {})
+
+    assert Fleet.memory_snapshot(_fleet_with_runners(object.__new__(ComparisonRunner))) == []
+
+
+def test_memory_snapshot_ignores_cascade_without_mode(monkeypatch):
+    monkeypatch.setattr("basal_ui.fleet.rss_by_pgid", lambda: {})
+
+    assert Fleet.memory_snapshot(_fleet_with_runners(object.__new__(CascadeRunner))) == []
+
+
+def test_lmstudio_without_process_or_api_is_omitted(monkeypatch):
+    monkeypatch.setattr(lmstudio, "_root_pid", lambda: None)
+    monkeypatch.setattr(memory, "rss_accounting", lambda: "resident")
+
+    def fail(*_args):
+        raise lmstudio.httpx.ConnectError("offline")
+
+    monkeypatch.setattr(lmstudio._probe, "get_json", fail)
+
+    assert lmstudio.observe() is None
+
+
 def test_non_unified_fleet_rss_reports_system_remainder(monkeypatch):
     monkeypatch.setattr(memory, "_host", lambda _: HOST)
     monkeypatch.setattr(memory, "_cache_bytes", lambda _: None)
@@ -54,7 +90,7 @@ def test_incompatible_accounting_hides_remainder(monkeypatch):
 
 
 def test_unified_fleet_rss_is_counted_once_and_remainder_is_unavailable(monkeypatch):
-    host = {**HOST, "unified": True}
+    host = {**HOST, "unified": True, "accounting": "host_used_includes_gpu"}
     monkeypatch.setattr(memory, "_host", lambda _: host)
     monkeypatch.setattr(memory, "_cache_bytes", lambda _: None)
     fleet = _fleet([{"id": "model", "kind": "basal", "state": "ready", "rss_bytes": 25}])
@@ -66,6 +102,7 @@ def test_unified_fleet_rss_is_counted_once_and_remainder_is_unavailable(monkeypa
     assert runtime["models"][0]["bytes"] == 25
     assert runtime["models"][0]["pool"] == "unified"
     assert runtime["accounting"] == "rss_excludes_gpu"
+    assert result["host"]["accounting"] == "host_used_includes_gpu"
     assert "RSS excludes GPU allocations" in runtime["note"]
     assert result["host"]["gpu"] == []
     assert result["other"] is None

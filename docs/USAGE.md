@@ -53,23 +53,14 @@ Manager does not add requests. **Models** opens Suggested (default) and All mode
 **Live memory** on Dashboard shows host RAM and measured discrete GPU usage alongside each loaded runtime's process RSS
 and model memory. Ollama confirms loaded models through its local `GET /api/ps` response: `size` is total loaded
 model size and `size_vram` is its VRAM portion. Model rows show total size; the observation's `pool` field identifies
-unified, fully RAM, or fully GPU placement, and remains unknown when placement is mixed or unavailable. Runtime process
-and include runtime overhead; the accounting basis follows the host, and unified-memory RSS excludes GPU allocations.
-Ollama's `context_length` is in tokens, not bytes; context-byte and cache measurements are unavailable. If the API
-cannot be reached but an Ollama process is identifiable, its RSS remains visible with an **unreachable** status. An
-empty model list is distinct from an unavailable measurement. The System and other apps remainder appears only when
-host and runtime accounting can be compared.
+unified, fully RAM, or fully GPU placement, and remains unknown when placement is mixed or unavailable. Ollama's
+`context_length` is in tokens, not bytes; context-byte and cache measurements are unavailable. SGLang reports
+confirmed models and process RSS, but model, context and cache byte fields are unavailable. LM Studio reports loaded
+model identity from its local API; model memory and cache usage are not exposed. oMLX reports model and cache details
+when its admin API is available, falling back to a loaded-model count and estimated memory from health. Runtime
+process RSS includes overhead and, on Apple unified-memory hosts, excludes GPU allocations. The **System and other
+apps** remainder appears only when host and runtime accounting can be compared and every runtime total is known.
 
-### Live runtime checks
-
-Ollama was not installed on the validation host, so no live Ollama checks or Ollama version check ran; provider behavior
-was checked only with fixture responses and a local `/api/ps` browser stub.
-and Engine state-cache bytes when active. SGLang's confirmed `model_path` is shown as a loaded model, with process RSS
-including runtime overhead; model, context and cache byte fields remain **Not measured**. SGLang KV-pool token counts and
-memory fractions are not bytes. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when
-unavailable; Engine context limits are tokens, not bytes. The System and other apps remainder appears only when host
-and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
-is unavailable; GPU allocations are not counted in both RAM and GPU totals.
 **Memory history** shares Dashboard's time range with traffic and shows measured per-runtime totals, host RAM and the
 compatible **System and other apps** remainder. Samples run once per minute while basal-ui is running, even when all
 browser tabs are closed; closing the app stops sampling. Collection coverage is shown, and missing buckets remain
@@ -515,10 +506,10 @@ Optionally set **Unload idle models after minutes** in **Settings → Memory & s
 ### Dashboard
 
 The Dashboard lets you select **1 hour**, **24 hours**, **7 days**, **30 days** or **All time** for recorded Decision
-traffic. The plot starts at the first Decision collected by this version and keeps offline periods as gaps. All time
-Decision totals still come from the shared lifetime Usage counters; dated chart history starts now and is persisted
-for up to five years: minute buckets cover the newest 24 hours, hourly buckets cover history through 90 days, then
-daily buckets retain older history. Resetting a model removes its dated traffic;
+traffic. The plot starts at the first Decision collected by this version and keeps offline periods as gaps. Dated totals
+sum the retained traffic series in the selected range; they are separate from lifetime Usage counters, which remain
+available in Model manager. Dated chart history is persisted for up to five years: minute buckets cover the newest
+24 hours, hourly buckets cover history through 90 days, then daily buckets retain older history. Resetting a model
 resetting all Usage restarts collection at the reset time. Endpoint attribution remains a separate recent,
 process-local 15-minute view.
 
