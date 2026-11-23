@@ -312,8 +312,10 @@ def test_local_route_and_shutdown_use_injected_manager(tmp_path, monkeypatch):
 
     class Manager:
         closed = False
+        calls = []
 
         async def run(self, url, request):
+            self.calls.append(url)
             if url == "bad":
                 raise fetch.FetchError("Refused", "fetch_address_refused", 400)
             return {"state": {"value": 1}, "url": url}
@@ -335,6 +337,9 @@ def test_local_route_and_shutdown_use_injected_manager(tmp_path, monkeypatch):
         assert client.post("/api/fetch", json={"url": "https://example.com"}).json()["state"] == {"value": 1}
         response = client.post("/api/fetch", json={"url": "bad"})
         assert response.status_code == 400 and response.json()["code"] == "fetch_address_refused"
+        response = client.post("/api/fetch", json={"url": 23})
+        assert response.status_code == 400 and response.json()["code"] == "fetch_address_refused"
+    assert manager.calls == ["https://example.com", "bad"]
     assert manager.closed
 
 

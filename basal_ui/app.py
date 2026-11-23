@@ -2636,7 +2636,10 @@ def create_app(
     @app.post("/api/fetch")
     def fetch_url(request: Request, body: dict = Body(...)):
         try:
-            return anyio.from_thread.run(fetch_manager.run, body.get("url"), request)
+            url = body.get("url")
+            if not isinstance(url, str):
+                raise FetchError("Enter an absolute HTTP or HTTPS URL.", "fetch_address_refused", 400)
+            return anyio.from_thread.run(fetch_manager.run, url, request)
         except FetchError as exc:
             return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
 

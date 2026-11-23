@@ -472,8 +472,9 @@ async function selectMedia(files, append=false) {
 }
 // One capture owns its permission, tracks, recorder and decode; replacement invalidates all callbacks.
 let recording=null;
+$('#recordAudio').textContent=t('Record');
 function recordingUI(message='') {
-  $('#recordAudio').textContent=t(recording?(recording.phase==='pending'?'Cancel microphone request':recording.phase==='recording'?'Stop recording':'Cancel recording'):'Record audio');
+  $('#recordAudio').textContent=t(recording?(recording.phase==='pending'?'Cancel microphone request':recording.phase==='recording'?'Stop recording':'Cancel recording'):'Record');
   $('#recordStatus').textContent=message?t(message):'';
   $('#sendButton').disabled=Boolean(recording);
   const active=recording?.phase==='recording';
@@ -515,24 +516,25 @@ async function startRecording() {
   if(!model || !(model.media||[]).includes('audio')){showMediaError(t('This model does not support {kind}',{kind:'audio'}));return;}
   if(!window.isSecureContext){showMediaError(t('Microphone recording requires HTTPS or a loopback address.'));return;}
   if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !window.AudioContext || !window.OfflineAudioContext){showMediaError(t('This browser does not support microphone recording.'));return;}
-  showMediaError();const session={model:selectedModel,generation:model.generation,phase:'pending',chunks:[]};recording=session;recordingUI('Waiting for microphone permission…');
+  showMediaError();const session={model:selectedModel,generation:model.generation,mediaGeneration:mediaSelection,phase:'pending',chunks:[]};recording=session;recordingUI('Waiting for microphone permission…');
   try {
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     if(recording!==session){stream.getTracks().forEach(track=>track.stop());return;}
     session.stream=stream;stream.getAudioTracks().forEach(track=>track.addEventListener('ended',()=>{if(recording===session && session.phase==='recording'){cancelRecording();showMediaError(t('Microphone access was interrupted. Try again.'));}}));session.context=new AudioContext();session.source=session.context.createMediaStreamSource(stream);session.analyser=session.context.createAnalyser();session.source.connect(session.analyser);
-    session.recorder=new MediaRecorder(stream);session.bytes=0;session.recorder.ondataavailable=e=>{if(recording!==session || !e.data.size)return;session.bytes+=e.data.size;if(session.bytes>20*1024*1024){cancelRecording();showMediaError(t('Recording is empty or exceeds the 30-second or 20 MiB limit.'));return;}session.chunks.push(e.data);};
-    session.recorder.onerror=()=>{if(recording===session){cancelRecording();showMediaError(t('Recording failed. Check your microphone and try again.'));}};
+    session.recorder=new MediaRecorder(stream);session.bytes=0;session.recorder.ondataavailable=e=>{if(recording!==session||session.failed||!e.data.size)return;session.bytes+=e.data.size;if(session.bytes>20*1024*1024){cancelRecording();showMediaError(t('Recording is empty or exceeds the 30-second or 20 MiB limit.'));return;}session.chunks.push(e.data);};
+    session.recorder.onerror=()=>{session.failed=true;if(recording===session){recording=null;recordingUI();showMediaError(t('Recording failed. Check your microphone and try again.'));}releaseCapture(session);};
     session.recorder.onstop=async()=>{
       session.recorder.ondataavailable=null;session.recorder.onstop=null;session.recorder.onerror=null;
-      if(recording!==session)return;
+      if(session.failed){releaseCapture(session);return;}
+      if(recording!==session){releaseCapture(session);return;}
       try{
         const blob=new Blob(session.chunks,{type:session.recorder.mimeType});if(!blob.size)throw new Error('empty');
         const context=new AudioContext();session.decodeContext=context;let decoded;
         try{decoded=await context.decodeAudioData(await blob.arrayBuffer());}finally{if(context.state!=='closed')await context.close();session.decodeContext=null;}
-        if(recording!==session)return;
+        if(recording!==session||mediaSelection!==session.mediaGeneration)return;
         if(decoded.duration>30 || !decoded.length)throw new Error('limit');
         const length=Math.ceil(decoded.duration*16000),offline=new OfflineAudioContext(1,length,16000),source=offline.createBufferSource();source.buffer=decoded;source.connect(offline.destination);source.start();
-        const rendered=await offline.startRendering();if(recording!==session)return;
+        const rendered=await offline.startRendering();if(recording!==session||mediaSelection!==session.mediaGeneration)return;
         const file=wavFile(rendered);const added=await selectMedia([file],true);
         if(recording!==session)return;
         recording=null;recordingUI(added?'Recording added.':'');
