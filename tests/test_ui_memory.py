@@ -152,3 +152,20 @@ def test_dotted_provider_is_imported_lazily(monkeypatch):
     result = memory.snapshot(_fleet(), ["tests.fake_memory_provider.observe"], hardware_fn=lambda: None)
 
     assert result["runtimes"][1]["runtime"] == "sample"
+
+
+def test_runtime_provider_imports_before_memory_module():
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import basal_ui.runtimes.omlx; import basal_ui.memory; "
+            "assert 'basal_ui.runtimes.omlx.observe' in basal_ui.memory.PROVIDERS",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )

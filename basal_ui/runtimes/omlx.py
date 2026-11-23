@@ -1,16 +1,16 @@
 """Read-only memory observations for a local oMLX server."""
 
 import json
+import time
 from pathlib import Path
 
 import httpx
 
-from .. import memory
+from . import _probe
 
 _DEFAULT_PORT = 8000
-_TIMEOUT = 0.75
-_RSS_PATTERN = r"(?i)\bomlx-server\b"
-
+_DEADLINE = 0.75
+_RSS_PATTERN = r"^(?:.*/)?omlx-server(?:\s|$)"
 
 _NOTE = (
     "Process RSS includes oMLX runtime overhead and excludes GPU allocations on unified-memory hosts. "
@@ -30,27 +30,28 @@ def _settings_path():
     return Path.home() / ".omlx" / "settings.json"
 
 
-def _port():
+def _origin():
     try:
         settings = json.loads(_settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return _DEFAULT_PORT
+        settings = {}
     server = settings.get("server") if isinstance(settings, dict) else None
-    port = server.get("port") if isinstance(server, dict) else None
-    return port if type(port) is int and 1 <= port <= 65535 else _DEFAULT_PORT
+    if not isinstance(server, dict):
+        server = {}
+    port = server.get("port")
+    port = port if type(port) is int and 1 <= port <= 65535 else _DEFAULT_PORT
+    host = server.get("host", server.get("bind", "127.0.0.1"))
+    host = f"[{host}]" if isinstance(host, str) and ":" in host and not host.startswith("[") else host
+    scheme = server.get("scheme", "http")
+    return _probe.loopback_origin(f"{scheme}://{host}:{port}")
 
 
 def _bytes(value):
     return value if type(value) is int and value >= 0 else None
 
 
-def _api_snapshot(port):
-    try:
-        response = httpx.get(f"http://127.0.0.1:{port}/admin/api/stats", timeout=_TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
-    except (httpx.HTTPError, ValueError):
-        return None
+def _api_snapshot(origin, deadline, started):
+    payload = _probe.get_json(_probe.endpoint(origin, "/admin/api/stats"), deadline, started)
     if not isinstance(payload, dict):
         return None
     active = payload.get("active_models")
@@ -65,30 +66,31 @@ def _api_snapshot(port):
     )
     models = []
     for row in active["models"]:
-        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or row.get("is_loading") is not False:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            continue
+        if row.get("is_loading") is True:
+            models.append({"id": row["id"], "state": "loading"})
+            continue
+        if row.get("is_loading") is not False:
             continue
         cache = cache_by_id.get(row["id"], {})
+        distributed = cache.get("cache_tier") == "rank-prompt-snapshot"
         models.append(
             {
                 "id": row["id"],
-                "bytes": None,
+                "bytes": _bytes(row.get("actual_size")),
+                "size_estimated": False,
                 "pool": "unified",
                 "context_bytes": None,
-                "cache_bytes": _bytes(cache.get("hot_cache_size_bytes")),
-                "cold_cache_bytes": _bytes(cache.get("total_size_bytes")),
+                "cache_bytes": None if distributed else _bytes(cache.get("hot_cache_size_bytes")),
+                "cold_cache_bytes": None if distributed else _bytes(cache.get("total_size_bytes")),
             }
         )
     return models
 
 
-def _health_snapshot(port):
-    try:
-        response = httpx.get(f"http://127.0.0.1:{port}/health", timeout=_TIMEOUT)
-        if response.status_code not in (200, 503):
-            return None
-        payload = response.json()
-    except (httpx.HTTPError, ValueError):
-        return None
+def _health_snapshot(origin, deadline, started):
+    payload = _probe.get_json(_probe.endpoint(origin, "/health"), deadline, started)
     if not isinstance(payload, dict) or payload.get("status") not in ("healthy", "loading"):
         return None
     pool = payload.get("engine_pool")
@@ -106,7 +108,9 @@ def _health_models(loaded_count, model_memory):
     return [
         {
             "id": f"{loaded_count} loaded models",
+            "aggregate": loaded_count,
             "bytes": model_memory,
+            "size_estimated": True,
             "pool": "unified",
             "context_bytes": None,
             "cache_bytes": None,
@@ -115,48 +119,47 @@ def _health_models(loaded_count, model_memory):
     ]
 
 
-def _health_observation(port, process_bytes):
-    health = _health_snapshot(port)
-    if health is None:
-        return None
-    health_status, loaded_count, model_memory = health
+def _observation(status, process_bytes, models, note):
     return {
         "runtime": "omlx",
         "label": "oMLX",
-        "status": "ok" if loaded_count else "empty" if health_status == "healthy" else "unavailable",
+        "status": status,
         "accounting": "rss_excludes_gpu",
         "process_bytes": process_bytes,
-        "models": _health_models(loaded_count, model_memory),
-        "note": _HEALTH_NOTE,
+        "models": models,
+        "note": note,
     }
 
 
 def observe() -> dict | None:
     """Return a local oMLX observation, or None when no oMLX process is present."""
-    process_bytes = memory.process_rss(_RSS_PATTERN)
-    port = _port()
-    models = _api_snapshot(port)
+    from ..memory import process_rss
+
+    process_bytes = process_rss(_RSS_PATTERN)
+    started = time.monotonic()
+    try:
+        origin = _origin()
+    except (ValueError, TypeError):
+        return _observation("unavailable", process_bytes, [], _UNAVAILABLE_NOTE) if process_bytes is not None else None
+    try:
+        models = _api_snapshot(origin, _DEADLINE, started)
+    except (httpx.ConnectError, httpx.TimeoutException, TimeoutError):
+        return _observation("unreachable", process_bytes, [], _UNAVAILABLE_NOTE) if process_bytes is not None else None
+    except (httpx.HTTPError, ValueError):
+        models = None
     if models is not None:
-        return {
-            "runtime": "omlx",
-            "label": "oMLX",
-            "status": "ok" if models else "empty",
-            "accounting": "rss_excludes_gpu",
-            "process_bytes": process_bytes,
-            "models": models,
-            "note": _NOTE,
-        }
-    health = _health_observation(port, process_bytes)
+        return _observation("ok", process_bytes, models, _NOTE)
+    try:
+        health = _health_snapshot(origin, _DEADLINE, started)
+    except (httpx.ConnectError, httpx.TimeoutException, TimeoutError):
+        return _observation("unreachable", process_bytes, [], _UNAVAILABLE_NOTE) if process_bytes is not None else None
+    except (httpx.HTTPError, ValueError):
+        health = None
     if health is not None:
-        return health
+        _, loaded_count, model_memory = health
+        models = _health_models(loaded_count, model_memory)
+        status = "ok"
+        return _observation(status, process_bytes, models, _HEALTH_NOTE)
     if process_bytes is None:
         return None
-    return {
-        "runtime": "omlx",
-        "label": "oMLX",
-        "status": "unavailable",
-        "accounting": "rss_excludes_gpu",
-        "process_bytes": process_bytes,
-        "models": [],
-        "note": _UNAVAILABLE_NOTE,
-    }
+    return _observation("unavailable", process_bytes, [], _UNAVAILABLE_NOTE)

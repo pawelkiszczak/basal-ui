@@ -1858,6 +1858,7 @@ const PL = {
   "Host and loaded runtime measurements": "Pomiary hosta i załadowanych środowisk",
   "Memory data unavailable": "Dane o pamięci są niedostępne",
   "Not measured": "Nie zmierzono",
+  "Estimated": "Szacunkowo",
   "System and other apps": "System i inne aplikacje",
   "System and other apps: breakdown unavailable": "Podział pamięci systemu i innych aplikacji jest niedostępny",
   "Context bytes": "Bajty kontekstu",
