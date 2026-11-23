@@ -93,6 +93,22 @@ combined across data-parallel engines because their fractions do not define a ru
 vLLM runtime overhead. The accounting is `rss_excludes_gpu` on Apple Silicon and `resident` elsewhere. The existing
 `GET` and `PUT /api/memory` routes continue to manage memory settings.
 
+The oMLX provider reads `server.port` (default `8000`) and the configured `server.host` or `server.bind` when set;
+it validates the address as loopback before contacting it, including IPv6 loopback. It uses a provider-wide bounded
+HTTP budget with environment proxies disabled. It tries `GET /admin/api/stats` for loaded IDs, reported
+`actual_size`, and `runtime_cache.models.hot_cache_size_bytes` / `total_size_bytes`. If that admin endpoint is
+unavailable or unauthorized, it falls back to the unauthenticated `GET /health` and validates the oMLX `engine_pool`
+shape (`model_count`, `loaded_count`, `current_model_memory`) to avoid mistaking the basal-ui gateway on the same
+port for oMLX. Health provides a loaded count and aggregate planned-resident-size estimate but no model identities;
+the estimate is labeled separately from measured RSS in the Dashboard. `process_bytes` remains locally measured RSS,
+including runtime overhead, with `rss_excludes_gpu` accounting on Apple unified-memory hosts. Context and unavailable
+cache details remain `null`; rank-local prompt-snapshot cache telemetry is not presented as system-wide tier data.
+Connection refusal and timeout produce `unreachable`, while a reachable but unusable API produces `unavailable`.
+See oMLX [`GET /health`](https://github.com/jundot/omlx/blob/main/omlx/server.py#L3362),
+[`current_model_memory`](https://github.com/jundot/omlx/blob/main/omlx/engine_pool.py#L1118),
+[planned resident size](https://github.com/jundot/omlx/blob/main/omlx/engine_pool.py#L588), and
+[`GET /admin/api/stats`](https://github.com/jundot/omlx/blob/main/omlx/admin/routes.py#L7244).
+
 
 
 These routes live on the **UI port** (default `7860`), not the external API-server gateway port.

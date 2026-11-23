@@ -66,6 +66,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   and process RSS, without treating KV-pool token counts or memory fractions as byte measurements.
   [Live memory](USAGE.md#sglang-memory-observation)
   without treating Engine context token limits as bytes or double-counting unified memory.
+- Show oMLX's confirmed loaded models and measured hot and disk-backed cache when its admin API is available. Fall back
+  to its loaded-model count and memory estimate from health. Label process RSS as including runtime overhead and mark
+  unavailable details explicitly.
 - Show confirmed vLLM model ids and available process RSS and KV-cache usage on Dashboard without treating cache
   percentages as bytes. [Live memory](API.md#local-app-management-api)
 - Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Use dated counts for

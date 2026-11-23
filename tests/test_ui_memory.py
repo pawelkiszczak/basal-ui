@@ -154,11 +154,18 @@ def test_dotted_provider_is_imported_lazily(monkeypatch):
     assert result["runtimes"][1]["runtime"] == "sample"
 
 
-def test_ollama_imports_before_memory():
+def test_runtime_providers_import_before_memory_module():
     import subprocess
     import sys
 
     subprocess.run(
-        [sys.executable, "-c", "import basal_ui.runtimes.ollama; import basal_ui.memory"],
+        [
+            sys.executable,
+            "-c",
+            "import basal_ui.runtimes.omlx, basal_ui.runtimes.ollama; import basal_ui.memory; "
+            "assert 'basal_ui.runtimes.omlx.observe' in basal_ui.memory.PROVIDERS",
+        ],
         check=True,
+        capture_output=True,
+        text=True,
     )

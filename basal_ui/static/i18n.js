@@ -1933,6 +1933,7 @@ const PL = {
   "Host and loaded runtime measurements": "Pomiary hosta i załadowanych środowisk",
   "Memory data unavailable": "Dane o pamięci są niedostępne",
   "Not measured": "Nie zmierzono",
+  "Estimated": "Szacunkowo",
   "System and other apps": "System i inne aplikacje",
   "System and other apps: breakdown unavailable": "Podział pamięci systemu i innych aplikacji jest niedostępny",
   "Context bytes": "Bajty kontekstu",
@@ -1952,7 +1953,10 @@ const PL = {
   "Unified memory is shared; allocations are counted once.": "Pamięć zunifikowana jest współdzielona; alokacje są liczone tylko raz.",
   "Fleet memory could not be read.": "Nie można odczytać pamięci Fleet.",
   "Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
+  "Process RSS includes oMLX runtime overhead and excludes GPU allocations on unified-memory hosts. Per-model memory and context bytes are not reported.": "Pamięć RSS procesu obejmuje narzut środowiska oMLX i nie uwzględnia alokacji GPU na hostach z pamięcią zunifikowaną. Nie są raportowane wartości pamięci poszczególnych modeli ani bajty kontekstu.",
+  "oMLX memory API is unavailable; process RSS includes oMLX runtime overhead and excludes GPU allocations on unified-memory hosts. Model and cache details could not be read.": "Interfejs API pamięci oMLX jest niedostępny; pamięć RSS procesu obejmuje narzut środowiska oMLX i nie uwzględnia alokacji GPU na hostach z pamięcią zunifikowaną. Nie można odczytać szczegółów modeli ani pamięci podręcznej.",
   "Process RSS excludes GPU allocations on unified-memory hosts. Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć RSS procesu nie obejmuje alokacji GPU na hostach z pamięcią zunifikowaną. Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
+  "Loaded models: {count}; their identities are unavailable. The oMLX-reported model-memory total is a planned resident-size estimate, separate from process RSS.": "Załadowane modele: {count}; ich identyfikatory są niedostępne. Łączna pamięć modeli raportowana przez oMLX to szacowany planowany rozmiar rezydentny, oddzielny od RSS procesu.",
   "Process RSS includes runtime overhead. Ollama reports total loaded model size; size_vram is its VRAM portion. Context length is in tokens, not bytes; cache bytes are not measured.": "RSS procesu obejmuje narzut środowiska. Ollama podaje całkowity rozmiar załadowanego modelu; size_vram to jego część w VRAM. Długość kontekstu jest podawana w tokenach, nie bajtach; bajty pamięci podręcznej nie są mierzone.",
   "Ollama API is unreachable. Process RSS includes runtime overhead.": "API Ollama jest nieosiągalne. RSS procesu obejmuje narzut środowiska.",
   "Ollama API is unavailable. Process RSS includes runtime overhead.": "API Ollama jest niedostępne. RSS procesu obejmuje narzut środowiska.",
@@ -1992,6 +1996,7 @@ const PL_PLURAL = {
   "{n} preset": ["{n} preset", "{n} presety", "{n} presetów"],
   "{n} requests": ["{n} żądanie", "{n} żądania", "{n} żądań"],
   "{n} variant": ["{n} wariant", "{n} warianty", "{n} wariantów"],
+  "{n} loaded model": ["{n} załadowany model", "{n} załadowane modele", "{n} załadowanych modeli"],
 };  // '{n} model' (the English singular): ['{n} model', '{n} modele', '{n} modeli'] (1 / 2-4 / 5+)
 
 function fill(text, vars) {
