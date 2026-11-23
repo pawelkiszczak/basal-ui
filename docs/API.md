@@ -31,17 +31,20 @@ Replay preserves question fields; media redaction can prevent Replay. OpenAI Dec
 `GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
 `{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
 selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
-a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
+a Backend changes `suggestions`, not Saved load settings or the global catalog filter. Each row's `model_compatible`
+reports whether this machine supports its architecture and format with a Backend after dependencies are installed;
+it is distinct from current `runnable` status and memory `fit`.
 
 `GET /api/calibrations?id=…` lists each file’s `layout`, the active or saved layout in `shipped.context`, `layout_mismatch` and its message code, the model `default_layout`, and the `calibrate_layout` Engine capability. `POST /api/calibrate` uses that active or saved layout and returns `calibration_layout_unsupported` if the Engine lacks the required layout flag, including a canonical override of a non-canonical model default. Refit uses the original file layout and returns `calibration_rows_layout_unknown` when its paired calibration cannot establish that layout. Saved-row refits work without the model snapshot, reject known identity contradictions, and honor the requested comparison; when a legacy row header lacks revision, the paired calibration’s declared revision is trusted, not independently verified. `calibration_rows_baseline_unavailable` reports an unreadable baseline. Mismatched baseline thresholds are excluded using Engine semantics. Model listings expose `has_calibration_rows` so those refits remain reachable.
 Each calibration listing, fit, and model-card shipped calibration uses one snapshot of the active or saved load settings for revision, mode, and layout. Invalid or non-object model layout metadata leaves `default_layout` null and reports `shipped.error`; fitted files remain available in the listing.
 
-Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
-`est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
-`media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies are
-missing). A missing add-on is not represented as a working media load. `recommendation_note` explicitly identifies
-format/tier rankings as heuristics rather than benchmarks. Physical-memory estimates do not reserve capacity;
-`POST /api/load` separately enforces configured budget/reserve and active commitments.
+Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, a `reasons` list explaining its
+machine/Backend compatibility, memory fit and slot-ranking basis, `mode`, `media`, `est_memory_bytes`, `fit` and
+`fit_now`. The UI translates these English reason strings. A multimodal suggestion also carries `media_available`,
+nullable `media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies
+are missing). A missing add-on is not represented as a working media load. `recommendation_note` explains the catalog
+heuristics and the up-to-five slot limit, including why empty or duplicate core slots are omitted. Physical-memory
+estimates do not reserve capacity; `POST /api/load` separately enforces configured budget/reserve and active commitments.
 
 | Route | Contract |
 |---|---|

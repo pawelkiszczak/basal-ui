@@ -112,6 +112,7 @@ class Downloads:
                 "error": None,
                 "ended": None,
                 "revision": revision,
+                "id": variant.id,
             }
             record["thread"] = threading.Thread(target=self._run, args=(record, variant, cache_dir), daemon=True)
             self.records[variant.repo] = record
@@ -146,6 +147,7 @@ class Downloads:
                 if record["thread"].is_alive() or failed:
                     done = record["bar"].done
                     out[repo] = {
+                        "id": record.get("id"),
                         "done_bytes": done,
                         "total_bytes": max(record["total"], done),
                         "error": str(record["error"]) if record["error"] is not None else None,

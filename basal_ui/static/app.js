@@ -8,6 +8,18 @@ let trafficData=null, trafficError=null, trafficMinutes=15, trafficGeneration=0,
 let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
+const mcpGroup=document.createElement('fieldset');
+mcpGroup.className='mcp-settings';
+ mcpGroup.innerHTML=`<legend>${t('MCP')}</legend><div class="mcp-setting"></div><p id="mcpAvailability" class="muted" role="status"></p><div class="mcp-hint"></div><div class="field"><span>${t('Endpoint')}</span><code id="mcpEndpoint"></code></div><div class="field" id="mcpClient"><span>${t('Client connection')}</span><pre><code id="connectMcp"></code></pre><div class="mcp-connect-hint"></div><button id="copyMcpConnect" class="btn ghost icon-button" type="button" data-variant="outline">${t('Copy snippet')}</button></div>`;
+$('.serve-actions').before(mcpGroup);
+const mcpSetting=$('#serveMcp').closest('label');
+mcpGroup.querySelector('.mcp-setting').append(mcpSetting);
+mcpSetting.querySelector('input').setAttribute('aria-describedby','mcpHint');
+mcpGroup.querySelector('.mcp-hint').append($('#mcpHint'));
+mcpGroup.querySelectorAll('.field')[1].querySelector('pre code').replaceWith($('#connectMcp'));
+mcpGroup.querySelector('.mcp-connect-hint').append($('#mcpConnectHint'));
+$('#connectTabs [data-connect="mcp"]').remove();
+$('[data-connect-panel="mcp"]').remove();
 let rankAvailable=false;
 function httpFailure(status,message,code) {
   const hint={422:t('Invalid request: revise the input.'),503:code==='OVERLOADED'?t('Model is busy. Wait and retry.'):t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
@@ -148,11 +160,28 @@ function renderModels(data) {
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
-  const older = $('#olderToggle').checked, showBad = $('#notRunnableToggle').checked, downloadedOnly = $('#downloadedToggle').checked;
-  const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable || m.media_mode) && (!downloadedOnly || m.downloaded));
+  const older = $('#olderToggle').checked, runAvailabilityFilter = $('#modelRunAvailabilityFilter').value;
+  const query=$('#modelSearch').value.trim().toLowerCase(), downloadFilter=$('#modelDownloadFilter').value,
+    loadFilter=$('#modelLoadFilter').value, compatibilityFilter=$('#modelCompatibilityFilter').value, fitFilter=$('#modelFitFilter').value;
+  const activeFilters=Boolean(query||downloadFilter||loadFilter||compatibilityFilter||fitFilter||older||runAvailabilityFilter!=='available');
+  $('#clearModelFilters').disabled=!activeFilters;
+  const list = modelData.filter(m => {
+    const download=statusAvailable?statusCache?.downloads?.[m.repo]:null, downloading=statusAvailable?Boolean(download&&!download.error&&download.id===m.id):null;
+    const runner=statusCache?.models?.find(x=>x.id===m.id), loaded=statusAvailable?Boolean(runner&&['ready','starting','downloading'].includes(runner.state)):null;
+    const compatible=m.model_compatible;
+    const runAvailable=Boolean(m.runnable||m.media_mode);
+    return (!backendModelFilter||backendModelFilter.ids.has(m.id))
+      && (older || !['basal-1.0','basal-1.5'].includes(m.family))
+      && (runAvailabilityFilter==='any' || runAvailable===(runAvailabilityFilter==='available'))
+      && (!query || [m.id,m.repo,m.family,m.tier,m.label].some(value=>String(value||'').toLowerCase().includes(query)))
+      && (!downloadFilter || (downloadFilter==='downloaded'?m.downloaded:downloadFilter==='downloading'?downloading===true:m.downloaded===false&&downloading===false))
+      && (!loadFilter || (loadFilter==='loaded'?loaded===true:loaded===false))
+      && (!compatibilityFilter || (compatibilityFilter==='compatible'?compatible===true:compatible===false))
+      && (!fitFilter || (m.fit||'unknown')===fitFilter);
+  });
   list.sort((a,b) => familyOrder(b.family)-familyOrder(a.family) || tierOrder(a.tier)-tierOrder(b.tier) || a.port.localeCompare(b.port));
   const groups = new Map(); for (const m of list) { if (!groups.has(m.family)) groups.set(m.family, []); groups.get(m.family).push(m); }
-  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty">${t('No models match these filters.')}</div>`; return; }
+  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty"><p>${t('No models match these filters.')}</p><button type="button" class="outline-action" data-clear-model-filters>${t('Clear filters')}</button></div>`; return; }
   let html = '';
   const tableHead=`<table class="model-variants"><colgroup><col style="width:20%"><col style="width:13%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:9%"><col style="width:30%"></colgroup><thead><tr><th>${t('Tier')}</th><th>${t('Format')}</th><th>${t('Size')}</th><th>${t('Est. memory')}</th><th>${t('Fit')}</th><th>${t('Fit now')}</th><th>${t('Action')}</th></tr></thead><tbody>`;
   for (const [family, rows] of groups) {
@@ -165,9 +194,9 @@ function renderModels(data) {
       const slot = slots.get(m.id);
       const mediaReasonText = ts(m.media_reason, m.media_reason_code, m.media_reason_params);
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
-      const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
+      const downloadStatus=statusAvailable?statusCache?.downloads?.[m.repo]:null, loaded=statusAvailable?statusCache?.models?.find(x=>x.id===m.id):null;
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:statusAvailable&&!loaded&&m.downloaded?deleteButton(m.id):''}`;
       html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
@@ -202,20 +231,26 @@ function downloadControl(m, progress) {
   return `<button class="download-model" data-id="${esc(m.id)}">${t('Download')}</button>${progress?.error?`<span class="reason">${esc(progress.error)}</span>`:''}`;
 }
 function renderSuggestions(suggestions) {
-  if (!suggestions.length) { $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>`; return; }
+  const browseAll = `<button type="button" class="dashboard-link suggestion-catalog-link">${t('Browse all models')} →</button>`;
+  if (!suggestions.length) {
+    $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>${browseAll}`;
+    return;
+  }
   const models = new Map(modelData.map(m => [m.id, m]));
   $('#suggested').innerHTML = `<div class="suggestion-grid">${suggestions.map(s => {
     const m=models.get(s.id);if(!m)return '';
     const why=esc(ts(s.why,s.why_code,s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g,'<code>$1</code>');
+    const reasons=(s.reasons||[]).map(reason=>`<li>${esc(t(reason))}</li>`).join('');
     const loaded=statusCache?.models?.find(x=>x.id===m.id), chosenMode=recommendationBackend!=='automatic'||s.media?s.mode:null, mode=chosenMode?` data-mode="${esc(chosenMode)}"`:'';
     const media=s.media&&s.media_available!==false, estimate=s.est_memory_bytes;
     const fit=s.fit_now||s.fit;
     const load=m.downloaded&&!loaded&&(s.media?media:m.runnable||s.mode)?`<button type="button" class="load-model primary" data-id="${esc(m.id)}" data-media="${media}"${mode}>${t(media?'Load with media':'Load')}</button>`:'';
     const setup=s.media_available===false?`<p class="reason">${esc(ts(s.media_reason,s.media_reason_code,s.media_reason_params))}</p><a class="dashboard-link" href="#backends">${t('Install media add-on')} →</a>`:'';
     const action=`<div class="controls">${loaded?diskActions(m):!m.downloaded?downloadControl(m,statusCache?.downloads?.[m.repo]):load}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>`;
-    return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
-  }).join('')}</div>`;
+    return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p><ul class="suggestion-reasons">${reasons}</ul><p class="suggestion-estimate-note">${t('Memory fit is an estimate, not a reservation or an Inference test.')}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
+  }).join('')}</div>${browseAll}`;
 }
+$('#suggested').addEventListener('click',event=>{if(event.target.closest('.suggestion-catalog-link')){selectModelsTab('all');$('#allModelsTab').focus();}});
 document.addEventListener('click',e=>{const b=e.target.closest('.model-card-open');if(b)act(()=>openModelCard(b.dataset.id));});
 async function openModelCard(id) {
   const c=await api(`/api/models/card?id=${encodeURIComponent(id)}`);
@@ -252,8 +287,9 @@ function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} 
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
-  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model" data-id="${esc(m.id)}">${t('Unload')}</button>`;
+  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}${statusAvailable?'':` · ${t('stale')}`}</span><button type="button" class="unload-model outline-action" data-id="${esc(m.id)}">${t('Unload')}${statusAvailable?'':` · ${t('stale')}`}</button>`;
   if(!m.runnable&&!m.media_mode){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
+  if(!statusAvailable)return `<span class="muted">${t('Model status unavailable')}</span>`;
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
   const noMedia=!m.media_mode&&(m.media||[]).length?`<small class="muted">${esc(noMediaText||'')}</small>`:'';
@@ -583,7 +619,7 @@ async function refreshStatus() {
       const status = await api('/api/status');
       if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
     } catch(e) {
-      if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
     }
   })();
   statusRefresh=request;
@@ -1624,7 +1660,6 @@ async function sendDecision() {
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
 $('#recommendationBackend').onchange=event=>{recommendationBackend=event.target.value;loadModels();};
-$('#downloadedToggle').addEventListener('change',rerenderFilters);
 $('#saveModelsDir').addEventListener('click',()=>saveModelsDir($('#modelsDir').value));
 $('#defaultModelsDir').addEventListener('click',()=>saveModelsDir(null));
 let catalogData=null;
@@ -1632,7 +1667,16 @@ const originalRenderModels=renderModels;
 renderModels=function(data){catalogData=data; originalRenderModels(data);};
 function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===recommendationBackend) originalRenderModels(catalogData);}
 $('#olderToggle').addEventListener('change',rerenderFilters);
-$('#notRunnableToggle').addEventListener('change',rerenderFilters);
+['modelSearch','modelDownloadFilter','modelLoadFilter','modelCompatibilityFilter','modelRunAvailabilityFilter','modelFitFilter'].forEach(id=>{$(`#${id}`).addEventListener(id==='modelSearch'?'input':'change',rerenderFilters);});
+function clearModelFilters(){
+  $('#modelSearch').value=''; $('#modelDownloadFilter').value=''; $('#modelLoadFilter').value='';
+  $('#modelCompatibilityFilter').value=''; $('#modelRunAvailabilityFilter').value='available'; $('#modelFitFilter').value='';
+  setChecked($('#olderToggle'),false);
+  backendModelFilter=null; $('#backendModelFilterNotice').hidden=true;
+  rerenderFilters(); $('#modelSearch').focus();
+}
+$('#clearModelFilters').addEventListener('click',clearModelFilters);
+document.addEventListener('click',event=>{if(event.target.closest('[data-clear-model-filters]'))clearModelFilters();});
 $('#addQuestion').addEventListener('click',()=>addQuestion());
 $('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
@@ -1665,9 +1709,9 @@ $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox
 window.addEventListener('beforeunload',()=>{cancelRecording();selectedMedia.forEach(item=>URL.revokeObjectURL(item.url));});
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-function connectionEndpoint() {
+function connectionEndpoint(useActive=true) {
   const settings=serveData.settings, serving=statusCache?.serving;
-  if (serving?.url) return serving.url;
+  if (useActive&&serving?.url) return serving.url;
   const host=settings.host==='0.0.0.0'?(serveData.lan_ip||location.hostname):'127.0.0.1';
   return `http://${host}:${settings.port}`;
 }
@@ -1711,16 +1755,21 @@ decision = client.decisions.create(
       model: hosted_vllm/${name}
       api_base: ${endpoint}
       api_key: ${key||'local'}`,
-    mcp:mcpHttp,
   };
   $('#connectCurl').textContent=snippets.curl;
   $('#connectPython').textContent=snippets.python;
   $('#connectTypesafe').textContent=snippets.typesafe;
   $('#connectOpenai').textContent=snippets.openai;
   $('#connectLitellm').textContent=snippets.litellm;
-  $('#connectMcp').textContent=snippets.mcp;
-  $('#mcpConnectHint').hidden=Boolean(mcpHttp);
-  $('#copyServeConnect').disabled=connectTab==='mcp'&&!mcpHttp;
+  $('#connectMcp').textContent=mcpHttp;
+  $('#mcpEndpoint').textContent=mcpHttp?`${endpoint}/mcp`:t('Saved MCP URL (pending until MCP is enabled and the server is restarted): {url}',{url:`${connectionEndpoint(false)}/mcp`});
+  $('#mcpAvailability').textContent=serveData.mcp_available?t('The optional MCP extra is installed.'):t('The optional MCP extra is missing.');
+  $('#mcpHint').textContent=serveData.mcp_available?t('Save MCP settings, then restart the API server to apply changes.'):t('Install MCP with uv sync --extra mcp from source, uv pip install "basal-ui[mcp]" in a venv, or uv tool install --with "basal-ui[mcp]" basal-ui; then restart basal-ui.');
+  $('#mcpClient').hidden=!serveData.mcp_available;
+  $('#mcpConnectHint').textContent=mcpHttp?'':t('Start the API server with MCP enabled to use this example.');
+  $('#mcpConnectHint').hidden=!serveData.mcp_available||Boolean(mcpHttp);
+  $('#copyMcpConnect').disabled=!mcpHttp;
+  $('#copyServeConnect').disabled=false;
   $('#runningServerNote').hidden=!statusCache?.serving?.restart_required;
   $('#connectTabs').querySelectorAll('[data-connect]').forEach(tab=>{
     const active=tab.dataset.connect===connectTab;
@@ -1799,12 +1848,14 @@ async function copyText(text, success=t('Copied to clipboard')) {
     try { area.select(); copied=document.execCommand('copy'); }
     catch {}
     finally { area.remove(); }
-    if(!copied) { toast(t('Copy failed — select the text and copy manually'),'error'); return; }
+    if(!copied) { toast(t('Copy failed — select the text and copy manually'),'error'); return false; }
   }
   toast(success);
+  return true;
 }
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
+$('#copyMcpConnect').onclick=()=>copyText($('#connectMcp').textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
@@ -1878,7 +1929,7 @@ function renderManagerSummary() {
 }
 let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
-  const oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
+  const recovered=!statusAvailable, oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
   if(oldFeatures!==JSON.stringify(s.features))document.querySelectorAll('.question').forEach(card=>{renderSharedFields(card);updateCardVisibility(card);});
   invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
   const attachJob=s.jobs?.attach;
@@ -1902,7 +1953,8 @@ function renderStatus(s) {
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
   const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
-  if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if((recovered||signature!==rowsSignature)&&!finished)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(finished)loadModels();  // refresh catalog before rendering downloaded-state filters
   if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
   lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;
@@ -2205,7 +2257,7 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog" aria-labelledby="reportTitle"><h3 id="reportTitle">${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog" aria-labelledby="reportTitle"><h3 id="reportTitle">${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
 $('#calibrationAdvanced').insertAdjacentHTML('beforeend',`<div class="manager-fields"><label class="manager-field">${t('Conformal coverage levels')}<input id="calConformal" type="text" placeholder="0.8, 0.9"><span id="calConformalReason" class="reason"></span></label><fieldset><legend>${t('Keep compared thresholds')}</legend><div class="controls">${['choice','noul','score'].map(type=>`<label><input type="checkbox" data-keep-type="${type}" disabled> ${esc(type)}</label>`).join('')}</div><span id="calKeepReason" class="reason"></span></fieldset></div>`);
 let calibrationOptions={}, keepSequence=0;
@@ -2319,6 +2371,8 @@ function renderCalibrationFiles(id, d) {
   const reason=layout&&calibrationBlocked?t('The installed Engine cannot calibrate this layout'):'';
   const mismatch=d.layout_mismatch_code?ts('Selected calibration layout differs from the load settings; certified thresholds will not apply.',d.layout_mismatch_code):'';
   const focused=document.activeElement, focusKey=focused?.closest('#calibrationFiles')?{name:focused.name,value:focused.value,refit:focused.dataset.refit,report:focused.dataset.report}:null;
+  const help=`<details id="calibrationHelp" class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p><p>${t('Input: one labelled Decision per JSONL line with a “state”, non-empty “questions”, and a “gold” answer for each question. Simple basal-run records with “gold” are also accepted.')}</p><p>${t('Example: a choice has probabilities 0.80 and 0.20. For a two-option choice, a Selected calibration with an effective temperature T = 2 maps each probability to pᵢ^(1/T) / Σpⱼ^(1/T). The top confidence becomes √0.80 / (√0.80 + √0.20) = 0.667 (66.7%), down from 80%; the top choice stays the same, but confidence can change whether it clears a certified threshold.')}</p><p>${t('This is an example, not a promised fit result; the fitted value depends on labelled Decisions. The Selected calibration is used the next time the model starts. If it is already loaded, restart it to apply.')}</p><p>${t('To return to the calibration supplied for this execution configuration, select Shipped calibration in the Use column.')}</p></details>`;
+  if(!$('#calibrationHelp'))$('#calibrationFiles').insertAdjacentHTML('beforebegin',help);
   const html=`<p class="muted">${context}<br>${selection}<br>${t('Fit layout')}: ${esc(layout||'—')}</p>${!available&&d.shipped?.error?`<p class="reason">${esc(d.shipped.error)}</p>`:''}${reason?`<p class="reason">${esc(reason)}</p>`:''}${mismatch?`<p class="reason">${esc(mismatch)}</p>`:''}<div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Layout')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
   const content=JSON.stringify([id,html,d.calibrate_layout,d.default_layout,d.files,loaded?.restart_required]);
   if($('#calibrationFiles').dataset.content===content)return;
@@ -2470,7 +2524,7 @@ const OPTION_FIELDS={
   global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],graphOnly:true},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
-const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
+const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model outline-action" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
 document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');

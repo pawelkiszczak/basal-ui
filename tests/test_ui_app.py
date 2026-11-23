@@ -203,6 +203,25 @@ def test_model_api_includes_reason_and_suggestion_codes(tmp_path):
         assert card["why"] == catalog.ASSESSMENT_TEMPLATES[card["why_code"]].format(**card["why_params"])
 
 
+def test_model_api_separates_format_compatibility_from_missing_backend(tmp_path):
+    gguf = Variant(
+        "gguf",
+        "Remek/basal-2.0-mini-GGUF",
+        "basal-2.0",
+        "mini",
+        "GGUF",
+        "GGUF Q4_K_M",
+        "model-Q4_K_M.gguf",
+        100,
+        False,
+    )
+    app, _ = app_for(tmp_path, [gguf], hw=Hardware("cpu", "cpu", 1024**4, None, None, frozenset()))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        model = client.get("/api/models").json()["models"][0]
+    assert model["model_compatible"] is True
+    assert model["runnable"] is False and "basal[gguf]" in model["reason"]
+
+
 def test_model_api_filters_installed_backends_and_rejects_unknown_choices(tmp_path):
     app, _ = app_for(tmp_path, [MINI])
     with TestClient(app, base_url="http://127.0.0.1") as client:
@@ -397,6 +416,7 @@ def test_download_runs_without_a_model_and_reports_progress_then_errors(tmp_path
         assert status.json()["models"] == []
         wait_for(lambda: client.get("/api/status").json()["downloads"][MINI.repo]["done_bytes"] == 40)
         assert client.get("/api/status").json()["downloads"][MINI.repo] == {
+            "id": MINI.id,
             "done_bytes": 40,
             "total_bytes": 100,
             "error": None,

@@ -1277,13 +1277,22 @@ def create_app(
             "local_dir",
         )
         on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in baseline}
+        compatible = {
+            a.variant.id: any(
+                backends.machine_reason(key, current_hw) is None and backends.matching_modes(key, a.variant, current_hw)
+                for key in backends.BACKENDS
+            )
+            for a in baseline
+        }
         return {
             "source": source,
             "recommendation_backends": installed,
             "recommendation_backend": backend,
             "recommendation_note": (
                 "Recommendation slots use catalog format and tier heuristics, not measured benchmarks. "
-                "Best quality means the largest fitting tier; fastest means the smallest tier."
+                "Best quality means the largest fitting tier; fastest means the smallest tier. "
+                "Up to five slots appear; a slot is omitted when no candidate qualifies, and Best quality or Fastest "
+                "is omitted when it duplicates another core slot."
             ),
             "suggestions": suggestions,
             "models_dir": str(Path(cache_dir).resolve()),
@@ -1291,6 +1300,7 @@ def create_app(
                 {
                     **{k: getattr(a.variant, k) for k in fields},
                     "runnable": a.runnable and (a.variant.family != "attached" or engine.feature("attach")),
+                    "model_compatible": compatible[a.variant.id],
                     "reason": "attached models need engine 2.5"
                     if a.variant.family == "attached" and not engine.feature("attach")
                     else a.reason,
