@@ -2,8 +2,14 @@
 
 This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
+## Interface
+
+- Share popover surfaces across Tools, Appearance and Playground Request settings. Escape closes either header menu and restores focus, theme selection returns focus to Appearance, Space remains the native checkbox toggle, and Enter on a form checkbox does not submit the form. [Tools in light English](images/issue-144-controls.png) and [Appearance in dark Polish](images/issue-144-appearance-dark-pl.png).
+
 ## Models and inference
 
+- Filter **All models** by name, download/load state, model compatibility, run availability and memory fit; clear all filters in one action. Setup and Unload use the shared secondary-action styling.
+- Show a translated, screen-reader-announced pending status during initial loading and foreground actions, including while sending a Decision. See the [English](images/loading-progress.png) and [Polish](images/loading-progress-pl.png) captures.
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
   optional chat fallback. Playground and API responses identify the answering tier. Blend and fallback answers carry
   no automation certificate. Escalation without fallback also works in Batch.
@@ -16,6 +22,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Schedule Batch over folders of JSONL files with local-time intervals, protected outputs, and run history. On Engines
   with Batch resume support, choose Resume or Restart after an interruption. Set the unanswered-line limit and use
   Engine question presets with automatic, Polish or English wording. [Batch](USAGE.md#batch)
+- Explain each Suggested card's compatibility, memory-fit and slot-ranking reasons. Keep **Browse all models** available
+  when no suggestion qualifies; memory estimates are labeled advisory. [Model suggestions](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
 
 ## Playground and History
 
@@ -23,8 +31,11 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   and experimental rank questions when the installed Engine provides them.
 - Fetch a public HTTP(S) page into editable State with provenance. Replay restores the recorded State without a
   second fetch and preserves native question fields and truncation details.
+- Generate API examples beside the request inputs and copy the displayed snippet with its own control.
 - Record a microphone clip as PCM WAV in the Playground. History can retain bounded audio copies when explicitly
   enabled, and Replay retrieves retained clips on demand. [Recording audio](USAGE.md#recording-audio-in-the-playground)
+- Keep the Playground media picker within its panel and wrap full selected filenames; style **Compare models** as a
+  secondary action.
 - Import MCP tool catalogues into tool questions and shortlist locally. Import request and load presets from public URLs.
 - Keep Load options tied to the latest model and dialog, including immediate reopen. Send Engine errors to the matching
   question cards, distinguish overload, and retain persistent error toasts.
@@ -40,6 +51,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   thresholds, inspect conformal levels, and preserve layout when refitting saved rows. Calibration warnings identify
   mismatches and invalid metadata. Benchmarks include the Identity gate, option-order checks, and active adapter/MLX
   settings where supported. [Calibration and benchmarks](USAGE.md#custom-calibration)
+- Explain the choice between Shipped and Selected calibration with an accessible worked example of the Engine's
+  temperature scaling, labelled input and how to return to Shipped calibration.
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
@@ -47,8 +60,20 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   without treating Engine context token limits as bytes or double-counting unified memory.
 - Show confirmed vLLM model ids and available process RSS and KV-cache usage on Dashboard without treating cache
   percentages as bytes. [Live memory](API.md#local-app-management-api)
+- Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Use dated counts for
+  window rates, keep lifetime Usage separate, and show the effective time range for overlapping source buckets.
+  Remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.
+- Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bound Comparison requests by
+  time and response size. Reserve Cascade ports through spawn and validate router health. Reject symlinked scheduled
+  inputs and outputs, and keep Attached models removable after changing the models directory.
+- Keep status snapshots coherent across model unloads, return Cascade error codes at the API top level, and reject
+  unsupported text codecs at the Fetch boundary.
+- Enforce the microphone recording size limit while chunks arrive, before buffering and decoding the full recording.
+- Group the API server's MCP setting with dependency availability, the `/mcp` endpoint and a copy-ready client snippet;
+  explain how to install the optional extra when it is missing. [API server](USAGE.md#api-server)
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
+- Preserve discovered Comparison models when an upstream returns a malformed listing.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
   Inspect follows the saved language and supports keyboard History activation, reduced motion, and forced colors.
 - Run the release CI matrix after merges to `stage` and `main`. [Release process](../CONTRIBUTING.md#releasing)

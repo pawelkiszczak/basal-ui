@@ -201,6 +201,252 @@ def test_calibration_file_messages_are_separate_and_escaped(browser, tmp_path):
         assert not app.stop()
 
 
+def test_foreground_pending_feedback(browser, isolated_ui, tmp_path):
+    context = browser.new_context(reduced_motion="reduce", service_workers="block")
+    page = context.new_page()
+    try:
+        page.add_init_script("""(() => {
+          const fetch=window.fetch.bind(window);
+          window.__foregroundRequests=[]; window.__completedRequests=[]; window.__batchJob=null;
+          window.fetch=async(input,options={})=>{
+            const path=new URL(String(input),location.href).pathname, method=options.method||'GET';
+            if(path==='/api/hardware'&&!sessionStorage.getItem('heldHardware')){
+              sessionStorage.setItem('heldHardware','1');
+              return new Promise(resolve=>window.releaseHardware=()=>resolve(fetch(input,options)));
+            }
+            if(path==='/api/download'){
+              const id=JSON.parse(options.body).id;
+              window.__foregroundRequests.push({path,method,id});
+              await new Promise(resolve=>setTimeout(resolve,id.endsWith('/slow')?1100:300));
+              window.__completedRequests.push(id);
+              return id.endsWith('/fail')
+                ?new Response(JSON.stringify({detail:'Synthetic failure'}),{status:503,headers:{'content-type':'application/json'}})
+                :new Response('{}',{headers:{'content-type':'application/json'}});
+            }
+            if(path==='/api/models/card'){
+              window.__foregroundRequests.push({path,method});
+              await new Promise(resolve=>setTimeout(resolve,1900));
+              window.__completedRequests.push(path);
+              return new Response(JSON.stringify({id:'public/card',repo:'public/card',url:'https://example.org',family:'basal-2.0',tier:'mini',label:'bf16',port:'bf16',size_bytes:1,media:[],quantisation:{scheme:'bf16',engine:'basal'},assessment:{mode:'eager',runnable:true,fit:'fits',fit_now:'fits',est_memory_bytes:1},downloaded:false,revisions:[]}),{headers:{'content-type':'application/json'}});
+            }
+            if(path==='/api/decide'){
+              window.__foregroundRequests.push({path,method});
+              await new Promise(resolve=>setTimeout(resolve,500));
+              return new Response(JSON.stringify({detail:'Synthetic failure'}),{status:503,headers:{'content-type':'application/json'}});
+            }
+            if(path==='/api/status'){
+              const response=await fetch(input,options),data=await response.json();
+              if(window.__batchJob)data.jobs={...data.jobs,batch:window.__batchJob};
+              return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});
+            }
+            if(path==='/api/batch'&&method==='DELETE'){
+              window.__foregroundRequests.push({path,method});
+              await new Promise(resolve=>setTimeout(resolve,400));
+              window.__batchJob={running:false,phase:'cancelled',done:1,total:5};
+              return new Response('{}',{headers:{'content-type':'application/json'}});
+            }
+            return fetch(input,options);
+          };
+        })()""")
+        page.goto(isolated_ui.url)
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Loading basal-ui…")
+        page.evaluate("window.releaseHardware()")
+        page.wait_for_function(
+            "() => statusCache !== null && modelData.length && !document.querySelector('#pendingStatus').textContent"
+        )
+        assert page.locator("#pendingStatus").evaluate(
+            "el => getComputedStyle(el).display !== 'none' && el.getAttribute('aria-live') === 'polite'"
+        )
+        page.evaluate("""() => {
+          const source=modelData[0],models=['slow','fail','dialog'].map(name=>({...source,id:`public/${name}`,repo:`public/${name}`,family:'basal-2.0',tier:'mini',label:'bf16',port:'bf16',downloaded:false,attached:false,runnable:true,media_mode:false,media:[],fit:'fits',fit_now:'fits',weights_bytes:1,est_memory_bytes:1}));
+          renderModels({models,suggestions:[],recommendation_backends:JSON.parse($('#recommendationBackend').dataset.choices),recommendation_note:''});
+        }""")
+        view(page, "models")
+        page.evaluate("selectModelsTab('all')")
+        fail_button = page.locator('#modelsTable .download-model[data-id="public/fail"]')
+        fail_button.focus()
+        fail_button.press("Enter")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Working…")
+        assert page.locator("#pendingStatus").evaluate("el => getComputedStyle(el,'::before').animationName === 'none'")
+        assert page.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+        sync_api.expect(page.locator("#toastStack")).to_contain_text("Synthetic failure")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        page.emulate_media(reduced_motion="no-preference")
+        slow_button = page.locator('#modelsTable .download-model[data-id="public/slow"]')
+        slow_button.scroll_into_view_if_needed()
+        slow_button.click()
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Working…")
+        assert page.locator("#pendingStatus").evaluate(
+            "el => {const s=getComputedStyle(el,'::before');return getComputedStyle(el).position === 'fixed' && s.animationName === 'pending-spin' && s.animationIterationCount === '2'}"
+        )
+        box = page.locator("#pendingStatus").bounding_box()
+        assert box and box["x"] >= 0 and box["y"] >= 0 and box["y"] + box["height"] <= page.evaluate("innerHeight")
+        page.screenshot(path=str(tmp_path / "loading-pending-en.png"))
+        page.locator('#modelsTable .model-card-open[data-id="public/dialog"]').click()
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Working…")
+        page.wait_for_function("() => window.__completedRequests.includes('public/slow')")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Working…")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        page.wait_for_function("() => document.querySelector('#modelCardDialog').open")
+
+        page.locator("#modelCardBody").evaluate(
+            "el=>el.append(document.querySelector('#modelsTable .download-model[data-id=\"public/dialog\"]'))"
+        )
+        dialog_button = page.locator('#modelCardBody .download-model[data-id="public/dialog"]')
+        dialog_button.click()
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Working…")
+        assert page.locator("#pendingStatus").evaluate(
+            "el => el.closest('dialog')?.id === 'modelCardDialog' && getComputedStyle(el).position === 'static'"
+        )
+        page.screenshot(path=str(tmp_path / "loading-pending-dialog.png"))
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        page.locator("#modelCardDialog").evaluate("el => el.close()")
+
+        view(page, "playground")
+        page.evaluate(
+            """request=>{
+          selectedModel='public/slow';const select=$('#playgroundModel');
+          select.innerHTML='<option value="public/slow">public/slow</option>';select.value=selectedModel;setRequest(request);
+        }""",
+            CHOICE,
+        )
+        page.evaluate("sendDecision();undefined")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Sending a Decision…")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        page.evaluate("localStorage.setItem('basal-ui.lang','pl')")
+        page.reload()
+        page.wait_for_function(
+            "() => statusCache !== null && modelData.length && !document.querySelector('#pendingStatus').textContent"
+        )
+        page.evaluate("""() => {
+          const source=modelData[0],models=['slow','fail','dialog'].map(name=>({...source,id:`public/${name}`,repo:`public/${name}`,family:'basal-2.0',tier:'mini',label:'bf16',port:'bf16',downloaded:false,attached:false,runnable:true,media_mode:false,media:[],fit:'fits',fit_now:'fits',weights_bytes:1,est_memory_bytes:1}));
+          renderModels({models,suggestions:[],recommendation_backends:JSON.parse($('#recommendationBackend').dataset.choices),recommendation_note:''});
+        }""")
+        view(page, "models")
+        page.evaluate("selectModelsTab('all')")
+        fail_button = page.locator('#modelsTable .download-model[data-id="public/fail"]')
+        fail_button.click()
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa przetwarzanie…")
+        page.screenshot(path=str(tmp_path / "loading-pending-pl.png"))
+        sync_api.expect(page.locator("#toastStack")).to_contain_text("Synthetic failure")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        view(page, "playground")
+        page.evaluate(
+            """request=>{
+          selectedModel='public/slow';const select=$('#playgroundModel');
+          select.innerHTML='<option value="public/slow">public/slow</option>';select.value=selectedModel;setRequest(request);
+        }""",
+            CHOICE,
+        )
+        page.evaluate("sendDecision();undefined")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Wysyłanie Decyzji…")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        view(page, "batch")
+        page.evaluate("window.__batchJob={running:true,phase:'running',done:1,total:5};refreshStatus()")
+        sync_api.expect(page.locator("#cancelBatch")).to_be_visible()
+        cancel = page.locator("#cancelBatch")
+        cancel.click()
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa przetwarzanie…")
+        sync_api.expect(page.locator("#batchProgress")).to_contain_text("Anulowano.")
+        assert page.evaluate("window.__foregroundRequests.some(r=>r.path==='/api/batch'&&r.method==='DELETE')")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+    finally:
+        context.close()
+
+
+def test_pending_status_is_stable_and_does_not_block_narrow_controls(browser, isolated_ui):
+    context = browser.new_context(viewport={"width": 390, "height": 844}, service_workers="block")
+    page = context.new_page()
+    page.set_default_timeout(10_000)
+    try:
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        page.evaluate("localStorage.setItem('basal-ui.lang','pl')")
+        page.reload()
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        page.evaluate("""() => {
+          const status=$('#pendingStatus'),descriptor=Object.getOwnPropertyDescriptor(Node.prototype,'textContent'),prepend=Element.prototype.prepend;
+          window.__statusTextWrites=0;window.__statusMoveCalls=0;
+          Object.defineProperty(status,'textContent',{get(){return descriptor.get.call(this)},set(value){window.__statusTextWrites++;descriptor.set.call(this,value)}});
+          Element.prototype.prepend=function(...nodes){if(nodes.includes(status))window.__statusMoveCalls++;return prepend.apply(this,nodes)};
+        }""")
+        page.evaluate(
+            "window.__firstPending=withPending('',()=>new Promise(resolve=>window.__firstResolve=resolve));undefined"
+        )
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa przetwarzanie…")
+        page.evaluate("""() => {
+          const status=$('#pendingStatus'),button=$('#openSettings'),box=status.getBoundingClientRect();
+          button.style.cssText=`position:fixed;z-index:39;left:${box.left+8}px;top:${box.top+8}px;width:32px;height:28px;padding:0`;
+        }""")
+        box = page.locator("#openSettings").bounding_box()
+        assert box
+        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        sync_api.expect(page.locator("#settings")).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.evaluate(
+            "window.__secondPending=withPending('',()=>new Promise(resolve=>window.__secondResolve=resolve));undefined"
+        )
+        assert page.evaluate("window.__statusTextWrites === 1 && window.__statusMoveCalls === 0")
+        page.evaluate("window.__firstResolve()")
+        sync_api.expect(page.locator("#pendingStatus")).to_have_text("Trwa przetwarzanie…")
+        page.evaluate("window.__secondResolve()")
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        assert page.evaluate("window.__statusTextWrites === 2 && window.__statusMoveCalls === 0")
+    finally:
+        context.close()
+
+
+def test_confirming_destructive_actions_does_not_show_pending_until_accepted(browser, isolated_ui):
+    context = browser.new_context(service_workers="block")
+    page = context.new_page()
+    page.set_default_timeout(10_000)
+    deletes = []
+    page.on("request", lambda request: deletes.append(request.url) if request.method == "DELETE" else None)
+    try:
+        page.route(
+            "**/api/stats",
+            lambda route: route.fulfill(
+                json={
+                    "models": {
+                        "public/pending-test": {
+                            "requests": 1,
+                            "questions": 1,
+                            "avg_best_prob": None,
+                            "avg_latency_ms": None,
+                            "p95_ms": None,
+                            "input_tokens": 1,
+                            "last_used": None,
+                            "by_type": {},
+                        }
+                    },
+                    "benchmarks": {},
+                }
+            ),
+        )
+        page.goto(isolated_ui.url + "/")
+        page.wait_for_function("() => statusCache !== null && !document.querySelector('#pendingStatus').textContent")
+        manager_tab(page, "usage")
+        page.locator('#statsTable [data-reset="public/pending-test"]').click()
+        sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        page.locator("#confirmCancel").click()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+
+        view(page, "history")
+        page.locator("#clearHistory").click()
+        sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        page.locator("#confirmCancel").click()
+        sync_api.expect(page.locator("#pendingStatus")).to_be_empty()
+        assert deletes == []
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("width", [390, 1099, 1100, 1440, 1920])
 def test_polish_navigation_hit_targets_and_keyboard(browser, isolated_ui, width):
     context = browser.new_context(viewport={"width": width, "height": 900})
@@ -693,7 +939,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     assert unavailable["family"] in {"basal-1.0", "basal-1.5"}
     view(page, "models")
     page.click("#allModelsTab")
-    page.check("#notRunnableToggle")
+    page.select_option("#modelRunAvailabilityFilter", "unavailable")
     page.check("#olderToggle")
     translated_reason = page.evaluate("m => ts(m.reason, m.reason_code, m.reason_params)", unavailable)
     assert translated_reason != unavailable["reason"]
@@ -740,7 +986,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.wait_for_function("() => typeof statusCache !== 'undefined' && modelData.length > 0")
     view(page, "models")
     page.click("#allModelsTab")
-    page.check("#notRunnableToggle")
+    page.select_option("#modelRunAvailabilityFilter", "unavailable")
     page.check("#olderToggle")
     sync_api.expect(page.locator("#modelsTable .reason").filter(has_text=unavailable["reason"]).first).to_be_visible()
     page.click("#suggestedTab")
@@ -1457,6 +1703,69 @@ def test_theme_toggle_persists_and_sets_the_document_theme(page):
         "dark",
         "dark",
     ]
+
+
+def test_theme_choices_and_menu_escape_priority(browser, ui):
+    context = browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    try:
+        page.goto(ui.url + "/")
+        page.wait_for_function("() => typeof applyTheme === 'function'")
+        page.locator("#openSettings").click()
+        page.locator("#settings-tab-appearance").click()
+        settings_dark = page.locator('#settings-appearance [data-theme-choice="dark"]')
+        settings_dark.focus()
+        page.keyboard.press("Enter")
+        assert page.evaluate(
+            "() => [document.documentElement.dataset.theme, localStorage.getItem('basal-ui.theme')]"
+        ) == [
+            "dark",
+            "dark",
+        ]
+        assert settings_dark.evaluate("el => document.activeElement === el")
+        assert not page.locator(".appearance-controls details").evaluate("el => el.open")
+
+        header = page.locator(".appearance-controls")
+        summary = header.locator("summary")
+        summary.click()
+        header.locator('[data-theme-choice="light"]').click()
+        assert page.evaluate(
+            "() => [document.documentElement.dataset.theme, localStorage.getItem('basal-ui.theme')]"
+        ) == [
+            "light",
+            "light",
+        ]
+        assert summary.evaluate("el => !el.parentElement.open && document.activeElement === el")
+
+        tools = page.locator(".nav-tools")
+        tools_summary = tools.locator("summary")
+        tools_summary.click()
+        page.keyboard.press("?")
+        sync_api.expect(page.locator("#shortcutsDialog")).to_be_visible()
+        page.keyboard.press("Escape")
+        sync_api.expect(page.locator("#shortcutsDialog")).to_be_hidden()
+        assert tools.evaluate("el => el.open")
+        page.keyboard.press("Escape")
+        assert tools.evaluate("el => !el.open && document.activeElement === el.querySelector('summary')")
+
+        tools_summary.click()
+        tools.locator(".header-menu-panel button").first.focus()
+        page.keyboard.press("Escape")
+        assert tools.evaluate("el => !el.open && document.activeElement === el.querySelector('summary')")
+
+        tools_summary.click()
+        first_action = tools.locator(".header-menu-panel button").first
+        first_action.evaluate(
+            """el => {
+              el.addEventListener('keydown', event => event.preventDefault(), {once: true});
+              el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+            }"""
+        )
+        assert tools.evaluate("el => el.open")
+        page.keyboard.press("Escape")
+        assert tools.evaluate("el => !el.open && document.activeElement === el.querySelector('summary')")
+    finally:
+        context.close()
 
 
 def test_control_enter_sends_a_playground_decision(page):
