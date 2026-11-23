@@ -22,6 +22,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Schedule Batch over folders of JSONL files with local-time intervals, protected outputs, and run history. On Engines
   with Batch resume support, choose Resume or Restart after an interruption. Set the unanswered-line limit and use
   Engine question presets with automatic, Polish or English wording. [Batch](USAGE.md#batch)
+- Explain each Suggested card's compatibility, memory-fit and slot-ranking reasons. Keep **Browse all models** available
+  when no suggestion qualifies; memory estimates are labeled advisory. [Model suggestions](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
 
 ## Playground and History
 

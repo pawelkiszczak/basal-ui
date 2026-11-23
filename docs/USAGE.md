@@ -109,6 +109,14 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   *Lightest* offers the recurrent pico family. *Multimodal* selects fitting native image/audio checkpoints, including
   when the media add-on is missing; such a card explains the missing dependency and links to Backends instead of
   pretending media can load. Media estimates use their eager/vLLM path, not a text CUDA-graph estimate.
+  Each card explains its machine/Backend compatibility, memory fit and slot-ranking rule; the All models tab and
+  **Browse all models** action remain available even when no suggestion qualifies. Text slots require a runnable,
+  non-experimental text candidate. The multimodal slot is selected independently from fitting media-capable variants,
+  so a single `basal-omni-1.0` multimodal suggestion can appear when no text candidate is runnable. The API only offers
+  that card when its media Execution mode is compatible with the host. This explains selection, not model quality:
+  quality and speed labels are catalog heuristics, not measured benchmarks.
+  There are up to five slots: Recommended, Best quality, Fastest, Lightest and Multimodal. A slot with no eligible
+  candidate is omitted; Best quality and Fastest are also omitted when their model duplicates another core slot.
   Loads still enforce the configured Fleet budget, keep-free reserve and existing reservations; recommendations are
   estimates, not a reservation or an Inference test. A selected Backend opens its recommendation's load options for
   review, retaining the Saved revision and other inputs. Leave **Remember** unchecked to load this choice without
