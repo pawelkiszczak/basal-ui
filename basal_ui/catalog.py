@@ -115,9 +115,12 @@ def _suggestion(slot: str, model_id: str, code: str, *, reasons: list[str], **pa
     return {"slot": slot, "id": model_id, "why": text, "why_code": code, "why_params": params, "reasons": reasons}
 
 
-def _suggestion_reasons(slot: str, item: "Assessment") -> list[str]:
+def _suggestion_reasons(slot: str, item: "Assessment", *, preferred_format_selected: bool | None = None) -> list[str]:
     reasons = []
-    if item.runnable or item.media_mode:
+    mode_available = (
+        item.media_mode is not None and item.media_reason is None if slot == "multimodal" else item.runnable
+    )
+    if mode_available:
         reasons.append("This model is compatible with an available Backend and Execution mode on this machine.")
     if item.fit_now == "unknown":
         memory_reason = {
@@ -137,6 +140,9 @@ def _suggestion_reasons(slot: str, item: "Assessment") -> list[str]:
             "recommended": (
                 "Preferred family and format; 4.5B is chosen when it fits comfortably, otherwise mini or the "
                 "smallest available tier."
+                if preferred_format_selected
+                else "Preferred family; selected for memory fit because the preferred format is unavailable or does "
+                "not fit."
             ),
             "best_quality": "Largest tier with a comfortable memory fit.",
             "fastest": "Mini-tier heuristic, not measured throughput.",
@@ -681,7 +687,9 @@ def suggest(items: list[Assessment], hw: Hardware, *, packed: bool = True) -> li
                     "recommended",
                     v.id,
                     code,
-                    reasons=_suggestion_reasons("recommended", recommended),
+                    reasons=_suggestion_reasons(
+                        "recommended", recommended, preferred_format_selected=v.label == preferred_format(hw)
+                    ),
                     **params,
                 )
             )

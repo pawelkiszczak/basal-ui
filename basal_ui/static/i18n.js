@@ -968,6 +968,7 @@ const PL = {
   "Largest tier with a comfortable memory fit.": "Największy rozmiar modelu z komfortowym dopasowaniem pamięci.",
   "Mini-tier heuristic, not measured throughput.": "Heurystyka dla rozmiaru mini, a nie zmierzona przepustowość.",
   "Preferred family and format; 4.5B is chosen when it fits comfortably, otherwise mini or the smallest available tier.": "Preferowana rodzina i format; 4.5B jest wybierany, gdy mieści się komfortowo, w przeciwnym razie mini lub najmniejszy dostępny rozmiar.",
+  "Preferred family; selected for memory fit because the preferred format is unavailable or does not fit.": "Preferowana rodzina; wybrano format dopasowany do pamięci, ponieważ preferowany format jest niedostępny lub się nie mieści.",
   "This model is compatible with an available Backend and Execution mode on this machine.": "Ten model jest zgodny z dostępnym Backendem i trybem wykonania na tym komputerze.",
   "Runnable recurrent model in the preferred available format.": "Uruchamialny model rekurencyjny w preferowanym dostępnym formacie.",
   "Memory & storage": "Pamięć i przechowywanie",

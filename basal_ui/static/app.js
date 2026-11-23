@@ -225,7 +225,7 @@ function renderSuggestions(suggestions) {
     return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p><ul class="suggestion-reasons">${reasons}</ul><p class="suggestion-estimate-note">${t('Memory fit is an estimate, not a reservation or an Inference test.')}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
   }).join('')}</div>${browseAll}`;
 }
-$('#suggested').addEventListener('click',event=>{if(event.target.closest('.suggestion-catalog-link'))selectModelsTab('all');});
+$('#suggested').addEventListener('click',event=>{if(event.target.closest('.suggestion-catalog-link')){selectModelsTab('all');$('#allModelsTab').focus();}});
 document.addEventListener('click',e=>{const b=e.target.closest('.model-card-open');if(b)act(()=>openModelCard(b.dataset.id));});
 async function openModelCard(id) {
   const c=await api(`/api/models/card?id=${encodeURIComponent(id)}`);
