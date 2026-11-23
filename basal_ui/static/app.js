@@ -93,7 +93,7 @@ document.addEventListener('keydown',event=>{
   const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
   if(event.key==='Tab'&&!event.shiftKey&&event.target===menu?.querySelector('summary')){
     const first=menu.querySelector('.header-menu-panel button:not(:disabled)');
-    if(first){event.preventDefault();requestAnimationFrame(()=>first.focus());}
+    if(first){event.preventDefault();first.focus();}
   }
 });
 document.addEventListener('keydown',e=>{
