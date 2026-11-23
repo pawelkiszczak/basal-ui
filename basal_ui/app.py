@@ -33,7 +33,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, engine, hardware, history_audio, settings
+from . import backends, catalog, engine, hardware, history_audio, memory, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fetch import FetchError, FetchManager
@@ -121,6 +121,7 @@ def create_app(
     preset_fetch_manager=None,
     mcp_importer=None,
     schedules=None,
+    memory_providers=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
     history = history or History(settings_mod.history_path())
@@ -780,6 +781,10 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
         return {"deleted": name}
+
+    @app.get("/api/memory/live")
+    def live_memory():
+        return memory.snapshot(fleet, memory.PROVIDERS if memory_providers is None else memory_providers, hardware_fn)
 
     @app.get("/api/memory")
     def get_memory():

@@ -1593,6 +1593,28 @@ class Fleet:
             "jobs": self.jobs.states(),
         }
 
+    def memory_snapshot(self):
+        """Return cached child RSS and lightweight runner state without status probes or settings reads."""
+        with self.lock:
+            runners = list(self.runners.values())
+            rss = dict(self._rss_cache[1])
+        result = []
+        for runner in runners:
+            with runner.lock:
+                if runner.state == "idle":
+                    continue
+                result.append(
+                    {
+                        "id": runner.model,
+                        "kind": "basal",
+                        "state": runner.state,
+                        "rss_bytes": rss.get(runner.pid) if runner.pid else None,
+                        "base_url": runner.base_url,
+                        "mode": runner.mode,
+                    }
+                )
+        return result
+
     def _rss(self):
         """rss_by_pgid() at most every RSS_INTERVAL_S: the UI polls every second while a model loads."""
         now = time.monotonic()

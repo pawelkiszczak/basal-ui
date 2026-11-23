@@ -50,6 +50,12 @@ after the view, matching keyboard navigation order. [Mobile example](images/quic
 [Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
 Manager does not add requests. **Models** opens Suggested (default) and All models.
 
+**Live memory** on Dashboard shows host RAM and measured discrete GPU usage alongside each loaded runtime's process RSS
+and Engine state-cache bytes when active. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when
+unavailable; Engine context limits are tokens, not bytes. The System and other apps remainder appears only when host
+and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
+is unavailable; GPU allocations are not counted in both RAM and GPU totals.
+
 **Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
 Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load
 options. Keep it open to see startup, then choose **Use** when ready; the current view's model selector is updated

@@ -1,0 +1,154 @@
+from fastapi.testclient import TestClient
+
+from basal_ui import memory
+from tests.test_ui_app import app_for
+
+HOST = {"ram_total": 100, "ram_used": 90, "unified": False, "gpu": [], "accounting": "resident"}
+
+
+def _observation(accounting="resident", process_bytes=10, model_bytes=10, **model_fields):
+    return {
+        "runtime": "sample",
+        "label": "Sample runtime",
+        "status": "ok",
+        "accounting": accounting,
+        "process_bytes": process_bytes,
+        "models": [
+            {
+                "id": "sample-model",
+                "bytes": model_bytes,
+                "pool": "ram",
+                "context_bytes": None,
+                "cache_bytes": None,
+                "cold_cache_bytes": None,
+                **model_fields,
+            }
+        ],
+        "note": None,
+    }
+
+
+def _fleet(models=()):
+    return type("FleetStub", (), {"memory_snapshot": lambda self: list(models)})()
+
+
+def test_non_unified_fleet_rss_reports_system_remainder(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+    monkeypatch.setattr(memory, "_cache_bytes", lambda _: None)
+    fleet = _fleet([{"id": "model", "kind": "basal", "state": "ready", "rss_bytes": 10}])
+
+    result = memory.snapshot(fleet, [], hardware_fn=lambda: None)
+
+    assert result["runtimes"][0]["accounting"] == "resident"
+    assert result["runtimes"][0]["process_bytes"] == 10
+    assert result["other"] == 80
+
+
+def test_incompatible_accounting_hides_remainder(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    result = memory.snapshot(_fleet(), [lambda: _observation("api")], hardware_fn=lambda: None)
+
+    assert result["other"] is None
+
+
+def test_unified_fleet_rss_is_counted_once_and_remainder_is_unavailable(monkeypatch):
+    host = {**HOST, "unified": True}
+    monkeypatch.setattr(memory, "_host", lambda _: host)
+    monkeypatch.setattr(memory, "_cache_bytes", lambda _: None)
+    fleet = _fleet([{"id": "model", "kind": "basal", "state": "ready", "rss_bytes": 25}])
+
+    result = memory.snapshot(fleet, [], hardware_fn=lambda: None)
+
+    runtime = result["runtimes"][0]
+    assert runtime["process_bytes"] == 25
+    assert runtime["models"][0]["bytes"] == 25
+    assert runtime["models"][0]["pool"] == "unified"
+    assert runtime["accounting"] == "rss_excludes_gpu"
+    assert "RSS excludes GPU allocations" in runtime["note"]
+    assert result["host"]["gpu"] == []
+    assert result["other"] is None
+
+
+def test_failed_provider_isolated_and_zero_remains_measured(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    def fail():
+        raise RuntimeError("offline")
+
+    measured = lambda: _observation(process_bytes=0, model_bytes=0, cache_bytes=0)
+    result = memory.snapshot(_fleet(), [fail, measured], hardware_fn=lambda: None)
+
+    assert result["runtimes"][1]["status"] == "unavailable"
+    assert result["runtimes"][2]["process_bytes"] == 0
+    assert result["runtimes"][2]["models"][0]["bytes"] == 0
+    assert result["runtimes"][2]["models"][0]["cache_bytes"] == 0
+
+
+def test_unknown_component_stays_none_and_disables_remainder(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    result = memory.snapshot(
+        _fleet(), [lambda: _observation(process_bytes=None, model_bytes=None)], hardware_fn=lambda: None
+    )
+
+    assert result["runtimes"][1]["process_bytes"] is None
+    assert result["runtimes"][1]["models"][0]["bytes"] is None
+    assert result["runtimes"][1]["models"][0]["context_bytes"] is None
+    assert result["runtimes"][1]["models"][0]["cache_bytes"] is None
+    assert result["other"] is None
+
+
+def test_live_route_returns_snapshot_without_changing_memory_settings(tmp_path, monkeypatch):
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+    app, _ = app_for(tmp_path, [], memory_providers=[lambda: _observation()])
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        live = client.get("/api/memory/live").json()
+        settings = client.get("/api/memory").json()
+
+    assert set(live) == {"time", "host", "runtimes", "other"}
+    assert live["runtimes"][1]["runtime"] == "sample"
+    assert live["runtimes"][1]["models"][0]["bytes"] == 10
+    assert settings["settings"]["reserve_bytes"] > 0
+
+
+def test_process_rss_sums_matching_commands_and_reports_absence(monkeypatch):
+    out = "  2048 /usr/local/bin/ollama serve\n1024 /usr/local/bin/ollama runner --model x\n  512 /bin/zsh\n"
+    monkeypatch.setattr(memory.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": out})())
+
+    assert memory.process_rss(r"\bollama\b") == 3072 * 1024
+    assert memory.process_rss(r"\bvllm\b") is None
+
+
+def test_remainder_subtracts_measured_process_of_runtime_with_api_down(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+    down = {**_observation(process_bytes=30), "status": "unreachable", "models": []}
+
+    result = memory.snapshot(_fleet(), [lambda: down], hardware_fn=lambda: None)
+
+    assert result["other"] == 60
+
+
+def test_failed_provider_makes_remainder_unknown(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    def fail():
+        raise RuntimeError("offline")
+
+    assert memory.snapshot(_fleet(), [fail], hardware_fn=lambda: None)["other"] is None
+
+
+def test_dotted_provider_is_imported_lazily(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    module = ModuleType("tests.fake_memory_provider")
+    module.observe = lambda: _observation()
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    result = memory.snapshot(_fleet(), ["tests.fake_memory_provider.observe"], hardware_fn=lambda: None)
+
+    assert result["runtimes"][1]["runtime"] == "sample"

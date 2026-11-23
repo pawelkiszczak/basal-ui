@@ -5,6 +5,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const gb = n => n == null ? '—' : `${(Number(n) / 1e9).toFixed(1)} GB`;
 let modelData = [], hw = null, examples = [], pollTimer = null, loadedMedia = [], selectedMedia = [], mediaSelection = 0, statusSequence = 0;
 let trafficData=null, trafficHistory=null, trafficError=null, trafficRecentError=null, trafficRange=['1h','24h','7d','30d','all'].includes(localStorage.getItem('basal-ui.dashboard-range'))?localStorage.getItem('basal-ui.dashboard-range'):'24h', refreshSeconds=[1,2,5,15,30].includes(Number(localStorage.getItem('basal-ui.dashboard-refresh')))?Number(localStorage.getItem('basal-ui.dashboard-refresh')):1, trafficGeneration=0, trafficInFlight=false, trafficPending=false, statusAvailable=false, statsAvailable=false, statusFailureNotified=false;
+let memoryData=null,memoryError=null,memorySequence=0,memoryInFlight=false;
 let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
@@ -588,8 +589,22 @@ document.addEventListener('keydown',event=>{
 });
 
 function renderDashboard() {
-  window.updateDashboard({traffic:trafficData,history:trafficHistory,range:trafficRange,refreshSeconds,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError,recentError:trafficRecentError});
+  window.updateDashboard({traffic:trafficData,history:trafficHistory,range:trafficRange,refreshSeconds,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError,recentError:trafficRecentError,memory:memoryData,memoryError});
 }
+async function refreshMemory() {
+  if ($('#dashboard').hidden || memoryInFlight) return;
+  memoryInFlight=true;
+  const sequence=++memorySequence;
+  try {
+    const data=await api('/api/memory/live');
+    if(sequence===memorySequence&&!$('#dashboard').hidden){memoryData=data;memoryError=null;renderDashboard();}
+  } catch(error) {
+    if(sequence===memorySequence&&!$('#dashboard').hidden){memoryData=null;memoryError=error.message;renderDashboard();}
+  } finally {
+    memoryInFlight=false;
+  }
+}
+
 async function refreshTraffic() {
   if ($('#dashboard').hidden) return;
   if (trafficInFlight) { trafficPending=true; return; }
@@ -646,6 +661,7 @@ async function refreshStatus() {
   })();
   statusRefresh=request;
   try{await request;}finally{if(statusRefresh===request)statusRefresh=null;}
+  if (!$('#dashboard').hidden) refreshMemory();
 }
 async function loadExamples() {
   try {

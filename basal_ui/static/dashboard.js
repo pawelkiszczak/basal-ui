@@ -5,14 +5,15 @@
   const decimal = new Intl.NumberFormat(LANG, {maximumSignificantDigits:3});
   const clock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit'});
   const preciseClock = new Intl.DateTimeFormat(LANG, {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  let state = {traffic:null,history:null,stats:null,status:null,error:null,recentError:null,range:'24h'}, metric = 'input_tokens_per_s';
+  let state = {traffic:null,history:null,stats:null,status:null,error:null,recentError:null,range:'24h',memory:null,memoryError:null}, metric = 'input_tokens_per_s';
   const q = selector => root.querySelector(selector);
   const number = (value, fractional=false) => Number.isFinite(value) ? (fractional ? decimal : integer).format(value) : '—';
   const setText = (selector, text) => {const node=q(selector);if(node.textContent!==text)node.textContent=text;};
   const text = (node,value) => {if(node.textContent!==value)node.textContent=value;};
   const html = (node,value) => {if(node.innerHTML!==value)node.innerHTML=value;};
 
-  root.innerHTML = `<div class="traffic-toolbar">
+  root.innerHTML = `<section class="card memory-panel" aria-labelledby="memoryTitle"><div class="traffic-heading"><div><h2 id="memoryTitle">${t('Live memory')}</h2><p>${t('Host and loaded runtime measurements')}</p></div><span id="memoryTime" class="traffic-scope"></span></div><div id="memoryContent"></div></section>
+  <div class="traffic-toolbar">
     <div><strong>${t('Recorded Decision traffic')}</strong><p>${t('Recorded traffic collected from this app')}</p></div>
     <div class="traffic-controls">
       <label class="traffic-window">${t('Time range')}<select class="select" id="trafficWindow">${[['1h','Last hour'],['24h','Last 24 hours'],['7d','Last 7 days'],['30d','Last 30 days'],['all','All time']].map(([value,label])=>`<option value="${value}">${t(label)}</option>`).join('')}</select></label>
@@ -30,6 +31,30 @@
   </div>
   <section class="card traffic-endpoints"><div class="traffic-heading"><div><h2>${t('Endpoint traffic')}</h2><p>${t('Recent recorded Decisions by public entry point')}</p></div><span class="traffic-scope">${t('Last 15 minutes')}</span></div><div class="traffic-table-wrap"><table><thead><tr><th>${t('Endpoint')}</th><th>${t('Requests')}</th><th>req/s</th><th title="${t('Percentile of bounded latency samples, not every Decision')}">${t('p95 (sampled)')} · ms</th><th>${t('Errors')}</th></tr></thead><tbody id="trafficEndpoints"></tbody></table></div></section>
   <p class="traffic-definition">${t('Input tokens processed per second, not generated output tokens.')} ${t('Lifetime model usage is shared with Model manager; dated traffic history is shared across apps using the same settings file.')}</p>`;
+
+  const bytes = value => value == null ? t('Not measured') : `${(value / 1024**3).toFixed(2)} GiB`;
+  const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  function renderMemory() {
+    const memory=state.memory, host=memory?.host, target=q('#memoryContent');
+    setText('#memoryTime',memory?.time?preciseClock.format(new Date(memory.time*1000)):'');
+    if(!memory||state.memoryError){html(target,`<p class="memory-unavailable">${t('Memory data unavailable')}</p>`);return;}
+    const runtimes=memory.runtimes||[];
+    const measured=runtimes.filter(runtime=>runtime.process_bytes!=null);
+    const hasBreakdown=memory.other!=null;
+    const used=host?.ram_used, total=host?.ram_total;
+    const barDescription=hasBreakdown
+      ? [...measured.map(runtime=>`${runtime.label}: ${bytes(runtime.process_bytes)}`),`${t('System and other apps')}: ${bytes(memory.other)}`].join('; ')
+      : t('System and other apps: breakdown unavailable');
+    const segments=hasBreakdown?measured.map((runtime,index)=>`<span class="memory-segment memory-segment-${index%4}" style="width:${Math.min(100,runtime.process_bytes/total*100)}%" title="${escape(runtime.label)} · ${bytes(runtime.process_bytes)}"></span>`).join('')+`<span class="memory-other" style="width:${Math.min(100,memory.other/total*100)}%" title="${t('System and other apps')} · ${bytes(memory.other)}"></span>`:'';
+    const hostFill=used==null||!total?'0':Math.min(100,used/total*100);
+    const barContent=hasBreakdown?segments:`<span class="memory-host-used" style="width:${hostFill}%"></span>`;
+    const runtimeRows=runtimes.map(runtime=>{
+      const models=runtime.models||[];
+      return `<section class="memory-runtime"><div class="memory-runtime-head"><strong>${escape(runtime.label)}</strong><span>${bytes(runtime.process_bytes)}</span></div>${models.length?models.map(model=>`<article class="memory-model"><div class="memory-model-head"><strong>${escape(model.id)}</strong><span>${bytes(model.bytes)}</span></div><dl><div><dt>${t('Context bytes')}</dt><dd>${bytes(model.context_bytes)}</dd></div><div><dt>${t('Hot cache')} (${t('Hot cache pool: {pool}').replace('{pool}',model.cache_pool||'RAM')})</dt><dd>${bytes(model.cache_bytes)}</dd></div><div><dt>${t('Disk-backed cold cache')}</dt><dd>${bytes(model.cold_cache_bytes)}</dd></div></dl></article>`).join(''):`<p class="memory-unavailable">${runtime.status==='empty'?t('No loaded models'):t('Runtime memory unavailable')}</p>`}${runtime.note?`<p class="memory-note">${escape(t(runtime.note))}</p>`:''}</section>`;
+    }).join('');
+    const gpu=(host?.gpu||[]).map(device=>`<div class="memory-device"><strong>${escape(device.name)}</strong><span>${bytes(device.used)} / ${bytes(device.total)}</span></div>`).join('');
+    html(target,`<div class="memory-host"><div class="memory-runtime-head"><strong>${t('Host RAM')}</strong><span>${bytes(used)} / ${bytes(total)}</span></div><div class="memory-track" role="img" aria-label="${escape(`${t('Host RAM')}: ${bytes(used)} / ${bytes(total)}; ${barDescription}`)}">${barContent}</div><p>${memory.other==null?t('System and other apps: breakdown unavailable'):`${t('System and other apps')}: ${bytes(memory.other)}`}</p></div><section class="memory-gpu"><h3>${t('Discrete GPU memory')}</h3>${gpu||`<p class="memory-unavailable">${t('Not measured')}</p>`}</section>${host?.unified?`<p class="memory-note">${t('Unified memory is shared; allocations are counted once.')}</p>`:''}<div class="memory-runtimes">${runtimeRows}</div>`);
+  }
 
   function renderChart(history) {
     const container=q('#trafficChart');
@@ -137,6 +162,7 @@
     setText('#traffic-errors-note',`${t('Failed Decisions')}: ${number(available?totalErrors:null)}`);
     setText('#trafficNotice',state.error?t('Traffic unavailable: {message}',{message:state.error}):available?'':t('Waiting for traffic data…'));
     q('#trafficNotice').classList.toggle('traffic-error',Boolean(state.error));
+    renderMemory();
     const started=history?.collection_started;
     setText('#trafficCollection',started?t('Collection started {time}',{time:new Intl.DateTimeFormat(LANG,{dateStyle:'medium',timeStyle:'short'}).format(new Date(started*1000))}):t('Collection will start when the first Decision is recorded.'));
     renderChart(history);
