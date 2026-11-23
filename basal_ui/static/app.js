@@ -1823,9 +1823,10 @@ async function copyText(text, success=t('Copied to clipboard')) {
     try { area.select(); copied=document.execCommand('copy'); }
     catch {}
     finally { area.remove(); }
-    if(!copied) { toast(t('Copy failed — select the text and copy manually'),'error'); return; }
+    if(!copied) { toast(t('Copy failed — select the text and copy manually'),'error'); return false; }
   }
   toast(success);
+  return true;
 }
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));

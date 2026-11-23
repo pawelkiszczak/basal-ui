@@ -29,6 +29,7 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   and experimental rank questions when the installed Engine provides them.
 - Fetch a public HTTP(S) page into editable State with provenance. Replay restores the recorded State without a
   second fetch and preserves native question fields and truncation details.
+- Generate API examples beside the request inputs and copy the displayed snippet with its own control.
 - Record a microphone clip as PCM WAV in the Playground. History can retain bounded audio copies when explicitly
   enabled, and Replay retrieves retained clips on demand. [Recording audio](USAGE.md#recording-audio-in-the-playground)
 - Keep the Playground media picker within its panel and wrap full selected filenames; style **Compare models** as a
