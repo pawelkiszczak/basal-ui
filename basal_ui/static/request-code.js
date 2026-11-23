@@ -79,6 +79,7 @@ window.RequestCode = (() => {
   }
   function invalidate() {
     generation++;
+    if (!root) return;
     snippet = '';
     $('#requestCodeText').textContent = '';
     const copy = $('#copyRequestCode');
