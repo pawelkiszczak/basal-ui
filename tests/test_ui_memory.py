@@ -29,7 +29,7 @@ def _observation(accounting="resident", process_bytes=10, model_bytes=10, **mode
 
 
 def _fleet(models=()):
-    return type("FleetStub", (), {"status": lambda self: {"models": list(models)}})()
+    return type("FleetStub", (), {"memory_snapshot": lambda self: list(models)})()
 
 
 def test_non_unified_fleet_rss_reports_system_remainder(monkeypatch):
@@ -129,3 +129,26 @@ def test_remainder_subtracts_measured_process_of_runtime_with_api_down(monkeypat
     result = memory.snapshot(_fleet(), [lambda: down], hardware_fn=lambda: None)
 
     assert result["other"] == 60
+
+
+def test_failed_provider_makes_remainder_unknown(monkeypatch):
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    def fail():
+        raise RuntimeError("offline")
+
+    assert memory.snapshot(_fleet(), [fail], hardware_fn=lambda: None)["other"] is None
+
+
+def test_dotted_provider_is_imported_lazily(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    module = ModuleType("tests.fake_memory_provider")
+    module.observe = lambda: _observation()
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(memory, "_host", lambda _: HOST)
+
+    result = memory.snapshot(_fleet(), ["tests.fake_memory_provider.observe"], hardware_fn=lambda: None)
+
+    assert result["runtimes"][1]["runtime"] == "sample"
