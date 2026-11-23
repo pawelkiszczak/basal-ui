@@ -58,6 +58,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
 - Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
   without treating Engine context token limits as bytes or double-counting unified memory.
+- Show confirmed vLLM model ids and available process RSS and KV-cache usage on Dashboard without treating cache
+  percentages as bytes. [Live memory](API.md#local-app-management-api)
 - Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Use dated counts for
   window rates, keep lifetime Usage separate, and show the effective time range for overlapping source buckets.
   Remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.

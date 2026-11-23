@@ -195,3 +195,6 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
         else None
     )
     return {"time": time.time(), "host": host, "runtimes": runtimes, "other": other}
+
+
+register_provider("basal_ui.runtimes.vllm.observe")

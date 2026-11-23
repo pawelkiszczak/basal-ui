@@ -20,15 +20,25 @@ The model options endpoint reports availability of each server limit in `limits_
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
 `GET /api/memory/live` returns the live observation snapshot: `time`, `host` (RAM, unified-memory flag, measured
-discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
-On non-unified hosts process RSS and host RAM are compared only where their basis is known to agree. Linux
+discrete GPUs and accounting basis), `runtimes` (per-runtime process bytes and model/cache measurements) and `other`.
+Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. Linux
 `ram_used` and `other` are `null` because `MemAvailable` and RSS account for reclaimable pages differently. On
-unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include GPU allocations.
-`other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
-those totals share the host's accounting basis and no listed runtime has an unknown total. Fleet totals include every
-measured process, while model breakdowns list ready models only. `cache_bytes` is the Engine state cache only while
-active, and `cache_pool` identifies its memory pool (`vram`, `ram`, or `unified`); context bytes and disk-backed
-cold-cache bytes remain `null` when unavailable. Engine context token limits are not byte measurements. The existing
+unified-memory hosts process RSS excludes GPU allocations, so `other` is `null`.
+`other` subtracts every runtime with measured process bytes, regardless of API status, and is present only when host
+and runtime accounting bases match and every runtime total is known. Fleet totals include every measured process,
+while model breakdowns list ready models only. `cache_bytes` is the Engine state cache only while active, and
+`cache_pool` identifies its memory pool (`vram`, `ram`, or `unified`); context bytes and disk-backed cold-cache bytes
+remain `null` when unavailable. Engine context limits are tokens, not byte measurements.
+
+For vLLM, `BASAL_UI_VLLM_URL` selects the loopback server origin (default `http://127.0.0.1:8000`). vLLM is
+identified independently through its `/version` response or vLLM metric families; `GET /v1/models` supplies model
+IDs, with [`max_model_len`](https://github.com/vllm-project/vllm/pull/4643) required for base models but not adapter
+cards (`parent` is non-null). Authenticated `/v1/models` does not prevent independent metrics collection. The
+optional `cache` list contains each reported vLLM KV-cache gauge as `{engine, usage_percent}`; readings are not
+combined across data-parallel engines because their fractions do not define a runtime-wide aggregate.
+([vLLM metrics docs](https://docs.vllm.ai/en/stable/design/metrics/)). Percentages are not converted to bytes;
+`process_bytes` is a verified vLLM process-tree RSS measurement that excludes basal-ui Fleet processes and includes
+vLLM runtime overhead. The accounting is `rss_excludes_gpu` on Apple Silicon and `resident` elsewhere. The existing
 `GET` and `PUT /api/memory` routes continue to manage memory settings.
 
 
