@@ -109,6 +109,14 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   *Lightest* offers the recurrent pico family. *Multimodal* selects fitting native image/audio checkpoints, including
   when the media add-on is missing; such a card explains the missing dependency and links to Backends instead of
   pretending media can load. Media estimates use their eager/vLLM path, not a text CUDA-graph estimate.
+  Each card explains its machine/Backend compatibility, memory fit and slot-ranking rule; the All models tab and
+  **Browse all models** action remain available even when no suggestion qualifies. Text slots require a runnable,
+  non-experimental text candidate. The multimodal slot is selected independently from fitting media-capable variants,
+  so a single `basal-omni-1.0` multimodal suggestion can appear when no text candidate is runnable. The API only offers
+  that card when its media Execution mode is compatible with the host. This explains selection, not model quality:
+  quality and speed labels are catalog heuristics, not measured benchmarks.
+  There are up to five slots: Recommended, Best quality, Fastest, Lightest and Multimodal. A slot with no eligible
+  candidate is omitted; Best quality and Fastest are also omitted when their model duplicates another core slot.
   Loads still enforce the configured Fleet budget, keep-free reserve and existing reservations; recommendations are
   estimates, not a reservation or an Inference test. A selected Backend opens its recommendation's load options for
   review, retaining the Saved revision and other inputs. Leave **Remember** unchecked to load this choice without
@@ -508,6 +516,20 @@ thresholds are enabled; changing the comparison rechecks them. A fit uses Active
 otherwise Saved load settings. Reports show available identity digests, kept sources, refuted thresholds, ICC and
 design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
 [Advanced calibration controls](images/calibration-advanced.png).
+
+The help beside the calibration choices explains the labelled JSONL input, shows how a Selected calibration changes a
+choice's confidence using the Engine's temperature scaling, and explains when it applies and how to return to the
+Shipped calibration.
+
+The input accepts one labelled Decision per JSONL line with a non-empty `questions` object, a `state`, and a `gold`
+answer for each question (simple `basal-run` records with `gold` are also accepted). For example, with choice
+probabilities 0.80 and 0.20 and a Selected calibration with effective temperature 2 for a two-option question, basal-serve maps each
+probability to `p^(1/T) / Σp^(1/T)`: the top confidence becomes `√0.80 / (√0.80 + √0.20) = 0.667` (66.7%) instead of
+80%, while the top choice stays the same. The Engine first selects the option-count bucket (2–10 options) and then uses
+its temperature; `temperature_per_prim` is only the fallback when no bucket applies. This illustrates the method, not a
+promised fit result. If a Shipped row is available, select it in the **Use** column to return to the calibration
+supplied for the execution configuration. When only saved rows are present and no local snapshot is available, no
+Shipped row appears. A loaded model needs a restart after changing the selection.
 
 ## Fine-tuning on labelled Decisions
 
