@@ -3,8 +3,8 @@
 import contextlib
 import json
 import os
+import secrets
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -110,7 +110,7 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
             pass
 
         def do_GET(self):
-            if self.path != "/v1/models":
+            if self.path != f"/{credential}/v1/models":
                 self.send_error(404)
                 return
             content = json.dumps(
@@ -129,7 +129,7 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 origin = urlsplit(self.headers.get("Origin", ""))
                 allowed = {"127.0.0.1", "localhost", "::1"}
                 if (
-                    self.path != "/v1/systemone"
+                    self.path != f"/{credential}/v1/systemone"
                     or host.hostname not in allowed
                     or host.username is not None
                     or host.password is not None
@@ -243,11 +243,12 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 with contextlib.suppress(OSError):
                     connection.shutdown(socket.SHUT_RDWR)
 
+    credential = secrets.token_urlsafe(32)
     server = Server(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, name="basal-ui-scheduled-batch", daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}"
+        yield f"http://127.0.0.1:{server.server_port}/{credential}"
     finally:
         server.shutdown()
         server.close_pending()

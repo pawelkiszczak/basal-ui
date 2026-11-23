@@ -120,6 +120,15 @@ def _group_alive(pgid) -> bool:
     return True
 
 
+def child_environment(overrides=None, *, inherit=True):
+    """Build a subprocess environment without the parent process's admin credential."""
+    environment = os.environ.copy() if inherit else dict(overrides or {})
+    if inherit and overrides:
+        environment.update(overrides)
+    environment.pop("BASAL_UI_ADMIN_KEY", None)
+    return environment
+
+
 def run_tool(job, module, argv, out_path=None, on_json=None, env=None):
     """`python -m basal.<module> argv` (an engine tool: basal-loadtest, basal-bench, basal-run) for a job: its output
     lines go to the job's log (each JSON object line also to on_json), a cancel stops it and everything it started.
@@ -141,8 +150,7 @@ def run_tool(job, module, argv, out_path=None, on_json=None, env=None):
         encoding="utf-8",
         errors="replace",
         bufsize=1,
-        env=env,
-        **options,
+        env=child_environment(env, inherit=env is None),
     )
     finished = threading.Event()
 

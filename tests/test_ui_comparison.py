@@ -603,6 +603,8 @@ def test_batch_proxy_refuses_host_and_origin_and_accepts_local_client(app_client
                 url + "/v1/systemone", content=json.dumps(BODY), headers={"Content-Type": "text/plain", **headers}
             )
             assert response.status_code == 403
+        unauthenticated = url.rsplit("/", 1)[0] + "/v1/systemone"
+        assert httpx.post(unauthenticated, json=BODY).status_code == 403
         assert child.seen == []
         assert httpx.post(url + "/v1/systemone", json=BODY).status_code == 200
     assert child.seen[-1][1]["model"] == "provider/model"

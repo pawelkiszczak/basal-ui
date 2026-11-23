@@ -20,7 +20,7 @@ from . import catalog, hardware, settings
 from . import options as load_options
 from .compat import DECISIONS, child_request, openai_error_body
 from .history import make_record
-from .jobs import Jobs, LogBuffer, terminate
+from .jobs import Jobs, LogBuffer, child_environment, terminate
 
 START_TIMEOUT_S = 1800  # --mode fast compiles for 4-17 minutes on the first start (README, Serving modes)
 MODEL_LOGS_KEPT = 10  # log buffers of unloaded models kept for the Logs view
@@ -208,7 +208,7 @@ class Runner:
     def _poll_health(self, gen, url):
         health = {"reachable": False, "running": None, "queued": None}
         try:
-            response = httpx.get(url + "/health", timeout=0.5)
+            response = httpx.get(url + "/health", timeout=0.5, trust_env=False)
             data = response.json()
             status = data.get("status") if isinstance(data, dict) else None
             health["reachable"] = (response.status_code == 200 and status == "ok") or (
@@ -387,7 +387,7 @@ class Runner:
         attempts, error = (5 if media else 3), None
         for attempt in range(attempts):
             try:
-                response = httpx.get(self.base_url + "/v1/models", timeout=1)
+                response = httpx.get(self.base_url + "/v1/models", timeout=1, trust_env=False)
                 response.raise_for_status()
                 models = response.json().get("models", [])
                 entry = models[0] if models else None
@@ -441,10 +441,9 @@ class Runner:
                     encoding="utf-8",
                     errors="replace",
                     bufsize=1,
-                    env={
-                        **os.environ,
-                        **({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"} if self.local_only else {}),
-                    },
+                    env=child_environment(
+                        {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"} if self.local_only else {}
+                    ),
                     **options,
                 )
                 self.log_thread = log_thread = threading.Thread(target=self._read_logs, args=(proc,), daemon=True)
@@ -455,7 +454,7 @@ class Runner:
                 if proc.poll() is not None:
                     raise RuntimeError(self._exit_error(proc, log_thread))
                 try:
-                    if httpx.get(self.base_url + "/health", timeout=1).status_code == 200:
+                    if httpx.get(self.base_url + "/health", timeout=1, trust_env=False).status_code == 200:
                         entry, media_kinds = self._models_entry(media)
                         if entry is not None and "certified" not in entry:  # basal-serve 2.4.1 does not report them
                             # (2.5.0 does, from the calibration it applies; absent on a calibration mismatch: {})
@@ -551,7 +550,10 @@ class Runner:
             return reply
         response = reply(
             httpx.post(
-                self._url("/v1/systemone"), json=child_body, timeout=httpx.Timeout(120, read=self.read_timeout())
+                self._url("/v1/systemone"),
+                json=child_body,
+                timeout=httpx.Timeout(120, read=self.read_timeout()),
+                trust_env=False,
             )
         )
         response.extensions["basal.inference"] = True
@@ -622,8 +624,7 @@ class CascadeRunner:
                 argv += ["--blend", members[level["model"]]]
             argv += ["--blend-weights", *map(str, self.spec["weights"])]
         fallback = self.spec.get("fallback")
-        env = os.environ.copy()
-        env.pop("BASAL_FALLBACK_API_KEY", None)
+        env = child_environment()
         if fallback:
             argv += [
                 "--fallback",
@@ -656,7 +657,7 @@ class CascadeRunner:
                 if proc.poll() is not None:
                     raise RuntimeError(f"basal-router exited ({proc.returncode}): {self.log.last() or ''}")
                 try:
-                    if httpx.get(base_url + "/health", timeout=0.5).status_code == 200:
+                    if httpx.get(base_url + "/health", timeout=0.5, trust_env=False).status_code == 200:
                         with self.lock:
                             if gen != self.gen:
                                 raise RuntimeError("cascade start cancelled")
@@ -743,7 +744,9 @@ class CascadeRunner:
         if child_body is None:
             return reply
         timeout = httpx.Timeout(120, read=self.read_timeout())
-        return self._reply(httpx.post(self._url("/v1/systemone"), json=child_body, timeout=timeout), reply)
+        return self._reply(
+            httpx.post(self._url("/v1/systemone"), json=child_body, timeout=timeout, trust_env=False), reply
+        )
 
     async def adecide(self, client, body, path="/v1/systemone", timeout=None):
         child_body, reply = child_request(path, body)
@@ -868,7 +871,7 @@ class ComparisonRunner:
         if refusal is not None:
             return refusal
         url = self.server.get("decisions_url") or self.base_url + "/v1/systemone"
-        return self._reply(httpx.post(url, json=payload, headers=headers, timeout=120), body)
+        return self._reply(httpx.post(url, json=payload, headers=headers, timeout=120, trust_env=False), body)
 
     async def adecide(self, client, body, path="/v1/systemone"):
         refusal, payload, headers = await asyncio.to_thread(self._prepare, body)
@@ -940,9 +943,11 @@ class Fleet:
                 try:
                     key = self.settings_mod.decision_secret(server_id)
                     headers = {"Authorization": f"Bearer {key}"} if key else {}
-                    health = httpx.get(server["base_url"] + "/health", headers=headers, timeout=2)
+                    health = httpx.get(server["base_url"] + "/health", headers=headers, timeout=2, trust_env=False)
                     if health.status_code in (200, 403, 404, 405):
-                        response = httpx.get(server["base_url"] + "/v1/models", headers=headers, timeout=2)
+                        response = httpx.get(
+                            server["base_url"] + "/v1/models", headers=headers, timeout=2, trust_env=False
+                        )
                         if response.status_code == 200:
                             payload = response.json()
                             entries = payload.get("data", payload.get("models")) if isinstance(payload, dict) else None
@@ -1379,7 +1384,7 @@ class Fleet:
                     continue
                 gen, url, last_used, expected_timeout = runner.gen, runner.base_url, runner.last_used, timeout
             try:
-                response = httpx.get(url + "/health", timeout=0.5)
+                response = httpx.get(url + "/health", timeout=0.5, trust_env=False)
                 response.raise_for_status()
                 health = response.json()
                 if not isinstance(health, dict) or health.get("status") != "ok":
@@ -1496,14 +1501,16 @@ class Fleet:
         for server_id in server_ids:
             self._poll_decision_server(server_id)
         with self.lock:
-            runners = list(self.runners.values())
-        rss = self._rss() if any(r.process for r in runners) else {}
+            runners = dict(self.runners)
+        rss = self._rss() if any(runner.process for runner in runners.values()) else {}
         models = []
-        for runner in runners:
-            runner.rss_bytes = rss.get(runner.pid) if runner.pid else None
-            models.append(runner.status())
-        now = time.monotonic()
         with self.lock:
+            for model_id, runner in runners.items():
+                if self.runners.get(model_id) is not runner:
+                    continue
+                runner.rss_bytes = rss.get(runner.pid) if runner.pid else None
+                models.append(runner.status())
+            now = time.monotonic()
             memory = self._memory(sum(m["rss_bytes"] or 0 for m in models if m.get("kind") != "cascade"))
             inflight = list(self.inflight.values())
             idle_unloads = dict(self.idle_unloads)

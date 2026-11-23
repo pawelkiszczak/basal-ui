@@ -150,6 +150,10 @@ def create_app(
                 batch.validate_runner(runner)
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
+            if source.is_symlink() or source.parent.resolve() != Path(spec["input_dir"]).resolve():
+                raise RuntimeError("input must stay inside its watched directory and must not be a symbolic link")
+            if output.is_symlink() or output.parent.resolve() != Path(spec["output_dir"]).resolve():
+                raise RuntimeError("output must stay inside its configured directory and must not be a symbolic link")
             if output.resolve() == source.resolve():
                 raise RuntimeError("output must not be the input file")
             fd, name = tempfile.mkstemp(prefix=".basal-ui-schedule-", suffix=".jsonl", dir=output.parent)
@@ -1397,7 +1401,7 @@ def create_app(
             raise HTTPException(404, f"cascade {name!r} not found") from exc
         except RuntimeError as exc:
             code = "CASCADE_MEMBER_NOT_LOADED" if "member" in str(exc) else "CASCADE_START_FAILED"
-            raise HTTPException(409, {"code": code, "detail": str(exc)}) from exc
+            return JSONResponse({"detail": str(exc), "code": code}, status_code=409)
 
     @app.post("/api/cascades/{name}/stop")
     def stop_cascade(name: str):

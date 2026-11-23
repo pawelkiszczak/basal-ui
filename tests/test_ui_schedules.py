@@ -332,7 +332,7 @@ def test_edit_and_delete_do_not_drop_active_completion(client, child, tmp_path, 
     assert client.get("/api/schedules/nightly/runs").json()["runs"][0]["rows"] == 1
 
 
-def test_symlink_input_keeps_matching_name(client, tmp_path):
+def test_symlink_input_is_not_scanned(client, tmp_path):
     inputs, outputs = tmp_path / "i", tmp_path / "o"
     inputs.mkdir()
     outputs.mkdir()
@@ -340,14 +340,8 @@ def test_symlink_input_keeps_matching_name(client, tmp_path):
     source.write_text(item())
     (inputs / "export.jsonl").symlink_to(source)
     assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
-    scheduler = client.app.state.schedules
-    assert scheduler.run_due(1000)["status"] == "started"
-    job = scheduler.active[2]
-    job.thread.join(30)
-    assert not job.thread.is_alive()
-    scheduler.run_due(1001)
-    assert (outputs / "export.answers.jsonl").is_file()
-    assert not (outputs / "target.answers.jsonl").exists()
+    assert client.app.state.schedules.run_due(1000)["status"] == "no_new_files"
+    assert not list(outputs.iterdir())
 
 
 def test_publication_recovers_checkpoint_after_restart(tmp_path, monkeypatch):
@@ -615,17 +609,18 @@ def test_missing_directory_counts_errors_and_pauses(client, tmp_path):
     assert client.post("/api/schedules/nightly/pause").json()["paused"]
 
 
-def test_output_symlink_to_input_is_refused(client, tmp_path):
+def test_output_symlink_outside_destination_is_refused(client, tmp_path):
     inputs, outputs = tmp_path / "i", tmp_path / "o"
     inputs.mkdir()
     outputs.mkdir()
-    source = inputs / "a.jsonl"
-    source.write_text(item())
-    (outputs / "a.answers.jsonl").symlink_to(source)
+    (inputs / "a.jsonl").write_text(item())
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("outside")
+    (outputs / "a.answers.jsonl").symlink_to(outside)
     assert client.post("/api/schedules", json=definition(inputs, outputs, overwrite=True)).status_code == 201
     assert client.app.state.schedules.run_due(1000)["status"] == "failed"
-    assert source.read_text() == item()
-    assert "output must not be the input file" in client.get("/api/schedules/nightly/runs").json()["runs"][0]["error"]
+    assert outside.read_text() == "outside"
+    assert "symbolic link" in client.get("/api/schedules/nightly/runs").json()["runs"][0]["error"]
 
 
 def test_run_now_queues_behind_manual_batch(client, child, tmp_path, monkeypatch):

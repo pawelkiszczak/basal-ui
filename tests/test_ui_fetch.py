@@ -69,6 +69,13 @@ def test_html_and_json_content():
         fetch._content(b"pdf", "application/pdf")
 
 
+def test_non_text_json_charset_is_rejected_for_presets_and_falls_back_for_state():
+    assert fetch._content(b'{"ok":true}', "application/json; charset=base64") == ({"ok": True}, False)
+    with pytest.raises(fetch.FetchError) as error:
+        fetch._content(b'{"ok":true}', "application/json; charset=base64", presets=True)
+    assert error.value.code == "fetch_unsupported_encoding"
+
+
 def test_article_header_and_json_precision_at_fetch_boundary(monkeypatch):
     class Response:
         status = 200

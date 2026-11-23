@@ -1012,6 +1012,38 @@ def test_benchmark_decisions_leave_statistics_and_history_untouched(tmp_path, mo
     assert fleet.stats.traffic_snapshot(15)["requests"] == 1
 
 
+def test_status_skips_runner_detached_during_rss_snapshot(tmp_path, instant_start, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    fleet.load(SimpleNamespace(variant=MINI, mode="eager", est_memory_bytes=None))
+    wait_for(lambda: fleet.loaded_ids() == ["mini"])
+    runner = fleet.runners["mini"]
+    runner.process = SimpleNamespace(pid=1, poll=lambda: None)
+    entered, release = threading.Event(), threading.Event()
+    result = {}
+
+    def blocked_rss():
+        entered.set()
+        assert release.wait(5)
+        return {}
+
+    monkeypatch.setattr(fleet, "_rss", blocked_rss)
+    thread = threading.Thread(target=lambda: result.update(fleet.status()))
+    thread.start()
+    try:
+        assert entered.wait(5)
+        with fleet.lock:
+            detached, _ = fleet._detach_runner("mini")
+            fleet.retiring.pop(detached, None)
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert result["models"] == []
+    finally:
+        release.set()
+        thread.join(5)
+
+
+
 def test_status_lists_the_requests_being_answered_per_model_until_each_returns_or_fails(
     tmp_path, monkeypatch, instant_start
 ):
@@ -2793,7 +2825,7 @@ def test_cascade_start_refuses_unloaded_member(tmp_path, monkeypatch):
         assert client.post("/api/cascades", json=body).status_code == 201
         response = client.post("/api/cascades/tri/start")
         assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "CASCADE_MEMBER_NOT_LOADED"
+        assert response.json()["code"] == "CASCADE_MEMBER_NOT_LOADED"
 
 
 def test_cascade_routes_explain_engine_compatibility(tmp_path, monkeypatch):

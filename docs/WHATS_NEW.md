@@ -43,6 +43,10 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
+- Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bypass environment proxies for
+  Decision servers. Reject symlinked scheduled inputs and outputs.
+- Keep status snapshots coherent across model unloads, return Cascade error codes at the API top level, and reject
+  unsupported text codecs at the Fetch boundary.
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
