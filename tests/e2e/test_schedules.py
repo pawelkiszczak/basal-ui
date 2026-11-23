@@ -87,12 +87,24 @@ def test_schedule_selector_filters_unsupported_cascades_without_replacing_saved_
     test_pages.view(page, "batch")
     page.click("#batchSchedulesTab")
     test_pages.sync_api.expect(page.locator("[data-action=edit][data-id=saved-cascade]")).to_be_visible()
+
+    def include_cascades(route):
+        response = route.fetch()
+        data = response.json()
+        data["models"].extend(
+            {"id": name, "state": "ready", "kind": "cascade", "cascade_kind": kind, "cascade_has_fallback": fallback}
+            for name, kind, fallback in (
+                ("blend", "blend", False),
+                ("fallback", "escalate", True),
+                ("escalate", "escalate", False),
+            )
+        )
+        route.fulfill(response=response, json=data)
+
+    page.route("**/api/status", include_cascades)
+    page.evaluate("() => refreshStatus()")
+    test_pages.sync_api.expect(page.locator('#scheduleModel option[value="escalate"]')).to_have_count(1)
     state = page.evaluate("""() => {
-        const models=[...statusCache.models,
-          {id:'blend',state:'ready',kind:'cascade',cascade_kind:'blend',cascade_has_fallback:false},
-          {id:'fallback',state:'ready',kind:'cascade',cascade_kind:'escalate',cascade_has_fallback:true},
-          {id:'escalate',state:'ready',kind:'cascade',cascade_kind:'escalate',cascade_has_fallback:false}];
-        statusCache.models=models; document.dispatchEvent(new CustomEvent('app:status',{detail:{models}}));
         const select=document.querySelector('#scheduleModel');
         const visible=[...select.options].map(option=>option.value);
         document.querySelector('[data-action=edit][data-id=saved-cascade]').click();

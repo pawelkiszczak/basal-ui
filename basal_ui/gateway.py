@@ -72,6 +72,10 @@ def _group_metrics(lines):
     return [line for headers, samples in families.values() for line in (*headers, *samples)]
 
 
+def _api_entries(fleet):
+    return [entry for entry in fleet.model_entries() if (entry["entry"] or {}).get("kind") != "comparison"]
+
+
 def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0.1"):
     """The gateway's ASGI app. keys: basal_ui.auth.ApiKeys or None (no key required)."""
     from starlette.applications import Starlette
@@ -87,11 +91,8 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
     allowed_hosts = ["*"] if host in ("0.0.0.0", "::") else {host, "127.0.0.1", "localhost", "::1"}
     client: dict = {}
 
-    def api_entries():
-        return [entry for entry in fleet.model_entries() if (entry["entry"] or {}).get("kind") != "comparison"]
-
     def api_loaded_ids():
-        return [entry["id"] for entry in api_entries()]
+        return [entry["id"] for entry in _api_entries(fleet)]
 
     def error(path, status, message, code):
         if path in DECISIONS:
@@ -161,7 +162,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
         )
 
     async def models(_):
-        entries = api_entries()
+        entries = _api_entries(fleet)
         return JSONResponse(
             {
                 "object": "list",
@@ -182,44 +183,51 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
     async def health(_):
         return JSONResponse({"status": "ok", "models": api_loaded_ids()})
 
-    async def stats_route(request):
+    def admin_refusal(request):
         record = request.scope.get("basal.api_key")
         if record is not None and not record.get("admin", False):
             return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
+        return None
+
+    async def stats_route(request):
+        if (refusal := admin_refusal(request)) is not None:
+            return refusal
+        return JSONResponse(await run_in_threadpool(api_stats))
+
+    def api_stats():
         data = stats.snapshot()
-        data["models"] = {key: value for key, value in data["models"].items() if not key.startswith("comparison:")}
-        data["benchmarks"] = {
-            key: value for key, value in data["benchmarks"].items() if not key.startswith("comparison:")
-        }
-        return JSONResponse(data)
+        for section in ("models", "benchmarks"):
+            data[section] = {key: value for key, value in data[section].items() if not key.startswith("comparison:")}
+        return data
 
     async def metrics_route(request):
-        record = request.scope.get("basal.api_key")
-        if record is not None and not record.get("admin", False):
-            return JSONResponse({"error": "admin key required", "code": "FORBIDDEN"}, status_code=403)
+        if (refusal := admin_refusal(request)) is not None:
+            return refusal
         counters = ("requests", "questions", "errors", "input_tokens")
         lines = [f"# TYPE basal_ui_{key}_total counter" for key in counters]
-        lines.extend(("# TYPE basal_ui_latency_seconds gauge", "# TYPE basal_ui_latency_seconds_avg gauge"))
-        snapshot = await run_in_threadpool(stats.snapshot)
+        lines.extend(("# TYPE basal_ui_latency_quantile_seconds gauge", "# TYPE basal_ui_latency_seconds_avg gauge"))
+        snapshot = await run_in_threadpool(api_stats)
         for model, entry in snapshot["models"].items():
             label = f'model="{_label(model)}"'
             for key in counters:
                 lines.append(f"basal_ui_{key}_total{{{label}}} {entry[key]}")
             for quantile, key in (("0.5", "p50_ms"), ("0.95", "p95_ms")):
                 if entry[key] is not None:
-                    lines.append(f'basal_ui_latency_seconds{{{label},quantile="{quantile}"}} {entry[key] / 1000}')
+                    lines.append(
+                        f'basal_ui_latency_quantile_seconds{{{label},quantile="{quantile}"}} {entry[key] / 1000}'
+                    )
             if entry["avg_latency_ms"] is not None:
                 lines.append(f"basal_ui_latency_seconds_avg{{{label}}} {entry['avg_latency_ms'] / 1000}")
-        lines.extend(f"# TYPE basal_ui_traffic_{key}_total gauge" for key in ("requests", "errors"))
+        lines.extend(f"# TYPE basal_ui_traffic_{key}_15m gauge" for key in ("requests", "errors"))
         traffic = await run_in_threadpool(stats.traffic_snapshot, 15)
         for entry in traffic["endpoints"]:
             labels = f'endpoint="{_label(entry["endpoint"])}",method="{_label(entry["method"])}"'
             for key in ("requests", "errors"):
-                lines.append(f"basal_ui_traffic_{key}_total{{{labels}}} {entry[key]}")
+                lines.append(f"basal_ui_traffic_{key}_15m{{{labels}}} {entry[key]}")
         loaded, children = await run_in_threadpool(fleet.metrics_snapshot)
         lines.extend(("# TYPE basal_ui_models_loaded gauge", f"basal_ui_models_loaded {loaded}"))
         metadata = {("TYPE", f"basal_ui_{key}_total") for key in counters}
-        metadata.update(("TYPE", f"basal_ui_traffic_{key}_total") for key in ("requests", "errors"))
+        metadata.update(("TYPE", f"basal_ui_traffic_{key}_15m") for key in ("requests", "errors"))
 
         async def scrape(model, runner, generation, url):
             try:
@@ -392,11 +400,7 @@ class Gateway:
             "require_key": shown["require_key"],
             "mcp": shown["mcp"],
             "mcp_models": feature("mcp_models"),  # MCP tools take `model` and offer list_models (engine 2.5.0)
-            "models": [
-                entry["id"]
-                for entry in self.fleet.model_entries()
-                if (entry["entry"] or {}).get("kind") != "comparison"
-            ],
+            "models": [entry["id"] for entry in _api_entries(self.fleet)],
             "restart_required": (snapshot != current) if config["enabled"] else snapshot is not None,
             "error": self.error,
         }

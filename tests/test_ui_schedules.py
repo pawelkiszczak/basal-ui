@@ -90,6 +90,19 @@ def test_skip_is_not_a_checkpoint_and_run_now_is_truthful(client, tmp_path):
     assert client.get("/api/status").json()["jobs"].get("batch") is None
 
 
+def test_repeated_unloaded_skip_keeps_one_history_row(client, tmp_path):
+    inputs, outputs = tmp_path / "inputs", tmp_path / "outputs"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "one.jsonl").write_text(item())
+    assert client.post("/api/schedules", json=definition(inputs, outputs, model="offline")).status_code == 201
+    scheduler = client.app.state.schedules
+    for now in (1000, 1060, 1120):
+        assert scheduler.run_due(now)["status"] == "skipped"
+    runs = client.get("/api/schedules/nightly/runs").json()["runs"]
+    assert len(runs) == 1 and runs[0]["skipped"] == "model not loaded"
+
+
 def test_daily_catchup_and_empty_scan_clock(tmp_path, monkeypatch):
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
     scheduler = schedules.Schedules(settings, object(), None)
@@ -142,7 +155,7 @@ def test_lifecycle_owns_timer(tmp_path, monkeypatch):
         def run_due(self):
             self.called.set()
 
-        def _finish_active(self):
+        def shutdown(self):
             pass
 
     monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
@@ -175,6 +188,9 @@ def test_invalid_values_rejected(tmp_path):
             schedules.validate(definition(tmp_path, tmp_path, interval=interval))
     with pytest.raises(ValueError):
         schedules.validate(definition(tmp_path, tmp_path, concurrency=True))
+    for reason in ({}, "x" * 201):
+        with pytest.raises(ValueError, match="paused_reason"):
+            schedules.validate(definition(tmp_path, tmp_path, paused_reason=reason))
 
 
 def test_queue_drains_and_manual_batch_cannot_start(client, child, tmp_path, monkeypatch):
@@ -217,6 +233,33 @@ def test_queue_drains_and_manual_batch_cannot_start(client, child, tmp_path, mon
     assert len(client.get("/api/schedules/nightly/runs").json()["runs"]) == 2
 
 
+def test_colliding_input_names_are_refused_before_starting_batch(client, child, tmp_path):
+    inputs, outputs = tmp_path / "inputs", tmp_path / "outputs"
+    inputs.mkdir()
+    outputs.mkdir()
+    for name in ("sample.jsonl", "sample.txt"):
+        (inputs / name).write_text(item())
+    assert client.post("/api/schedules", json=definition(inputs, outputs, pattern="sample.*")).status_code == 201
+    assert client.app.state.schedules.run_due(1000)["status"] == "failed"
+    error = client.get("/api/schedules/nightly/runs").json()["runs"][0]["error"]
+    assert "sample.jsonl and sample.txt would publish the same answers file" in error
+    assert child.seen == [] and list(outputs.iterdir()) == []
+
+
+def test_two_daily_schedules_queue_on_the_same_tick(client, tmp_path):
+    inputs, outputs = tmp_path / "inputs", tmp_path / "outputs"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "one.jsonl").write_text(item())
+    for name in ("a", "b"):
+        spec = definition(inputs, outputs, id=name, interval={"daily_at": "10:00"})
+        assert client.post("/api/schedules", json=spec).status_code == 201
+    scheduler = client.app.state.schedules
+    assert scheduler.run_due(datetime(2026, 11, 6, 10, 4))["status"] == "started"
+    assert settings.schedule_state("b")["scan"]["items"] == [str(inputs / "one.jsonl")]
+    scheduler.active[2].thread.join(30)
+
+
 def test_output_creation_race_preserves_existing_data(client, child, tmp_path, monkeypatch):
     import threading
 
@@ -248,7 +291,8 @@ def test_output_creation_race_preserves_existing_data(client, child, tmp_path, m
     assert client.get("/api/schedules/nightly/runs").json()["runs"][0]["error"]
 
 
-def test_cancel_does_not_replace_output(client, child, tmp_path, monkeypatch):
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_cancel_does_not_replace_output(client, child, tmp_path, monkeypatch, shutdown):
     import threading
 
     inputs, outputs = tmp_path / "i", tmp_path / "o"
@@ -270,15 +314,26 @@ def test_cancel_does_not_replace_output(client, child, tmp_path, monkeypatch):
     child.gate.clear()
     assert scheduler.run_due(1000)["status"] == "started"
     assert called.wait(10)
-    client.delete("/api/batch")
+    if shutdown:
+        scheduler.fleet.jobs.cancel_all()
+    else:
+        client.delete("/api/batch")
     child.gate.set()
     job = scheduler.active[2]
     job.thread.join(30)
     assert not job.thread.is_alive()
-    scheduler.run_due(1001)
+    if shutdown:
+        scheduler.shutdown()
+    else:
+        scheduler.run_due(1001)
     assert list(outputs.iterdir()) == [destination]
     assert destination.read_text() == "prior answers"
-    assert client.get("/api/schedules/nightly/runs").json()["runs"][0]["cancelled"]
+    row = client.get("/api/schedules/nightly/runs").json()["runs"][0]
+    assert row["cancelled"] == ("cancelled during shutdown" if shutdown else "cancelled by user")
+    state = settings.schedule_state("nightly")
+    if shutdown:
+        assert state["scan"]["items"] == [str(inputs / "a.jsonl")]
+        assert not state.get("processed")
 
 
 def test_concurrent_process_updates_preserve_schedules(tmp_path, monkeypatch):
@@ -293,6 +348,67 @@ def test_concurrent_process_updates_preserve_schedules(tmp_path, monkeypatch):
     assert [child.wait(timeout=30) for child in children] == [0] * 4
     monkeypatch.setenv("BASAL_UI_CONFIG", str(path))
     assert {row["id"] for row in settings.schedules()} == {"0", "1", "2", "3"}
+
+
+def test_shared_settings_admit_only_one_scheduled_batch(client, child, tmp_path):
+    import subprocess
+    import sys
+
+    inputs, outputs = tmp_path / "inputs", tmp_path / "outputs"
+    inputs.mkdir()
+    outputs.mkdir()
+    (inputs / "one.jsonl").write_text(item())
+    assert client.post("/api/schedules", json=definition(inputs, outputs, overwrite=True)).status_code == 201
+    lease = settings.try_schedule_lock()
+    assert lease is not None
+    with lease:
+        response = client.post("/api/schedules/nightly/run")
+        assert response.status_code == 409 and response.json()["detail"]["code"] == "schedule_owned"
+    owner = client.app.state.schedules
+    contender = schedules.Schedules(settings, owner.fleet, owner.start_batch)
+    program = """
+from basal_ui import schedules, settings
+try:
+    print(schedules.Schedules(settings, None, None).run_now("nightly")["status"])
+except schedules.SchedulerBusy:
+    print("busy")
+"""
+
+    def other_process():
+        return subprocess.check_output([sys.executable, "-c", program], text=True, timeout=10).strip()
+
+    child.gate.clear()
+    try:
+        assert owner.run_due(1000)["status"] == "started"
+        with pytest.raises(schedules.SchedulerBusy):
+            contender.run_now("nightly")
+        assert other_process() == "busy"
+    finally:
+        child.gate.set()
+    owner.shutdown()
+    assert other_process() == "no_new_files"
+    assert len(child.seen) == 1
+    assert (outputs / "one.answers.jsonl").exists()
+    assert len(client.get("/api/schedules/nightly/runs").json()["runs"]) == 1
+
+
+def test_scheduler_lease_recovers_after_process_exit(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    monkeypatch.setenv("BASAL_UI_CONFIG", str(tmp_path / "settings.json"))
+    program = """
+import os
+from basal_ui.settings import try_schedule_lock
+lock = try_schedule_lock()
+assert lock is not None
+os._exit(23)
+"""
+    assert subprocess.run([sys.executable, "-c", program], timeout=10, check=False).returncode == 23
+    lease = settings.try_schedule_lock()
+    assert lease is not None
+    with lease:
+        assert settings.try_schedule_lock() is None
 
 
 def test_edit_and_delete_do_not_drop_active_completion(client, child, tmp_path, monkeypatch):
@@ -560,7 +676,7 @@ def test_pause_during_snapshot_prevents_job_start(client, child, tmp_path, monke
     assert client.post("/api/schedules", json=definition(inputs, outputs)).status_code == 201
     scheduler = client.app.state.schedules
     opened, resume = threading.Event(), threading.Event()
-    original = paths._open
+    original = paths.open_input
 
     @contextlib.contextmanager
     def delayed(path):
@@ -570,7 +686,7 @@ def test_pause_during_snapshot_prevents_job_start(client, child, tmp_path, monke
         with original(path) as stream:
             yield stream
 
-    monkeypatch.setattr(paths, "_open", delayed)
+    monkeypatch.setattr(paths, "open_input", delayed)
     with ThreadPoolExecutor(max_workers=2) as pool:
         scan = pool.submit(scheduler.run_due, 1000)
         try:
@@ -791,7 +907,7 @@ def test_restart_recovers_daily_scan_queue_after_first_file(client, child, tmp_p
     scheduler = client.app.state.schedules
     assert scheduler.run_due(datetime(2026, 11, 6, 10))["status"] == "started"
     scheduler.active[2].thread.join(30)
-    scheduler._finish_active()
+    scheduler.shutdown()
     restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
     assert restarted.run_due(datetime(2026, 11, 6, 11))["status"] == "started"
     restarted.active[2].thread.join(30)
@@ -995,7 +1111,7 @@ def test_resumed_scan_missing_folder_respects_interval(client, child, tmp_path):
     scheduler = client.app.state.schedules
     assert scheduler.run_due(1000)["status"] == "started"
     scheduler.active[2].thread.join(30)
-    scheduler._finish_active()
+    scheduler.shutdown()
     for path in inputs.iterdir():
         path.unlink()
     inputs.rmdir()
@@ -1022,7 +1138,7 @@ def test_restart_preserves_accepted_order_and_excludes_later_arrival(client, chi
     scheduler = client.app.state.schedules
     assert scheduler.run_due(1000)["status"] == "started"
     scheduler.active[2].thread.join(30)
-    scheduler._finish_active()
+    scheduler.shutdown()
     (inputs / "a.jsonl").write_text(item("a"))
     restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
     assert restarted.run_due(1100)["status"] == "started"
@@ -1074,6 +1190,7 @@ def test_restart_does_not_readmit_settled_skip_when_output_disappears(client, ch
         release.set()
         monkeypatch.setattr(scheduler.fleet, "decide_runner", original)
     scheduler.active = None  # simulate loss of the in-memory job during restart
+    scheduler.shutdown()
     restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
     assert restarted.run_due(1100)["status"] == "started"
     restarted.active[2].thread.join(30)
@@ -1104,7 +1221,8 @@ def test_changed_symlink_target_is_not_read_as_scheduled_input(client, child, tm
     scheduler = client.app.state.schedules
     assert scheduler.run_due(1000)["status"] == "started"
     scheduler.active[2].thread.join(30)
-    scheduler._finish_active()
+    scheduler.shutdown()
+    assert settings.schedule_state("nightly")["scan"]["items"] == []
     target.write_text(item("changed b"))
     restarted = schedules.Schedules(settings, scheduler.fleet, scheduler.start_batch)
     assert restarted.run_due(1100)["status"] == "no_new_files"

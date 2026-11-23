@@ -126,11 +126,15 @@ def usage(fd):
     return total
 
 
+class AudioBudgetExceeded(OSError):
+    """A retained clip would exceed the audio budget."""
+
+
 def reserve(path, record, body, records):
     values = [value for _, value in audio_paths(body)]
     data = json.dumps(values, ensure_ascii=False).encode("utf-8")
     if len(data) > BUDGET:
-        raise OSError("History audio exceeds the storage budget")
+        raise AudioBudgetExceeded("History audio exceeds the storage budget")
     fd = _directory(path)
     blob = None
     try:
@@ -144,7 +148,7 @@ def reserve(path, record, body, records):
                 used -= os.stat(ref["name"], dir_fd=fd, follow_symlinks=False).st_size
                 evicted.append(old)
         if used + len(data) > BUDGET:
-            raise OSError("History audio storage budget is full")
+            raise AudioBudgetExceeded("History audio storage budget is full")
         name = record["id"] + "_" + uuid.uuid4().hex
         blob = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=fd)
         info = os.fstat(blob)
@@ -190,7 +194,8 @@ def _journal(path):
     return path.with_name(path.name + ".audio-pending.json")
 
 
-def _pending(path):
+def pending_cleanup(path):
+    """Read and validate recorded ownership for deferred cleanup."""
     try:
         value = json.loads(_journal(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -209,13 +214,13 @@ def journal_add(path, records):
     if additions:
         if not supported():
             raise OSError("History audio retention is unavailable on this platform")
-        settings._write_private(_journal(path), json.dumps(_pending(path) + additions))
+        settings._write_private(_journal(path), json.dumps(pending_cleanup(path) + additions))
 
 
 def cleanup(path, records):
     from . import settings
 
-    pending = _pending(path)
+    pending = pending_cleanup(path)
     if not pending:
         return
     live = {r.get("_audio", {}).get("name") for r in records if valid_ref(r, r.get("_audio"))}
@@ -227,6 +232,18 @@ def cleanup(path, records):
     finally:
         os.close(fd)
     settings._write_private(_journal(path), "[]")
+
+
+def for_replay(path, record, replay):
+    try:
+        fd = _directory(path)
+        try:
+            retained = available(fd, record)
+            return retained, restore(fd, record) if replay and retained else None
+        finally:
+            os.close(fd)
+    except OSError:
+        return False, None
 
 
 def available(fd, record):

@@ -59,6 +59,9 @@ def test_html_and_json_content():
     assert state == "Title: Report\nHeading\nText\nItem\n| one | two\n| three | four"
     assert not truncated
     assert fetch._content(b"null", "application/json") == (None, False)
+    with pytest.raises(fetch.FetchError) as exc:
+        fetch._content(b"null", "application/json; charset=rot13", presets=True)
+    assert (exc.value.code, exc.value.status) == ("fetch_unsupported_encoding", 415)
     assert fetch._content(b'"hello"', "application/json") == ("hello", False)
     assert fetch._content(b'{"items":[1,true]}', "application/json")[0] == {"items": [1, True]}
     assert fetch._content(b"x" * (fetch.MAX_TEXT_CHARS + 1), "text/plain") == ("x" * fetch.MAX_TEXT_CHARS, True)
@@ -102,7 +105,7 @@ def test_article_header_and_json_precision_at_fetch_boundary(monkeypatch):
             pass
 
     monkeypatch.setattr(fetch, "checked_url", lambda url: (fetch.urlsplit(url), "example.com", 80, []))
-    monkeypatch.setattr(fetch, "_Connection", Connection)
+    monkeypatch.setattr(fetch, "PinnedConnection", Connection)
     Response.body = (
         b"<title>Site</title><nav>Links</nav><article><header><h1>Recall details</h1>"
         b"<p>Published today</p></header><p>Product recalled.</p></article>"
@@ -213,7 +216,7 @@ def test_redirect_is_revalidated_before_connect(monkeypatch):
             pass
 
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
-    monkeypatch.setattr(fetch, "_Connection", Connection)
+    monkeypatch.setattr(fetch, "PinnedConnection", Connection)
     with pytest.raises(fetch.FetchError, match="non-public"):
         fetch.fetch("http://example.com/")
     assert resolutions == ["example.com", "internal.example"]
@@ -370,7 +373,7 @@ def test_response_limit_and_content_encoding(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(fetch, "_Connection", Connection)
+    monkeypatch.setattr(fetch, "PinnedConnection", Connection)
     with pytest.raises(fetch.FetchError) as error:
         fetch.fetch("http://example.com")
     assert error.value.code == "fetch_too_large"
@@ -412,3 +415,30 @@ def test_decision_history_records_source_but_child_receives_only_native_body(tmp
         assert client.post("/api/decide", json={**request, "source_url": 42}).status_code == 400
     assert child.seen == [("/v1/systemone", {"state": request["state"], "questions": request["questions"]})]
     assert History(fleet.history.path).get(record_id)["request"] == request
+
+
+def test_worker_capacity_refuses_before_starting_another_worker(monkeypatch):
+    async def exercise():
+        started = asyncio.Event()
+
+        async def spawn(*args, **kwargs):
+            started.set()
+            await asyncio.Future()
+
+        class Request:
+            async def is_disconnected(self):
+                return False
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        manager = fetch.FetchManager()
+        tasks = [asyncio.create_task(manager.run("https://example.com", Request())) for _ in range(4)]
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            with pytest.raises(fetch.FetchError) as error:
+                await manager.run("https://example.com", Request())
+            assert (error.value.code, error.value.status) == ("fetch_busy", 429)
+        finally:
+            await manager.close()
+        assert all(task.done() for task in tasks)
+
+    asyncio.run(exercise())

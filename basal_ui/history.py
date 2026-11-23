@@ -181,12 +181,12 @@ class History:
             return ()
         return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
-    def _read_file(self, strict=False) -> list:
+    def _read_file(self, strict=False, *, recover_rows=False) -> list:
         """Read valid rows, failing closed on corrupt metadata when audio ownership is involved."""
         out = []
         seen = set()
         lines = 0
-        protect_audio = strict and history_audio.storage_present(self.path)
+        protect_audio = strict and not recover_rows and history_audio.storage_present(self.path)
         try:
             with self.path.open("rb") as stream:
                 for line in stream:
@@ -222,13 +222,13 @@ class History:
         from . import settings
 
         def write():
-            capture_audio = (
-                body is not None
-                and history_audio.supported()
-                and (keep_audio() if callable(keep_audio) else keep_audio)
-                and any(history_audio.audio_paths(body))
-            )
-            if not capture_audio and not history_audio._pending(self.path):
+            capture_audio = body is not None and history_audio.supported() and any(history_audio.audio_paths(body))
+            if capture_audio:
+                try:
+                    capture_audio = keep_audio() if callable(keep_audio) else keep_audio
+                except settings.HistoryAudioPolicyError:
+                    capture_audio = False
+            if not capture_audio and not history_audio.pending_cleanup(self.path):
                 self._refresh_locked()
                 if self.lines < self.keep + 500:
                     self._append_line(record)
@@ -241,7 +241,10 @@ class History:
             committed = False
             try:
                 if capture_audio:
-                    reservation = history_audio.reserve(self.path, record, body, existing)
+                    try:
+                        reservation = history_audio.reserve(self.path, record, body, existing)
+                    except history_audio.AudioBudgetExceeded:
+                        record["_audio_expired"] = True
                 evicted = reservation[2] if reservation else []
                 candidate = []
                 evicted_ids = {r["id"] for r in evicted}
@@ -256,7 +259,11 @@ class History:
                 self.records.append(record)
                 history_audio.cleanup(self.path, self._read_file(strict=True))
                 if reservation:
-                    history_audio.fill(self.path, record, reservation)
+                    try:
+                        history_audio.fill(self.path, record, reservation)
+                    except OSError:
+                        with contextlib.suppress(OSError):
+                            history_audio.remove(reservation[0], record)
             finally:
                 if reservation:
                     history_audio.close_reservation(self.path, record, reservation, committed)
@@ -269,11 +276,12 @@ class History:
 
         records = [*candidate, record]
         expired = []
-        if self.lines + 1 > self.keep + 500:
+        rotate = self.lines + 1 > self.keep + 500
+        if rotate:
             expired = existing[: max(0, len(existing) + 1 - self.keep)]
             records = records[-self.keep :]
         history_audio.journal_add(self.path, [*evicted, *expired])
-        if evicted or expired:
+        if evicted or rotate:
             settings._write_private(self.path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
             self.lines = len(records)
         else:
@@ -301,9 +309,13 @@ class History:
         from . import settings
 
         def read():
-            record = next((r for r in self._read_file() if r["id"] == record_id), None)
+            record = None
+            if self._stamp == self._file_stamp():
+                record = next((r for r in reversed(self.records) if r["id"] == record_id), None)
             if record is None:
-                return None
+                record = next((r for r in self._read_file() if r["id"] == record_id), None)
+                if record is None:
+                    return None
             public = {k: v for k, v in record.items() if k != "_audio"}
             request = record.get("request", {})
             if record.get("_audio_expired"):
@@ -325,15 +337,7 @@ class History:
                 target[path[-1]] = "audio retained"
             if _contains_redacted_media(masked, root=True):
                 return {**public, **replay_fields(request)}
-            try:
-                fd = history_audio._directory(self.path)
-                try:
-                    available = history_audio.available(fd, record)
-                    restored = history_audio.restore(fd, record) if replay and available else None
-                finally:
-                    os.close(fd)
-            except OSError:
-                available, restored = False, None
+            available, restored = history_audio.for_replay(self.path, record, replay)
             if available and not replay:
                 return {**public, "replay_request": None, "replay_error": None, "replay_requires_audio": True}
             if restored is None:
@@ -398,7 +402,7 @@ class History:
         from . import settings
 
         def clear_disk():
-            records = self._read_file(strict=True)
+            records = self._read_file(strict=True, recover_rows=True)
             history_audio.cleanup(self.path, records)
             history_audio.journal_add(self.path, records)
             settings._write_private(self.path, "")

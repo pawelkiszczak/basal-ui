@@ -43,7 +43,7 @@ def test_transport_restrictions(monkeypatch):
     monkeypatch.setattr(
         fetch.socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 80))]
     )
-    monkeypatch.setattr(fetch, "_Connection", Connection)
+    monkeypatch.setattr(fetch, "PinnedConnection", Connection)
     response = Connection.response = Response()
     pack = {"request": {"large": {"questions": {"q": {"text": "x" * 220000}}, "state": [1, 0.25, True, None]}}}
     response.body = json.dumps(pack).encode()
@@ -130,7 +130,7 @@ def test_url_pack_boundary_parity_and_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr(
         fetch.socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 80))]
     )
-    monkeypatch.setattr(fetch, "_Connection", Connection)
+    monkeypatch.setattr(fetch, "PinnedConnection", Connection)
     response = Connection.response = Response()
 
     class Manager:

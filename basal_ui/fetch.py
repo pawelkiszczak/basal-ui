@@ -101,7 +101,7 @@ def checked_url(url, *, allow_loopback=False):
     addresses = [
         (family, sockaddr) for family, kind, _, _, sockaddr in answers if family in (socket.AF_INET, socket.AF_INET6)
     ]
-    local = allow_loopback and (host.lower() == "localhost" or _explicit_loopback(host))
+    local = allow_loopback and (host.lower() == "localhost" or explicit_loopback(host))
     if not addresses or any(
         not (ipaddress.ip_address(sockaddr[0]).is_loopback if local else public_address(sockaddr[0]))
         for _, sockaddr in addresses
@@ -110,14 +110,14 @@ def checked_url(url, *, allow_loopback=False):
     return parsed, host, port, addresses
 
 
-def _explicit_loopback(host):
+def explicit_loopback(host):
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
 
 
-class _Connection(http.client.HTTPConnection):
+class PinnedConnection(http.client.HTTPConnection):
     def __init__(self, host, port, addresses, secure):
         super().__init__(host, port, timeout=TIMEOUT_S)
         self.addresses = addresses
@@ -179,6 +179,18 @@ class _ReadableHTML(HTMLParser):
             (self.title if self.in_title else self.parts).append(data)
 
 
+def preserved_json_number(value):
+    number = Decimal(value)
+    converted = float(number)
+    if (
+        (number.is_zero() and number.is_signed())
+        or (number == number.to_integral_value() and abs(number) > 9007199254740991)
+        or Decimal(str(converted)) != number
+    ):
+        raise ValueError("JSON contains a number that cannot be preserved safely.")
+    return int(value) if "." not in value and "e" not in value.lower() else converted
+
+
 def _content(data, content_type, *, presets=False):
     from email.message import Message
 
@@ -193,7 +205,10 @@ def _content(data, content_type, *, presets=False):
     except (LookupError, TypeError, ValueError) as exc:
         if presets:
             raise FetchError("Unsupported JSON charset.", "fetch_unsupported_encoding", 415) from exc
-        encoding = "utf-8"
+        codec = codecs.lookup("utf-8")
+    if not codec._is_text_encoding:
+        raise FetchError("Unsupported text charset.", "fetch_unsupported_encoding", 415)
+    encoding = codec.name
     if presets and kind != "application/json":
         raise FetchError("Presets require application/json.", "fetch_unsupported_type", 415)
     if kind == "application/json" or kind.endswith("+json"):
@@ -202,15 +217,10 @@ def _content(data, content_type, *, presets=False):
             raise ValueError(f"Nonfinite JSON value: {value}")
 
         def safe_number(value):
-            number = Decimal(value)
-            converted = float(value)
-            if (
-                (number.is_zero() and number.is_signed())
-                or (number == number.to_integral_value() and abs(number) > 9007199254740991)
-                or Decimal(str(converted)) != number
-            ):
-                raise FetchError("JSON contains a number that cannot be preserved safely.", "fetch_json_precision", 422)
-            return int(value) if "." not in value and "e" not in value.lower() else converted
+            try:
+                return preserved_json_number(value)
+            except ValueError as exc:
+                raise FetchError(str(exc), "fetch_json_precision", 422) from exc
 
         try:
             value = json.loads(
@@ -243,7 +253,7 @@ def fetch(url, *, presets=False):
     current = url
     for redirect in range(MAX_REDIRECTS + 1):
         parsed, host, port, addresses = checked_url(current)
-        connection = _Connection(host, port, addresses, parsed.scheme.lower() == "https")
+        connection = PinnedConnection(host, port, addresses, parsed.scheme.lower() == "https")
         try:
             path = parsed.path or "/"
             if parsed.query:
@@ -292,24 +302,27 @@ def fetch(url, *, presets=False):
 class FetchManager:
     """Own subprocesses until their request finishes, disconnects, times out, or the app stops."""
 
-    def __init__(self, worker_module="basal_ui.fetch", *, presets=False):
+    def __init__(self, worker_module="basal_ui.fetch", *, presets=False, timeout=None):
         if presets:
             worker_module = "basal_ui.preset_fetch"
         if worker_module not in {"basal_ui.fetch", "basal_ui.mcp_import", "basal_ui.preset_fetch"}:
             raise ValueError("Unknown network worker")
         self.worker_module = worker_module
+        self.timeout = timeout
         self.tasks = set()
         self.stopping = False
 
     async def run(self, url, request):
         if self.stopping:
             raise FetchError("The application is shutting down.", "fetch_cancelled", 503)
+        if len(self.tasks) >= 4:
+            raise FetchError("Too many URL requests are running. Try again shortly.", "fetch_busy", 429)
         task = asyncio.current_task()
         self.tasks.add(task)
         process = None
         spawn = None
         exchange = None
-        deadline = asyncio.get_running_loop().time() + TIMEOUT_S
+        deadline = asyncio.get_running_loop().time() + (self.timeout if self.timeout is not None else TIMEOUT_S)
         try:
             try:
                 spawn = asyncio.create_task(
