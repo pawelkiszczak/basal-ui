@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from basal_ui import memory
-from basal_ui.runtimes import vllm
+from basal_ui.runtimes import _probe, vllm
 
 MODELS = {
     "object": "list",
@@ -10,144 +10,180 @@ MODELS = {
         {"id": "meta-llama/Llama-3.1-8B", "object": "model", "max_model_len": 8192},
     ],
 }
-METRICS = """# HELP vllm:gpu_cache_usage_perc GPU cache usage.
-# TYPE vllm:gpu_cache_usage_perc gauge
-vllm:gpu_cache_usage_perc{model_name="Qwen/Qwen3-8B"} 0.375
-"""
 
 
-def _response(payload=None, text=""):
-    return SimpleNamespace(
-        raise_for_status=lambda: None,
-        json=lambda: payload,
-        text=text,
-    )
-
-
-def test_observe_confirms_vllm_models_and_keeps_fractional_cache_unknown(monkeypatch):
+def _setup(monkeypatch, models=MODELS, metrics="", version=None):
+    version = version or {"version": "0.11"}
     calls = []
-    responses = [_response(MODELS), _response(text=METRICS)]
-    monkeypatch.setenv("BASAL_UI_VLLM_URL", "http://127.0.0.1:18000/")
-    monkeypatch.setattr(
-        vllm.httpx,
-        "get",
-        lambda url, **kwargs: calls.append((url, kwargs)) or responses.pop(0),
-    )
-    monkeypatch.setattr(memory, "process_rss", lambda pattern: 512 * 1024**2 if pattern == r"\bvllm\b" else None)
+
+    def get_json(url, deadline, started):
+        calls.append(url)
+        if url.endswith("/v1/models"):
+            return models
+        return version
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs["trust_env"] is False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return SimpleNamespace(raise_for_status=lambda: None, text=metrics)
+
+    monkeypatch.setattr(_probe, "get_json", get_json)
+    monkeypatch.setattr(vllm.httpx, "Client", Client)
+    monkeypatch.setattr(_probe, "timeout_for", lambda deadline, started: 0.5)
+    monkeypatch.setattr(vllm, "_process_bytes", lambda: 512 * 1024**2)
     monkeypatch.setattr(memory, "rss_accounting", lambda: "resident")
+    monkeypatch.setenv("BASAL_UI_VLLM_URL", "http://127.0.0.1:18000/")
+    return calls
+
+
+def test_observe_reads_models_and_per_engine_cache_without_bytes(monkeypatch):
+    metrics = (
+        'vllm:gpu_cache_usage_perc{engine="0",model_name="Qwen"} 0.375\n'
+        'vllm:gpu_cache_usage_perc{engine="1",model_name="Qwen"} 0.625\n'
+    )
+    calls = _setup(monkeypatch, metrics=metrics)
 
     result = vllm.observe()
 
-    assert [call[0] for call in calls] == [
+    assert calls == [
         "http://127.0.0.1:18000/v1/models",
+        "http://127.0.0.1:18000/version",
         "http://127.0.0.1:18000/metrics",
     ]
-    assert all(call[1]["timeout"] <= 1 for call in calls)
-    assert result["runtime"] == "vllm"
     assert result["status"] == "ok"
     assert result["process_bytes"] == 512 * 1024**2
     assert [model["id"] for model in result["models"]] == ["Qwen/Qwen3-8B", "meta-llama/Llama-3.1-8B"]
-    assert all(model["context_bytes"] is None and model["cache_bytes"] is None for model in result["models"])
-    assert "37.5%" in result["note"]
-    assert "runtime overhead" in result["note"]
-    assert result["accounting"] == "resident"
-
-
-def test_observe_keeps_zero_rss_distinct_and_unavailable_measurements_unknown(monkeypatch):
-    responses = [_response(MODELS), _response(text="# unrelated metric 0\n")]
-    monkeypatch.setattr(vllm.httpx, "get", lambda *args, **kwargs: responses.pop(0))
-    monkeypatch.setattr(memory, "process_rss", lambda _: 0)
-
-    result = vllm.observe()
-
-    assert result["status"] == "ok"
-    assert result["process_bytes"] == 0
-    assert all(model["bytes"] is None and model["cache_bytes"] is None for model in result["models"])
-    assert "not reported in bytes" in result["note"]
-
-
-def test_observe_uses_process_fallback_when_vllm_api_is_unreachable(monkeypatch):
-    def get(*args, **kwargs):
-        raise vllm.httpx.ConnectError("offline")
-
-    monkeypatch.setattr(vllm.httpx, "get", get)
-    monkeypatch.setattr(memory, "process_rss", lambda pattern: 1024 if pattern == r"\bvllm\b" else None)
-
-    result = vllm.observe()
-
-    assert result["status"] == "unreachable"
-    assert result["process_bytes"] == 1024
-    assert result["models"] == []
-    assert "runtime overhead" in result["note"]
-
-
-def test_process_rss_fallback_matches_vllm_process_commands(monkeypatch):
-    out = (
-        "  2048 /venv/bin/vllm serve model-id\n"
-        "  1024 /venv/bin/python -m vllm.entrypoints.openai.api_server\n"
-        "  512 /bin/zsh\n"
-    )
-    monkeypatch.setattr(memory.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=out))
-
-    assert memory.process_rss(r"\bvllm\b") == 3072 * 1024
-
-
-def test_observe_ignores_non_vllm_openai_models_endpoint(monkeypatch):
-    monkeypatch.setattr(
-        vllm.httpx,
-        "get",
-        lambda *args, **kwargs: _response({"object": "list", "data": [{"id": "basal-model"}]}),
-    )
-    monkeypatch.setattr(memory, "process_rss", lambda _: None)
-
-    assert vllm.observe() is None
-
-
-def test_observe_returns_none_when_runtime_is_not_present(monkeypatch):
-    monkeypatch.setattr(
-        vllm.httpx,
-        "get",
-        lambda *args, **kwargs: (_ for _ in ()).throw(vllm.httpx.ConnectError("offline")),
-    )
-    monkeypatch.setattr(memory, "process_rss", lambda _: None)
-
-    assert vllm.observe() is None
-
-
-def test_observe_marks_unified_host_rss_as_excluding_gpu(monkeypatch):
-    monkeypatch.setattr(vllm.httpx, "get", lambda *args, **kwargs: _response(MODELS))
-    monkeypatch.setattr(memory, "process_rss", lambda _: None)
-    monkeypatch.setattr(memory, "rss_accounting", lambda: "rss_excludes_gpu")
-
-    result = vllm.observe()
-
-    assert result["status"] == "ok"
-    assert result["process_bytes"] is None
-    assert result["accounting"] == "rss_excludes_gpu"
-
-
-def test_observe_never_probes_a_non_loopback_configured_url(monkeypatch):
-    monkeypatch.setenv("BASAL_UI_VLLM_URL", "http://192.0.2.10:8000")
-    monkeypatch.setattr(
-        vllm.httpx,
-        "get",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network call")),
-    )
-    monkeypatch.setattr(memory, "process_rss", lambda _: None)
-
-    assert vllm.observe() is None
-
-
-def test_observe_reports_zero_legacy_kv_cache_fraction(monkeypatch):
-    responses = [
-        _response(MODELS),
-        _response(text="vllm:kv_cache_usage_perc 0.0\n"),
+    assert result["cache"] == [
+        {"engine": "0", "usage_percent": 37.5},
+        {"engine": "1", "usage_percent": 62.5},
     ]
-    monkeypatch.setattr(vllm.httpx, "get", lambda *args, **kwargs: responses.pop(0))
-    monkeypatch.setattr(memory, "process_rss", lambda _: None)
+    assert all(model["context_bytes"] is None and model["cache_bytes"] is None for model in result["models"])
+    assert "engine 0 37.5%" in result["note"]
+    assert "engine 1 62.5%" in result["note"]
+
+
+def test_adapter_without_max_length_does_not_hide_base_models(monkeypatch):
+    models = {"data": [{"id": "base", "max_model_len": 4096}, {"id": "adapter", "parent": "base"}]}
+    _setup(monkeypatch, models=models)
 
     result = vllm.observe()
 
-    assert result["status"] == "ok"
-    assert "0.0%" in result["note"]
-    assert all(model["cache_bytes"] is None for model in result["models"])
+    assert [model["id"] for model in result["models"]] == ["base", "adapter"]
+
+
+def test_sglang_openai_compatible_models_are_not_vllm(monkeypatch):
+    _setup(monkeypatch, version={"sglang_version": "0.5.0"}, metrics="# no vllm metrics\n")
+    monkeypatch.setattr(vllm, "_process_bytes", lambda: None)
+
+    assert vllm.observe() is None
+
+
+def test_authenticated_models_endpoint_still_collects_metrics(monkeypatch):
+    calls = []
+
+    def get_json(url, deadline, started):
+        calls.append(url)
+        if url.endswith("/v1/models"):
+            request = vllm.httpx.Request("GET", url)
+            response = vllm.httpx.Response(401, request=request)
+            raise vllm.httpx.HTTPStatusError("Unauthorized", request=request, response=response)
+        raise ValueError("not vLLM version response")
+
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs["trust_env"] is False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return SimpleNamespace(raise_for_status=lambda: None, text="vllm:other_metric 1\n")
+
+    monkeypatch.setattr(_probe, "get_json", get_json)
+    monkeypatch.setattr(vllm.httpx, "Client", Client)
+    monkeypatch.setattr(_probe, "timeout_for", lambda deadline, started: 0.5)
+    monkeypatch.setattr(vllm, "_process_bytes", lambda: 100)
+    monkeypatch.setattr(memory, "rss_accounting", lambda: "resident")
+    monkeypatch.setenv("BASAL_UI_VLLM_URL", "http://127.0.0.1:8000")
+
+    result = vllm.observe()
+
+    assert result["status"] == "unavailable"
+    assert result["models"] == []
+    assert result["process_bytes"] == 100
+    assert calls[-1] == "http://127.0.0.1:8000/metrics"
+
+
+def test_invalid_url_skips_network_but_keeps_process_measurement(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setenv("BASAL_UI_VLLM_URL", "http://127.0.0.1:8000?#")
+    monkeypatch.setattr(vllm, "_process_bytes", lambda: 100)
+    monkeypatch.setattr(_probe, "get_json", lambda *args: (_ for _ in ()).throw(AssertionError("network")))
+
+    result = vllm.observe()
+
+    assert result["status"] == "unavailable"
+    assert result["process_bytes"] == 100
+
+
+def test_invalid_json_is_unavailable_but_transport_failure_is_unreachable(monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setattr(vllm, "_process_bytes", lambda: 100)
+    monkeypatch.setattr(_probe, "get_json", lambda *args: (_ for _ in ()).throw(ValueError("bad JSON")))
+
+    assert vllm.observe()["status"] == "unavailable"
+
+    monkeypatch.setattr(
+        _probe,
+        "get_json",
+        lambda *args: (_ for _ in ()).throw(vllm.httpx.ConnectError("offline")),
+    )
+    assert vllm.observe()["status"] == "unreachable"
+
+
+def test_process_tree_rss_excludes_fleet_workers_and_matches_external_titles(monkeypatch):
+    output = (
+        "100 1 basal-serve /venv/bin/basal-serve --mode vllm\n"
+        "101 100 VLLM::EngineCore VLLM::EngineCore\n"
+        "110 1 python /venv/bin/python -m basal.server --mode vllm\n"
+        "111 110 VLLM::EngineCore VLLM::EngineCore\n"
+        "200 1 vllm /venv/bin/vllm serve model\n"
+        "201 200 VLLM::EngineCore VLLM::EngineCore\n"
+        "300 1 zsh /bin/zsh -c 'vllm serve'\n"
+        "400 1 VLLM::EngineCore VLLM::EngineCore\n"
+    )
+    monkeypatch.setattr(vllm.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=output))
+    measured = []
+    monkeypatch.setattr(_probe, "process_tree_rss", lambda pid, excluded: measured.append((pid, excluded)) or 100)
+
+    assert vllm._process_bytes() == 200
+    assert [pid for pid, _ in measured] == [200, 400]
+    assert measured[0][1] == {100, 101, 110, 111}
+
+
+def test_provider_import_before_memory_does_not_cycle():
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import basal_ui.runtimes.vllm; assert 'basal_ui.memory' not in sys.modules; "
+            "import basal_ui.memory",
+        ],
+        check=True,
+    )

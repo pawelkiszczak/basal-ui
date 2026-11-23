@@ -55,18 +55,17 @@ and Engine state-cache bytes when active. Context bytes and disk-backed cold-cac
 unavailable; Engine context limits are tokens, not bytes. The System and other apps remainder appears only when host
 and runtime accounting can be compared. On unified-memory hosts, process RSS excludes GPU allocations, so the remainder
 is unavailable; GPU allocations are not counted in both RAM and GPU totals. vLLM is observed read-only through its
-configurable local URL (`BASAL_UI_VLLM_URL`, default `http://127.0.0.1:8000`): `/v1/models` must identify served model
-ids with `max_model_len` before the runtime is shown. Its `/metrics` KV-cache usage gauges are percentages, not bytes;
-the Dashboard leaves `cache_bytes` **Not measured** and shows any percentage in the note. Process RSS includes vLLM
-runtime overhead.
+loopback URL (`BASAL_UI_VLLM_URL`, default `http://127.0.0.1:8000`). vLLM identity is verified independently using
+`/version` or vLLM metric families; `/v1/models` provides base-model IDs with `max_model_len` and adapter IDs. When
+the API cannot be identified, a verified vLLM process-tree RSS measurement still shows the runtime without models.
+The `/metrics` KV-cache gauges are percentages shown per engine, not bytes; `cache_bytes` remains **Not measured**.
+Process RSS includes vLLM runtime overhead and excludes basal-ui Fleet processes.
 
 ### Live runtime checks
 
-No live vLLM checks ran: vLLM is not installed on this host, so no version was available. Fixtures covered model-id and
-`max_model_len` identification; current and legacy KV-cache percentage metrics, including measured zero; unavailable
-metrics and API; unknown model bytes and process RSS; matching `vllm serve` and `vllm.entrypoints` process commands;
-unified-memory accounting; rejection of a non-vLLM OpenAI-compatible model listing; and rejection of a non-loopback URL.
-The browser screenshots also use a local fixture server, not vLLM.
+No live vLLM checks ran. Unit fixtures cover independent API identity, base and adapter model cards, per-engine
+KV-cache metrics, metrics collection when model discovery returns 401, malformed URL fallback, Fleet-process exclusion
+and external vLLM worker matching. Browser screenshots use a local fixture server, not vLLM.
 
 **Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
 Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load

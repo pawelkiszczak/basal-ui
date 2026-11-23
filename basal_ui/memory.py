@@ -197,6 +197,4 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
     return {"time": time.time(), "host": host, "runtimes": runtimes, "other": other}
 
 
-from .runtimes import vllm  # noqa: E402  (runtime providers call process_rss defined above)
-
-PROVIDERS.append(vllm.observe)
+register_provider("basal_ui.runtimes.vllm.observe")

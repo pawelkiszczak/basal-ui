@@ -1874,6 +1874,7 @@ const PL = {
   "Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
   "Process RSS excludes GPU allocations on unified-memory hosts. Engine state cache is measured only when active; context bytes and disk-backed cold cache are not measured.": "Pamięć RSS procesu nie obejmuje alokacji GPU na hostach z pamięcią zunifikowaną. Pamięć podręczna stanu Engine jest mierzona tylko wtedy, gdy jest aktywna; bajty kontekstu i zimna pamięć podręczna na dysku nie są mierzone.",
   "vLLM KV-cache usage: {usage}%. Process RSS includes vLLM runtime overhead.": "Użycie pamięci podręcznej KV vLLM: {usage}%. RSS procesu obejmuje narzut środowiska vLLM.",
+  "vLLM KV-cache usage by engine: {usage}. Process RSS includes vLLM runtime overhead.": "Użycie pamięci podręcznej KV vLLM według silnika: {usage}. RSS procesu obejmuje narzut środowiska vLLM.",
   "vLLM KV-cache usage is not reported in bytes. Process RSS includes vLLM runtime overhead.": "Użycie pamięci podręcznej KV vLLM nie jest podawane w bajtach. RSS procesu obejmuje narzut środowiska vLLM.",
   "vLLM process RSS includes runtime overhead; the local model API is unavailable.": "RSS procesu vLLM obejmuje narzut środowiska; lokalne API modeli jest niedostępne.",
 };  // 'English text': 'tekst po polsku'
