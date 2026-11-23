@@ -186,13 +186,13 @@ document.addEventListener('click',e=>{
   const id=b.dataset.id;
   if(b.classList.contains('download-model'))act(async()=>{await api('/api/download',{method:'POST',body:JSON.stringify({id})});await refreshStatus();});
   else if(b.classList.contains('unload-model'))act(()=>unloadOne(id));
-  else if(b.classList.contains('delete-model'))act(()=>deleteModel(id));
+  else if(b.classList.contains('delete-model'))deleteModel(id);
   else act(()=>loadModel(id,b.dataset.media==='true',b.dataset.mode||null));
 });
 async function deleteModel(id) {
   const model=modelData.find(m=>m.id===id);
   if(!model||!await confirmDialog({title:t('Delete model from disk?'),description:t('{model} will be removed from disk.',{model:`${model.family} ${model.tier} (${model.label})`}),confirmLabel:t('Delete'),destructive:true}))return;
-  await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})}); toast(t('Model deleted')); await loadModels();
+  await act(async()=>{await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})});toast(t('Model deleted'));await loadModels();});
 }
 // "basal-2.0" / "basal-omni-1.0" written the way basal.si5.pl writes the family names
 function familyMark(family) {
@@ -570,14 +570,20 @@ document.addEventListener('dashboard:window',event=>{
   if(trafficMinutes!==event.detail.minutes){trafficMinutes=event.detail.minutes;trafficGeneration++;trafficPending=true;trafficData=null;trafficError=null;renderDashboard();}
   refreshTraffic();
 });
+let statusRefresh=null;
 async function refreshStatus() {
+  if(statusRefresh){await statusRefresh;return refreshStatus();}
   const sequence = ++statusSequence;
-  try {
-    const status = await api('/api/status');
-    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
-  } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
-  }
+  const request=(async()=>{
+    try {
+      const status = await api('/api/status');
+      if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    } catch(e) {
+      if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    }
+  })();
+  statusRefresh=request;
+  try{await request;}finally{if(statusRefresh===request)statusRefresh=null;}
 }
 async function loadExamples() {
   try {
@@ -1808,7 +1814,8 @@ const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
 let pendingActions=0, pendingDecisions=0, initialLoading=false;
 function setPendingStatus(text=''){const status=$('#pendingStatus');if(status.textContent!==text)status.textContent=text;}
 function updatePendingStatus(){
-  const status=$('#pendingStatus'),dialog=pendingActions&&document.querySelector('dialog[open]');
+  const status=$('#pendingStatus'),activeDialog=document.activeElement?.closest('dialog[open]');
+  const dialog=pendingActions?activeDialog||document.querySelector('dialog[open]'):null;
   setPendingStatus(pendingDecisions?t('Sending a Decision…'):pendingActions?t('Working…'):initialLoading?t('Loading basal-ui…'):'');
   if(dialog){if(status.parentElement!==dialog)dialog.prepend(status);status.classList.add('in-dialog');}
   else if(status.parentElement!==$('#main-content')){$('#main-content').prepend(status);status.classList.remove('in-dialog');}
@@ -1820,10 +1827,8 @@ async function withPending(action,fn){
   try{return await fn();}finally{pendingActions--;if(action==='decision')pendingDecisions--;updatePendingStatus();}
 }
 async function act(fn){try{await withPending('',fn);}catch(e){toast(e.message,'error');}}
-document.addEventListener('close',event=>{
-  const status=$('#pendingStatus');
-  if(pendingActions&&event.target.contains(status)){$('#main-content').prepend(status);status.classList.remove('in-dialog');}
-},true);
+document.addEventListener('focusin',event=>{if(pendingActions&&event.target.closest('dialog[open]'))updatePendingStatus();});
+document.addEventListener('close',()=>{if(pendingActions)updatePendingStatus();},true);
 
 function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
 let decisionServerSignature='';
@@ -2575,7 +2580,7 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   dialog.showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
-document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
+document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action).catch(error=>toast(error.message,'error'));}});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
@@ -2585,11 +2590,13 @@ $('#optionsApply').onclick=async()=>{
     const invalid=[...$('#optionsForm').querySelectorAll('input,select')].find(el=>!el.disabled&&!el.closest('[hidden]')&&(!el.checkValidity()||(['opt-reread','opt-graph_memory_gb'].includes(el.id)&&el.value!==''&&Number(el.value)<=0)));
     if(invalid){invalid.setAttribute('aria-invalid','true');invalid.focus();throw new Error(t('Check the value of {option}.',{option:OPTION_FIELDS[invalid.id.slice(4)]?.label?t(OPTION_FIELDS[invalid.id.slice(4)].label):invalid.id}));}
     for(const [key,reason] of Object.entries(data.unavailable||{}))if(Object.hasOwn(options,key))throw new Error(t('Load option {option}: {reason}',{option:key,reason:t(reason)}));
-    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
+    if(remember||data.saved&&!initialMode)await withPending('',async()=>{await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();});
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();const replacement=[...document.querySelectorAll('.options-model')].find(b=>b.dataset.id===id&&b.dataset.action==='save'&&b.dataset.media===String(media)&&b.getClientRects().length);(replacement|| (trigger?.isConnected?trigger:null))?.focus();return;}
-    if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
-    else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
-    $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    await withPending('',async()=>{
+      if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
+      else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
+      $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    });
   }catch(e){$('#optionsError').textContent=e.message;$('#optionsError').hidden=false;}
   finally{$('#optionsApply').disabled=false;}
 };
@@ -2693,7 +2700,7 @@ async function replayRequest(x) {
   showView('playground',true);
   if(model.kind==='comparison')DecisionTools.selectComparison(model.id);
 }
-function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
+function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;return loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
 $('#historyModel').onchange=resetHistory;
 $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.toggle('active',b.dataset.source===historySource));
@@ -2701,7 +2708,7 @@ $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)
 $('#historyMore').onclick=()=>loadHistory('more');
 $('#clearHistory').onclick=async()=>{
   if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted, including scheduled Batch.'),confirmLabel:t('Clear history'),destructive:true}))return;
-  await act(async()=>{const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();});
+  await act(async()=>{const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); await resetHistory();});
 };
 async function loadLogs() {
   clearTimeout(logTimer);
