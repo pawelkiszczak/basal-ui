@@ -190,6 +190,14 @@ body{background:var(--paper);color:var(--ink)}
 .model-format{overflow-wrap:anywhere}
 .model-format>.chip,.model-downloaded{display:block;margin-top:8px;font-size:11px}
 .model-size{white-space:nowrap}
+.model-filters{display:grid;gap:12px;margin:18px 0 12px}
+.model-filter-toggles{gap:8px 18px}
+.model-filter-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px;align-items:end}
+.model-filter-control{display:grid;gap:4px;min-width:0;font-size:12px;font-weight:650}
+.model-filter-fields input,.model-filter-fields select{width:100%;min-width:0;min-height:40px}
+.model-filter-fields>button{min-height:40px}
+.model-filter-note{font-size:12px}
+.model-actions .options-model,.model-actions .unload-model{min-height:36px;padding:6px 10px;font-size:13px}
 .side-nav button{justify-content:flex-start;text-align:start}
 .theme-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;width:100%;margin-bottom:8px}
 .theme-controls button{width:100%;min-width:0;padding-inline:8px}

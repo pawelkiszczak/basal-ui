@@ -148,11 +148,28 @@ function renderModels(data) {
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
-  const older = $('#olderToggle').checked, showBad = $('#notRunnableToggle').checked, downloadedOnly = $('#downloadedToggle').checked;
-  const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable || m.media_mode) && (!downloadedOnly || m.downloaded));
+  const older = $('#olderToggle').checked, runAvailabilityFilter = $('#modelRunAvailabilityFilter').value;
+  const query=$('#modelSearch').value.trim().toLowerCase(), downloadFilter=$('#modelDownloadFilter').value,
+    loadFilter=$('#modelLoadFilter').value, compatibilityFilter=$('#modelCompatibilityFilter').value, fitFilter=$('#modelFitFilter').value;
+  const activeFilters=Boolean(query||downloadFilter||loadFilter||compatibilityFilter||fitFilter||older||runAvailabilityFilter!=='available');
+  $('#clearModelFilters').disabled=!activeFilters;
+  const list = modelData.filter(m => {
+    const download=statusAvailable?statusCache?.downloads?.[m.repo]:null, downloading=statusAvailable?Boolean(download&&!download.error&&download.id===m.id):null;
+    const runner=statusCache?.models?.find(x=>x.id===m.id), loaded=statusAvailable?Boolean(runner&&['ready','starting','downloading'].includes(runner.state)):null;
+    const compatible=m.model_compatible;
+    const runAvailable=Boolean(m.runnable||m.media_mode);
+    return (!backendModelFilter||backendModelFilter.ids.has(m.id))
+      && (older || !['basal-1.0','basal-1.5'].includes(m.family))
+      && (runAvailabilityFilter==='any' || runAvailable===(runAvailabilityFilter==='available'))
+      && (!query || [m.id,m.repo,m.family,m.tier,m.label].some(value=>String(value||'').toLowerCase().includes(query)))
+      && (!downloadFilter || (downloadFilter==='downloaded'?m.downloaded:downloadFilter==='downloading'?downloading===true:m.downloaded===false&&downloading===false))
+      && (!loadFilter || (loadFilter==='loaded'?loaded===true:loaded===false))
+      && (!compatibilityFilter || (compatibilityFilter==='compatible'?compatible===true:compatible===false))
+      && (!fitFilter || (m.fit||'unknown')===fitFilter);
+  });
   list.sort((a,b) => familyOrder(b.family)-familyOrder(a.family) || tierOrder(a.tier)-tierOrder(b.tier) || a.port.localeCompare(b.port));
   const groups = new Map(); for (const m of list) { if (!groups.has(m.family)) groups.set(m.family, []); groups.get(m.family).push(m); }
-  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty">${t('No models match these filters.')}</div>`; return; }
+  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty"><p>${t('No models match these filters.')}</p><button type="button" class="outline-action" data-clear-model-filters>${t('Clear filters')}</button></div>`; return; }
   let html = '';
   const tableHead=`<table class="model-variants"><colgroup><col style="width:20%"><col style="width:13%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:9%"><col style="width:30%"></colgroup><thead><tr><th>${t('Tier')}</th><th>${t('Format')}</th><th>${t('Size')}</th><th>${t('Est. memory')}</th><th>${t('Fit')}</th><th>${t('Fit now')}</th><th>${t('Action')}</th></tr></thead><tbody>`;
   for (const [family, rows] of groups) {
@@ -165,9 +182,9 @@ function renderModels(data) {
       const slot = slots.get(m.id);
       const mediaReasonText = ts(m.media_reason, m.media_reason_code, m.media_reason_params);
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
-      const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
+      const downloadStatus=statusAvailable?statusCache?.downloads?.[m.repo]:null, loaded=statusAvailable?statusCache?.models?.find(x=>x.id===m.id):null;
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:statusAvailable&&!loaded&&m.downloaded?deleteButton(m.id):''}`;
       html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
@@ -252,8 +269,9 @@ function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} 
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
-  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model" data-id="${esc(m.id)}">${t('Unload')}</button>`;
+  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}${statusAvailable?'':` · ${t('stale')}`}</span><button type="button" class="unload-model outline-action" data-id="${esc(m.id)}">${t('Unload')}${statusAvailable?'':` · ${t('stale')}`}</button>`;
   if(!m.runnable&&!m.media_mode){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
+  if(!statusAvailable)return `<span class="muted">${t('Model status unavailable')}</span>`;
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
   const noMedia=!m.media_mode&&(m.media||[]).length?`<small class="muted">${esc(noMediaText||'')}</small>`:'';
@@ -581,7 +599,7 @@ async function refreshStatus() {
       const status = await api('/api/status');
       if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
     } catch(e) {
-      if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
     }
   })();
   statusRefresh=request;
@@ -1622,7 +1640,6 @@ async function sendDecision() {
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
 $('#recommendationBackend').onchange=event=>{recommendationBackend=event.target.value;loadModels();};
-$('#downloadedToggle').addEventListener('change',rerenderFilters);
 $('#saveModelsDir').addEventListener('click',()=>saveModelsDir($('#modelsDir').value));
 $('#defaultModelsDir').addEventListener('click',()=>saveModelsDir(null));
 let catalogData=null;
@@ -1630,7 +1647,16 @@ const originalRenderModels=renderModels;
 renderModels=function(data){catalogData=data; originalRenderModels(data);};
 function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===recommendationBackend) originalRenderModels(catalogData);}
 $('#olderToggle').addEventListener('change',rerenderFilters);
-$('#notRunnableToggle').addEventListener('change',rerenderFilters);
+['modelSearch','modelDownloadFilter','modelLoadFilter','modelCompatibilityFilter','modelRunAvailabilityFilter','modelFitFilter'].forEach(id=>{$(`#${id}`).addEventListener(id==='modelSearch'?'input':'change',rerenderFilters);});
+function clearModelFilters(){
+  $('#modelSearch').value=''; $('#modelDownloadFilter').value=''; $('#modelLoadFilter').value='';
+  $('#modelCompatibilityFilter').value=''; $('#modelRunAvailabilityFilter').value='available'; $('#modelFitFilter').value='';
+  setChecked($('#olderToggle'),false);
+  backendModelFilter=null; $('#backendModelFilterNotice').hidden=true;
+  rerenderFilters(); $('#modelSearch').focus();
+}
+$('#clearModelFilters').addEventListener('click',clearModelFilters);
+document.addEventListener('click',event=>{if(event.target.closest('[data-clear-model-filters]'))clearModelFilters();});
 $('#addQuestion').addEventListener('click',()=>addQuestion());
 $('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
@@ -1876,7 +1902,7 @@ function renderManagerSummary() {
 }
 let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
-  const oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
+  const recovered=!statusAvailable, oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
   if(oldFeatures!==JSON.stringify(s.features))document.querySelectorAll('.question').forEach(card=>{renderSharedFields(card);updateCardVisibility(card);});
   invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
   const attachJob=s.jobs?.attach;
@@ -1900,7 +1926,8 @@ function renderStatus(s) {
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
   const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
-  if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if((recovered||signature!==rowsSignature)&&!finished)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(finished)loadModels();  // refresh catalog before rendering downloaded-state filters
   if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
   lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;
@@ -2470,7 +2497,7 @@ const OPTION_FIELDS={
   global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],graphOnly:true},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
-const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
+const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model outline-action" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
 document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
