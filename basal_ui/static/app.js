@@ -1667,9 +1667,9 @@ $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox
 window.addEventListener('beforeunload',()=>{cancelRecording();selectedMedia.forEach(item=>URL.revokeObjectURL(item.url));});
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-function connectionEndpoint() {
+function connectionEndpoint(useActive=true) {
   const settings=serveData.settings, serving=statusCache?.serving;
-  if (serving?.url) return serving.url;
+  if (useActive&&serving?.url) return serving.url;
   const host=settings.host==='0.0.0.0'?(serveData.lan_ip||location.hostname):'127.0.0.1';
   return `http://${host}:${settings.port}`;
 }
@@ -1720,9 +1720,9 @@ decision = client.decisions.create(
   $('#connectOpenai').textContent=snippets.openai;
   $('#connectLitellm').textContent=snippets.litellm;
   $('#connectMcp').textContent=mcpHttp;
-  $('#mcpEndpoint').textContent=`${endpoint}/mcp`;
+  $('#mcpEndpoint').textContent=mcpHttp?`${endpoint}/mcp`:t('Saved MCP URL (pending until MCP is enabled and the server is restarted): {url}',{url:`${connectionEndpoint(false)}/mcp`});
   $('#mcpAvailability').textContent=serveData.mcp_available?t('The optional MCP extra is installed.'):t('The optional MCP extra is missing.');
-  $('#mcpHint').textContent=serveData.mcp_available?t('Save MCP settings, then restart the API server to apply changes.'):t('Install the optional MCP extra with uv sync --extra mcp, then restart basal-ui.');
+  $('#mcpHint').textContent=serveData.mcp_available?t('Save MCP settings, then restart the API server to apply changes.'):t('Install MCP with uv sync --extra mcp from source, uv pip install "basal-ui[mcp]" in a venv, or uv tool install --with "basal-ui[mcp]" basal-ui; then restart basal-ui.');
   $('#mcpClient').hidden=!serveData.mcp_available;
   $('#mcpConnectHint').textContent=mcpHttp?'':t('Start the API server with MCP enabled to use this example.');
   $('#mcpConnectHint').hidden=!serveData.mcp_available||Boolean(mcpHttp);
