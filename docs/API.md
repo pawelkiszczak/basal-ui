@@ -225,7 +225,7 @@ it. Resume is checked by the Engine against input, request options and server id
 
 ### Decision servers
 
-`POST /api/decision-servers` accepts `{"name":"Local", "url":"http://127.0.0.1:11434", "key":null, "consent":false}` and returns 201. `consent: true` is required for hosts other than loopback and link-local; missing consent returns 400 with `CONSENT_REQUIRED`. URLs containing credentials, query strings or fragments are refused. `GET /api/decision-servers` lists server state and reported models without keys; `DELETE /api/decision-servers/{id}` removes the server, its models and key. Secrets are held in an owner-only `<settings stem>.decision-secrets.json` sidecar and are never exported in settings.
+`POST /api/decision-servers` accepts `{"name":"Local", "url":"http://127.0.0.1:11434", "key":null, "consent":false}` and returns 201. `consent: true` is required for hosts other than loopback; missing consent returns 400 with `CONSENT_REQUIRED`. URLs containing credentials, query strings or fragments are refused. `GET /api/decision-servers` lists server state and reported models without keys; `DELETE /api/decision-servers/{id}` removes the server, its models and key. Secrets are held in an owner-only `<settings stem>.decision-secrets.json` sidecar and are never exported in settings.
 
 Settings and the secret sidecar are each replaced atomically under the settings lock, with rollback on ordinary write
 failures. A process crash between the two replacements can leave a stale sidecar entry or a server without its key;
@@ -273,7 +273,7 @@ benchmark kinds are `benchmark`, `loadtest`, `determinism`, `modes`, `identity` 
 
 ### Scheduled Batch
 
-`GET /api/schedules` lists definitions; `POST /api/schedules` creates one. Supply `model`, absolute `input_dir` and `output_dir`, `pattern`, `concurrency` (1–256), and an `interval` containing either `every_minutes` (1–525600) or `daily_at` (`HH:MM`, local time). Optional booleans are `overwrite`, `catch_up`, and `paused`; `id` may be supplied or generated. `PUT /api/schedules/{id}` updates a definition, `DELETE` removes it, `POST /api/schedules/{id}/pause` and `/resume` change pause state, and `POST /api/schedules/{id}/run` returns `started`, `queued`, `skipped`, `failed`, or `no_new_files`. Run now bypasses pause and due time, but not processed-file or overwrite protection. `GET /api/schedules/{id}/preview` inspects the next unprocessed matching input without inference or writes. `GET /api/schedules/{id}/runs?cursor=0` returns up to 100 latest run records and `next_cursor`.
+`GET /api/schedules` lists definitions; `POST /api/schedules` creates one. Supply `model`, absolute `input_dir` and `output_dir`, `pattern`, `concurrency` (1–256), and an `interval` containing either `every_minutes` (1–525600) or `daily_at` (`HH:MM`, local time). Optional booleans are `overwrite`, `catch_up`, and `paused`; `id` may be supplied or generated. `PUT /api/schedules/{id}` updates a definition, `DELETE` removes it, `POST /api/schedules/{id}/pause` and `/resume` change pause state, and `POST /api/schedules/{id}/run` returns `started`, `queued`, `skipped`, `failed`, or `no_new_files`. Run now bypasses pause and due time, but not processed-file or overwrite protection. It returns 409 with code `schedule_owned` while another instance sharing settings is running scheduled work. `GET /api/schedules/{id}/preview` inspects the next unprocessed matching input without inference or writes. `GET /api/schedules/{id}/runs?cursor=0` returns up to 100 latest run records and `next_cursor`.
 
 `GET /api/jobs` returns the same process-local job states as `GET /api/status` under `jobs`. A run records the model, file, actual start and duration, row and error counts, output path and completion, skip, failure or cancellation reason. Definitions, scan clocks and processed signatures are stored in settings; run history uses an owner-only, size-rotated `<settings stem>.schedules.jsonl` sidecar. Unreadable or corrupt history is an error. Changes, resume and edit reset the failure streak; three consecutive errors pause a schedule. Skips and cancellations do not count as errors; cancelled file signatures are not automatically retried. Published output checkpoints are recovered after an interrupted process; recovered records have null duration. Accepted scans retain their remaining file order after restart; later arrivals wait for the next interval unless Run now adds them. A failed resumed scan settles its clock so a missing folder does not retry every timer tick. Run now also scans for newly arrived files during an active job. A changed source is identified by canonical path, size and nanosecond modification time. Comparison models require PR 60; their inputs are preflighted before basal-run so unsupported or discarded fields are rejected without contacting the upstream server. An unloaded model is skipped, never loaded automatically.
 
@@ -342,10 +342,10 @@ The basal-ui metric names are:
 | `basal_ui_questions_total` | `model` | counter | questions |
 | `basal_ui_errors_total` | `model` | counter | failed requests |
 | `basal_ui_input_tokens_total` | `model` | counter | input tokens |
-| `basal_ui_latency_seconds` | `model`, `quantile` (`0.5` or `0.95`) | gauge | seconds |
+| `basal_ui_latency_quantile_seconds` | `model`, `quantile` (`0.5` or `0.95`) | gauge | seconds |
 | `basal_ui_latency_seconds_avg` | `model` | gauge | seconds |
-| `basal_ui_traffic_requests_total` | `endpoint`, `method` | gauge | requests in 15 minutes |
-| `basal_ui_traffic_errors_total` | `endpoint`, `method` | gauge | failed requests in 15 minutes |
+| `basal_ui_traffic_requests_15m` | `endpoint`, `method` | gauge | requests in 15 minutes |
+| `basal_ui_traffic_errors_15m` | `endpoint`, `method` | gauge | failed requests in 15 minutes |
 | `basal_ui_models_loaded` | none | gauge | ready models |
 
 Latency quantiles use at most 1,000 retained samples per model, not the complete lifetime distribution.
@@ -806,7 +806,7 @@ Only public HTTP(S) addresses and `application/json` responses up to 1 MiB are a
 Entries use the same validation, replacement and deletion rules as `PUT /api/presets`, in load then request order.
 A failed entry can leave earlier entries saved. Request preset root `model` is removed.
 ### MCP tool import and shortlist
-`POST /api/mcp/tools` accepts `{ "url": "http://localhost:PORT/mcp", "token": "..." }` (token optional) and returns `{ "tools": [...] }`. It initializes a streamable HTTP MCP session and follows up to 20 pages within a 10-second operation and 4 MiB response budget. Explicit loopback servers are allowed; other hosts must resolve exclusively to public unicast addresses, and bearer tokens for remote hosts require HTTPS. The token is operation-only; failures include an English `detail` and a `code`.
+`POST /api/mcp/tools` accepts `{ "url": "http://localhost:PORT/mcp", "token": "..." }` (token optional) and returns `{ "tools": [...] }`. It initializes a streamable HTTP MCP session and follows up to 20 pages within a 30-second operation and 4 MiB response budget. Only loopback clients can import from explicit loopback servers. Other targets must resolve exclusively to public unicast addresses, and bearer tokens for remote hosts require HTTPS. The token is operation-only; failures include an English `detail` and a `code`.
 `POST /api/tools/shortlist` accepts `{ "tools": [...], "query": "...", "k": 40 }` and returns ranked original definitions in `tools`. Ranking uses local BM25 and does not call a model or an MCP tool.
 Load options use the installed Engine parser's `long_lane` choices and default. `soam` accepts `auto`, `on`, or `off`; `auto` sends no flag. Legacy `long_lane: true` stays on and `false` inherits the installed Engine's default. If a load preset uses `long_lane: auto` on an Engine without that choice, it uses the installed Engine's default. Legacy boolean `soam` values migrate to `auto` or `off`. A model status may include `calibration_origin_warning` and `calibration_origin_warning_code` when the Engine reports a calibration fitted on other model files.
 

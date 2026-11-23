@@ -48,8 +48,9 @@ function toolBudgetError(request, model) {
   document.body.append(dialog);
   const get = id => dialog.querySelector('#mcp-' + id);
   let state = null, sequence = 0;
-  function invalidate() { sequence++; state?.controller?.abort(); if (state) state.controller = null; get('token').value = ''; get('import').disabled = get('shortlist').disabled = false; }
-  function close() { const opener = state?.opener; invalidate(); dialog.close(); state = null; if (opener?.isConnected) opener.focus(); }
+  function origin(url) { try { return new URL(url).origin; } catch { return null; } }
+  function invalidate(clearToken=false) { sequence++; state?.controller?.abort(); if (state) state.controller = null; if (clearToken) get('token').value = ''; get('import').disabled = get('shortlist').disabled = false; }
+  function close() { const opener = state?.opener; invalidate(true); dialog.close(); state = null; if (opener?.isConnected) opener.focus(); }
   function current(s) {
     return state === s && !s.stale && dialog.open && s.card.isConnected && $('.q-type', s.card).value === 'tool' &&
       $('.q-name', s.card).value === s.name && $('[data-f="tools"]', s.card)?.value === s.toolsText &&
@@ -100,9 +101,9 @@ function toolBudgetError(request, model) {
     get('url').value = typeof source?.url === 'string' ? source.url : ''; state.url = get('url').value;
     get('token').value = ''; get('k').value = '40'; error(''); render(); dialog.showModal(); get('url').focus();
   });
-  document.addEventListener('input', event => { if (state && (state.card.contains(event.target) || event.target.matches('#playgroundModel, #requestJson'))) { state.stale = true; invalidate(); error(t('Question changed. Close and reopen the picker.')); } });
-  document.addEventListener('change', event => { if (state && (state.card.contains(event.target) || event.target.matches('#playgroundModel, #editJsonToggle, #examples'))) { state.stale = true; invalidate(); error(t('Question changed. Close and reopen the picker.')); } });
-  get('url').addEventListener('input', () => { invalidate(); if (state) { state.url = get('url').value; state.items = []; state.selected.clear(); state.ranked = null; state.imported = false; render(); } });
+  document.addEventListener('input', event => { if (state && (state.card.contains(event.target) || event.target.matches('#playgroundModel, #requestJson'))) { state.stale = true; invalidate(true); error(t('Question changed. Close and reopen the picker.')); } });
+  document.addEventListener('change', event => { if (state && (state.card.contains(event.target) || event.target.matches('#playgroundModel, #editJsonToggle, #examples'))) { state.stale = true; invalidate(true); error(t('Question changed. Close and reopen the picker.')); } });
+  get('url').addEventListener('input', () => { invalidate(origin(state?.url) !== origin(get('url').value)); if (state) { state.url = get('url').value; state.items = []; state.selected.clear(); state.ranked = null; state.imported = false; render(); } });
   get('import').onclick = () => { const s=state, token=get('token').value, url=get('url').value; s.url=url; operation('/api/mcp/tools', {url,...(token ? {token} : {})}, result => { if (s.ranked) s.original=merged(); s.ranked=null; s.imported=true; s.items=result.tools; s.selected=new Set(s.remembered?.url === url && Array.isArray(s.remembered.selected) ? s.items.filter(x=>s.remembered.selected.includes(x.name)).map(x=>x.name) : s.items.map(x=>x.name)); }); };
   get('all').onclick = () => { invalidate(); state.selected = new Set((state.ranked || state.items).map(toolName)); render(); };
   get('none').onclick = () => { invalidate(); state.selected.clear(); render(); };

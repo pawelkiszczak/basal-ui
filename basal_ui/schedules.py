@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -51,6 +52,9 @@ def validate(definition):
     for key in ("overwrite", "catch_up", "paused"):
         if type(definition.get(key, False)) is not bool:
             raise ValueError(f"{key} must be a boolean")
+    paused_reason = definition.get("paused_reason")
+    if paused_reason is not None and (not isinstance(paused_reason, str) or len(paused_reason) > 200):
+        raise ValueError("paused_reason must be a string of at most 200 characters")
     schedule_id = definition.get("id") or uuid.uuid4().hex[:12]
     if not isinstance(schedule_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", schedule_id):
         raise ValueError("id must be 1..40 lowercase letters, digits or hyphens, starting with a letter or digit")
@@ -64,22 +68,33 @@ def validate(definition):
         "overwrite": definition.get("overwrite", False),
         "catch_up": definition.get("catch_up", False),
         "paused": definition.get("paused", False),
-        **({"paused_reason": definition["paused_reason"]} if definition.get("paused_reason") else {}),
+        **({"paused_reason": paused_reason} if paused_reason else {}),
     }
 
 
 def candidates(spec):
-    return sorted(
+    paths = sorted(
         (
             path
             for path in Path(spec["input_dir"]).iterdir()
             if not path.is_symlink()
+            and not path.is_dir()
             and fnmatch.fnmatchcase(path.name, spec["pattern"])
             and not path.name.endswith(".answers.jsonl")
             and not path.name.startswith(".basal-ui-schedule-")
         ),
         key=lambda path: path.name,
     )
+    by_stem = {}
+    for path in paths:
+        if path.stem in by_stem:
+            raise ValueError(f"{by_stem[path.stem]} and {path.name} would publish the same answers file")
+        by_stem[path.stem] = path.name
+    return paths
+
+
+class SchedulerBusy(RuntimeError):
+    """Another instance owns Scheduled Batch for this settings file."""
 
 
 class Schedules:
@@ -88,6 +103,7 @@ class Schedules:
         self.lock = threading.RLock()
         self.run_lock = threading.Lock()
         self.active = None
+        self._lease = None
         self.pending = {}
         self.settings.recover_schedule_publications()
 
@@ -121,6 +137,8 @@ class Schedules:
                     spec["_token"] = old["_token"]
                     if not spec["paused"]:
                         spec.pop("paused_reason", None)
+                    elif spec.get("paused_reason") == old.get("paused_reason") and old.get("paused_reason_code"):
+                        spec["paused_reason_code"] = old["paused_reason_code"]
                     rows[index] = spec
                     return spec
             raise KeyError(schedule_id)
@@ -190,7 +208,7 @@ class Schedules:
             latest_slot = datetime.combine(current.date() - timedelta(days=1), slot_time).timestamp()
         if spec["catch_up"]:
             return (last is None and current.timestamp() >= today_slot) or (last is not None and last < latest_slot)
-        return current.strftime("%H:%M") == spec["interval"]["daily_at"] and (last is None or last < today_slot)
+        return today_slot <= now.timestamp() < today_slot + 5 * 60 and (last is None or last < today_slot)
 
     def _record(self, spec, row, checkpoint=False):
         try:
@@ -241,22 +259,59 @@ class Schedules:
             rows=result.get("items", 0),
             errors=result.get("errors", 0),
         )
+        interrupted = state["phase"] == "cancelled" and job.cancel_reason == "shutdown"
         if state["phase"] == "cancelled":
-            row["cancelled"] = "cancelled by user"
+            row["cancelled"] = "cancelled during shutdown" if interrupted else "cancelled by user"
+            if interrupted:
+                row.pop("_matched", None)
         elif state["phase"] not in ("done", "done_with_warnings"):
             row.update(error=state.get("error") or state["phase"], errors=1)
         elif row["errors"]:
             row["error"] = "one or more requests failed"
-        self._record(spec, row, checkpoint=True)
+        self._record(spec, row, checkpoint=not interrupted)
         self.active = None
         return False
+
+    def _release_lease(self):
+        if self._lease is not None:
+            self._lease.close()
+            self._lease = None
+
+    @contextmanager
+    def _shared_run(self):
+        if self._lease is None:
+            self._lease = self.settings.try_schedule_lock()
+            if self._lease is None:
+                yield False
+                return
+            # Another instance may have settled our cached scan while we were idle.
+            self.pending.clear()
+        try:
+            yield True
+        finally:
+            if self.active is None:
+                self._release_lease()
+
+    def shutdown(self):
+        with self.run_lock, self.lock:
+            try:
+                if self.active is not None and self.active[2].thread is not None:
+                    self.active[2].thread.join()
+                self._finish_active()
+            finally:
+                self._release_lease()
 
     def run_due(self, now=None, schedule_id=None, force=False):
         now = time.time() if now is None else now
         timestamp = self._time(now).timestamp()
-        with self.run_lock, self.lock:
+        with self.run_lock, self.lock, self._shared_run() as owned:
+            if not owned:
+                if force:
+                    raise SchedulerBusy("Scheduled Batch is busy in another basal-ui instance. Retry when it finishes.")
+                return {"status": "queued"}
             self.settings.recover_schedule_publications()
             running = self._finish_active()
+            started = None
             outcome = "no_new_files"
             for spec in self.list():
                 sid = spec["id"]
@@ -502,11 +557,13 @@ class Schedules:
                     queue.pop(0)
                     row["at"] = job.state()["started"]
                     self.active = (spec, row, job)
-                    return {"status": "started", "job": job.state()}
-                if not queue and sid in self.pending:
+                    started = job.state()
+                    running = True
+                    break
+                if not running and not queue and sid in self.pending:
                     self.settings.complete_schedule_scan(spec, self.pending[sid]["scan"])
                     self.pending.pop(sid, None)
-            return {"status": outcome}
+            return {"status": "started", "job": started} if started is not None else {"status": outcome}
 
     def run_now(self, schedule_id, now=None):
         self.get(schedule_id)

@@ -77,7 +77,7 @@ def test_protocol_pagination_and_session(monkeypatch):
     monkeypatch.setattr(
         socket, "getaddrinfo", lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80))]
     )
-    monkeypatch.setattr(mcp_import, "_Connection", Connection)
+    monkeypatch.setattr(mcp_import, "PinnedConnection", Connection)
     result = mcp_import.list_tools({"url": "http://localhost/mcp", "token": "secret"})
     assert [item["name"] for item in result["tools"]] == ["one", "two"]
     assert [call[1]["method"] for call in calls[:-1]] == [
@@ -102,7 +102,7 @@ def test_management_routes_use_injected_importer(tmp_path, monkeypatch):
         closed = False
 
         async def run(self, body, request):
-            assert body == {"url": "http://localhost/mcp"}
+            assert body == {"url": "http://localhost/mcp", "allow_loopback": False}
             return {"tools": [{"name": "weather", "inputSchema": {}}]}
 
         async def close(self):
@@ -120,7 +120,10 @@ def test_management_routes_use_injected_importer(tmp_path, monkeypatch):
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         assert (
-            client.post("/api/mcp/tools", json={"url": "http://localhost/mcp"}).json()["tools"][0]["name"] == "weather"
+            client.post("/api/mcp/tools", json={"url": "http://localhost/mcp", "allow_loopback": True}).json()["tools"][
+                0
+            ]["name"]
+            == "weather"
         )
         result = client.post("/api/tools/shortlist", json={"tools": [{"name": "weather"}], "query": "weather"})
         assert result.json() == {"tools": [{"name": "weather"}]}
@@ -176,7 +179,15 @@ def test_actual_gateway_catalogue_import(tmp_path, monkeypatch):
         stats=fleet.stats,
         history=fleet.history,
     )
-    with TestClient(app, base_url="http://127.0.0.1") as client:
+    with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345)) as client:
+        remote = TestClient(app, base_url="http://127.0.0.1", client=("192.0.2.10", 12345))
+        try:
+            refused = remote.post(
+                "/api/mcp/tools", json={"url": f"http://127.0.0.1:{port}/mcp", "allow_loopback": True}
+            )
+            assert refused.status_code == 400 and refused.json()["code"] == "fetch_address_refused"
+        finally:
+            remote.close()
         response = client.post("/api/mcp/tools", json={"url": f"http://127.0.0.1:{port}/mcp"})
         assert response.status_code == 200, response.text
         assert response.json()["tools"] == [
@@ -270,7 +281,7 @@ def test_stream_events_and_cursor_loop(monkeypatch):
     monkeypatch.setattr(
         socket, "getaddrinfo", lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80))]
     )
-    monkeypatch.setattr(mcp_import, "_Connection", Connection)
+    monkeypatch.setattr(mcp_import, "PinnedConnection", Connection)
     with pytest.raises(FetchError, match="repeated cursor"):
         mcp_import.list_tools({"url": "http://localhost/mcp"})
 
@@ -343,7 +354,7 @@ def test_catalogue_limits_and_auth_errors(monkeypatch, case, expected):
     monkeypatch.setattr(
         socket, "getaddrinfo", lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80))]
     )
-    monkeypatch.setattr(mcp_import, "_Connection", Connection)
+    monkeypatch.setattr(mcp_import, "PinnedConnection", Connection)
     with pytest.raises(FetchError) as error:
         mcp_import.list_tools({"url": "http://localhost/mcp"})
     assert error.value.code == expected
@@ -476,7 +487,7 @@ def test_sse_ignores_server_request_with_matching_id_and_returns_before_eof(monk
     monkeypatch.setattr(
         socket, "getaddrinfo", lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 80))]
     )
-    monkeypatch.setattr(mcp_import, "_Connection", Connection)
+    monkeypatch.setattr(mcp_import, "PinnedConnection", Connection)
     assert mcp_import.list_tools({"url": "http://localhost/mcp"}) == {"tools": [{"name": "weather", "inputSchema": {}}]}
 
 

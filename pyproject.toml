@@ -29,6 +29,7 @@ dependencies = [
   "httpx>=0.28",
   "huggingface_hub>=0.34",
   "packaging>=23",
+  "opentelemetry-api>=1.45.2",  # CVE-2026-126360 in FastAPI and MCP's transitive dependency
 ]
 # The engine (rkinas/basal) is not a runtime dependency: PyPI rejects direct-URL requirements and the PyPI "basal"
 # package is unrelated. basal_ui.engine.check() refuses to start without it; see README, "Install". Development pins it
