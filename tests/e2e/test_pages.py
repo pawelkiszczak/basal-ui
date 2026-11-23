@@ -974,6 +974,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     }""")
     assert options_target
     page.click("#allModelsTab")
+    page.select_option("#modelRunAvailabilityFilter", "available")
     page.locator(f'#modelsTable .options-model[data-id="{options_target["id"]}"]').click()
     sync_api.expect(page.locator("#loadOptions")).to_be_visible()
     sync_api.expect(
@@ -992,6 +993,7 @@ def test_server_messages_translate_in_polish_and_remain_english(page):
     page.click("#suggestedTab")
     sync_api.expect(page.locator("#suggested .why").filter(has_text=suggestion["why"]).first).to_be_visible()
     page.click("#allModelsTab")
+    page.select_option("#modelRunAvailabilityFilter", "available")
     page.locator(f'#modelsTable .options-model[data-id="{options_target["id"]}"]').click()
     sync_api.expect(
         page.locator("#loadOptions .option-mode.unavailable small")
@@ -2166,7 +2168,10 @@ def test_backend_recommendation_load_preserves_saved_revision_and_settings(brows
     if choice is None:
         pytest.skip("No downloaded text recommendation for the model's installed Backend")
     model_id = choice["id"]
-    isolated_ui.put("/api/models/options", {"id": model_id, "options": {"revision": "main", "orders": "1"}})
+    cached = isolated_ui.get("/api/models/card", params={"id": model_id})
+    assert cached["local_dir"]
+    revision = Path(cached["local_dir"]).name
+    isolated_ui.put("/api/models/options", {"id": model_id, "options": {"revision": revision, "orders": "1"}})
     before = isolated_ui.get("/api/models/options", params={"id": model_id})["options"]
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
@@ -2179,18 +2184,19 @@ def test_backend_recommendation_load_preserves_saved_revision_and_settings(brows
         page.click("#suggestedTab")
         page.locator(f'#suggested .load-model[data-id="{model_id}"]').first.click()
         sync_api.expect(page.locator("#loadOptions")).to_be_visible()
-        assert page.input_value("#opt-revision") == "main"
+        assert page.input_value("#opt-revision") == revision
         sync_api.expect(page.locator(f'input[name="optMode"][value="{choice["mode"]}"]')).to_be_checked()
         sync_api.expect(page.locator("#optionsRemember")).not_to_be_checked()
         page.click("#optionsApply")
         page.wait_for_function(
-            "id => statusCache.models.some(model => model.id === id && model.state === 'ready')",
+            "id => statusCache.models.some(model => model.id === id && ['ready', 'error'].includes(model.state))",
             arg=model_id,
             timeout=WAIT,
         )
         loaded = next(model for model in isolated_ui.get("/api/status")["models"] if model["id"] == model_id)
+        assert loaded["state"] == "ready", f"model load failed: {loaded}"
         assert loaded["mode"] == choice["mode"]
-        assert loaded["options"]["revision"] == "main"
+        assert loaded["options"]["revision"] == revision
         assert loaded["options"]["orders"] == "1"
         assert isolated_ui.get("/api/models/options", params={"id": model_id})["options"] == before
     finally:

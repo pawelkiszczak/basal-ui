@@ -97,7 +97,10 @@ def test_catalog_filters_keep_compatibility_and_status_distinct(browser, synthet
         "models": models,
     }
     status = synthetic_ui.get("/api/status")
-    status.update(models=[{"id": "missing-gguf", "state": "starting"}], downloads={"Synthetic/gguf": {}})
+    status.update(
+        models=[{"id": "missing-gguf", "state": "starting"}],
+        downloads={"Synthetic/gguf": {"id": "missing-gguf", "done_bytes": 0, "total_bytes": 100, "error": None}},
+    )
     page.route("**/api/models*", lambda route: route.fulfill(json=catalog))
     page.route("**/api/status", lambda route: route.fulfill(json=status))
     page.goto(synthetic_ui.url + "/")
