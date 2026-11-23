@@ -33,21 +33,18 @@ unified-memory hosts, otherwise `ram` or `gpu` when fully placed in that pool an
 Runtime `process_bytes` always uses process RSS, including runtime overhead, with the host basis from
 `memory.rss_accounting()`; it is not derived from Ollama's model-size estimate. Context-byte and cache fields remain
 unknown. If the API is unreachable but an `ollama` process exists, status is `unreachable` and RSS remains available.
-A valid empty model list is `empty` without forcing RSS to zero; an API response error is `unavailable`. With neither
-API nor process, the provider is omitted. Host configuration follows
+A valid empty model list is `ok` with no models and does not force RSS to zero. A runtime is reported only when
+`/api/version` confirms Ollama or a matching server process is present; an API response error is `unavailable`.
+With neither API confirmation nor a matching process, the provider is omitted. Host configuration follows
 [`OLLAMA_HOST`](https://github.com/ollama/ollama/blob/main/envconfig/config.go).
 
-The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
-discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
-On non-unified hosts process RSS and host RAM are compared only where their basis is known to agree. Linux
-`ram_used` and `other` are `null` because `MemAvailable` and RSS account for reclaimable pages differently. On
-unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include GPU allocations.
-`other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
-those totals share the host's accounting basis and no listed runtime has an unknown total. Fleet totals include every
-measured process, while model breakdowns list ready models only. `cache_bytes` is the Engine state cache only while
-active, and `cache_pool` identifies its memory pool (`vram`, `ram`, or `unified`); context bytes and disk-backed
-cold-cache bytes remain `null` when unavailable. Engine context token limits are not byte measurements. The existing
-`GET` and `PUT /api/memory` routes continue to manage memory settings.
+Fleet process totals include every measured non-idle Fleet child, while model breakdowns list ready models only.
+`cache_bytes` is the Engine state cache only while active, and `cache_pool` identifies its memory pool (`vram`,
+`ram`, or `unified`); context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context
+token limits are not byte measurements. On non-unified hosts process RSS and host RAM are compared only where their
+basis is known to agree. Linux `ram_used` and `other` are `null` because `MemAvailable` and RSS account for
+reclaimable pages differently. On unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS
+does not include GPU allocations.
 
 
 

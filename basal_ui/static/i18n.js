@@ -1880,6 +1880,11 @@ const PL = {
   "Ollama API returned an invalid response. Process RSS includes runtime overhead.": "API Ollama zwróciło nieprawidłową odpowiedź. RSS procesu obejmuje narzut środowiska.",
   "OLLAMA_HOST must point to a local Ollama server.": "OLLAMA_HOST musi wskazywać lokalny serwer Ollama.",
   "OLLAMA_HOST must point to a local Ollama server. Process RSS includes runtime overhead.": "OLLAMA_HOST musi wskazywać lokalny serwer Ollama. RSS procesu obejmuje narzut środowiska.",
+  "Pool: {pool}": "Pula: {pool}",
+  "VRAM": "VRAM",
+  "RAM": "RAM",
+  "Unified": "Zunifikowana",
+  "Mixed or unknown": "Mieszana lub nieznana",
 };  // 'English text': 'tekst po polsku'
 const PL_PLURAL = {
   "Unloaded after {n} idle minute at {time}": ["Wyładowano po {n} minucie bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}", "Wyładowano po {n} minutach bezczynności o {time}"],

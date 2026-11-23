@@ -166,8 +166,9 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
             else getattr(provider, "runtime", getattr(provider, "__name__", "runtime"))
         )
         try:
+            provider_path = provider if isinstance(provider, str) else None
             provider = _provider(provider)
-            observation = provider()
+            observation = provider(fleet) if provider_path == "basal_ui.runtimes.ollama.observe" else provider()
         except Exception:  # noqa: BLE001 — isolate optional runtime failures
             runtimes.append(
                 {
@@ -197,6 +198,4 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
     return {"time": time.time(), "host": host, "runtimes": runtimes, "other": other}
 
 
-from .runtimes import ollama  # noqa: E402  (runtime providers call process_rss defined above)
-
-PROVIDERS.append(ollama.observe)
+PROVIDERS.append("basal_ui.runtimes.ollama.observe")
