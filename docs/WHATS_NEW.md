@@ -60,6 +60,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   identify unavailable context and cache breakdowns without treating context token limits as bytes or double-counting
   unified memory.
 - Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
+  without treating Engine context token limits as bytes or double-counting unified memory. LM Studio adds loaded model
+  identity from its local API and process RSS, including runtime overhead when the API is unavailable.
   without treating Engine context token limits as bytes or double-counting unified memory. Show confirmed SGLang models
   and process RSS, without treating KV-pool token counts or memory fractions as byte measurements.
   [Live memory](USAGE.md#sglang-memory-observation)

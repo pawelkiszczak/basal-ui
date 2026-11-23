@@ -211,3 +211,4 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
 register_provider("basal_ui.runtimes.vllm.observe")
 register_provider("basal_ui.runtimes.sglang.observe")
 register_provider("basal_ui.runtimes.ollama.observe")
+register_provider("basal_ui.runtimes.lmstudio.observe")
