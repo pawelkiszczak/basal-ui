@@ -182,13 +182,13 @@ document.addEventListener('click',e=>{
   const id=b.dataset.id;
   if(b.classList.contains('download-model'))act(async()=>{await api('/api/download',{method:'POST',body:JSON.stringify({id})});await refreshStatus();});
   else if(b.classList.contains('unload-model'))act(()=>unloadOne(id));
-  else if(b.classList.contains('delete-model'))act(()=>deleteModel(id));
+  else if(b.classList.contains('delete-model'))deleteModel(id);
   else act(()=>loadModel(id,b.dataset.media==='true',b.dataset.mode||null));
 });
 async function deleteModel(id) {
   const model=modelData.find(m=>m.id===id);
   if(!model||!await confirmDialog({title:t('Delete model from disk?'),description:t('{model} will be removed from disk.',{model:`${model.family} ${model.tier} (${model.label})`}),confirmLabel:t('Delete'),destructive:true}))return;
-  await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})}); toast(t('Model deleted')); await loadModels();
+  await act(async()=>{await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})});toast(t('Model deleted'));await loadModels();});
 }
 // "basal-2.0" / "basal-omni-1.0" written the way basal.si5.pl writes the family names
 function familyMark(family) {
@@ -572,14 +572,20 @@ document.addEventListener('dashboard:window',event=>{
   if(trafficMinutes!==event.detail.minutes){trafficMinutes=event.detail.minutes;trafficGeneration++;trafficPending=true;trafficData=null;trafficError=null;renderDashboard();}
   refreshTraffic();
 });
+let statusRefresh=null;
 async function refreshStatus() {
+  if(statusRefresh){await statusRefresh;return refreshStatus();}
   const sequence = ++statusSequence;
-  try {
-    const status = await api('/api/status');
-    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
-  } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
-  }
+  const request=(async()=>{
+    try {
+      const status = await api('/api/status');
+      if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    } catch(e) {
+      if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
+    }
+  })();
+  statusRefresh=request;
+  try{await request;}finally{if(statusRefresh===request)statusRefresh=null;}
 }
 async function loadExamples() {
   try {
@@ -1607,7 +1613,7 @@ async function sendDecision() {
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   const evidenceStamp=modelEvidenceStamp(request.model);
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
+  try { const response=await withPending('decision',()=>api('/api/decide',{method:'POST',body:JSON.stringify(request)})); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) {
     if(e.status===422&&!jsonMode)showQuestionErrors(String(e.detail||''),request);
     showDecideError(e.message); toast(e.message,'error');
@@ -1807,7 +1813,24 @@ const pct=v=>v==null?'—':`${(Number(v)*100).toFixed(1)}%`;
 const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
-async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+let pendingActions=0, pendingDecisions=0, initialLoading=false;
+function setPendingStatus(text=''){const status=$('#pendingStatus');if(status.textContent!==text)status.textContent=text;}
+function updatePendingStatus(){
+  const status=$('#pendingStatus'),activeDialog=document.activeElement?.closest('dialog[open]');
+  const dialog=pendingActions?activeDialog||document.querySelector('dialog[open]'):null;
+  setPendingStatus(pendingDecisions?t('Sending a Decision…'):pendingActions?t('Working…'):initialLoading?t('Loading basal-ui…'):'');
+  if(dialog){if(status.parentElement!==dialog)dialog.prepend(status);status.classList.add('in-dialog');}
+  else if(status.parentElement!==$('#main-content')){$('#main-content').prepend(status);status.classList.remove('in-dialog');}
+}
+async function withPending(action,fn){
+  pendingActions++;
+  if(action==='decision')pendingDecisions++;
+  updatePendingStatus();
+  try{return await fn();}finally{pendingActions--;if(action==='decision')pendingDecisions--;updatePendingStatus();}
+}
+async function act(fn){try{await withPending('',fn);}catch(e){toast(e.message,'error');}}
+document.addEventListener('focusin',event=>{if(pendingActions&&event.target.closest('dialog[open]'))updatePendingStatus();});
+document.addEventListener('close',()=>{if(pendingActions)updatePendingStatus();},true);
 
 function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
 let decisionServerSignature='';
@@ -2068,8 +2091,8 @@ async function loadStats() {
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
   $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}${id.startsWith('comparison:')?comparisonBadge():''}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
-  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
-  const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
+  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true}))await act(async()=>{await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});});
+  const all=$('#resetAllStats'); if(all)all.onclick=async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true}))await act(async()=>{await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});};
 }
 const BENCH_HINTS={benchmark:t('5 warm-up, 30 sequential and 120 concurrent requests (8 at a time); items with a gold answer are scored. Own set: {link}.',{link:'<code>docs/BENCHMARK_SETS.md</code>'}),
   loadtest:t('basal-loadtest against the model: 10 warm-up, sequential requests for the latency, then the concurrent ones for the throughput. Synthetic states of about N tokens replace the set when given.'),
@@ -2560,7 +2583,7 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   dialog.showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
-document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
+document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action).catch(error=>toast(error.message,'error'));}});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
@@ -2570,11 +2593,13 @@ $('#optionsApply').onclick=async()=>{
     const invalid=[...$('#optionsForm').querySelectorAll('input,select')].find(el=>!el.disabled&&!el.closest('[hidden]')&&(!el.checkValidity()||(['opt-reread','opt-graph_memory_gb'].includes(el.id)&&el.value!==''&&Number(el.value)<=0)));
     if(invalid){invalid.setAttribute('aria-invalid','true');invalid.focus();throw new Error(t('Check the value of {option}.',{option:OPTION_FIELDS[invalid.id.slice(4)]?.label?t(OPTION_FIELDS[invalid.id.slice(4)].label):invalid.id}));}
     for(const [key,reason] of Object.entries(data.unavailable||{}))if(Object.hasOwn(options,key))throw new Error(t('Load option {option}: {reason}',{option:key,reason:t(reason)}));
-    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
+    if(remember||data.saved&&!initialMode)await withPending('',async()=>{await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();});
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();const replacement=[...document.querySelectorAll('.options-model')].find(b=>b.dataset.id===id&&b.dataset.action==='save'&&b.dataset.media===String(media)&&b.getClientRects().length);(replacement|| (trigger?.isConnected?trigger:null))?.focus();return;}
-    if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
-    else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
-    $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    await withPending('',async()=>{
+      if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
+      else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
+      $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    });
   }catch(e){$('#optionsError').textContent=e.message;$('#optionsError').hidden=false;}
   finally{$('#optionsApply').disabled=false;}
 };
@@ -2678,16 +2703,16 @@ async function replayRequest(x) {
   showView('playground',true);
   if(model.kind==='comparison')DecisionTools.selectComparison(model.id);
 }
-function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
+function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;return loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
 $('#historyModel').onchange=resetHistory;
 $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.toggle('active',b.dataset.source===historySource));
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
-$('#clearHistory').onclick=()=>act(async()=>{
+$('#clearHistory').onclick=async()=>{
   if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted, including scheduled Batch.'),confirmLabel:t('Clear history'),destructive:true}))return;
-  const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
-});
+  await act(async()=>{const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); await resetHistory();});
+};
 async function loadLogs() {
   clearTimeout(logTimer);
   if($('#logs').hidden)return;
@@ -2981,4 +3006,5 @@ $('#saveMemory').onclick=async()=>{
 showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();
- (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();})();
+initialLoading=true;updatePendingStatus();
+ (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}try{await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();}finally{initialLoading=false;updatePendingStatus();}})();
