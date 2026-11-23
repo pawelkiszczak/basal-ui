@@ -1536,6 +1536,7 @@ class Fleet:
                         "id": runner.model,
                         "kind": "basal",
                         "state": runner.state,
+                        "pid": runner.pid,
                         "rss_bytes": rss.get(runner.pid) if runner.pid else None,
                         "base_url": runner.base_url,
                         "mode": runner.mode,

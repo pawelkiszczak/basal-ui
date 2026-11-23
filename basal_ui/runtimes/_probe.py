@@ -12,6 +12,10 @@ def loopback_origin(value: str) -> str:
     parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("runtime URL must be an HTTP(S) loopback origin")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("runtime URL has an invalid port") from exc
     if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
         raise ValueError("runtime URL must be an origin without path, query, or fragment")
     try:
