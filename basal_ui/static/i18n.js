@@ -1887,6 +1887,8 @@ const PL = {
   "System and other apps: breakdown unavailable": "Podział pamięci systemu i innych aplikacji jest niedostępny",
   "Context bytes": "Bajty kontekstu",
   "Hot cache": "Pamięć podręczna w RAM",
+  "Hot cache pool: {pool}": "Pula pamięci podręcznej: {pool}",
+  "Runtime memory observation is unavailable.": "Pomiar pamięci środowiska jest niedostępny.",
   "Disk-backed cold cache": "Zimna pamięć podręczna na dysku",
   "No loaded models": "Brak załadowanych modeli",
   "Runtime memory unavailable": "Pamięć środowiska jest niedostępna",
