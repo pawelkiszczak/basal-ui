@@ -2,6 +2,10 @@
 
 This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
+## Interface
+
+- Share popover surfaces across Tools, Appearance and Playground Request settings. Escape closes either header menu and restores focus, theme selection returns focus to Appearance, Space remains the native checkbox toggle, and Enter on a form checkbox does not submit the form. [Tools in light English](images/issue-144-controls.png) and [Appearance in dark Polish](images/issue-144-appearance-dark-pl.png).
+
 ## Models and inference
 
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an

@@ -85,10 +85,17 @@ function applyTheme(theme) {
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
-document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);$('.appearance-controls details').open=false;});
+document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);const menu=b.closest('.appearance-controls details');if(menu){menu.open=false;menu.querySelector('summary').focus();}});
 applyTheme(localStorage.getItem('basal-ui.theme')||'system');
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Tab'&&!event.shiftKey&&event.target===menu?.querySelector('summary')){
+    const first=menu.querySelector('.header-menu-panel button:not(:disabled)');
+    if(first){event.preventDefault();first.focus();}
+  }
+});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
   if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('#sendButton').click();}
@@ -98,15 +105,6 @@ document.addEventListener('keydown',e=>{
 document.addEventListener('click',event=>{if(recording && event.target.closest('#dt-run')){event.preventDefault();event.stopImmediatePropagation();$('#decisionCompare .dt-error').textContent=t('Finish recording before sending.');$('#decisionCompare .dt-error').hidden=false;}},true);
 document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;if(event.target.closest('#playground') && !event.target.closest('#recordAudio, #sendButton') && recording)cancelRecording();},true);
 document.addEventListener('input',event=>{if(event.target.closest('#playground')){replayIntent++;if(recording && !event.target.closest('#recordAudio'))cancelRecording();}});
-document.addEventListener('change',event=>{
-  if(event.target.matches('input[type=checkbox]'))event.target.setAttribute('aria-checked',String(event.target.checked));
-});
-document.addEventListener('keydown',event=>{
-  if(event.key==='Enter'&&event.target.matches('input[type=checkbox][role=switch]')) {
-    event.preventDefault(); setChecked(event.target,!event.target.checked);
-    event.target.dispatchEvent(new Event('change',{bubbles:true}));
-  }
-});
 ['overview','models','manager','playground','batch','inspect','api','history','logs'].forEach((view,index)=>{$(`.side-nav [data-view="${view}"]`).dataset.shortcut=String(index+1);});
 $('.side-nav [data-view=backends]').dataset.shortcut='0';
 $('#shortcutViews').innerHTML=[...document.querySelectorAll('.side-nav [data-shortcut]')]
@@ -114,9 +112,7 @@ $('#shortcutViews').innerHTML=[...document.querySelectorAll('.side-nav [data-sho
   .map(button=>`<p><kbd>Alt + ${button.dataset.shortcut}</kbd> ${esc(t(button.textContent.trim()))}</p>`).join('');
 function setChecked(input, value) {
   input.checked=Boolean(value);
-  input.setAttribute('aria-checked',String(input.checked));
 }
-document.querySelectorAll('input[type=checkbox]').forEach(input=>{input.setAttribute('role','switch');setChecked(input,input.checked);});
 document.querySelectorAll('.icon-button').forEach(button=>{
   const icon=button.id==='logsToggle'
     ?'<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v12H4zM7 8h6M7 11h6M7 14h3"/></svg>'
@@ -317,9 +313,9 @@ document.addEventListener('click',event=>{
   $('#modelLoaderDialog').close();
 });
 let audioSettingsVersion=0, audioSettingsRead=0, audioSettingsSaving=false;
-$('#keepHistoryAudio').indeterminate=true;$('#keepHistoryAudio').setAttribute('aria-checked','mixed');
+$('#keepHistoryAudio').indeterminate=true;
 function audioSettingsUnknown() {
-  const input=$('#keepHistoryAudio');input.indeterminate=true;input.setAttribute('aria-checked','mixed');input.disabled=true;
+  const input=$('#keepHistoryAudio');input.indeterminate=true;input.disabled=true;
   $('#historyAudioError').textContent=t('History audio setting is unknown. Reload the page to check it.');$('#historyAudioError').hidden=false;
 }
 function applyAudioSettings(settings) {
@@ -546,6 +542,12 @@ async function startRecording() {
 }
 $('#recordAudio').addEventListener('click',startRecording);
 document.addEventListener('keydown',event=>{if(event.key==='Escape' && recording){event.preventDefault();if(recording.phase==='recording')finishRecording(recording);else cancelRecording();}});
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Escape'&&menu?.contains(event.target)&&!event.defaultPrevented&&!document.querySelector('dialog[open]')){
+    event.preventDefault();menu.open=false;menu.querySelector('summary').focus();
+  }
+});
 
 function renderDashboard() {
   window.updateDashboard({traffic:trafficData,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError});
@@ -721,7 +723,7 @@ const qField=(label,input,help='',cls='')=>{const id=`question-field-${++questio
 const qNum=(f,v,attrs='')=>`<input class="input" type="number" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" ${attrs}>`;
 const qText=(f,v,ph='')=>`<input class="input" type="text" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" placeholder="${esc(t(ph))}">`;
 const qArea=(f,v,ph='',cls='')=>`<textarea class="textarea${cls?` ${cls}`:''}" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" placeholder="${esc(cls==='json'?ph:t(ph))}">${esc(v??'')}</textarea>`;
-const qSwitch=(f,v,label,cls='')=>`<label class="qf-switch${cls?` ${cls}`:''}"><input class="switch" type="checkbox" role="switch" data-f="${f}"${v?' checked aria-checked="true"':' aria-checked="false"'}> ${t(label)}</label>`;
+const qSwitch=(f,v,label,cls='')=>`<label class="qf-switch${cls?` ${cls}`:''}"><input class="switch" type="checkbox" data-f="${f}"${v?' checked':''}> ${t(label)}</label>`;
 const qSelect=(f,options,v)=>`<select class="select" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}">${options.map(([value,label])=>`<option value="${esc(value)}"${String(value)===String(v??'')?' selected':''}>${esc(t(label))}</option>`).join('')}</select>`;
 // the set options of multi, multi-label classify and multi tool; constraints: fallback and exclusive keys (multi and
 // tool only: classify takes objective, threshold, min and max)
@@ -753,7 +755,7 @@ function renderTypeFields(card, type, q) {
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
       +`<button type="button" class="mcp-open">${t('Import or refresh MCP tools')}</button>`
-      +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
+      +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" data-extra="${x}"${extra.includes(x)?' checked':''}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
   }
@@ -1831,6 +1833,9 @@ function decisionServerConsent(){
   $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
 }
 $('#decisionServerUrl').addEventListener('input',decisionServerConsent);
+$('#decisionServerForm').addEventListener('keydown',event=>{
+  if(event.key==='Enter'&&event.target.matches('input[type="checkbox"]'))event.preventDefault();
+});
 $('#decisionServerForm').addEventListener('submit',async event=>{
   event.preventDefault();const error=$('#decisionServerError');error.hidden=true;
   const button=$('#addDecisionServer');let added=false;button.disabled=true;
@@ -2114,7 +2119,7 @@ async function loadComparisonModes() {
   try{
     const d=await api(`/api/modes?id=${encodeURIComponent(id)}`);
     const preset=new Set(d.modes.filter(m=>!['ollama','llamacpp'].includes(m)).slice(0,2));  // external services: opt in
-    $('#bpModes').innerHTML=d.modes.map(m=>`<label><input type="checkbox" role="switch" data-mode="${esc(m)}"${preset.has(m)?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(m)}</label>`).join('')||`<span class="muted">${t('No mode can run this model here.')}</span>`;
+    $('#bpModes').innerHTML=d.modes.map(m=>`<label><input type="checkbox" data-mode="${esc(m)}"${preset.has(m)?' checked':''}> ${esc(m)}</label>`).join('')||`<span class="muted">${t('No mode can run this model here.')}</span>`;
   }catch(e){comparisonFor='';$('#bpModes').innerHTML=`<span class="reason">${esc(e.message)}</span>`;}
 }
 const intOf=sel=>$(sel).value===''?undefined:Number($(sel).value);
@@ -2195,10 +2200,8 @@ async function refreshKeepOptions(){
 $('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;refreshKeepOptions();};
 $('#calComparePath').oninput=refreshKeepOptions;
 $('#calCompare').onchange();
-['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
 $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInput',$('#calibrationInput').value);
-document.querySelectorAll('#calibrationBlock input[type=checkbox]').forEach(i=>{i.setAttribute('role','switch');setChecked(i,i.checked);});
 document.body.append($('#reportDialog'));  // a modal inside a hidden view would block the page without showing
 $('#reportClose').onclick=()=>$('#reportDialog').close();
 let calibrationRunning=false, calibrationBlocked=true, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0, lastCalibrationStatus='';
@@ -2443,7 +2446,7 @@ const OPTION_FIELDS={
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
 const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
-document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
+document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
@@ -2453,7 +2456,7 @@ let optionsState=null, optionsSequence=0;
 const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
-  if(f.kind==='bool')return `<label><input type="checkbox" role="switch" id="${id}"${value?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(t(f.label))}</label>`;
+  if(f.kind==='bool')return `<label><input type="checkbox" id="${id}"${value?' checked':''}> ${esc(t(f.label))}</label>`;
   const listed=(optionsState.data.load_choices?.[key]||f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`

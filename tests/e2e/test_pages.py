@@ -1459,6 +1459,69 @@ def test_theme_toggle_persists_and_sets_the_document_theme(page):
     ]
 
 
+def test_theme_choices_and_menu_escape_priority(browser, ui):
+    context = browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    try:
+        page.goto(ui.url + "/")
+        page.wait_for_function("() => typeof applyTheme === 'function'")
+        page.locator("#openSettings").click()
+        page.locator("#settings-tab-appearance").click()
+        settings_dark = page.locator('#settings-appearance [data-theme-choice="dark"]')
+        settings_dark.focus()
+        page.keyboard.press("Enter")
+        assert page.evaluate(
+            "() => [document.documentElement.dataset.theme, localStorage.getItem('basal-ui.theme')]"
+        ) == [
+            "dark",
+            "dark",
+        ]
+        assert settings_dark.evaluate("el => document.activeElement === el")
+        assert not page.locator(".appearance-controls details").evaluate("el => el.open")
+
+        header = page.locator(".appearance-controls")
+        summary = header.locator("summary")
+        summary.click()
+        header.locator('[data-theme-choice="light"]').click()
+        assert page.evaluate(
+            "() => [document.documentElement.dataset.theme, localStorage.getItem('basal-ui.theme')]"
+        ) == [
+            "light",
+            "light",
+        ]
+        assert summary.evaluate("el => !el.parentElement.open && document.activeElement === el")
+
+        tools = page.locator(".nav-tools")
+        tools_summary = tools.locator("summary")
+        tools_summary.click()
+        page.keyboard.press("?")
+        sync_api.expect(page.locator("#shortcutsDialog")).to_be_visible()
+        page.keyboard.press("Escape")
+        sync_api.expect(page.locator("#shortcutsDialog")).to_be_hidden()
+        assert tools.evaluate("el => el.open")
+        page.keyboard.press("Escape")
+        assert tools.evaluate("el => !el.open && document.activeElement === el.querySelector('summary')")
+
+        tools_summary.click()
+        tools.locator(".header-menu-panel button").first.focus()
+        page.keyboard.press("Escape")
+        assert tools.evaluate("el => !el.open && document.activeElement === el.querySelector('summary')")
+
+        tools_summary.click()
+        first_action = tools.locator(".header-menu-panel button").first
+        first_action.evaluate(
+            """el => {
+              el.addEventListener('keydown', event => event.preventDefault(), {once: true});
+              el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true}));
+            }"""
+        )
+        assert tools.evaluate("el => el.open")
+        page.keyboard.press("Escape")
+        assert tools.evaluate("el => !el.open && document.activeElement === el.querySelector('summary')")
+    finally:
+        context.close()
+
+
 def test_control_enter_sends_a_playground_decision(page):
     view(page, "playground")
     page.evaluate("""() => {
