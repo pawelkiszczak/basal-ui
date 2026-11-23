@@ -9,6 +9,18 @@ let memoryData=null,memoryError=null,memorySequence=0,memoryInFlight=false;
 let sourceUrl=null, fetchInfo=null, replayLocked=false, fetchOperation=null, fetchGeneration=0, applyingFetch=false;
 let serveData=null, serveHost='127.0.0.1', statusCache=null, connectTab='curl';
 let selectedModel=localStorage.getItem('basal-ui.model')||'', previousDownloads=new Set(), rowsSignature='', playgroundSignature='';
+const mcpGroup=document.createElement('fieldset');
+mcpGroup.className='mcp-settings';
+ mcpGroup.innerHTML=`<legend>${t('MCP')}</legend><div class="mcp-setting"></div><p id="mcpAvailability" class="muted" role="status"></p><div class="mcp-hint"></div><div class="field"><span>${t('Endpoint')}</span><code id="mcpEndpoint"></code></div><div class="field" id="mcpClient"><span>${t('Client connection')}</span><pre><code id="connectMcp"></code></pre><div class="mcp-connect-hint"></div><button id="copyMcpConnect" class="btn ghost icon-button" type="button" data-variant="outline">${t('Copy snippet')}</button></div>`;
+$('.serve-actions').before(mcpGroup);
+const mcpSetting=$('#serveMcp').closest('label');
+mcpGroup.querySelector('.mcp-setting').append(mcpSetting);
+mcpSetting.querySelector('input').setAttribute('aria-describedby','mcpHint');
+mcpGroup.querySelector('.mcp-hint').append($('#mcpHint'));
+mcpGroup.querySelectorAll('.field')[1].querySelector('pre code').replaceWith($('#connectMcp'));
+mcpGroup.querySelector('.mcp-connect-hint').append($('#mcpConnectHint'));
+$('#connectTabs [data-connect="mcp"]').remove();
+$('[data-connect-panel="mcp"]').remove();
 let rankAvailable=false;
 function httpFailure(status,message,code) {
   const hint={422:t('Invalid request: revise the input.'),503:code==='OVERLOADED'?t('Model is busy. Wait and retry.'):t('Service unavailable: if GPU memory is exhausted, shorten the input or unload another model before retrying manually.'),500:t('Internal server error: inspect model logs and request ID.')}[status];
@@ -86,10 +98,17 @@ function applyTheme(theme) {
   document.querySelectorAll('[data-theme-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.themeChoice===value)));
   localStorage.setItem('basal-ui.theme',value);
 }
-document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);$('.appearance-controls details').open=false;});
+document.querySelectorAll('[data-theme-choice]').forEach(b=>b.onclick=()=>{applyTheme(b.dataset.themeChoice);const menu=b.closest('.appearance-controls details');if(menu){menu.open=false;menu.querySelector('summary').focus();}});
 applyTheme(localStorage.getItem('basal-ui.theme')||'system');
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if((localStorage.getItem('basal-ui.theme')||'system')==='system')applyTheme('system');});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)$('#'+b.dataset.close).close();});
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Tab'&&!event.shiftKey&&event.target===menu?.querySelector('summary')){
+    const first=menu.querySelector('.header-menu-panel button:not(:disabled)');
+    if(first){event.preventDefault();first.focus();}
+  }
+});
 document.addEventListener('keydown',e=>{
   const typing=e.target.matches('input,textarea,select,[contenteditable=true]');
   if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!$('#playground').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();$('#sendButton').click();}
@@ -99,15 +118,6 @@ document.addEventListener('keydown',e=>{
 document.addEventListener('click',event=>{if(recording && event.target.closest('#dt-run')){event.preventDefault();event.stopImmediatePropagation();$('#decisionCompare .dt-error').textContent=t('Finish recording before sending.');$('#decisionCompare .dt-error').hidden=false;}},true);
 document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;if(event.target.closest('#playground') && !event.target.closest('#recordAudio, #sendButton') && recording)cancelRecording();},true);
 document.addEventListener('input',event=>{if(event.target.closest('#playground')){replayIntent++;if(recording && !event.target.closest('#recordAudio'))cancelRecording();}});
-document.addEventListener('change',event=>{
-  if(event.target.matches('input[type=checkbox]'))event.target.setAttribute('aria-checked',String(event.target.checked));
-});
-document.addEventListener('keydown',event=>{
-  if(event.key==='Enter'&&event.target.matches('input[type=checkbox][role=switch]')) {
-    event.preventDefault(); setChecked(event.target,!event.target.checked);
-    event.target.dispatchEvent(new Event('change',{bubbles:true}));
-  }
-});
 ['overview','models','manager','playground','batch','inspect','api','history','logs'].forEach((view,index)=>{$(`.side-nav [data-view="${view}"]`).dataset.shortcut=String(index+1);});
 $('.side-nav [data-view=backends]').dataset.shortcut='0';
 $('#shortcutViews').innerHTML=[...document.querySelectorAll('.side-nav [data-shortcut]')]
@@ -115,9 +125,7 @@ $('#shortcutViews').innerHTML=[...document.querySelectorAll('.side-nav [data-sho
   .map(button=>`<p><kbd>Alt + ${button.dataset.shortcut}</kbd> ${esc(t(button.textContent.trim()))}</p>`).join('');
 function setChecked(input, value) {
   input.checked=Boolean(value);
-  input.setAttribute('aria-checked',String(input.checked));
 }
-document.querySelectorAll('input[type=checkbox]').forEach(input=>{input.setAttribute('role','switch');setChecked(input,input.checked);});
 document.querySelectorAll('.icon-button').forEach(button=>{
   const icon=button.id==='logsToggle'
     ?'<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v12H4zM7 8h6M7 11h6M7 14h3"/></svg>'
@@ -153,11 +161,28 @@ function renderModels(data) {
   const suggestions = data.suggestions || [];
   renderSuggestions(suggestions);
   const slots = new Map(suggestions.map(s => [s.id, s.slot]));
-  const older = $('#olderToggle').checked, showBad = $('#notRunnableToggle').checked, downloadedOnly = $('#downloadedToggle').checked;
-  const list = modelData.filter(m => (!backendModelFilter||backendModelFilter.ids.has(m.id)) && (older || !['basal-1.0','basal-1.5'].includes(m.family)) && (showBad || m.runnable || m.media_mode) && (!downloadedOnly || m.downloaded));
+  const older = $('#olderToggle').checked, runAvailabilityFilter = $('#modelRunAvailabilityFilter').value;
+  const query=$('#modelSearch').value.trim().toLowerCase(), downloadFilter=$('#modelDownloadFilter').value,
+    loadFilter=$('#modelLoadFilter').value, compatibilityFilter=$('#modelCompatibilityFilter').value, fitFilter=$('#modelFitFilter').value;
+  const activeFilters=Boolean(query||downloadFilter||loadFilter||compatibilityFilter||fitFilter||older||runAvailabilityFilter!=='available');
+  $('#clearModelFilters').disabled=!activeFilters;
+  const list = modelData.filter(m => {
+    const download=statusAvailable?statusCache?.downloads?.[m.repo]:null, downloading=statusAvailable?Boolean(download&&!download.error&&download.id===m.id):null;
+    const runner=statusCache?.models?.find(x=>x.id===m.id), loaded=statusAvailable?Boolean(runner&&['ready','starting','downloading'].includes(runner.state)):null;
+    const compatible=m.model_compatible;
+    const runAvailable=Boolean(m.runnable||m.media_mode);
+    return (!backendModelFilter||backendModelFilter.ids.has(m.id))
+      && (older || !['basal-1.0','basal-1.5'].includes(m.family))
+      && (runAvailabilityFilter==='any' || runAvailable===(runAvailabilityFilter==='available'))
+      && (!query || [m.id,m.repo,m.family,m.tier,m.label].some(value=>String(value||'').toLowerCase().includes(query)))
+      && (!downloadFilter || (downloadFilter==='downloaded'?m.downloaded:downloadFilter==='downloading'?downloading===true:m.downloaded===false&&downloading===false))
+      && (!loadFilter || (loadFilter==='loaded'?loaded===true:loaded===false))
+      && (!compatibilityFilter || (compatibilityFilter==='compatible'?compatible===true:compatible===false))
+      && (!fitFilter || (m.fit||'unknown')===fitFilter);
+  });
   list.sort((a,b) => familyOrder(b.family)-familyOrder(a.family) || tierOrder(a.tier)-tierOrder(b.tier) || a.port.localeCompare(b.port));
   const groups = new Map(); for (const m of list) { if (!groups.has(m.family)) groups.set(m.family, []); groups.get(m.family).push(m); }
-  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty">${t('No models match these filters.')}</div>`; return; }
+  if (!list.length) { $('#modelsTable').innerHTML = `<div class="empty"><p>${t('No models match these filters.')}</p><button type="button" class="outline-action" data-clear-model-filters>${t('Clear filters')}</button></div>`; return; }
   let html = '';
   const tableHead=`<table class="model-variants"><colgroup><col style="width:20%"><col style="width:13%"><col style="width:9%"><col style="width:11%"><col style="width:8%"><col style="width:9%"><col style="width:30%"></colgroup><thead><tr><th>${t('Tier')}</th><th>${t('Format')}</th><th>${t('Size')}</th><th>${t('Est. memory')}</th><th>${t('Fit')}</th><th>${t('Fit now')}</th><th>${t('Action')}</th></tr></thead><tbody>`;
   for (const [family, rows] of groups) {
@@ -170,9 +195,9 @@ function renderModels(data) {
       const slot = slots.get(m.id);
       const mediaReasonText = ts(m.media_reason, m.media_reason_code, m.media_reason_params);
       const mediaReason = !m.media_mode && (m.media || []).length ? `<small class="muted">${esc(mediaReasonText || '')}</small>` : '';
-      const downloadStatus=statusCache?.downloads?.[m.repo], loaded=statusCache?.models?.find(x=>x.id===m.id);
+      const downloadStatus=statusAvailable?statusCache?.downloads?.[m.repo]:null, loaded=statusAvailable?statusCache?.models?.find(x=>x.id===m.id):null;
       const downloadButton=downloadControl(m,downloadStatus);
-      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:!loaded&&m.downloaded?deleteButton(m.id):''}`;
+      const actions=`${m.downloaded?diskActions(m,false):m.attached?'':downloadButton}${m.runnable&&(!m.attached||m.downloaded)?optionsButton(m.id,false,'save'):''}${m.attached?`<button type="button" class="remove-attached destructive" data-id="${esc(m.id)}">${t('Remove')}</button>`:statusAvailable&&!loaded&&m.downloaded?deleteButton(m.id):''}`;
       html += `<tr class="${m.runnable||m.media_mode?'':'not-runnable'}"><td class="model-tier"><span class="model-name">${esc(m.tier)}</span>${reason}${mediaReason}</td><td class="model-format">${esc(m.label)} ${m.attached?`<span class="chip">${t('Attached')}</span>`:''}${m.community?`<span class="chip">${t('community')}</span>`:''}${m.revision?`<span class="chip">${t('revision {revision}',{revision:esc(m.revision)})}</span>`:''}${m.downloaded?`<small class="model-downloaded muted">${t('On disk')}${m.downloaded_bytes==null?'':` · ${gb(m.downloaded_bytes)}`}</small>`:''}</td><td class="model-size">${gb(m.weights_bytes)}</td><td class="model-size">${gb(m.est_memory_bytes)}</td><td><span class="badge ${classes}">${esc(t(m.fit || 'unknown'))}</span></td><td><span class="badge ${nowClasses}">${esc(t(m.fit_now || 'unknown'))}</span></td><td><div class="model-actions"><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button>${actions}</div></td></tr>`;
     }
     html += '</tbody></table></div></section>';
@@ -187,13 +212,13 @@ document.addEventListener('click',e=>{
   const id=b.dataset.id;
   if(b.classList.contains('download-model'))act(async()=>{await api('/api/download',{method:'POST',body:JSON.stringify({id})});await refreshStatus();});
   else if(b.classList.contains('unload-model'))act(()=>unloadOne(id));
-  else if(b.classList.contains('delete-model'))act(()=>deleteModel(id));
+  else if(b.classList.contains('delete-model'))deleteModel(id);
   else act(()=>loadModel(id,b.dataset.media==='true',b.dataset.mode||null));
 });
 async function deleteModel(id) {
   const model=modelData.find(m=>m.id===id);
   if(!model||!await confirmDialog({title:t('Delete model from disk?'),description:t('{model} will be removed from disk.',{model:`${model.family} ${model.tier} (${model.label})`}),confirmLabel:t('Delete'),destructive:true}))return;
-  await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})}); toast(t('Model deleted')); await loadModels();
+  await act(async()=>{await api('/api/models/delete',{method:'POST',body:JSON.stringify({id})});toast(t('Model deleted'));await loadModels();});
 }
 // "basal-2.0" / "basal-omni-1.0" written the way basal.si5.pl writes the family names
 function familyMark(family) {
@@ -207,20 +232,26 @@ function downloadControl(m, progress) {
   return `<button class="download-model" data-id="${esc(m.id)}">${t('Download')}</button>${progress?.error?`<span class="reason">${esc(progress.error)}</span>`:''}`;
 }
 function renderSuggestions(suggestions) {
-  if (!suggestions.length) { $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>`; return; }
+  const browseAll = `<button type="button" class="dashboard-link suggestion-catalog-link">${t('Browse all models')} →</button>`;
+  if (!suggestions.length) {
+    $('#suggested').innerHTML = `<div class="empty">${t('Nothing fits the memory available now; free memory or use All models')}</div>${browseAll}`;
+    return;
+  }
   const models = new Map(modelData.map(m => [m.id, m]));
   $('#suggested').innerHTML = `<div class="suggestion-grid">${suggestions.map(s => {
     const m=models.get(s.id);if(!m)return '';
     const why=esc(ts(s.why,s.why_code,s.why_params)).replace(/(--[a-z][\w-]*(?: [a-z][\w.-]*)?)/g,'<code>$1</code>');
+    const reasons=(s.reasons||[]).map(reason=>`<li>${esc(t(reason))}</li>`).join('');
     const loaded=statusCache?.models?.find(x=>x.id===m.id), chosenMode=recommendationBackend!=='automatic'||s.media?s.mode:null, mode=chosenMode?` data-mode="${esc(chosenMode)}"`:'';
     const media=s.media&&s.media_available!==false, estimate=s.est_memory_bytes;
     const fit=s.fit_now||s.fit;
     const load=m.downloaded&&!loaded&&(s.media?media:m.runnable||s.mode)?`<button type="button" class="load-model primary" data-id="${esc(m.id)}" data-media="${media}"${mode}>${t(media?'Load with media':'Load')}</button>`:'';
     const setup=s.media_available===false?`<p class="reason">${esc(ts(s.media_reason,s.media_reason_code,s.media_reason_params))}</p><a class="dashboard-link" href="#backends">${t('Install media add-on')} →</a>`:'';
     const action=`<div class="controls">${loaded?diskActions(m):!m.downloaded?downloadControl(m,statusCache?.downloads?.[m.repo]):load}${optionsButton(m.id,false,'save')}${m.downloaded&&!loaded?deleteButton(m.id):''}</div>`;
-    return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
-  }).join('')}</div>`;
+    return `<article class="suggestion-card${m.media.length?' omni':''}"><div class="eyebrow">${esc(t(s.slot.replace('_',' ')))}</div><h3>${familyMark(m.family)}</h3><button type="button" class="model-card-open" data-id="${esc(m.id)}" aria-label="${t('Model information')}">ⓘ</button><div class="suggestion-tier">${esc(m.tier)} · ${esc(m.label)}</div><div class="chips">${m.media.map(kind=>`<span class="chip media">${esc(mediaTitle([kind]))}</span>`).join('')}${s.mode?`<span class="chip">${esc(s.mode)}</span>`:''}</div><div><span class="suggestion-meta">${gb(m.weights_bytes)} → ${gb(estimate)} ${t('est. memory')}</span></div><div><span class="badge fit-${esc(fit||'unknown')}">${esc(t(fit||'unknown'))}</span></div><p class="why">${why}</p><ul class="suggestion-reasons">${reasons}</ul><p class="suggestion-estimate-note">${t('Memory fit is an estimate, not a reservation or an Inference test.')}</p>${setup}${m.downloaded?`<div class="suggestion-downloaded">✓ ${gb(m.downloaded_bytes)} ${t('downloaded')}</div>`:''}${action}</article>`;
+  }).join('')}</div>${browseAll}`;
 }
+$('#suggested').addEventListener('click',event=>{if(event.target.closest('.suggestion-catalog-link')){selectModelsTab('all');$('#allModelsTab').focus();}});
 document.addEventListener('click',e=>{const b=e.target.closest('.model-card-open');if(b)act(()=>openModelCard(b.dataset.id));});
 async function openModelCard(id) {
   const c=await api(`/api/models/card?id=${encodeURIComponent(id)}`);
@@ -257,8 +288,9 @@ function idleUnloadMessage(reason){return tp(reason.minutes,'Unloaded after {n} 
 // Model manager: load (text or media, or with options) and unload the models on disk
 function diskActions(m, details=true) {
   const loaded=statusCache?.models?.find(x=>x.id===m.id);
-  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}</span><button type="button" class="unload-model" data-id="${esc(m.id)}">${t('Unload')}</button>`;
+  if(loaded)return `<span class="chip">${esc(t(loaded.state==='ready'?'loaded':loaded.state))}${statusAvailable?'':` · ${t('stale')}`}</span><button type="button" class="unload-model outline-action" data-id="${esc(m.id)}">${t('Unload')}${statusAvailable?'':` · ${t('stale')}`}</button>`;
   if(!m.runnable&&!m.media_mode){const reason=ts(m.reason,m.reason_code,m.reason_params)||t('not runnable here');return `<span class="reason" title="${esc(reason)}">${esc(reason)}</span>`;}
+  if(!statusAvailable)return `<span class="muted">${t('Model status unavailable')}</span>`;
   const media=m.media_mode?`<button type="button" class="load-model load-media-model" data-id="${esc(m.id)}" data-media="true" title="${esc(mediaTitle(m.media||[]))}">${t('Load with media')}</button>`:'';
   const noMediaText=ts(m.media_reason,m.media_reason_code,m.media_reason_params);
   const noMedia=!m.media_mode&&(m.media||[]).length?`<small class="muted">${esc(noMediaText||'')}</small>`:'';
@@ -318,9 +350,9 @@ document.addEventListener('click',event=>{
   $('#modelLoaderDialog').close();
 });
 let audioSettingsVersion=0, audioSettingsRead=0, audioSettingsSaving=false;
-$('#keepHistoryAudio').indeterminate=true;$('#keepHistoryAudio').setAttribute('aria-checked','mixed');
+$('#keepHistoryAudio').indeterminate=true;
 function audioSettingsUnknown() {
-  const input=$('#keepHistoryAudio');input.indeterminate=true;input.setAttribute('aria-checked','mixed');input.disabled=true;
+  const input=$('#keepHistoryAudio');input.indeterminate=true;input.disabled=true;
   $('#historyAudioError').textContent=t('History audio setting is unknown. Reload the page to check it.');$('#historyAudioError').hidden=false;
 }
 function applyAudioSettings(settings) {
@@ -473,8 +505,9 @@ async function selectMedia(files, append=false) {
 }
 // One capture owns its permission, tracks, recorder and decode; replacement invalidates all callbacks.
 let recording=null;
+$('#recordAudio').textContent=t('Record');
 function recordingUI(message='') {
-  $('#recordAudio').textContent=t(recording?(recording.phase==='pending'?'Cancel microphone request':recording.phase==='recording'?'Stop recording':'Cancel recording'):'Record audio');
+  $('#recordAudio').textContent=t(recording?(recording.phase==='pending'?'Cancel microphone request':recording.phase==='recording'?'Stop recording':'Cancel recording'):'Record');
   $('#recordStatus').textContent=message?t(message):'';
   $('#sendButton').disabled=Boolean(recording);
   const active=recording?.phase==='recording';
@@ -516,24 +549,25 @@ async function startRecording() {
   if(!model || !(model.media||[]).includes('audio')){showMediaError(t('This model does not support {kind}',{kind:'audio'}));return;}
   if(!window.isSecureContext){showMediaError(t('Microphone recording requires HTTPS or a loopback address.'));return;}
   if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !window.AudioContext || !window.OfflineAudioContext){showMediaError(t('This browser does not support microphone recording.'));return;}
-  showMediaError();const session={model:selectedModel,generation:model.generation,phase:'pending',chunks:[]};recording=session;recordingUI('Waiting for microphone permission…');
+  showMediaError();const session={model:selectedModel,generation:model.generation,mediaGeneration:mediaSelection,phase:'pending',chunks:[]};recording=session;recordingUI('Waiting for microphone permission…');
   try {
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     if(recording!==session){stream.getTracks().forEach(track=>track.stop());return;}
     session.stream=stream;stream.getAudioTracks().forEach(track=>track.addEventListener('ended',()=>{if(recording===session && session.phase==='recording'){cancelRecording();showMediaError(t('Microphone access was interrupted. Try again.'));}}));session.context=new AudioContext();session.source=session.context.createMediaStreamSource(stream);session.analyser=session.context.createAnalyser();session.source.connect(session.analyser);
-    session.recorder=new MediaRecorder(stream);session.recorder.ondataavailable=e=>{if(e.data.size)session.chunks.push(e.data);};
-    session.recorder.onerror=()=>{if(recording===session){cancelRecording();showMediaError(t('Recording failed. Check your microphone and try again.'));}};
+    session.recorder=new MediaRecorder(stream);session.bytes=0;session.recorder.ondataavailable=e=>{if(recording!==session||session.failed||!e.data.size)return;session.bytes+=e.data.size;if(session.bytes>20*1024*1024){cancelRecording();showMediaError(t('Recording is empty or exceeds the 30-second or 20 MiB limit.'));return;}session.chunks.push(e.data);};
+    session.recorder.onerror=()=>{session.failed=true;if(recording===session){recording=null;recordingUI();showMediaError(t('Recording failed. Check your microphone and try again.'));}releaseCapture(session);};
     session.recorder.onstop=async()=>{
       session.recorder.ondataavailable=null;session.recorder.onstop=null;session.recorder.onerror=null;
-      if(recording!==session)return;
+      if(session.failed){releaseCapture(session);return;}
+      if(recording!==session){releaseCapture(session);return;}
       try{
         const blob=new Blob(session.chunks,{type:session.recorder.mimeType});if(!blob.size)throw new Error('empty');
         const context=new AudioContext();session.decodeContext=context;let decoded;
         try{decoded=await context.decodeAudioData(await blob.arrayBuffer());}finally{if(context.state!=='closed')await context.close();session.decodeContext=null;}
-        if(recording!==session)return;
+        if(recording!==session||mediaSelection!==session.mediaGeneration)return;
         if(decoded.duration>30 || !decoded.length)throw new Error('limit');
         const length=Math.ceil(decoded.duration*16000),offline=new OfflineAudioContext(1,length,16000),source=offline.createBufferSource();source.buffer=decoded;source.connect(offline.destination);source.start();
-        const rendered=await offline.startRendering();if(recording!==session)return;
+        const rendered=await offline.startRendering();if(recording!==session||mediaSelection!==session.mediaGeneration)return;
         const file=wavFile(rendered);const added=await selectMedia([file],true);
         if(recording!==session)return;
         recording=null;recordingUI(added?'Recording added.':'');
@@ -547,6 +581,12 @@ async function startRecording() {
 }
 $('#recordAudio').addEventListener('click',startRecording);
 document.addEventListener('keydown',event=>{if(event.key==='Escape' && recording){event.preventDefault();if(recording.phase==='recording')finishRecording(recording);else cancelRecording();}});
+document.addEventListener('keydown',event=>{
+  const menu=document.querySelector('.nav-tools[open],.appearance-controls details[open]');
+  if(event.key==='Escape'&&menu?.contains(event.target)&&!event.defaultPrevented&&!document.querySelector('dialog[open]')){
+    event.preventDefault();menu.open=false;menu.querySelector('summary').focus();
+  }
+});
 
 function renderDashboard() {
   window.updateDashboard({traffic:trafficData,history:trafficHistory,memoryHistory,memoryHistoryError,range:trafficRange,refreshSeconds,stats:statsAvailable?statsData:null,status:statusAvailable?statusCache:null,error:trafficError,recentError:trafficRecentError,memory:memoryData,memoryError});
@@ -609,14 +649,20 @@ function scheduleStatusPoll() {
   clearTimeout(pollTimer);
   pollTimer=setTimeout(refreshStatus,statusPollDelay());
 }
+let statusRefresh=null;
 async function refreshStatus() {
+  if(statusRefresh){await statusRefresh;return refreshStatus();}
   const sequence = ++statusSequence;
-  try {
-    const status = await api('/api/status');
-    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
-  } catch(e) {
-    if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); scheduleStatusPoll(); }
-  }
+  const request=(async()=>{
+    try {
+      const status = await api('/api/status');
+      if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
+    } catch(e) {
+      if (sequence === statusSequence) { if(statusAvailable){statusAvailable=false;rerenderFilters();renderDiskModels();renderModelLoader();} $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); scheduleStatusPoll(); }
+    }
+  })();
+  statusRefresh=request;
+  try{await request;}finally{if(statusRefresh===request)statusRefresh=null;}
   if (!$('#dashboard').hidden) refreshMemory();
 }
 async function loadExamples() {
@@ -761,7 +807,7 @@ const qField=(label,input,help='',cls='')=>{const id=`question-field-${++questio
 const qNum=(f,v,attrs='')=>`<input class="input" type="number" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" ${attrs}>`;
 const qText=(f,v,ph='')=>`<input class="input" type="text" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" value="${esc(v??'')}" placeholder="${esc(t(ph))}">`;
 const qArea=(f,v,ph='',cls='')=>`<textarea class="textarea${cls?` ${cls}`:''}" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}" placeholder="${esc(cls==='json'?ph:t(ph))}">${esc(v??'')}</textarea>`;
-const qSwitch=(f,v,label,cls='')=>`<label class="qf-switch${cls?` ${cls}`:''}"><input class="switch" type="checkbox" role="switch" data-f="${f}"${v?' checked aria-checked="true"':' aria-checked="false"'}> ${t(label)}</label>`;
+const qSwitch=(f,v,label,cls='')=>`<label class="qf-switch${cls?` ${cls}`:''}"><input class="switch" type="checkbox" data-f="${f}"${v?' checked':''}> ${t(label)}</label>`;
 const qSelect=(f,options,v)=>`<select class="select" data-f="${f}" aria-label="${esc(t(f.replaceAll('_',' ')))}">${options.map(([value,label])=>`<option value="${esc(value)}"${String(value)===String(v??'')?' selected':''}>${esc(t(label))}</option>`).join('')}</select>`;
 // the set options of multi, multi-label classify and multi tool; constraints: fallback and exclusive keys (multi and
 // tool only: classify takes objective, threshold, min and max)
@@ -793,7 +839,7 @@ function renderTypeFields(card, type, q) {
     const extra=q.extra??(q.multi?[]:TOOL_EXTRAS);
     html=qField('Tools (JSON array)',qArea('tools',q.tools?JSON.stringify(q.tools,null,2):'','[{"name": "get_weather", "description": "…", "inputSchema": {"type": "object", "properties": {"city": {"type": "string"}}}}]','json'),'OpenAI function, OpenAI Responses, MCP tools/list or Anthropic definitions.')
       +`<button type="button" class="mcp-open">${t('Import or refresh MCP tools')}</button>`
-      +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" role="switch" data-extra="${x}"${extra.includes(x)?' checked aria-checked="true"':' aria-checked="false"'}> ${t(x)}</label>`).join('')}</div></div>`
+      +`<div class="qf"><span class="qf-label">${t('Other options')}</span><div class="controls">${TOOL_EXTRAS.map(x=>`<label><input class="switch" type="checkbox" data-extra="${x}"${extra.includes(x)?' checked':''}> ${t(x)}</label>`).join('')}</div></div>`
       +`<div class="qf-row">${qField('Rank',qNum('rank',q.rank,'min="1" step="1" placeholder="off"'),'also the k most probable options')}${qField('Description chars',qNum('description_chars',q.description_chars,'min="0" step="1" placeholder="300"'),'0 = no cap')}</div>`+qSwitch('multi',q.multi,'Several tools (multi)')
       +`<div class="multi-tool-only">${setFields(q)}<small class="muted">${t('The other options (answer directly, ask the user, none) are always exclusive.')}</small></div>`;
   }
@@ -1645,7 +1691,7 @@ async function sendDecision() {
   $('#sendButton').disabled=true;
   const mediaSnapshot=(Array.isArray(request.media)?request.media:[]).map(media=>{const item=selectedMedia.find(current=>current.data===media?.data);return item?{kind:item.kind,data:item.data,file:item.file,elements:item.elements}:null;});
   const evidenceStamp=modelEvidenceStamp(request.model);
-  try { const response=await api('/api/decide',{method:'POST',body:JSON.stringify(request)}); renderResults(response,request,mediaSnapshot,evidenceStamp); }
+  try { const response=await withPending('decision',()=>api('/api/decide',{method:'POST',body:JSON.stringify(request)})); renderResults(response,request,mediaSnapshot,evidenceStamp); }
   catch(e) {
     if(e.status===422&&!jsonMode)showQuestionErrors(String(e.detail||''),request);
     showDecideError(e.message); toast(e.message,'error');
@@ -1654,7 +1700,6 @@ async function sendDecision() {
 }
 $('#refreshModels').addEventListener('click',()=>loadModels(true));
 $('#recommendationBackend').onchange=event=>{recommendationBackend=event.target.value;loadModels();};
-$('#downloadedToggle').addEventListener('change',rerenderFilters);
 $('#saveModelsDir').addEventListener('click',()=>saveModelsDir($('#modelsDir').value));
 $('#defaultModelsDir').addEventListener('click',()=>saveModelsDir(null));
 let catalogData=null;
@@ -1662,7 +1707,16 @@ const originalRenderModels=renderModels;
 renderModels=function(data){catalogData=data; originalRenderModels(data);};
 function rerenderFilters(){if(catalogData&&catalogData.recommendation_backend===recommendationBackend) originalRenderModels(catalogData);}
 $('#olderToggle').addEventListener('change',rerenderFilters);
-$('#notRunnableToggle').addEventListener('change',rerenderFilters);
+['modelSearch','modelDownloadFilter','modelLoadFilter','modelCompatibilityFilter','modelRunAvailabilityFilter','modelFitFilter'].forEach(id=>{$(`#${id}`).addEventListener(id==='modelSearch'?'input':'change',rerenderFilters);});
+function clearModelFilters(){
+  $('#modelSearch').value=''; $('#modelDownloadFilter').value=''; $('#modelLoadFilter').value='';
+  $('#modelCompatibilityFilter').value=''; $('#modelRunAvailabilityFilter').value='available'; $('#modelFitFilter').value='';
+  setChecked($('#olderToggle'),false);
+  backendModelFilter=null; $('#backendModelFilterNotice').hidden=true;
+  rerenderFilters(); $('#modelSearch').focus();
+}
+$('#clearModelFilters').addEventListener('click',clearModelFilters);
+document.addEventListener('click',event=>{if(event.target.closest('[data-clear-model-filters]'))clearModelFilters();});
 $('#addQuestion').addEventListener('click',()=>addQuestion());
 $('#stateInput').addEventListener('input',()=>{if(!applyingFetch)$('#stateInput')._requestState=undefined;syncRequest();});
 $('#editJsonToggle').addEventListener('change',()=>{
@@ -1695,9 +1749,9 @@ $('#mediaLightbox').addEventListener('click',e=>{if(e.target===$('#mediaLightbox
 window.addEventListener('beforeunload',()=>{cancelRecording();selectedMedia.forEach(item=>URL.revokeObjectURL(item.url));});
 addQuestion();
 $('#sendButton').addEventListener('click',sendDecision);
-function connectionEndpoint() {
+function connectionEndpoint(useActive=true) {
   const settings=serveData.settings, serving=statusCache?.serving;
-  if (serving?.url) return serving.url;
+  if (useActive&&serving?.url) return serving.url;
   const host=settings.host==='0.0.0.0'?(serveData.lan_ip||location.hostname):'127.0.0.1';
   return `http://${host}:${settings.port}`;
 }
@@ -1741,16 +1795,21 @@ decision = client.decisions.create(
       model: hosted_vllm/${name}
       api_base: ${endpoint}
       api_key: ${key||'local'}`,
-    mcp:mcpHttp,
   };
   $('#connectCurl').textContent=snippets.curl;
   $('#connectPython').textContent=snippets.python;
   $('#connectTypesafe').textContent=snippets.typesafe;
   $('#connectOpenai').textContent=snippets.openai;
   $('#connectLitellm').textContent=snippets.litellm;
-  $('#connectMcp').textContent=snippets.mcp;
-  $('#mcpConnectHint').hidden=Boolean(mcpHttp);
-  $('#copyServeConnect').disabled=connectTab==='mcp'&&!mcpHttp;
+  $('#connectMcp').textContent=mcpHttp;
+  $('#mcpEndpoint').textContent=mcpHttp?`${endpoint}/mcp`:t('Saved MCP URL (pending until MCP is enabled and the server is restarted): {url}',{url:`${connectionEndpoint(false)}/mcp`});
+  $('#mcpAvailability').textContent=serveData.mcp_available?t('The optional MCP extra is installed.'):t('The optional MCP extra is missing.');
+  $('#mcpHint').textContent=serveData.mcp_available?t('Save MCP settings, then restart the API server to apply changes.'):t('Install MCP with uv sync --extra mcp from source, uv pip install "basal-ui[mcp]" in a venv, or uv tool install --with "basal-ui[mcp]" basal-ui; then restart basal-ui.');
+  $('#mcpClient').hidden=!serveData.mcp_available;
+  $('#mcpConnectHint').textContent=mcpHttp?'':t('Start the API server with MCP enabled to use this example.');
+  $('#mcpConnectHint').hidden=!serveData.mcp_available||Boolean(mcpHttp);
+  $('#copyMcpConnect').disabled=!mcpHttp;
+  $('#copyServeConnect').disabled=false;
   $('#runningServerNote').hidden=!statusCache?.serving?.restart_required;
   $('#connectTabs').querySelectorAll('[data-connect]').forEach(tab=>{
     const active=tab.dataset.connect===connectTab;
@@ -1829,12 +1888,14 @@ async function copyText(text, success=t('Copied to clipboard')) {
     try { area.select(); copied=document.execCommand('copy'); }
     catch {}
     finally { area.remove(); }
-    if(!copied) { toast(t('Copy failed — select the text and copy manually'),'error'); return; }
+    if(!copied) { toast(t('Copy failed — select the text and copy manually'),'error'); return false; }
   }
   toast(success);
+  return true;
 }
 $('#copyServeUrl').onclick=()=>copyText(connectionEndpoint(),t('Endpoint copied'));
 $('#copyServeConnect').onclick=()=>copyText($(`[data-connect-panel="${connectTab}"] code`).textContent,t('Snippet copied'));
+$('#copyMcpConnect').onclick=()=>copyText($('#connectMcp').textContent,t('Snippet copied'));
 // Several models: status rows, memory bar, statistics, benchmarks, History and Logs views.
 let statsData={models:{},benchmarks:{}}, statsSignature='', benchSignature='', benchRunning=false;
 let historyAfter=null, historyBefore=null, historySource='', historyTimer=null, historyDebounce=null, historyRows=new Map(), historyBrowsingOlder=false;
@@ -1845,7 +1906,24 @@ const pct=v=>v==null?'—':`${(Number(v)*100).toFixed(1)}%`;
 const num=(v,digits=1)=>v==null?'—':Number(v).toFixed(digits);
 const shortName=id=>String(id).split('/').pop();
 const clock=ts=>new Date(ts*1000).toLocaleTimeString([], {hour12:false});
-async function act(fn){try{await fn();}catch(e){toast(e.message,'error');}}
+let pendingActions=0, pendingDecisions=0, initialLoading=false;
+function setPendingStatus(text=''){const status=$('#pendingStatus');if(status.textContent!==text)status.textContent=text;}
+function updatePendingStatus(){
+  const status=$('#pendingStatus'),activeDialog=document.activeElement?.closest('dialog[open]');
+  const dialog=pendingActions?activeDialog||document.querySelector('dialog[open]'):null;
+  setPendingStatus(pendingDecisions?t('Sending a Decision…'):pendingActions?t('Working…'):initialLoading?t('Loading basal-ui…'):'');
+  if(dialog){if(status.parentElement!==dialog)dialog.prepend(status);status.classList.add('in-dialog');}
+  else if(status.parentElement!==$('#main-content')){$('#main-content').prepend(status);status.classList.remove('in-dialog');}
+}
+async function withPending(action,fn){
+  pendingActions++;
+  if(action==='decision')pendingDecisions++;
+  updatePendingStatus();
+  try{return await fn();}finally{pendingActions--;if(action==='decision')pendingDecisions--;updatePendingStatus();}
+}
+async function act(fn){try{await withPending('',fn);}catch(e){toast(e.message,'error');}}
+document.addEventListener('focusin',event=>{if(pendingActions&&event.target.closest('dialog[open]'))updatePendingStatus();});
+document.addEventListener('close',()=>{if(pendingActions)updatePendingStatus();},true);
 
 function comparisonBadge(){return `<details class="comparison-badge"><summary class="badge">${t('Comparison')}</summary><p>${t('External model for comparison; confidence is not calibrated.')}</p></details>`;}
 let decisionServerSignature='';
@@ -1871,6 +1949,9 @@ function decisionServerConsent(){
   $('#decisionServerConsentText').textContent=t('I consent to sending request data and attachments to {host}',{host});
 }
 $('#decisionServerUrl').addEventListener('input',decisionServerConsent);
+$('#decisionServerForm').addEventListener('keydown',event=>{
+  if(event.key==='Enter'&&event.target.matches('input[type="checkbox"]'))event.preventDefault();
+});
 $('#decisionServerForm').addEventListener('submit',async event=>{
   event.preventDefault();const error=$('#decisionServerError');error.hidden=true;
   const button=$('#addDecisionServer');let added=false;button.disabled=true;
@@ -1888,7 +1969,7 @@ function renderManagerSummary() {
 }
 let lastAttachedJobRefresh=null, attachedStatusSignature='';
 function renderStatus(s) {
-  const oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
+  const recovered=!statusAvailable, oldFeatures=JSON.stringify(statusCache?.features); statusAvailable=true; statusCache=s;
   if(oldFeatures!==JSON.stringify(s.features))document.querySelectorAll('.question').forEach(card=>{renderSharedFields(card);updateCardVisibility(card);});
   invalidateModelEvidence($('#results'));DecisionTools.invalidateModelEvidence();
   const attachJob=s.jobs?.attach;
@@ -1912,7 +1993,8 @@ function renderStatus(s) {
   const finished=[...previousDownloads].some(repo=>!repos.has(repo)); previousDownloads=repos;
   const signature=JSON.stringify([models.map(m=>[m.id,m.state,m.options]),downloads,s.idle_unloads||{}]);
   const calibrationStatus=JSON.stringify(models.filter(m=>m.id===$('#calibrationModel').value).map(m=>[m.id,m.state,m.options]));
-  if(finished)loadModels(); else if(signature!==rowsSignature)rerenderFilters();  // loaded chips and download progress in the model lists
+  if((recovered||signature!==rowsSignature)&&!finished)rerenderFilters();  // loaded chips and download progress in the model lists
+  if(finished)loadModels();  // refresh catalog before rendering downloaded-state filters
   if(calibrationStatus!==lastCalibrationStatus&&$('#calibrationModel').value)loadCalibrations();
   lastCalibrationStatus=calibrationStatus;
   rowsSignature=signature;
@@ -2101,8 +2183,8 @@ async function loadStats() {
 function renderStats() {
   const entries=Object.entries(statsData.models||{});
   $('#statsTable').innerHTML=`<div class="section-head"><h3>${t('Statistics')}</h3>${entries.length?`<button type="button" id="resetAllStats" class="destructive">${t('Reset all')}</button>`:''}</div>${entries.length?`<div class="table-wrap"><table><thead><tr><th>${t('Model')}</th><th>${t('Requests')}</th><th>${t('Questions')}</th><th>${t('Avg best-answer prob.')}</th><th>${t('Avg / p95 latency')}</th><th>${t('Input tokens')}</th><th>${t('Last used')}</th><th></th></tr></thead><tbody>${entries.map(([id,x])=>`<tr><td title="${esc(id)}">${esc(shortName(id))}${id.startsWith('comparison:')?comparisonBadge():''}</td><td>${x.requests}${x.errors?` <span class="reason">${tp(x.errors,'{n} errors','{n} errors')}</span>`:''}</td><td>${x.questions}</td><td>${pct(x.avg_best_prob)}</td><td>${num(x.avg_latency_ms,0)} / ${num(x.p95_ms,0)} ms</td><td>${x.input_tokens}</td><td>${x.last_used?esc(new Date(x.last_used*1000).toLocaleString()):'—'}</td><td><button type="button" data-reset="${esc(id)}">${t('Reset')}</button></td></tr><tr class="stats-types"><td colspan="8">${Object.entries(x.by_type||{}).map(([type,v])=>`<span class="chip">${esc(type)} · ${v.questions} · ${pct(v.avg_best_prob)}</span>`).join(' ')||`<span class="muted">${t('no answers yet')}</span>`}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${t('No decisions yet: statistics appear after the first playground, API or MCP decision.')}</div>`}`;
-  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true})){await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}}));
-  const all=$('#resetAllStats'); if(all)all.onclick=()=>act(async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true})){await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();}});
+  $('#statsTable').querySelectorAll('[data-reset]').forEach(b=>b.onclick=async()=>{if(await confirmDialog({title:t('Reset statistics?'),description:t('The counters of {model} start from zero.',{model:b.dataset.reset}),confirmLabel:t('Reset'),destructive:true}))await act(async()=>{await api(`/api/stats/${encodeURIComponent(b.dataset.reset)}`,{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});});
+  const all=$('#resetAllStats'); if(all)all.onclick=async()=>{if(await confirmDialog({title:t('Reset all statistics?'),description:t('The counters of every model start from zero. Benchmark results stay.'),confirmLabel:t('Reset all'),destructive:true}))await act(async()=>{await api('/api/stats',{method:'DELETE'});toast(t('Statistics reset'));await loadStats();});};
 }
 const BENCH_HINTS={benchmark:t('5 warm-up, 30 sequential and 120 concurrent requests (8 at a time); items with a gold answer are scored. Own set: {link}.',{link:'<code>docs/BENCHMARK_SETS.md</code>'}),
   loadtest:t('basal-loadtest against the model: 10 warm-up, sequential requests for the latency, then the concurrent ones for the throughput. Synthetic states of about N tokens replace the set when given.'),
@@ -2152,7 +2234,7 @@ async function loadComparisonModes() {
   try{
     const d=await api(`/api/modes?id=${encodeURIComponent(id)}`);
     const preset=new Set(d.modes.filter(m=>!['ollama','llamacpp'].includes(m)).slice(0,2));  // external services: opt in
-    $('#bpModes').innerHTML=d.modes.map(m=>`<label><input type="checkbox" role="switch" data-mode="${esc(m)}"${preset.has(m)?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(m)}</label>`).join('')||`<span class="muted">${t('No mode can run this model here.')}</span>`;
+    $('#bpModes').innerHTML=d.modes.map(m=>`<label><input type="checkbox" data-mode="${esc(m)}"${preset.has(m)?' checked':''}> ${esc(m)}</label>`).join('')||`<span class="muted">${t('No mode can run this model here.')}</span>`;
   }catch(e){comparisonFor='';$('#bpModes').innerHTML=`<span class="reason">${esc(e.message)}</span>`;}
 }
 const intOf=sel=>$(sel).value===''?undefined:Number($(sel).value);
@@ -2213,7 +2295,7 @@ function renderBenchmarkResults() {
 }
 // Calibration: basal-calibrate on the user's labelled requests (a temporary uncalibrated child of the model; with task
 // questions the engine in basal-ui's process), or a file fitted elsewhere imported
-$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><details class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning. The selected file applies from the model's next start.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p></details><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog" aria-labelledby="reportTitle"><h3 id="reportTitle">${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
+$('#calibrationBlock').innerHTML=`<div class="section-head"><h3>${t('Calibration')}</h3></div><div class="manager-fields"><label class="manager-field">${t('Model to calibrate')}<select id="calibrationModel"></select></label><label class="manager-field">${t('Labelled requests')}<input id="calibrationInput" type="text" placeholder="${t('/path/to/labelled.jsonl')}"></label><div class="manager-field"><span>${t('Certified error thresholds')}</span><div class="controls"><label><input id="calibrationT1" type="checkbox" checked> 1%</label><label><input id="calibrationT5" type="checkbox" checked> 5%</label></div></div><div class="manager-actions"><button type="button" id="runCalibration">${t('Calibrate')}</button><button type="button" id="cancelCalibration" hidden>${t('Cancel')}</button><span id="calibrationProgress" class="muted"></span><a class="dashboard-link" href="#logs/job%3Acalibrate">${t('Logs')}</a></div></div><div class="manager-fields"><label class="manager-field">${t('Calibration file to import')}<input id="calibrationImportPath" type="text" placeholder="${t('/path/to/CALIBRATION.custom.json fitted elsewhere')}"></label><div class="manager-actions"><button type="button" id="importCalibration">${t('Import')}</button></div></div><div id="calibrationFiles"></div><dialog id="reportDialog" class="confirm-dialog report-dialog" aria-labelledby="reportTitle"><h3 id="reportTitle">${t('Calibration report')}</h3><div id="reportDetails"></div><pre id="reportText" class="logs"></pre><div class="dialog-actions"><button type="button" id="reportClose">${t('Close')}</button></div></dialog>`;
 $('#calibrationBlock').insertAdjacentHTML('beforeend',`<details id="calibrationAdvanced"><summary>${t('Advanced')}</summary><div class="controls"><label><input type="checkbox" id="calStrict"> ${t('Strict')}</label><label>${t('Reference')} <input type="text" id="calReference" placeholder="${t('basal-1.5 or path')}"></label><label>${t('Min/type')} <input type="number" id="calMinType" min="1" value="1"></label><label>${t('Min blend')} <input type="number" id="calMinBlend" min="0" value="0"></label><label>${t('Min family')} <input type="number" id="calMinFamily" min="1" value="1"></label><label>${t('Min/set')} <input type="number" id="calMinSet" min="1" value="1"></label><label>${t('Concurrency')} <input type="number" id="calConcurrency" min="1" max="256" value="1"></label><label>${t('Compare')} <select id="calCompare"><option value="shipped">${t('shipped')}</option><option value="none">${t('none')}</option><option value="path">${t('calibration file…')}</option></select></label><label>${t('Calibration comparison file')} <input id="calComparePath" type="text" placeholder="${t('calibration file path')}" hidden></label><label><input type="checkbox" id="calSaveRows"> ${t('Save rows')}</label><label><input type="checkbox" id="calReportOnly"> ${t('Report only')}</label></div></details>`);
 $('#calibrationAdvanced').insertAdjacentHTML('beforeend',`<div class="manager-fields"><label class="manager-field">${t('Conformal coverage levels')}<input id="calConformal" type="text" placeholder="0.8, 0.9"><span id="calConformalReason" class="reason"></span></label><fieldset><legend>${t('Keep compared thresholds')}</legend><div class="controls">${['choice','noul','score'].map(type=>`<label><input type="checkbox" data-keep-type="${type}" disabled> ${esc(type)}</label>`).join('')}</div><span id="calKeepReason" class="reason"></span></fieldset></div>`);
 let calibrationOptions={}, keepSequence=0;
@@ -2233,10 +2315,8 @@ async function refreshKeepOptions(){
 $('#calCompare').onchange=()=>{const hidden=$('#calCompare').value!=='path';$('#calComparePath').hidden=hidden;$('#calComparePath').closest('label').hidden=hidden;refreshKeepOptions();};
 $('#calComparePath').oninput=refreshKeepOptions;
 $('#calCompare').onchange();
-['calStrict','calSaveRows','calReportOnly'].forEach(id=>{const x=$('#'+id);x.setAttribute('role','switch');setChecked(x,x.checked);});
 $('#calibrationInput').value=localStorage.getItem('basal-ui.calibrationInput')||'';
 $('#calibrationInput').oninput=()=>localStorage.setItem('basal-ui.calibrationInput',$('#calibrationInput').value);
-document.querySelectorAll('#calibrationBlock input[type=checkbox]').forEach(i=>{i.setAttribute('role','switch');setChecked(i,i.checked);});
 document.body.append($('#reportDialog'));  // a modal inside a hidden view would block the page without showing
 $('#reportClose').onclick=()=>$('#reportDialog').close();
 let calibrationRunning=false, calibrationBlocked=true, calibrationSignature='', calibrationReportSeen=null, calibrationSequence=0, lastCalibrationStatus='';
@@ -2329,6 +2409,8 @@ function renderCalibrationFiles(id, d) {
   const reason=layout&&calibrationBlocked?t('The installed Engine cannot calibrate this layout'):'';
   const mismatch=d.layout_mismatch_code?ts('Selected calibration layout differs from the load settings; certified thresholds will not apply.',d.layout_mismatch_code):'';
   const focused=document.activeElement, focusKey=focused?.closest('#calibrationFiles')?{name:focused.name,value:focused.value,refit:focused.dataset.refit,report:focused.dataset.report}:null;
+  const help=`<details id="calibrationHelp" class="manager-help"><summary>${t('How calibration works')}</summary><p class="muted">${t("Fits temperatures and certified thresholds on your labelled requests (format: {input}; the simple {run} items with {gold} work too). Decision questions run against a temporary uncalibrated copy of the model, which needs its memory once more while it runs; task questions (classify / verify / extract with gold) are certified on the answers as served, so the engine runs in basal-ui's process instead (cancelling then takes effect when basal-calibrate finishes). Import adds a file fitted elsewhere (basal-calibrate on another machine); one fitted on another model is listed with basal-serve's warning.",{input:'<code>docs/CALIBRATION.md#input</code>',run:'<code>basal-run</code>',gold:'<code>gold</code>'})}</p><p>${t('Input: one labelled Decision per JSONL line with a “state”, non-empty “questions”, and a “gold” answer for each question. Simple basal-run records with “gold” are also accepted.')}</p><p>${t('Example: a choice has probabilities 0.80 and 0.20. For a two-option choice, a Selected calibration with an effective temperature T = 2 maps each probability to pᵢ^(1/T) / Σpⱼ^(1/T). The top confidence becomes √0.80 / (√0.80 + √0.20) = 0.667 (66.7%), down from 80%; the top choice stays the same, but confidence can change whether it clears a certified threshold.')}</p><p>${t('This is an example, not a promised fit result; the fitted value depends on labelled Decisions. The Selected calibration is used the next time the model starts. If it is already loaded, restart it to apply.')}</p><p>${t('To return to the calibration supplied for this execution configuration, select Shipped calibration in the Use column.')}</p></details>`;
+  if(!$('#calibrationHelp'))$('#calibrationFiles').insertAdjacentHTML('beforebegin',help);
   const html=`<p class="muted">${context}<br>${selection}<br>${t('Fit layout')}: ${esc(layout||'—')}</p>${!available&&d.shipped?.error?`<p class="reason">${esc(d.shipped.error)}</p>`:''}${reason?`<p class="reason">${esc(reason)}</p>`:''}${mismatch?`<p class="reason">${esc(mismatch)}</p>`:''}<div class="table-wrap"><table><thead><tr><th>${t('Use')}</th><th>${t('Layout')}</th><th>${t('Fitted on')}</th><th>${t('Per type')}</th><th>${t('Certified thresholds')}</th><th>${t('Automated on CERT')}</th><th></th></tr></thead><tbody>${shipped}${d.files.map(f=>row(f,f.file,new Date(f.when*1000).toLocaleString())).join('')}</tbody></table></div>`;
   const content=JSON.stringify([id,html,d.calibrate_layout,d.default_layout,d.files,loaded?.restart_required]);
   if($('#calibrationFiles').dataset.content===content)return;
@@ -2480,8 +2562,8 @@ const OPTION_FIELDS={
   global_attn:{label:'Global attention kernel',kind:'select',values:['flex','triton'],graphOnly:true},
 };
 // action: "load" (Model manager), "save" (Models: set up the options of the next load), "restart" (a loaded model)
-const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
-document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" role="switch" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
+const optionsButton=(id,media=false,action='load')=>`<button type="button" class="options-model outline-action" data-id="${esc(id)}" data-media="${media}" data-action="${action}" title="${t({load:'Load with options',save:'Set up the load options',restart:'Restart with other load options'}[action])}">⚙${t({load:' Options',save:' Setup',restart:''}[action])}</button>`;
+document.body.insertAdjacentHTML('beforeend',`<dialog id="loadOptions" class="confirm-dialog options-dialog" aria-labelledby="loadOptionsTitle"><h3 id="loadOptionsTitle">${t('Load options')}</h3><p id="optionsModel" class="muted"></p><p id="optionsSetupNote" class="muted option-note" hidden>${t('Media loads choose their mode (eager or vLLM) when loading from Model manager.')}</p><div id="optionsForm"></div><div id="optionsError" class="error-box" role="alert" hidden></div><div class="dialog-actions"><label><input type="checkbox" id="optionsRemember"> ${t('Remember for this model')}</label><button type="button" id="optionsReset">${t('Reset to defaults')}</button><button type="button" id="optionsCancel">${t('Cancel')}</button><button type="button" id="optionsApply" class="primary">${t('Load')}</button></div></dialog>`);
 $('#optionsModel').insertAdjacentHTML('afterend',`<div id="loadPresetControls" class="controls"><select id="loadPresetSelect" aria-label="${t('Load preset')}"></select><button type="button" id="applyLoadPreset">${t('Apply')}</button><button type="button" id="saveLoadPreset">${t('Save as…')}</button><button type="button" id="deleteLoadPreset">${t('Delete')}</button></div>`);
 $('#saveLoadPreset').onclick=()=>promptPresetName('load');
 $('#applyLoadPreset').onclick=()=>{const v=presetData.load?.[$('#loadPresetSelect').value];if(v)renderOptionsForm({...optionsState.data.defaults,...v});};
@@ -2491,7 +2573,7 @@ let optionsState=null, optionsSequence=0;
 const optionValue=v=>v===null||v===undefined?'':String(v);
 function optionInput(key, value) {
   const f=OPTION_FIELDS[key], id=`opt-${key}`;
-  if(f.kind==='bool')return `<label><input type="checkbox" role="switch" id="${id}"${value?' checked aria-checked="true"':' aria-checked="false"'}> ${esc(t(f.label))}</label>`;
+  if(f.kind==='bool')return `<label><input type="checkbox" id="${id}"${value?' checked':''}> ${esc(t(f.label))}</label>`;
   const listed=(optionsState.data.load_choices?.[key]||f.values||[]).map(v=>Array.isArray(v)?v:[v,v]);
   const input=f.kind==='select'?`<select id="${id}">${listed.map(([v,l])=>`<option value="${esc(optionValue(v))}"${optionValue(v)===optionValue(value)?' selected':''}>${esc(t(l))}</option>`).join('')}${listed.some(([v])=>optionValue(v)===optionValue(value))?'':`<option value="${esc(optionValue(value))}" selected>${esc(value)}</option>`}</select>`
     :f.kind==='band'?`<span class="controls"><input type="number" id="${id}-lo" min="0" max="1" step="0.05" value="${esc(value?.[0])}" aria-label="${esc(t(f.label))} ${t('low')}"><input type="number" id="${id}-hi" min="0" max="1" step="0.05" value="${esc(value?.[1])}" aria-label="${esc(t(f.label))} ${t('high')}"></span>`
@@ -2595,7 +2677,7 @@ async function openLoadOptions(id, media=false, action='load', initialMode=null)
   dialog.showModal();
   $('#optionsForm').scrollTop=0;  // the dialog is reused: another model's options start at the top
 }
-document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();act(()=>openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action));}});
+document.addEventListener('click',e=>{const b=e.target.closest('.options-model');if(b){$('#modelLoaderDialog').close();openLoadOptions(b.dataset.id,b.dataset.media==='true',b.dataset.action).catch(error=>toast(error.message,'error'));}});
 $('#optionsCancel').onclick=()=>$('#loadOptions').close();
 $('#optionsReset').onclick=()=>renderOptionsForm(optionsState.data.defaults);
 $('#optionsApply').onclick=async()=>{
@@ -2605,11 +2687,13 @@ $('#optionsApply').onclick=async()=>{
     const invalid=[...$('#optionsForm').querySelectorAll('input,select')].find(el=>!el.disabled&&!el.closest('[hidden]')&&(!el.checkValidity()||(['opt-reread','opt-graph_memory_gb'].includes(el.id)&&el.value!==''&&Number(el.value)<=0)));
     if(invalid){invalid.setAttribute('aria-invalid','true');invalid.focus();throw new Error(t('Check the value of {option}.',{option:OPTION_FIELDS[invalid.id.slice(4)]?.label?t(OPTION_FIELDS[invalid.id.slice(4)].label):invalid.id}));}
     for(const [key,reason] of Object.entries(data.unavailable||{}))if(Object.hasOwn(options,key))throw new Error(t('Load option {option}: {reason}',{option:key,reason:t(reason)}));
-    if(remember||data.saved&&!initialMode){await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();}
+    if(remember||data.saved&&!initialMode)await withPending('',async()=>{await api('/api/models/options',{method:'PUT',body:JSON.stringify({id,options:remember?options:{}})});if(id===$('#calibrationModel').value)loadCalibrations();});
     if(save){$('#loadOptions').close();toast(t('Load options saved for {model}',{model:shortName(id)}));await loadModels();const replacement=[...document.querySelectorAll('.options-model')].find(b=>b.dataset.id===id&&b.dataset.action==='save'&&b.dataset.media===String(media)&&b.getClientRects().length);(replacement|| (trigger?.isConnected?trigger:null))?.focus();return;}
-    if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
-    else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
-    $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    await withPending('',async()=>{
+      if(restart)await api('/api/restart',{method:'POST',body:JSON.stringify({id,options})});
+      else{statusSequence++;await api('/api/load',{method:'POST',body:JSON.stringify({id,...(media?{media:true}:{}),options})});}
+      $('#loadOptions').close(); toast(restart?t('Restarting {model}',{model:shortName(id)}):t('Model load started')); await refreshStatus();
+    });
   }catch(e){$('#optionsError').textContent=e.message;$('#optionsError').hidden=false;}
   finally{$('#optionsApply').disabled=false;}
 };
@@ -2713,16 +2797,16 @@ async function replayRequest(x) {
   showView('playground',true);
   if(model.kind==='comparison')DecisionTools.selectComparison(model.id);
 }
-function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;loadHistory('reset');}
+function resetHistory(){historyAfter=null;historyBefore=null;historyBrowsingOlder=false;return loadHistory('reset');}
 $('#historySearch').oninput=()=>{clearTimeout(historyDebounce);historyDebounce=setTimeout(resetHistory,300);};
 $('#historyModel').onchange=resetHistory;
 $('#historySource').querySelectorAll('[data-source]').forEach(b=>b.classList.toggle('active',b.dataset.source===historySource));
 $('#historySource').onclick=e=>{const b=e.target.closest('[data-source]');if(!b)return;historySource=b.dataset.source;$('#historySource').querySelectorAll('[data-source]').forEach(x=>x.classList.toggle('active',x===b));resetHistory();};
 $('#historyMore').onclick=()=>loadHistory('more');
-$('#clearHistory').onclick=()=>act(async()=>{
+$('#clearHistory').onclick=async()=>{
   if(!await confirmDialog({title:t('Clear history?'),description:t('Every recorded Decision is deleted, including scheduled Batch.'),confirmLabel:t('Clear history'),destructive:true}))return;
-  const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); resetHistory();
-});
+  await act(async()=>{const d=await api('/api/history',{method:'DELETE'}); toast(tp(d.cleared,'{n} decisions deleted','{n} decisions deleted')); await resetHistory();});
+};
 async function loadLogs() {
   clearTimeout(logTimer);
   if($('#logs').hidden)return;
@@ -2830,7 +2914,8 @@ $('#runBatch').onclick=()=>act(async()=>{
   const body={id:$('#batchModel').value,input:$('#batchInput').value.trim(),concurrency:Number($('#batchConcurrency').value)||16};
   if($('#batchOutput').value.trim())body.output=$('#batchOutput').value.trim();
   if(!$('#batchEarlyExit').hidden&&$('#batchEarlyExit').value)body.early_exit=$('#batchEarlyExit').value;
-  if(batchPresetAvailable&&$('#batchPreset').value){body.preset=$('#batchPreset').value;body.lang=$('#batchLang').value;}
+  body.preset=batchPresetAvailable&&$('#batchPreset').value?$('#batchPreset').value:null;
+  if(body.preset)body.lang=$('#batchLang').value;
   if(!$('#batchStopAfter').disabled){if(!$('#batchStopAfter').reportValidity())return; body.stop_after=Number($('#batchStopAfter').value);}
   try { await api('/api/batch',{method:'POST',body:JSON.stringify(body)}); }
   catch(e) {
@@ -3016,4 +3101,5 @@ $('#saveMemory').onclick=async()=>{
 showView(location.hash);
 loadMemorySettings();
 loadPresets();refreshUpdates();
- (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();})();
+initialLoading=true;updatePendingStatus();
+ (async()=>{try{renderHardware(await api('/api/hardware'));}catch(e){$('#deviceName').textContent=t('Hardware unavailable: {message}',{message:e.message});}try{await Promise.all([loadSettings(),loadModels(),loadExamples(),refreshStatus(),loadServe()]);restorePlaygroundLanguageDraft();}finally{initialLoading=false;updatePendingStatus();}})();

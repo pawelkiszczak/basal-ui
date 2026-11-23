@@ -35,6 +35,12 @@
 
   const bytes = value => value == null ? t('Not measured') : `${(value / 1024**3).toFixed(2)} GiB`;
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const memoryNote = (note, params) => {
+    const usage = note.match(/^vLLM KV-cache usage by engine: (.+)\. Process RSS includes vLLM runtime overhead\.$/);
+    return usage
+      ? t('vLLM KV-cache usage by engine: {usage}. Process RSS includes vLLM runtime overhead.', {usage: usage[1]})
+      : t(note, params);
+  };
   function renderMemory() {
     const memory=state.memory, host=memory?.host, target=q('#memoryContent');
     setText('#memoryTime',memory?.time?preciseClock.format(new Date(memory.time*1000)):'');
@@ -51,7 +57,7 @@
     const barContent=hasBreakdown?segments:`<span class="memory-host-used" style="width:${hostFill}%"></span>`;
     const runtimeRows=runtimes.map(runtime=>{
       const models=runtime.models||[];
-      return `<section class="memory-runtime"><div class="memory-runtime-head"><strong>${escape(runtime.label)}</strong><span>${bytes(runtime.process_bytes)}</span></div>${models.length?models.map(model=>`<article class="memory-model"><div class="memory-model-head"><strong>${escape(model.id)}</strong><span>${bytes(model.bytes)}</span></div><dl><div><dt>${t('Context bytes')}</dt><dd>${bytes(model.context_bytes)}</dd></div><div><dt>${t('Hot cache')} (${t('Hot cache pool: {pool}').replace('{pool}',model.cache_pool||'RAM')})</dt><dd>${bytes(model.cache_bytes)}</dd></div><div><dt>${t('Disk-backed cold cache')}</dt><dd>${bytes(model.cold_cache_bytes)}</dd></div></dl></article>`).join(''):`<p class="memory-unavailable">${runtime.status==='empty'?t('No loaded models'):t('Runtime memory unavailable')}</p>`}${runtime.note?`<p class="memory-note">${escape(t(runtime.note))}</p>`:''}</section>`;
+      return `<section class="memory-runtime"><div class="memory-runtime-head"><strong>${escape(runtime.label)}</strong><span>${bytes(runtime.process_bytes)}</span></div>${models.length?models.map(model=>{const label=model.aggregate!=null?tp(model.aggregate,'{n} loaded model','{n} loaded models'):model.id;const size=(model.size_estimated?`${bytes(model.bytes)} (${t('Estimated')})`:bytes(model.bytes))+` · ${t('Pool: {pool}').replace('{pool}',t(model.pool==='gpu'?'VRAM':model.pool==='ram'?'RAM':model.pool==='unified'?'Unified':'Mixed or unknown'))}`;return `<article class="memory-model"><div class="memory-model-head"><strong>${escape(label)}</strong><span>${size}</span></div><dl><div><dt>${t('Context bytes')}</dt><dd>${bytes(model.context_bytes)}</dd></div><div><dt>${t('Hot cache')} (${t('Hot cache pool: {pool}').replace('{pool}',model.cache_pool||'RAM')})</dt><dd>${bytes(model.cache_bytes)}</dd></div><div><dt>${t('Disk-backed cold cache')}</dt><dd>${bytes(model.cold_cache_bytes)}</dd></div></dl></article>`;}).join(''):`<p class="memory-unavailable">${runtime.status==='empty'||runtime.status==='ok'?t('No loaded models'):t('Runtime memory unavailable')}</p>`}${runtime.note?`<p class="memory-note">${escape(memoryNote(runtime.note,{count:models.find(model=>model.aggregate!=null)?.aggregate||0}))}</p>`:''}</section>`;
     }).join('');
     const gpu=(host?.gpu||[]).map(device=>`<div class="memory-device"><strong>${escape(device.name)}</strong><span>${bytes(device.used)} / ${bytes(device.total)}</span></div>`).join('');
     html(target,`<div class="memory-host"><div class="memory-runtime-head"><strong>${t('Host RAM')}</strong><span>${bytes(used)} / ${bytes(total)}</span></div><div class="memory-track" role="img" aria-label="${escape(`${t('Host RAM')}: ${bytes(used)} / ${bytes(total)}; ${barDescription}`)}">${barContent}</div><p>${memory.other==null?t('System and other apps: breakdown unavailable'):`${t('System and other apps')}: ${bytes(memory.other)}`}</p></div><section class="memory-gpu"><h3>${t('Discrete GPU memory')}</h3>${gpu||`<p class="memory-unavailable">${t('Not measured')}</p>`}</section>${host?.unified?`<p class="memory-note">${t('Unified memory is shared; allocations are counted once.')}</p>`:''}<div class="memory-runtimes">${runtimeRows}</div>`);
@@ -180,9 +186,8 @@
     q('#trafficWindow').value=state.range;
     q('#dashboardRefresh').value=String(state.refreshSeconds||2);
     const rows=history?.series||[], requests=rows.reduce((sum,row)=>sum+row.requests,0), errors=rows.reduce((sum,row)=>sum+row.errors,0);
-    const tokens=rows.reduce((sum,row)=>sum+row.input_tokens,0);
-    const latency=rows.reduce((sum,row)=>sum+row.avg_latency_ms*row.requests,0);
-    const total=requests,totalErrors=errors,totalTokens=tokens;
+    const tokens=rows.reduce((sum,row)=>sum+row.input_tokens,0), latency=rows.reduce((sum,row)=>sum+row.avg_latency_ms*row.requests,0);
+    const total=requests, totalErrors=errors, totalTokens=tokens;
     const meanLatency=requests?latency/requests:null;
     const elapsed=history?.window_start==null?0:Math.max(0,history.window_end-history.window_start);
     setText('#traffic-tokens',number(available&&elapsed?totalTokens/elapsed:null,true));

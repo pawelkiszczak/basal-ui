@@ -171,6 +171,23 @@ def test_dotted_provider_is_imported_lazily(monkeypatch):
     assert result["runtimes"][1]["runtime"] == "sample"
 
 
+def test_runtime_providers_import_before_memory_module():
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import basal_ui.runtimes.omlx, basal_ui.runtimes.ollama; import basal_ui.memory; "
+            "assert 'basal_ui.runtimes.omlx.observe' in basal_ui.memory.PROVIDERS",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_history_memory_snapshot_skips_per_model_metrics(monkeypatch):
     monkeypatch.setattr(memory, "_host", lambda _: HOST)
     monkeypatch.setattr(memory, "_cache_bytes", lambda _url: (_ for _ in ()).throw(AssertionError("unexpected probe")))

@@ -20,8 +20,60 @@ The model options endpoint reports availability of each server limit in `limits_
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
 `GET /api/memory/live` returns the live observation snapshot: `time`, `host` (RAM, unified-memory flag, measured
+discrete GPUs and accounting basis), `runtimes` (process bytes and optional per-model memory, cache and context bytes)
+and `other`. Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported
+separately. On unified-memory hosts Fleet and LM Studio use `rss_excludes_gpu`, so `other` is `null`; RSS does not
+include Metal/MLX GPU allocations. `other` subtracts every runtime with measured process bytes, including one whose API
+is down, and is present only when those totals share the host's accounting basis and no ready runtime has an unknown
+total. `cache_bytes` is the Engine state cache only while active; context bytes and disk-backed cold-cache bytes remain
+`null` when unavailable. Engine and LM Studio context lengths are tokens, not byte measurements.
+
+LM Studio's local `GET /api/v1/models` response identifies loaded models. Its API port is read from
+`~/.lmstudio/.internal/http-server-config.json` and requests always use `127.0.0.1`; a missing or invalid port falls
+back to `1234`. Process RSS includes runtime overhead; model memory and cache usage are not exposed, and context
+lengths are not byte measurements. If the API is unavailable, process RSS remains available when the LM Studio process
+is present, while model identity and model-specific measurements are unknown. The existing `GET` and `PUT /api/memory`
+routes continue to manage memory settings.
+discrete GPUs and accounting basis), `runtimes` (process/model byte measurements) and `other`. Runtime records preserve
+unknown measurements as `null`; zero means measured zero. `other` subtracts every runtime with measured process bytes,
+including one whose API is down, and is present only when all included totals share the host accounting basis and no
+ready runtime has an unknown total. Host-used RAM and process RSS are both `resident` on non-unified hosts; on Apple
+unified-memory hosts RSS is `rss_excludes_gpu` and does not include Metal/MLX GPU allocations.
+
+Ollama's local [`GET /api/ps`](https://docs.ollama.com/api/ps) reports running model names, `size` (total loaded model
+size in bytes), `size_vram` (VRAM portion in bytes), and `context_length` (tokens; see
+[context docs](https://docs.ollama.com/context-length)). Each model's `bytes` is `size`. `pool` is `unified` on
+unified-memory hosts, otherwise `ram` or `gpu` when fully placed in that pool and `null` when split or unknown.
+Runtime `process_bytes` always uses process RSS, including runtime overhead, with the host basis from
+`memory.rss_accounting()`; it is not derived from Ollama's model-size estimate. Context-byte and cache fields remain
+unknown. If the API is unreachable but an `ollama` process exists, status is `unreachable` and RSS remains available.
+A valid empty model list is `ok` with no models and does not force RSS to zero. A runtime is reported only when
+`/api/version` confirms Ollama or a matching server process is present; an API response error is `unavailable`.
+With neither API confirmation nor a matching process, the provider is omitted. Host configuration follows
+[`OLLAMA_HOST`](https://github.com/ollama/ollama/blob/main/envconfig/config.go).
+
+Fleet process totals include every measured non-idle Fleet child, while model breakdowns list ready models only.
+`cache_bytes` is the Engine state cache only while active, and `cache_pool` identifies its memory pool (`vram`,
+`ram`, or `unified`); context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context
+token limits are not byte measurements. On non-unified hosts process RSS and host RAM are compared only where their
+basis is known to agree. Linux `ram_used` and `other` are `null` because `MemAvailable` and RSS account for
+reclaimable pages differently. On unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS
+does not include GPU allocations.
 discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
+Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. On
+unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include Metal/MLX GPU allocations.
+`other` is present only when host and runtime totals share an accounting basis. SGLang is confirmed by the non-empty
+`model_path` from loopback `GET /get_model_info` and its process RSS is matched against `sglang.launch_server` (including
+runtime overhead). The URL defaults to `http://127.0.0.1:30000` and can be changed with `BASAL_UI_SGLANG_URL`; only
+loopback URLs are accepted. Model, context and cache bytes remain `null` when unavailable. The provider does not infer
+bytes from SGLang server-info token limits / memory fractions or optional Prometheus metrics. See SGLang's
+[native APIs](https://docs.sglang.ai/docs/basic_usage/native_api.md),
+[server implementation](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py)
+and [metrics reference](https://docs.sglang.ai/docs/references/production_metrics.md). Engine context token limits are
+not byte measurements. The existing `GET` and `PUT /api/memory` routes continue to manage memory settings.
 On non-unified hosts process RSS and host RAM are compared only where their basis is known to agree. Linux
+discrete GPUs and accounting basis), `runtimes` (per-runtime process bytes and model/cache measurements) and `other`.
+Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. Linux
 `ram_used` and `other` are `null` because `MemAvailable` and RSS account for reclaimable pages differently. On
 unified-memory hosts Fleet uses `rss_excludes_gpu`; RSS does not include GPU allocations.
 `other` subtracts every runtime with measured process bytes, including one whose API is down, and is present only when
@@ -37,6 +89,39 @@ marks history coverage and `window_start`/`window_end` bound the selected range.
 including when no browser is connected. Dashboard display refresh changes only the browser poll cadence. Fleet totals
 include every measured process, while model breakdowns list ready models only. `cache_pool` identifies a model's
 memory pool (`vram`, `ram`, or `unified`).
+unified-memory hosts process RSS excludes GPU allocations, so `other` is `null`.
+`other` subtracts every runtime with measured process bytes, regardless of API status, and is present only when host
+and runtime accounting bases match and every runtime total is known. Fleet totals include every measured process,
+while model breakdowns list ready models only. `cache_bytes` is the Engine state cache only while active, and
+`cache_pool` identifies its memory pool (`vram`, `ram`, or `unified`); context bytes and disk-backed cold-cache bytes
+remain `null` when unavailable. Engine context limits are tokens, not byte measurements.
+
+For vLLM, `BASAL_UI_VLLM_URL` selects the loopback server origin (default `http://127.0.0.1:8000`). vLLM is
+identified independently through its `/version` response or vLLM metric families; `GET /v1/models` supplies model
+IDs, with [`max_model_len`](https://github.com/vllm-project/vllm/pull/4643) required for base models but not adapter
+cards (`parent` is non-null). Authenticated `/v1/models` does not prevent independent metrics collection. The
+optional `cache` list contains each reported vLLM KV-cache gauge as `{engine, usage_percent}`; readings are not
+combined across data-parallel engines because their fractions do not define a runtime-wide aggregate.
+([vLLM metrics docs](https://docs.vllm.ai/en/stable/design/metrics/)). Percentages are not converted to bytes;
+`process_bytes` is a verified vLLM process-tree RSS measurement that excludes basal-ui Fleet processes and includes
+vLLM runtime overhead. The accounting is `rss_excludes_gpu` on Apple Silicon and `resident` elsewhere. The existing
+`GET` and `PUT /api/memory` routes continue to manage memory settings.
+
+The oMLX provider reads `server.port` (default `8000`) and the configured `server.host` or `server.bind` when set;
+it validates the address as loopback before contacting it, including IPv6 loopback. It uses a provider-wide bounded
+HTTP budget with environment proxies disabled. It tries `GET /admin/api/stats` for loaded IDs, reported
+`actual_size`, and `runtime_cache.models.hot_cache_size_bytes` / `total_size_bytes`. If that admin endpoint is
+unavailable or unauthorized, it falls back to the unauthenticated `GET /health` and validates the oMLX `engine_pool`
+shape (`model_count`, `loaded_count`, `current_model_memory`) to avoid mistaking the basal-ui gateway on the same
+port for oMLX. Health provides a loaded count and aggregate planned-resident-size estimate but no model identities;
+the estimate is labeled separately from measured RSS in the Dashboard. `process_bytes` remains locally measured RSS,
+including runtime overhead, with `rss_excludes_gpu` accounting on Apple unified-memory hosts. Context and unavailable
+cache details remain `null`; rank-local prompt-snapshot cache telemetry is not presented as system-wide tier data.
+Connection refusal and timeout produce `unreachable`, while a reachable but unusable API produces `unavailable`.
+See oMLX [`GET /health`](https://github.com/jundot/omlx/blob/main/omlx/server.py#L3362),
+[`current_model_memory`](https://github.com/jundot/omlx/blob/main/omlx/engine_pool.py#L1118),
+[planned resident size](https://github.com/jundot/omlx/blob/main/omlx/engine_pool.py#L588), and
+[`GET /admin/api/stats`](https://github.com/jundot/omlx/blob/main/omlx/admin/routes.py#L7244).
 
 
 
@@ -50,17 +135,20 @@ Replay preserves question fields; media redaction can prevent Replay. OpenAI Dec
 `GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
 `{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
 selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
-a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
+a Backend changes `suggestions`, not Saved load settings or the global catalog filter. Each row's `model_compatible`
+reports whether this machine supports its architecture and format with a Backend after dependencies are installed;
+it is distinct from current `runnable` status and memory `fit`.
 
 `GET /api/calibrations?id=…` lists each file’s `layout`, the active or saved layout in `shipped.context`, `layout_mismatch` and its message code, the model `default_layout`, and the `calibrate_layout` Engine capability. `POST /api/calibrate` uses that active or saved layout and returns `calibration_layout_unsupported` if the Engine lacks the required layout flag, including a canonical override of a non-canonical model default. Refit uses the original file layout and returns `calibration_rows_layout_unknown` when its paired calibration cannot establish that layout. Saved-row refits work without the model snapshot, reject known identity contradictions, and honor the requested comparison; when a legacy row header lacks revision, the paired calibration’s declared revision is trusted, not independently verified. `calibration_rows_baseline_unavailable` reports an unreadable baseline. Mismatched baseline thresholds are excluded using Engine semantics. Model listings expose `has_calibration_rows` so those refits remain reachable.
 Each calibration listing, fit, and model-card shipped calibration uses one snapshot of the active or saved load settings for revision, mode, and layout. Invalid or non-object model layout metadata leaves `default_layout` null and reports `shipped.error`; fitted files remain available in the listing.
 
-Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
-`est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
-`media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies are
-missing). A missing add-on is not represented as a working media load. `recommendation_note` explicitly identifies
-format/tier rankings as heuristics rather than benchmarks. Physical-memory estimates do not reserve capacity;
-`POST /api/load` separately enforces configured budget/reserve and active commitments.
+Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, a `reasons` list explaining its
+machine/Backend compatibility, memory fit and slot-ranking basis, `mode`, `media`, `est_memory_bytes`, `fit` and
+`fit_now`. The UI translates these English reason strings. A multimodal suggestion also carries `media_available`,
+nullable `media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies
+are missing). A missing add-on is not represented as a working media load. `recommendation_note` explains the catalog
+heuristics and the up-to-five slot limit, including why empty or duplicate core slots are omitted. Physical-memory
+estimates do not reserve capacity; `POST /api/load` separately enforces configured budget/reserve and active commitments.
 
 | Route | Contract |
 |---|---|
