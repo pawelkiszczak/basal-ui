@@ -56,10 +56,17 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
+- Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bound Comparison requests by
+  time and response size. Reserve Cascade ports through spawn and validate router health. Reject symlinked scheduled
+  inputs and outputs, and keep Attached models removable after changing the models directory.
+- Keep status snapshots coherent across model unloads, return Cascade error codes at the API top level, and reject
+  unsupported text codecs at the Fetch boundary.
+- Enforce the microphone recording size limit while chunks arrive, before buffering and decoding the full recording.
 - Group the API server's MCP setting with dependency availability, the `/mcp` endpoint and a copy-ready client snippet;
   explain how to install the optional extra when it is missing. [API server](USAGE.md#api-server)
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
+- Preserve discovered Comparison models when an upstream returns a malformed listing.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
   Inspect follows the saved language and supports keyboard History activation, reduced motion, and forced colors.
 - Run the release CI matrix after merges to `stage` and `main`. [Release process](../CONTRIBUTING.md#releasing)

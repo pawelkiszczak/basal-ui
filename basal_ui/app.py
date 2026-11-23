@@ -150,6 +150,10 @@ def create_app(
                 batch.validate_runner(runner)
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
+            if source.is_symlink() or source.parent.resolve() != Path(spec["input_dir"]).resolve():
+                raise RuntimeError("input must stay inside its watched directory and must not be a symbolic link")
+            if output.is_symlink() or output.parent.resolve() != Path(spec["output_dir"]).resolve():
+                raise RuntimeError("output must stay inside its configured directory and must not be a symbolic link")
             if output.resolve() == source.resolve():
                 raise RuntimeError("output must not be the input file")
             fd, name = tempfile.mkstemp(prefix=".basal-ui-schedule-", suffix=".jsonl", dir=output.parent)
@@ -182,16 +186,15 @@ def create_app(
                         error = batch.validate_comparison_item(item, runner)
                         if error:
                             raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
-                    if first:
-                        try:
-                            _, reason = paths._row_shape(item)
-                        except RecursionError as exc:
-                            raise RuntimeError(
-                                f"{source.name}: line {number}: request nesting exceeds the parser limit"
-                            ) from exc
-                        if reason:
-                            raise RuntimeError(f"{source.name}: line {number}: {reason}")
-                        first = False
+                    try:
+                        _, reason = paths._row_shape(item)
+                    except RecursionError as exc:
+                        raise RuntimeError(
+                            f"{source.name}: line {number}: request nesting exceeds the parser limit"
+                        ) from exc
+                    if reason:
+                        raise RuntimeError(f"{source.name}: line {number}: {reason}")
+                    first = False
                 after = os.fstat(raw.fileno())
                 if [after.st_size, after.st_mtime_ns] != signature:
                     raise RuntimeError("input changed while preparing the Batch")
@@ -909,11 +912,18 @@ def create_app(
             base = record.get("base")
             if base not in catalog.ATTACHABLE or model_id != "attached/" + base.lower().replace("/", "-"):
                 raise HTTPException(409, "invalid attached model record")
-            attached_root = settings_mod.models_dir() / "attached"
-            out_dir = attached_root / model_id.split("/", 1)[1]
-            if record.get("out_dir") != str(out_dir):
+            raw_out_dir = record.get("out_dir")
+            if not isinstance(raw_out_dir, str) or not Path(raw_out_dir).is_absolute():
+                raise HTTPException(409, "invalid attached model directory")
+            out_dir = Path(raw_out_dir)
+            attached_root = out_dir.parent
+            if attached_root.name != "attached" or out_dir.name != model_id.split("/", 1)[1]:
                 raise HTTPException(409, "invalid attached model directory")
             unsafe = attached_root.is_symlink() or out_dir.is_symlink()
+            try:
+                unsafe = unsafe or attached_root.resolve() != attached_root or out_dir.resolve() != out_dir
+            except (OSError, RuntimeError):
+                unsafe = True
             with fleet.jobs.lock:
                 working = any(j.running and j.model == model_id for j in fleet.jobs.jobs.values())
             if (
@@ -1407,7 +1417,7 @@ def create_app(
             raise HTTPException(404, f"cascade {name!r} not found") from exc
         except RuntimeError as exc:
             code = "CASCADE_MEMBER_NOT_LOADED" if "member" in str(exc) else "CASCADE_START_FAILED"
-            raise HTTPException(409, {"code": code, "detail": str(exc)}) from exc
+            return JSONResponse({"detail": str(exc), "code": code}, status_code=409)
 
     @app.post("/api/cascades/{name}/stop")
     def stop_cascade(name: str):
@@ -2636,7 +2646,10 @@ def create_app(
     @app.post("/api/fetch")
     def fetch_url(request: Request, body: dict = Body(...)):
         try:
-            return anyio.from_thread.run(fetch_manager.run, body.get("url"), request)
+            url = body.get("url")
+            if not isinstance(url, str):
+                raise FetchError("Enter an absolute HTTP or HTTPS URL.", "fetch_address_refused", 400)
+            return anyio.from_thread.run(fetch_manager.run, url, request)
         except FetchError as exc:
             return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
 

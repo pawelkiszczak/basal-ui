@@ -1032,6 +1032,37 @@ def test_benchmark_decisions_leave_statistics_and_history_untouched(tmp_path, mo
     assert fleet.stats.traffic_snapshot(15)["requests"] == 1
 
 
+def test_status_skips_runner_detached_during_rss_snapshot(tmp_path, instant_start, monkeypatch):
+    fleet = make_fleet(tmp_path)
+    fleet.load(SimpleNamespace(variant=MINI, mode="eager", est_memory_bytes=None))
+    wait_for(lambda: fleet.loaded_ids() == ["mini"])
+    runner = fleet.runners["mini"]
+    runner.process = SimpleNamespace(pid=1, poll=lambda: None)
+    entered, release = threading.Event(), threading.Event()
+    result = {}
+
+    def blocked_rss():
+        entered.set()
+        assert release.wait(5)
+        return {}
+
+    monkeypatch.setattr(fleet, "_rss", blocked_rss)
+    thread = threading.Thread(target=lambda: result.update(fleet.status()))
+    thread.start()
+    try:
+        assert entered.wait(5)
+        with fleet.lock:
+            detached, _ = fleet._detach_runner("mini")
+            fleet.retiring.pop(detached, None)
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert result["models"] == []
+    finally:
+        release.set()
+        thread.join(5)
+
+
 def test_status_lists_the_requests_being_answered_per_model_until_each_returns_or_fails(
     tmp_path, monkeypatch, instant_start
 ):
@@ -1896,6 +1927,7 @@ def test_attach_route_downloads_attaches_and_lists_the_local_variant(tmp_path, m
         fleet.runners[variant["id"]] = loaded
         assert client.delete(f"/api/attach/{variant['id']}").status_code == 409
         del fleet.runners[variant["id"]]
+        settings.set_models_dir(str(tmp_path / "relocated-models"))
         assert client.delete(f"/api/attach/{variant['id']}").status_code == 200
         assert not Path(variant["local_dir"]).exists() and target_weights.exists()
         assert settings.attached_models() == []
@@ -2783,7 +2815,13 @@ def test_cascade_api_start_routes_models_and_stops_when_member_unloads(tmp_path,
 
     monkeypatch.setattr(fleet_module, "rss_by_pgid", lambda: {})
     monkeypatch.setattr(fleet_module.subprocess, "Popen", lambda argv, **kwargs: (launched.append(argv), Process())[1])
-    monkeypatch.setattr(fleet_module.httpx, "get", lambda *args, **kwargs: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(
+        fleet_module.httpx,
+        "get",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok", "ready": 1, "replicas": 1, "pools": {"main": 1}}
+        ),
+    )
     monkeypatch.setattr(fleet_module.Runner, "_terminate", lambda proc: None)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         body = {"name": "tri", "kind": "escalate", "levels": [{"model": "a/one", "below": 0.8}, {"model": "b/two"}]}
@@ -2813,7 +2851,7 @@ def test_cascade_start_refuses_unloaded_member(tmp_path, monkeypatch):
         assert client.post("/api/cascades", json=body).status_code == 201
         response = client.post("/api/cascades/tri/start")
         assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "CASCADE_MEMBER_NOT_LOADED"
+        assert response.json()["code"] == "CASCADE_MEMBER_NOT_LOADED"
 
 
 def test_cascade_routes_explain_engine_compatibility(tmp_path, monkeypatch):
@@ -2909,7 +2947,9 @@ def test_cascade_unloaded_during_health_check_does_not_become_ready(tmp_path, mo
     def health(*args, **kwargs):
         entered.set()
         assert release.wait(5)
-        return SimpleNamespace(status_code=200)
+        return SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok", "ready": 1, "replicas": 1, "pools": {"main": 1}}
+        )
 
     monkeypatch.setattr(fleet_module.httpx, "get", health)
     errors = []
@@ -3049,5 +3089,5 @@ def test_existing_blend_with_fallback_cannot_start(tmp_path, monkeypatch):
     )
     with TestClient(app, base_url="http://127.0.0.1") as client:
         response = client.post("/api/cascades/route/start")
-        assert response.status_code == 409 and "Blend cannot use" in response.json()["detail"]["detail"]
+        assert response.status_code == 409 and "Blend cannot use" in response.json()["detail"]
         assert "route" not in fleet.runners and "route" not in fleet.draining

@@ -69,6 +69,13 @@ def test_html_and_json_content():
         fetch._content(b"pdf", "application/pdf")
 
 
+def test_non_text_json_charset_is_rejected_for_presets_and_falls_back_for_state():
+    assert fetch._content(b'{"ok":true}', "application/json; charset=base64") == ({"ok": True}, False)
+    with pytest.raises(fetch.FetchError) as error:
+        fetch._content(b'{"ok":true}', "application/json; charset=base64", presets=True)
+    assert error.value.code == "fetch_unsupported_encoding"
+
+
 def test_article_header_and_json_precision_at_fetch_boundary(monkeypatch):
     class Response:
         status = 200
@@ -305,8 +312,10 @@ def test_local_route_and_shutdown_use_injected_manager(tmp_path, monkeypatch):
 
     class Manager:
         closed = False
+        calls = []
 
         async def run(self, url, request):
+            self.calls.append(url)
             if url == "bad":
                 raise fetch.FetchError("Refused", "fetch_address_refused", 400)
             return {"state": {"value": 1}, "url": url}
@@ -328,6 +337,9 @@ def test_local_route_and_shutdown_use_injected_manager(tmp_path, monkeypatch):
         assert client.post("/api/fetch", json={"url": "https://example.com"}).json()["state"] == {"value": 1}
         response = client.post("/api/fetch", json={"url": "bad"})
         assert response.status_code == 400 and response.json()["code"] == "fetch_address_refused"
+        response = client.post("/api/fetch", json={"url": 23})
+        assert response.status_code == 400 and response.json()["code"] == "fetch_address_refused"
+    assert manager.calls == ["https://example.com", "bad"]
     assert manager.closed
 
 
