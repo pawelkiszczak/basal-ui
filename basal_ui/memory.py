@@ -14,6 +14,20 @@ from . import hardware
 PROVIDERS = []
 
 
+def register_provider(path: str) -> None:
+    """Register a dotted provider path, imported only when a snapshot is observed."""
+    PROVIDERS.append(path)
+
+
+def _provider(provider):
+    if isinstance(provider, str):
+        from importlib import import_module
+
+        module, name = provider.rsplit(".", 1)
+        return getattr(import_module(module), name)
+    return provider
+
+
 def process_rss(pattern: str) -> int | None:
     """Summed resident bytes of processes whose command line matches the regex `pattern`, including runtime overhead.
     None when no process matches or ps is unavailable. On unified-memory hosts RSS excludes GPU allocations."""
@@ -39,12 +53,14 @@ def rss_accounting() -> str:
 
 def _host(hardware_fn):
     hw = hardware_fn()
-    unified = hw.platform == "apple" and platform.machine() == "arm64"
+    unified = "strix" in hw.engines or (hw.platform == "apple" and platform.machine() == "arm64")
     ram_total = hw.system_ram_bytes
     available = hardware._available_bytes()
     ram_used = max(0, ram_total - available) if ram_total is not None and available is not None else None
+    if platform.system() == "Linux":
+        ram_used = None  # MemAvailable includes reclaimable file cache unlike process RSS.
     gpu = []
-    if hw.platform == "cuda":
+    if hw.platform == "cuda" and not unified:
         gpu.append(
             {
                 "name": hw.device_name,
@@ -57,7 +73,7 @@ def _host(hardware_fn):
         "ram_used": ram_used,
         "unified": unified,
         "gpu": gpu,
-        "accounting": "resident",
+        "accounting": "rss_excludes_gpu" if unified else "resident",
     }
 
 
@@ -82,46 +98,42 @@ def _cache_bytes(url):
 
 def _fleet(fleet, unified):
     try:
-        models = fleet.status().get("models", [])
+        models = fleet.memory_snapshot()
     except Exception:  # noqa: BLE001 — one unavailable runtime must not hide other observations
-        basis = "rss_excludes_gpu" if unified else "resident"
         return {
             "runtime": "basal",
             "label": "Fleet",
             "status": "unavailable",
-            "accounting": basis,
+            "accounting": "rss_excludes_gpu" if unified else "resident",
             "process_bytes": None,
             "models": [],
             "note": "Fleet memory could not be read.",
         }
-
     native = [model for model in models if model.get("kind") == "basal" and model.get("state") != "idle"]
     ready = [model for model in native if model.get("state") == "ready"]
-    observations = []
-    for model in ready:
-        rss = model.get("rss_bytes")
-        observations.append(
-            {
-                "id": model.get("id", ""),
-                "bytes": rss if type(rss) is int and rss >= 0 else None,
-                "pool": "unified" if unified else "ram",
-                "context_bytes": None,
-                "cache_bytes": _cache_bytes(model["base_url"]) if model.get("base_url") else None,
-                "cold_cache_bytes": None,
-            }
+    measured = [model for model in native if type(model.get("rss_bytes")) is int and model["rss_bytes"] >= 0]
+    observations = [
+        {
+            "id": model.get("id", ""),
+            "bytes": model["rss_bytes"] if type(model.get("rss_bytes")) is int and model["rss_bytes"] >= 0 else None,
+            "pool": "unified" if unified else "ram",
+            "context_bytes": None,
+            "cache_bytes": _cache_bytes(model["base_url"]) if model.get("base_url") else None,
+            "cache_pool": "vram" if model.get("mode") == "cuda" else ("unified" if unified else "ram"),
+            "cold_cache_bytes": None,
+        }
+        for model in ready
+    ]
+    process_bytes = sum(model["rss_bytes"] for model in measured) if measured else (0 if not native else None)
+    status = (
+        "ok"
+        if ready
+        else (
+            "unreachable"
+            if any(model.get("state") == "error" for model in native)
+            else ("unavailable" if native else "empty")
         )
-    if ready:
-        process_bytes = (
-            sum(model["bytes"] for model in observations)
-            if all(model["bytes"] is not None for model in observations)
-            else None
-        )
-        status = "ok"
-    elif native:
-        process_bytes = None
-        status = "unreachable" if any(model.get("state") == "error" for model in native) else "unavailable"
-    else:
-        process_bytes, status = 0, "empty"
+    )
     return {
         "runtime": "basal",
         "label": "Fleet",
@@ -148,10 +160,15 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
         host = {"ram_total": None, "ram_used": None, "unified": False, "gpu": [], "accounting": "resident"}
     runtimes = [_fleet(fleet, host["unified"])]
     for provider in providers:
+        name = (
+            provider.rsplit(".", 1)[-1]
+            if isinstance(provider, str)
+            else getattr(provider, "runtime", getattr(provider, "__name__", "runtime"))
+        )
         try:
+            provider = _provider(provider)
             observation = provider()
         except Exception:  # noqa: BLE001 — isolate optional runtime failures
-            name = getattr(provider, "runtime", getattr(provider, "__name__", "runtime"))
             runtimes.append(
                 {
                     "runtime": name,

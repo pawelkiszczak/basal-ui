@@ -590,10 +590,11 @@ async function refreshStatus() {
   const sequence = ++statusSequence;
   try {
     const status = await api('/api/status');
-    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden){refreshTraffic();refreshMemory();} }
+    if (sequence === statusSequence) { statusFailureNotified=false; renderStatus(status); if (serveData) renderServeStatus(status); if(!$('#dashboard').hidden)refreshTraffic(); }
   } catch(e) {
     if (sequence === statusSequence) { statusAvailable=false; $('#footerState').textContent=t('Unavailable'); $('#footerDot').className='status-dot error'; if(!statusFailureNotified){showStatusError(e.message);statusFailureNotified=true;} trafficError=e.message; trafficData=null; trafficGeneration++; trafficPending=false; renderDashboard(); clearTimeout(pollTimer); pollTimer=setTimeout(refreshStatus,5000); }
   }
+  if (!$('#dashboard').hidden) refreshMemory();
 }
 async function loadExamples() {
   try {
