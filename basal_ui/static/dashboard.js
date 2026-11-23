@@ -149,6 +149,7 @@
     q('#trafficWindow').value=state.range;
     q('#dashboardRefresh').value=String(state.refreshSeconds||2);
     const rows=history?.series||[], requests=rows.reduce((sum,row)=>sum+row.requests,0), errors=rows.reduce((sum,row)=>sum+row.errors,0);
+    const tokens=rows.reduce((sum,row)=>sum+row.input_tokens,0), latency=rows.reduce((sum,row)=>sum+row.avg_latency_ms*row.requests,0);
     const total=requests, totalErrors=errors, totalTokens=tokens;
     const meanLatency=requests?latency/requests:null;
     const elapsed=history?.window_start==null?0:Math.max(0,history.window_end-history.window_start);
