@@ -51,6 +51,19 @@ after the view, matching keyboard navigation order. [Mobile example](images/quic
 Manager does not add requests. **Models** opens Suggested (default) and All models.
 
 **Live memory** on Dashboard shows host RAM and measured discrete GPU usage alongside each loaded runtime's process RSS
+and model memory. Ollama confirms loaded models through its local `GET /api/ps` response: `size` is total loaded
+model size and `size_vram` is its VRAM portion. Model rows show total size; the observation's `pool` field identifies
+unified, fully RAM, or fully GPU placement, and remains unknown when placement is mixed or unavailable. Runtime process
+and include runtime overhead; the accounting basis follows the host, and unified-memory RSS excludes GPU allocations.
+Ollama's `context_length` is in tokens, not bytes; context-byte and cache measurements are unavailable. If the API
+cannot be reached but an Ollama process is identifiable, its RSS remains visible with an **unreachable** status. An
+empty model list is distinct from an unavailable measurement. The System and other apps remainder appears only when
+host and runtime accounting can be compared.
+
+### Live runtime checks
+
+Ollama was not installed on the validation host, so no live Ollama checks or Ollama version check ran; provider behavior
+was checked only with fixture responses and a local `/api/ps` browser stub.
 and Engine state-cache bytes when active. SGLang's confirmed `model_path` is shown as a loaded model, with process RSS
 including runtime overhead; model, context and cache byte fields remain **Not measured**. SGLang KV-pool token counts and
 memory fractions are not bytes. Context bytes and disk-backed cold-cache usage are labeled **Not measured** when

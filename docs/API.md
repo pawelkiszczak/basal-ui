@@ -20,6 +20,31 @@ The model options endpoint reports availability of each server limit in `limits_
 
 `GET /api/memory` and `PUT /api/memory` expose `idle_unload_minutes` under memory settings: `null` disables idle unloading (default), otherwise a whole integer from 1 through 9,007,199,254,740,991 minutes is required. Changing the timeout starts a fresh countdown for already-loaded models. `GET /api/status` reports idle unloads in `idle_unloads`, keyed by model ID with `code` (`idle_unload`), `minutes` and Unix time `at`; a new load clears its entry. Idle unloading keeps remembered models and does not reload on a request.
 `GET /api/memory/live` returns the live observation snapshot: `time`, `host` (RAM, unified-memory flag, measured
+discrete GPUs and accounting basis), `runtimes` (process/model byte measurements) and `other`. Runtime records preserve
+unknown measurements as `null`; zero means measured zero. `other` subtracts every runtime with measured process bytes,
+including one whose API is down, and is present only when all included totals share the host accounting basis and no
+ready runtime has an unknown total. Host-used RAM and process RSS are both `resident` on non-unified hosts; on Apple
+unified-memory hosts RSS is `rss_excludes_gpu` and does not include Metal/MLX GPU allocations.
+
+Ollama's local [`GET /api/ps`](https://docs.ollama.com/api/ps) reports running model names, `size` (total loaded model
+size in bytes), `size_vram` (VRAM portion in bytes), and `context_length` (tokens; see
+[context docs](https://docs.ollama.com/context-length)). Each model's `bytes` is `size`. `pool` is `unified` on
+unified-memory hosts, otherwise `ram` or `gpu` when fully placed in that pool and `null` when split or unknown.
+Runtime `process_bytes` always uses process RSS, including runtime overhead, with the host basis from
+`memory.rss_accounting()`; it is not derived from Ollama's model-size estimate. Context-byte and cache fields remain
+unknown. If the API is unreachable but an `ollama` process exists, status is `unreachable` and RSS remains available.
+A valid empty model list is `ok` with no models and does not force RSS to zero. A runtime is reported only when
+`/api/version` confirms Ollama or a matching server process is present; an API response error is `unavailable`.
+With neither API confirmation nor a matching process, the provider is omitted. Host configuration follows
+[`OLLAMA_HOST`](https://github.com/ollama/ollama/blob/main/envconfig/config.go).
+
+Fleet process totals include every measured non-idle Fleet child, while model breakdowns list ready models only.
+`cache_bytes` is the Engine state cache only while active, and `cache_pool` identifies its memory pool (`vram`,
+`ram`, or `unified`); context bytes and disk-backed cold-cache bytes remain `null` when unavailable. Engine context
+token limits are not byte measurements. On non-unified hosts process RSS and host RAM are compared only where their
+basis is known to agree. Linux `ram_used` and `other` are `null` because `MemAvailable` and RSS account for
+reclaimable pages differently. On unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS
+does not include GPU allocations.
 discrete GPUs and accounting basis), `runtimes` (per-model process bytes and measured cache bytes) and `other`.
 Host-used RAM and Fleet RSS are both `resident` on non-unified hosts, where GPU VRAM is reported separately. On
 unified-memory hosts Fleet uses `rss_excludes_gpu`, so `other` is `null`; RSS does not include Metal/MLX GPU allocations.

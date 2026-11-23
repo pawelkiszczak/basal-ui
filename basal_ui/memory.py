@@ -175,6 +175,8 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
             runtime_provider = _provider(provider)
             if provider == "basal_ui.runtimes.sglang.observe":
                 observation = runtime_provider(excluded_pids=excluded_pids)
+            elif provider == "basal_ui.runtimes.ollama.observe":
+                observation = runtime_provider(fleet)
             else:
                 observation = runtime_provider()
         except Exception:  # noqa: BLE001 — isolate optional runtime failures
@@ -208,3 +210,4 @@ def snapshot(fleet, providers, hardware_fn=hardware.detect):
 
 register_provider("basal_ui.runtimes.vllm.observe")
 register_provider("basal_ui.runtimes.sglang.observe")
+register_provider("basal_ui.runtimes.ollama.observe")

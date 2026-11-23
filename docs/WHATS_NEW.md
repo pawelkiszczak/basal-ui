@@ -56,6 +56,9 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
+- Show live host RAM, discrete GPU and Fleet RSS on Dashboard, plus Ollama's locally reported loaded models and memory;
+  identify unavailable context and cache breakdowns without treating context token limits as bytes or double-counting
+  unified memory.
 - Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
   without treating Engine context token limits as bytes or double-counting unified memory. Show confirmed SGLang models
   and process RSS, without treating KV-pool token counts or memory fractions as byte measurements.
