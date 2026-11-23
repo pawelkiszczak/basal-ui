@@ -275,7 +275,7 @@ def build_app(fleet, stats, keys=None, cors_origins=(), mcp=False, host="127.0.0
     @asynccontextmanager
     async def lifespan(_app):
         async with AsyncExitStack() as stack:
-            client["http"] = await stack.enter_async_context(httpx.AsyncClient(timeout=120))
+            client["http"] = await stack.enter_async_context(httpx.AsyncClient(timeout=120, trust_env=False))
             if mcp_run:
                 await stack.enter_async_context(mcp_run())
             yield

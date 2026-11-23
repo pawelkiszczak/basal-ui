@@ -43,17 +43,20 @@ Replay preserves question fields; media redaction can prevent Replay. OpenAI Dec
 `GET /api/models?backend=automatic` returns the model catalog and suggestions. `recommendation_backends` contains
 `{id,name}` choices for Automatic and detected machine-compatible local Backends; `recommendation_backend` is the
 selected id. Unknown/unavailable ids return 400. The existing `models` rows keep their normal assessment; selecting
-a Backend changes `suggestions`, not Saved load settings or the global catalog filter.
+a Backend changes `suggestions`, not Saved load settings or the global catalog filter. Each row's `model_compatible`
+reports whether this machine supports its architecture and format with a Backend after dependencies are installed;
+it is distinct from current `runnable` status and memory `fit`.
 
 `GET /api/calibrations?id=…` lists each file’s `layout`, the active or saved layout in `shipped.context`, `layout_mismatch` and its message code, the model `default_layout`, and the `calibrate_layout` Engine capability. `POST /api/calibrate` uses that active or saved layout and returns `calibration_layout_unsupported` if the Engine lacks the required layout flag, including a canonical override of a non-canonical model default. Refit uses the original file layout and returns `calibration_rows_layout_unknown` when its paired calibration cannot establish that layout. Saved-row refits work without the model snapshot, reject known identity contradictions, and honor the requested comparison; when a legacy row header lacks revision, the paired calibration’s declared revision is trusted, not independently verified. `calibration_rows_baseline_unavailable` reports an unreadable baseline. Mismatched baseline thresholds are excluded using Engine semantics. Model listings expose `has_calibration_rows` so those refits remain reachable.
 Each calibration listing, fit, and model-card shipped calibration uses one snapshot of the active or saved load settings for revision, mode, and layout. Invalid or non-object model layout metadata leaves `default_layout` null and reports `shipped.error`; fitted files remain available in the listing.
 
-Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, `mode`, `media`,
-`est_memory_bytes`, `fit` and `fit_now`. A multimodal suggestion also carries `media_available`, nullable
-`media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies are
-missing). A missing add-on is not represented as a working media load. `recommendation_note` explicitly identifies
-format/tier rankings as heuristics rather than benchmarks. Physical-memory estimates do not reserve capacity;
-`POST /api/load` separately enforces configured budget/reserve and active commitments.
+Each suggestion carries `slot`, `id`, English `why` plus `why_code`/`why_params`, a `reasons` list explaining its
+machine/Backend compatibility, memory fit and slot-ranking basis, `mode`, `media`, `est_memory_bytes`, `fit` and
+`fit_now`. The UI translates these English reason strings. A multimodal suggestion also carries `media_available`,
+nullable `media_reason`, `media_reason_code`/`media_reason_params`, and `media_setup` (`#backends` when dependencies
+are missing). A missing add-on is not represented as a working media load. `recommendation_note` explains the catalog
+heuristics and the up-to-five slot limit, including why empty or duplicate core slots are omitted. Physical-memory
+estimates do not reserve capacity; `POST /api/load` separately enforces configured budget/reserve and active commitments.
 
 | Route | Contract |
 |---|---|
@@ -285,6 +288,44 @@ an error; its latency includes the failed attempt. UI polling, UI/gateway reject
 benchmarks and private Inference tests do not contribute. Playground is attributed to `POST /api/decide`; gateway
 rows retain the public `POST` path (`/v1/systemone`, `/v1/basal`, `/v1/decisions` or `/decisions`) rather than the
 translated child path. MCP uses `CALL /mcp` (one invocation, not necessarily one HTTP request).
+
+`GET /api/traffic/history?range=24h` returns persisted dated aggregates for the Dashboard's shared time range.
+Supported values are `1h`, `24h`, `7d`, `30d` and `all`; unsupported values return HTTP 400. Aggregates are recorded
+at the same time as lifetime Usage, under the stats lock, and merge across app processes using the same settings file.
+The earliest eligible recorded Decision sets `collection_started`; cross-process flushes may move it earlier, but it
+never precedes the most recent global Usage reset. Existing lifetime Usage is not backfilled. The `lifetime` object
+remains sourced from lifetime Usage and is not reconstructed from dated buckets; Dashboard rates and window totals use
+dated series counts, keeping pre-collection lifetime totals separate.
+
+```json
+{
+  "range": "24h",
+  "collection_started": 1730000000.0,
+  "window_start": 1730000000.0,
+  "window_end": 1730000900.0,
+  "lifetime": {"requests": 12, "errors": 1, "input_tokens": 640, "avg_latency_ms": 90.0},
+  "series": [
+    {
+      "start": 1730000880,
+      "bucket_seconds": 60,
+      "requests": 1,
+      "errors": 0,
+      "input_tokens": 80,
+      "avg_latency_ms": 80.0,
+      "max_latency_ms": 80.0
+    }
+  ]
+}
+```
+
+The series is sparse: only buckets containing Decisions are returned, so omitted intervals are offline gaps, not
+zero-traffic observations. Minute buckets cover the newest 24 hours; older history is compacted hourly through 90 days,
+then daily through the five-year retention limit. Roll-ups preserve counts, latency sums, and maximum latency. For a
+bounded range, `window_start` moves back to the start of a bucket that overlaps the requested boundary; that entire
+bucket is counted, so the returned window matches the aggregates. Reads and writes both apply aging and retention.
+The Dashboard draws source-bucket coverage while leaving omitted buckets as gaps. Resetting a model removes its
+matching dated aggregates and ignores its other processes' pre-reset pending rows; resetting all Usage clears the
+series and restarts collection at the reset time.
 
 ```json
 {

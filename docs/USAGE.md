@@ -115,6 +115,14 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   *Lightest* offers the recurrent pico family. *Multimodal* selects fitting native image/audio checkpoints, including
   when the media add-on is missing; such a card explains the missing dependency and links to Backends instead of
   pretending media can load. Media estimates use their eager/vLLM path, not a text CUDA-graph estimate.
+  Each card explains its machine/Backend compatibility, memory fit and slot-ranking rule; the All models tab and
+  **Browse all models** action remain available even when no suggestion qualifies. Text slots require a runnable,
+  non-experimental text candidate. The multimodal slot is selected independently from fitting media-capable variants,
+  so a single `basal-omni-1.0` multimodal suggestion can appear when no text candidate is runnable. The API only offers
+  that card when its media Execution mode is compatible with the host. This explains selection, not model quality:
+  quality and speed labels are catalog heuristics, not measured benchmarks.
+  There are up to five slots: Recommended, Best quality, Fastest, Lightest and Multimodal. A slot with no eligible
+  candidate is omitted; Best quality and Fastest are also omitted when their model duplicates another core slot.
   Loads still enforce the configured Fleet budget, keep-free reserve and existing reservations; recommendations are
   estimates, not a reservation or an Inference test. A selected Backend opens its recommendation's load options for
   review, retaining the Saved revision and other inputs. Leave **Remember** unchecked to load this choice without
@@ -425,31 +433,30 @@ Optionally set **Unload idle models after minutes** in **Settings → Memory & s
 
 ### Dashboard
 
-The 15-minute or one-hour window shows **input tokens processed per second**, not generated output tokens, and
-requests/s, request-weighted mean latency, error rate, per-minute traffic and public endpoint attribution. These are
-recorded child-inference attempts from Playground, the API server and MCP, not all HTTP traffic: UI polling,
-pre-inference authentication/validation rejections, ordinary basal Batch, benchmarks and private Inference tests do not contribute. Comparison Batch Decisions do contribute.
+The Dashboard lets you select **1 hour**, **24 hours**, **7 days**, **30 days** or **All time** for recorded Decision
+traffic. The plot starts at the first Decision collected by this version and keeps offline periods as gaps. All time
+Decision totals still come from the shared lifetime Usage counters; dated chart history starts now and is persisted
+for up to five years: minute buckets cover the newest 24 hours, hourly buckets cover history through 90 days, then
+daily buckets retain older history. Resetting a model removes its dated traffic;
+resetting all Usage restarts collection at the reset time. Endpoint attribution remains a separate recent,
+process-local 15-minute view.
 
-Recent traffic is in memory in this app process only, starts at observation, and is not restored from lifetime
-statistics or merged from other processes. Rates use observed elapsed time rather than inventing a full prior
-window. Minute-bucket boundaries are approximate; at most 60 minute buckets are retained. Endpoint p95 is labelled
-**sampled** because retained latency samples are bounded. Missing Engine token usage contributes zero, not an estimate.
-Failed traffic fetches show an unavailable notice and dashes instead of stale live rates. Missing lifetime statistics
-show dashes without disabling valid recent traffic; a failed status poll clears live model activity until recovery.
-The [traffic API contract](API.md#recent-decision-traffic) describes fields and sampling limits.
+The Dashboard display refresh defaults to the existing 1-second cadence and can be changed to 2, 5, 15 or 30 seconds;
+the choice is remembered in that browser. The central `app.js` status poll owns refreshes; the Dashboard renderer
+does not start a separate timer. Rates use the elapsed range, including offline gaps. Chart downsampling keeps each
+display bucket's peak. Input tokens are Engine-reported usage when present; missing usage contributes zero and is
+never estimated. The [traffic API contract](API.md#recent-decision-traffic) describes the live and dated series.
 
 ### Lifetime usage
 
 **Model manager → Usage by model** lists the Decisions basal-ui recorded per model: requests, questions, errors,
 average best-answer probability (the answer's `confidence`; `set_confidence` for `multi`; the largest probability
 for `tool`), lifetime mean latency, p95 over the last 1000 retained latencies, input tokens, last use and question types.
-Dashboard's **Model activity** uses these same lifetime counters, not a second recording path. The window totals may
-differ by time range, process and the legacy lifetime treatment of pre-inference errors.
-
-These totals live in `<settings stem>.stats.json`, survive restarts and merge across apps sharing that settings file.
-A model or global reset affects the shared lifetime totals and clears matching recent traffic in this app process;
-another process's in-memory traffic is not cleared. A reset discards older unflushed lifetime counts from other
-instances, but Decisions recorded after the reset remain counted.
+Dashboard's **Model activity** uses these same lifetime counters, not a second recording path. All time totals continue
+to come from Usage; the dated traffic series begins when collection starts. These totals live in
+`<settings stem>.stats.json`, survive restarts and merge across apps sharing that settings file. Resetting a model
+removes its Usage and dated traffic; resetting all Usage also restarts the collection-start timestamp. A reset
+discards older unflushed lifetime counts from other instances, but Decisions recorded after the reset remain counted.
 
 ### Benchmarks
 
@@ -515,6 +522,20 @@ otherwise Saved load settings. Reports show available identity digests, kept sou
 design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
 [Advanced calibration controls](images/calibration-advanced.png).
 
+The help beside the calibration choices explains the labelled JSONL input, shows how a Selected calibration changes a
+choice's confidence using the Engine's temperature scaling, and explains when it applies and how to return to the
+Shipped calibration.
+
+The input accepts one labelled Decision per JSONL line with a non-empty `questions` object, a `state`, and a `gold`
+answer for each question (simple `basal-run` records with `gold` are also accepted). For example, with choice
+probabilities 0.80 and 0.20 and a Selected calibration with effective temperature 2 for a two-option question, basal-serve maps each
+probability to `p^(1/T) / Σp^(1/T)`: the top confidence becomes `√0.80 / (√0.80 + √0.20) = 0.667` (66.7%) instead of
+80%, while the top choice stays the same. The Engine first selects the option-count bucket (2–10 options) and then uses
+its temperature; `temperature_per_prim` is only the fallback when no bucket applies. This illustrates the method, not a
+promised fit result. If a Shipped row is available, select it in the **Use** column to return to the calibration
+supplied for the execution configuration. When only saved rows are present and no local snapshot is available, no
+Shipped row appears. A loaded model needs a restart after changing the selection.
+
 ## Fine-tuning on labelled Decisions
 
 In **Model manager → Calibration → Fine-tune**, select a downloaded bf16 basal or Attached model, enter the path to labelled JSONL and a new output name, then choose epochs, learning rate, LoRA rank and alpha, held-out share, maximum sequence length, gradient checkpointing and an optional optimizer-step limit. The Engine must expose fine-tuning and its declared `finetune` add-on must be installed; use **Backends → Engine add-ons** and restart when prompted. The input format is the same labelled request format as Calibration. Native trains choice, noul, score and act questions and skips multi and task decisions. The preflight reports skipped types and requires both training decisions and held-out groups; the file is copied privately and never rewritten.
@@ -567,7 +588,7 @@ the statistics above (admin key only when keys are required — that is, basal-u
 | Max context length | `4096` | Passed to each vLLM and SGLang `basal-serve` (`512`–`131072`). |
 | CORS origins | Empty | Optional allowed browser origins, one per line; `*` allows every origin. |
 | Decision log | Empty (off) | Every `basal-serve` appends its decisions (propensity records) to this writable file. |
-| MCP at `/mcp` | Off | Adds the MCP streamable-HTTP endpoint when the MCP extra is installed. |
+| MCP at `/mcp` | Off | Adds the MCP streamable-HTTP endpoint when the optional MCP extra is installed. The API server's MCP group shows availability, endpoint URL and the client connection snippet. If the extra is missing, the checkbox is disabled with installation guidance. |
 
 **Security.** The server is loopback-only by default. Local-network exposure is unauthenticated unless **Require an API
 key** is enabled; use a key before selecting **Local network**. Keys are generated with the `bsl_` prefix, stored as
@@ -583,14 +604,15 @@ Library row, which reloads only that model. The app checks the chosen bind port 
 `port <port> on <host> is in use` if another process owns it.
 
 The **Connect** panel provides copy-ready examples for curl (both `/v1/systemone` and `/v1/decisions`), Python
-(httpx), TypeSafe and OpenAI SDKs, LiteLLM's `hosted_vllm` provider, and MCP. HTTP inference examples include the
-selected model's `"model"` id; when authentication is disabled they omit API-key headers. MCP configuration is
-available only while the API server is running with MCP enabled, and uses its streamable-HTTP `/mcp` endpoint.
-With Engine 2.5.0, MCP `decide` and `decide_many` take a `model` argument (`list_models` names the loaded ids) and
-answer with the first loaded model without one; with Engine 2.4.1 they always use the **first loaded model**: their
-schemas have no model argument or model-listing tool. Use the ordinary HTTP routes when you need named-model routing
-on 2.4.1. The Engine's stdio bridge needs `--model` (2.5.0) to reach the gateway, so the UI does not advertise it.
-Full request and response shapes, error envelopes and compatibility details are in the [HTTP API reference](API.md).
+(httpx), TypeSafe and OpenAI SDKs, and LiteLLM's `hosted_vllm` provider. MCP has its own group with availability,
+the `/mcp` endpoint and a client configuration snippet. The snippet is available while the API server is running with
+MCP enabled; saved settings apply after **Restart server**. HTTP inference examples include the selected model's
+`"model"` id; when authentication is disabled they omit API-key headers. With Engine 2.5.0, MCP `decide` and
+`decide_many` take a `model` argument (`list_models` names the loaded ids) and answer with the first loaded model
+without one; with Engine 2.4.1 they always use the **first loaded model**: their schemas have no model argument or
+model-listing tool. Use the ordinary HTTP routes when you need named-model routing on 2.4.1. The Engine's stdio
+bridge needs `--model` (2.5.0) to reach the gateway, so the UI does not advertise it. Full request and response shapes,
+error envelopes and compatibility details are in the [HTTP API reference](API.md).
 
 ## Serving models from basal-ui
 

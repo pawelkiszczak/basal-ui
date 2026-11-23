@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -99,7 +100,7 @@ def test_attach_decide_accounting_gateway_and_detach(app_client, child, tmp_path
     assert os.stat(secret).st_mode & 0o777 == 0o600
     child.reply["answers"]["q"].update(calibration="validated", calibrated=True, automated={"0.01": True})
     response = client.post("/api/decide", json={**BODY, "model": model_id})
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     answer = response.json()["answers"]["q"]
     assert answer["calibrated"] is False and "calibration" not in answer and "automated" not in answer
     assert child.seen[-1][1]["model"] == "provider/model"
@@ -264,10 +265,11 @@ def test_slow_comparison_preparation_does_not_block_event_loop(monkeypatch):
     monkeypatch.setattr(runner, "_prepare", blocked)
 
     class Client:
-        async def post(self, *args, **kwargs):
+        @asynccontextmanager
+        async def stream(self, *args, **kwargs):
             import httpx
 
-            return httpx.Response(500)
+            yield httpx.Response(500)
 
     async def run():
         task = asyncio.create_task(runner.adecide(Client(), BODY))
@@ -275,7 +277,23 @@ def test_slow_comparison_preparation_does_not_block_event_loop(monkeypatch):
         release.set()
         assert (await task).status_code == 500
 
-    asyncio.run(run())
+
+def test_oversized_comparison_response_is_a_typed_upstream_error(monkeypatch):
+    import httpx
+
+    runner = ComparisonRunner(
+        {"id": "x", "name": "X", "base_url": "http://unused", "decisions_url": None}, {"id": "m"}, None
+    )
+    monkeypatch.setattr("basal_ui.fleet.COMPARISON_RESPONSE_MAX_BYTES", 1)
+
+    class Client:
+        @asynccontextmanager
+        async def stream(self, *args, **kwargs):
+            yield httpx.Response(200, content=b"too large")
+
+    response = asyncio.run(runner.adecide(Client(), BODY))
+    assert response.status_code == 502 and response.json()["code"] == "UPSTREAM_ERROR"
+    assert response.extensions["basal.inference"] is True
 
 
 def test_recovery_refreshes_capabilities_and_preserves_identity(app_client, child):
@@ -356,14 +374,14 @@ def test_timeout_is_recorded_and_does_not_prevent_primary(app_client, child, mon
 
     client, fleet = app_client
     _, model = attach(client, child)
-    post = httpx.post
+    stream = httpx.stream
 
-    def timeout(url, **kwargs):
+    def timeout(method, url, **kwargs):
         if kwargs.get("headers", {}).get("Authorization"):
             raise httpx.ReadTimeout("synthetic timeout")
-        return post(url, **kwargs)
+        return stream(method, url, **kwargs)
 
-    monkeypatch.setattr(httpx, "post", timeout)
+    monkeypatch.setattr(httpx, "stream", timeout)
     assert client.post("/api/decide", json={**BODY, "model": model["id"]}).status_code == 502
     assert client.post("/api/decide", json={**BODY, "model": "basal"}).status_code == 200
     assert fleet.stats.snapshot()["models"][model["id"]]["errors"] == 1
@@ -575,6 +593,17 @@ def test_malformed_discovery_recovers_and_health_falls_back(app_client, child):
         )
         assert model["kind"] == "comparison"
 
+    child.models = [{"id": "valid"}, None]
+    with fleet.lock:
+        fleet.decision_servers[server_id]["next_poll"] = 0
+    wait_for(
+        lambda: next(
+            (s for s in client.get("/api/status").json()["decision_servers"] if s["state"] == "unavailable"), None
+        )
+    )
+    retained = fleet.runners[f"comparison:{server_id}/model-403"]
+    assert retained.state == "unavailable" and f"comparison:{server_id}/valid" not in fleet.runners
+
 
 def test_gateway_stats_exclude_attached_and_detached_comparisons(app_client, child):
     client, fleet = app_client
@@ -603,6 +632,8 @@ def test_batch_proxy_refuses_host_and_origin_and_accepts_local_client(app_client
                 url + "/v1/systemone", content=json.dumps(BODY), headers={"Content-Type": "text/plain", **headers}
             )
             assert response.status_code == 403
+        unauthenticated = url.rsplit("/", 1)[0] + "/v1/systemone"
+        assert httpx.post(unauthenticated, json=BODY).status_code == 403
         assert child.seen == []
         assert httpx.post(url + "/v1/systemone", json=BODY).status_code == 200
     assert child.seen[-1][1]["model"] == "provider/model"
