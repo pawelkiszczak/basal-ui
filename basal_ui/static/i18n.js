@@ -708,7 +708,7 @@ const PL = {
   "The optional MCP extra is missing.": "Opcjonalny dodatek MCP nie jest zainstalowany.",
   "Save MCP settings, then restart the API server to apply changes.": "Zapisz ustawienia MCP, a następnie uruchom ponownie serwer API, aby je zastosować.",
   "Saved MCP URL (pending until MCP is enabled and the server is restarted): {url}": "Zapisany adres MCP (oczekuje na włączenie MCP i ponowne uruchomienie serwera): {url}",
-  "Install MCP with uv sync --extra mcp from source, uv pip install \"basal-ui[mcp]\" in a venv, or uv tool install --with \"basal-ui[mcp]\" basal-ui; then restart basal-ui.": "Zainstaluj MCP poleceniem uv sync --extra mcp ze źródeł, uv pip install \"basal-ui[mcp]\" w środowisku venv albo uv tool install --with \"basal-ui[mcp]\" basal-ui; następnie uruchom ponownie basal-ui.",
+  "Install MCP with uv sync --extra mcp from source, uv pip install \"basal-ui[mcp]\" in a venv, or uv tool install --with \"basal-ui[mcp]\" basal-ui; then restart basal-ui.": "Zainstaluj MCP poleceniem uv sync --extra mcp ze źródeł, uv pip install 'basal-ui[mcp]' w środowisku venv albo uv tool install --with 'basal-ui[mcp]' basal-ui; następnie uruchom ponownie basal-ui.",
   "Start the API server with MCP enabled to use this example.": "Aby użyć tego przykładu, uruchom serwer API z włączonym MCP.",
   "Client connection": "Połączenie klienta",
   "Endpoint traffic": "Ruch według endpointów",
