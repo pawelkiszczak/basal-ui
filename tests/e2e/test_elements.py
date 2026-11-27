@@ -510,8 +510,7 @@ def test_mixed_media_presets_keep_indexes_fallback_and_json_marks(page):
 
 
 def test_bundled_element_preset_without_original_bytes_restores_and_unlinks(page):
-    index = page.evaluate("() => examples.findIndex(e=>e.id==='media-01-checkout-elements')")
-    page.select_option("#examples", str(index))
+    load_checkout_example(page)
     assert page.evaluate("() => selectedMedia[0].elements.question") == "click_target"
     assert page.evaluate("() => selectedMedia[0].originalData") is None
     save_request_preset(page, "bundled elements")

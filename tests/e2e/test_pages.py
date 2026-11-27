@@ -1429,6 +1429,98 @@ def test_batch_view_runs_a_file_and_lists_the_answers(page, text_model, tmp_path
     sync_api.expect(page.locator("#batchSummary")).to_contain_text("20 items")
 
 
+@pytest.mark.parametrize("start_action", ["run", "restart"])
+@pytest.mark.parametrize("new_phase", ["running", "done"])
+def test_batch_discards_rows_from_an_older_result_load(page, ui, text_model, start_action, new_phase):
+    """Controlled browser race: delayed rows from a prior result must not repopulate or duplicate rows."""
+    view(page, "batch")
+    status = ui.get("/api/status")
+    state = {"status": status}
+
+    def batch_job(label, phase, started):
+        return {
+            "kind": "batch",
+            "model": text_model["id"],
+            "label": label,
+            "phase": phase,
+            "done": 20 if phase == "done" else 0,
+            "total": 20,
+            "error": None,
+            "running": phase == "running",
+            "started": started,
+            "finished": started + 1 if phase == "done" else None,
+            "result": {
+                "input": f"/synthetic/{label}.jsonl",
+                "output": f"/synthetic/{label}-answers.jsonl",
+                "model": text_model["id"],
+                "items": 20,
+                "errors": 0,
+                "seconds": 1,
+                "items_per_s": 20,
+                "server_latency_p50_ms": 1,
+            },
+        }
+
+    state["status"]["jobs"]["batch"] = batch_job("old", "done", 1)
+    page.route("**/api/status", lambda route: route.fulfill(json=state["status"]))
+
+    new_rows = [{"id": i, "option": "answer", "prediction": "q", "confidence": 1, "latency_ms": 1} for i in range(20)]
+    old_rows = [{**row, "id": row["id"] + 100} for row in new_rows]
+    old_request = []
+
+    row_requests = 0
+
+    def batch_rows(route):
+        nonlocal row_requests
+        row_requests += 1
+        if row_requests == 1:
+            old_request.append(route)
+        else:
+            route.fulfill(json={"rows": new_rows, "total": len(new_rows)})
+
+    page.route("**/api/batch/rows**", batch_rows)
+    with page.expect_request("**/api/batch/rows?offset=0&limit=100"):
+        page.reload()
+    view(page, "batch")
+    assert len(old_request) == 1
+
+    def start_batch(route):
+        state["status"]["jobs"]["batch"] = batch_job("new", new_phase, 3)
+        route.fulfill(status=202, json={})
+
+    page.route("**/api/batch", start_batch)
+    if start_action == "run":
+        page.select_option("#batchModel", text_model["id"])
+        page.fill("#batchInput", "/synthetic/new.jsonl")
+        page.click("#runBatch")
+    else:
+        partial = batch_job("partial", "stopped_resumable", 2)
+        partial["result"] = {
+            "id": text_model["id"],
+            "input": "/synthetic/new.jsonl",
+            "output": "/synthetic/new-answers.jsonl",
+            "concurrency": 4,
+        }
+        state["status"]["jobs"]["batch"] = partial
+        page.locator("#restartStoppedBatch").wait_for(state="visible")
+        page.click("#restartStoppedBatch")
+        sync_api.expect(page.locator("#confirmDialog")).to_be_visible()
+        page.click("#confirmAccept")
+    if new_phase == "done":
+        page.wait_for_function(
+            "() => document.querySelector('#batchSummary').textContent.includes('/synthetic/new-answers.jsonl') "
+            "&& document.querySelectorAll('#batchRows tbody tr').length === 20"
+        )
+    else:
+        page.wait_for_function("() => statusCache?.jobs?.batch?.running === true")
+
+    with page.expect_response(lambda response: "/api/batch/rows?offset=0&limit=100" in response.url) as old_response:
+        old_request[0].fulfill(json={"rows": old_rows, "total": len(old_rows)})
+    old_response.value.finished()
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    sync_api.expect(page.locator("#batchRows tbody tr")).to_have_count(20 if new_phase == "done" else 0)
+
+
 # the language buttons reload the page: until the new page's scripts run, LANG and statusCache do not exist
 SWITCHED = """lang => typeof LANG !== 'undefined' && typeof statusCache !== 'undefined' && LANG === lang
   && !sessionStorage.getItem('basal-ui.language-draft') && statusCache && modelData.length > 0"""

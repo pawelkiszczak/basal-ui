@@ -130,7 +130,7 @@ document.addEventListener('keydown',e=>{
   else if(e.altKey&&!e.ctrlKey&&!e.metaKey&&/^Digit[0-9]$/.test(e.code)){const target=document.querySelector(`.side-nav [data-shortcut="${e.code.slice(5)}"]`);if(target){e.preventDefault();showView(target.dataset.view,true);}}
 });
 document.addEventListener('click',event=>{if(recording && event.target.closest('#dt-run')){event.preventDefault();event.stopImmediatePropagation();$('#decisionCompare .dt-error').textContent=t('Finish recording before sending.');$('#decisionCompare .dt-error').hidden=false;}},true);
-document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;if(event.target.closest('#playground') && !event.target.closest('#recordAudio, #sendButton') && recording)cancelRecording();},true);
+document.addEventListener('click',event=>{if(!event.target.closest('.replay-request'))replayIntent++;},true);
 document.addEventListener('input',event=>{if(event.target.closest('#playground')){replayIntent++;if(recording && !event.target.closest('#recordAudio'))cancelRecording();}});
 document.addEventListener('change',event=>{
   if(event.target.matches('input[type=checkbox]'))event.target.setAttribute('aria-checked',String(event.target.checked));
@@ -2869,7 +2869,7 @@ function answerBest(a) {
   if(typeof a.noul==='number')return a.noul>=0.5?'true':'false';
   return a.type||null;
 }
-let batchRowsLoaded=0, batchRunning=false, batchResult=null, batchProgressMarkup=null;
+let batchRowsLoaded=0, batchRowsGeneration=0, batchRunning=false, batchResult=null, batchProgressMarkup=null;
 let batchPresetAvailable=false;
 async function loadBatchPresets() {
   const select=$('#batchPreset'), lang=$('#batchLang'), reason=$('#batchPresetReason');
@@ -2911,7 +2911,7 @@ function renderBatchState(job, ready) {
     const body={...job.result,choice:'restart'};
     if(!await confirmDialog({title:t('Restart Batch'),description:t('Discard partial answers for {output} and restart this Batch?',{output:body.output}),confirmLabel:t('Restart'),destructive:true}))return;
     await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
-    toast(t('Batch started')); await refreshStatus();
+    await batchStarted();
   });
   if(!running&&job?.phase==='done'&&(batchRunning||!batchResult))showBatchResult(job.result);
   batchRunning=running;
@@ -2924,10 +2924,18 @@ function showBatchResult(r) {
   $('#batchAccuracy').innerHTML=[...batchAccuracy.values()].map(x=>`<div>${esc(x.label)} ${x.comparison?comparisonBadge():''} · ${esc(x.input)} · ${t('accuracy')} ${pct(x.accuracy)}</div>`).join('');
   $('#batchSummary').innerHTML=`<div class="chips"><span class="chip">${esc(label)}</span>${comparison?comparisonBadge():''}<span class="chip">${tp(r.items,'{n} items','{n} items')}</span><span class="chip">${tp(r.errors,'{n} errors','{n} errors')}</span><span class="chip">${esc(r.seconds)} s</span><span class="chip">${esc(r.items_per_s)} ${t('items/s')}</span><span class="chip">${t('server p50')} ${esc(r.server_latency_p50_ms??'—')} ms</span>${r.accuracy!=null?`<span class="chip">${t('accuracy')} ${pct(r.accuracy)}</span>`:''}</div><p class="muted mono">${esc(r.output)}</p>`;
   $('#downloadBatch').hidden=$('#copyBatchPath').hidden=false;
-  batchRowsLoaded=0; $('#batchRows').innerHTML=''; loadBatchRows();
+  batchRowsLoaded=0; batchRowsGeneration++; $('#batchRows').innerHTML=''; loadBatchRows();
+}
+async function batchStarted() {
+  batchRunning=true;
+  batchRowsLoaded=0; batchRowsGeneration++;
+  $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
+  toast(t('Batch started')); await refreshStatus();
 }
 async function loadBatchRows() {
-  const d=await api(`/api/batch/rows?offset=${batchRowsLoaded}&limit=100`);
+  const generation=batchRowsGeneration, offset=batchRowsLoaded;
+  const d=await api(`/api/batch/rows?offset=${offset}&limit=100`);
+  if(generation!==batchRowsGeneration||offset!==batchRowsLoaded)return;
   const rows=d.rows.map(x=>`<tr><td>${esc(x.id)}</td><td>${x.option!=null?`<span class="chip">${esc(x.prediction)}: ${esc(x.option)} (${pct(x.confidence)})</span>`:Object.entries(x.answers||{}).map(([n,a])=>`<span class="chip">${esc(n)}: ${esc(answerBest(a)??'—')}${a?.confidence!=null?` (${pct(a.confidence)})`:''}</span>`).join(' ')}${x.correct===true?` <span class="badge fit-fits">${t('correct')}</span>`:x.correct===false?` <span class="badge fit-too_large">${t('wrong')}</span>`:''}</td><td>${num(x.latency_ms,1)} ms</td><td>${x.error?`<span class="reason">${esc(httpFailure(x.status,textOf(x.error)))}${x.request_id?` [${t('request')} ${esc(x.request_id)}]`:""}</span>`:''}</td></tr>`).join('');
   if(!batchRowsLoaded)$('#batchRows').innerHTML=`<table><thead><tr><th>${t('Id')}</th><th>${t('Answer')}</th><th>${t('Latency')}</th><th>${t('Error')}</th></tr></thead><tbody></tbody></table>`;
   $('#batchRows tbody').insertAdjacentHTML('beforeend',rows);
@@ -2947,9 +2955,7 @@ $('#runBatch').onclick=()=>act(async()=>{
     body.choice=await chooseBatch(); if(body.choice==='cancel')return;
     await api('/api/batch',{method:'POST',body:JSON.stringify(body)});
   }
-  batchRunning=true;
-  $('#batchSummary').innerHTML=''; $('#batchRows').innerHTML=''; $('#batchMore').hidden=$('#downloadBatch').hidden=$('#copyBatchPath').hidden=true;
-  toast(t('Batch started')); await refreshStatus();
+  await batchStarted();
 });
 $('#cancelBatch').onclick=()=>act(async()=>{await api('/api/batch',{method:'DELETE'});await refreshStatus();});
 $('#downloadBatch').onclick=()=>{const a=document.createElement('a');a.href='/api/batch/download';a.click();};
