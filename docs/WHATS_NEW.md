@@ -27,11 +27,13 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Schedule Batch over folders of JSONL files with local-time intervals, protected outputs, and run history. On Engines
   with Batch resume support, choose Resume or Restart after an interruption. Set the unanswered-line limit and use
   Engine question presets with automatic, Polish or English wording. [Batch](USAGE.md#batch)
+- Discard stale Batch row responses when a new run or result replaces the table.
 - Explain each Suggested card's compatibility, memory-fit and slot-ranking reasons. Keep **Browse all models** available
   when no suggestion qualifies; memory estimates are labeled advisory. [Model suggestions](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
 
 ## Playground and History
 
+- Keep microphone recording active when clicking passive Playground content.
 - Build Decisions with editable Engine question sets, conditional questions, answer sets, abstention targets,
   and experimental rank questions when the installed Engine provides them.
 - Fetch a public HTTP(S) page into editable State with provenance. Replay restores the recorded State without a
