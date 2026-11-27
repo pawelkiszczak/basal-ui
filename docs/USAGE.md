@@ -50,6 +50,84 @@ after the view, matching keyboard navigation order. [Mobile example](images/quic
 [Recent traffic and lifetime usage have different scopes](#statistics-and-benchmarks); viewing either Dashboard or
 Manager does not add requests. **Models** opens Suggested (default) and All models.
 
+**Live memory** on Dashboard shows host RAM and measured discrete GPU usage alongside each loaded runtime's process RSS
+and model memory. Ollama confirms loaded models through its local `GET /api/ps` response: `size` is total loaded
+model size and `size_vram` is its VRAM portion. Model rows show total size; the observation's `pool` field identifies
+unified, fully RAM, or fully GPU placement, and remains unknown when placement is mixed or unavailable. Ollama's
+`context_length` is in tokens, not bytes; context-byte and cache measurements are unavailable. SGLang reports
+confirmed models and process RSS, but model, context and cache byte fields are unavailable. LM Studio reports loaded
+model identity from its local API; model memory and cache usage are not exposed. oMLX reports model and cache details
+when its admin API is available, falling back to a loaded-model count and estimated memory from health. Runtime
+process RSS includes overhead and, on Apple unified-memory hosts, excludes GPU allocations. The **System and other
+apps** remainder appears only when host and runtime accounting can be compared and every runtime total is known.
+
+**Memory history** shares Dashboard's time range with traffic and shows measured per-runtime totals, host RAM and the
+compatible **System and other apps** remainder. Samples run once per minute while basal-ui is running, even when all
+browser tabs are closed; closing the app stops sampling. Collection coverage is shown, and missing buckets remain
+gaps. The range includes **All time**. The **Display refresh** setting changes only how often the Dashboard polls.
+
+### Live runtime checks
+
+On 2026-11-22, `GET /api/memory/live` on the Apple unified-memory host reported Fleet `status: empty`,
+`process_bytes: 0` and `other: null`. No model-serving runtime was active, so no external runtime version or provider
+endpoint was available for a live runtime check. The server recorded memory history while every browser tab was closed
+for 130 seconds, and the samples remained available after an app restart. Runtime observation/accounting cases,
+provider order, aggregation, and gap behavior were checked only with fixtures in `tests/test_ui_memory.py` and
+`tests/test_ui_stats.py`.
+is unavailable; GPU allocations are not counted in both RAM and GPU totals. LM Studio model identity is read from its
+local API when available. Its process RSS includes runtime overhead and remains available when the API is off, while
+model identity, context bytes and cache usage are unknown.
+
+### Live runtime checks
+
+On LM Studio 0.4.28+2, the server was ON at configured port 1235 with no model loaded. After `lms load glm-ocr`
+(1.34 GiB), `GET /api/memory/live` returned `status: ok`, model `glm-ocr`, and `process_bytes: 5496700928`; the model's
+memory, context-byte and cache fields were `null`. After `lms server stop`, the route returned `status: unreachable`,
+`process_bytes: 5503107072`, and no model rows, with identity, context bytes and cache usage marked unknown. Restoring
+with `lms unload --all` and `lms server start --port 1235` returned the server to ON/no-model state; `lms status` and
+`GET /api/memory/live` confirmed it (`status: empty`, `process_bytes: 411435008`). Fixtures cover missing/invalid port
+fallback and non-loopback interface settings; the provider always requests `127.0.0.1`.
+is unavailable; GPU allocations are not counted in both RAM and GPU totals. vLLM is observed read-only through its
+loopback URL (`BASAL_UI_VLLM_URL`, default `http://127.0.0.1:8000`). vLLM identity is verified independently using
+`/version` or vLLM metric families; `/v1/models` provides base-model IDs with `max_model_len` and adapter IDs. When
+the API cannot be identified, a verified vLLM process-tree RSS measurement still shows the runtime without models.
+The `/metrics` KV-cache gauges are percentages shown per engine, not bytes; `cache_bytes` remains **Not measured**.
+Process RSS includes vLLM runtime overhead and excludes basal-ui Fleet processes.
+
+### Live runtime checks
+
+No live vLLM checks ran. Unit fixtures cover independent API identity, base and adapter model cards, per-engine
+KV-cache metrics, metrics collection when model discovery returns 401, malformed URL fallback, Fleet-process exclusion
+and external vLLM worker matching. Browser screenshots use a local fixture server, not vLLM.
+
+### SGLang memory observation
+
+SGLang was not installed on the host, so no live runtime checks ran and no runtime version was observed. Provider fixtures
+cover read-only `GET /get_model_info` (`model_path` confirms the loaded model), unavailable byte fields, process RSS fallback
+for `sglang.launch_server`, and rejection of non-loopback URLs. The Dashboard was checked against a local HTTP stub returning
+a fixture `model_path`; it was not a live SGLang server. The official [native API documentation](https://docs.sglang.ai/docs/basic_usage/native_api.md)
+documents `/get_model_info` and `/server_info`; `/v1/models` is implemented in the official
+[HTTP server source](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py).
+The provider does not query either server-info endpoint, `/v1/models` or `/metrics`; it only uses `/get_model_info` for
+model identity and local process RSS for memory. The official docs describe `/server_info` and optional Prometheus metrics,
+including token counts and fractions, not byte-valued process memory. Pool token limits such as `max_total_num_tokens` and
+fractions such as `mem_fraction_static` are not bytes. No fixture checks queried `/server_info`, `/v1/models` or `/metrics`.
+
+The Dashboard recognizes oMLX on its configured loopback port (`server.port` in `~/.omlx/settings.json`, default
+8000). When its admin API is available, it confirms loaded model IDs and displays measured hot-cache and disk-backed
+cache bytes. Otherwise, the unauthenticated `/health` endpoint supplies a loaded-model count and oMLX's aggregate
+planned resident-size estimate; model identities and cache details remain unavailable. This estimate is separate
+from process RSS, which includes oMLX runtime overhead and excludes GPU allocations on Apple unified-memory hosts.
+
+### Live runtime checks
+
+oMLX 0.8.3 was checked live without loading or unloading models. `GET /admin/api/stats` returned HTTP 401; the
+unauthenticated `GET /health` returned `status: healthy`, `loaded_count: 3`, and
+`current_model_memory: 77,995,381,990`. `GET /api/memory/live` returned HTTP 200 with that same total in the
+`unified` model-like row and `process_bytes: 793,657,344` (`rss_excludes_gpu`); model identities and cache fields
+were unavailable, and `other` was `null`. Fixture-only checks covered admin-API model/cache data, zero values, and
+unavailable or non-oMLX responses.
+
 **Load downloaded model** in the page header opens the same loader from Dashboard, Playground, Batch, API server,
 Manager's panels and the other views. It lists models already on disk, their supported text/media actions and Load
 options. Keep it open to see startup, then choose **Use** when ready; the current view's model selector is updated
@@ -109,6 +187,14 @@ models loaded when basal-ui last ran, in load order. This category also holds up
   *Lightest* offers the recurrent pico family. *Multimodal* selects fitting native image/audio checkpoints, including
   when the media add-on is missing; such a card explains the missing dependency and links to Backends instead of
   pretending media can load. Media estimates use their eager/vLLM path, not a text CUDA-graph estimate.
+  Each card explains its machine/Backend compatibility, memory fit and slot-ranking rule; the All models tab and
+  **Browse all models** action remain available even when no suggestion qualifies. Text slots require a runnable,
+  non-experimental text candidate. The multimodal slot is selected independently from fitting media-capable variants,
+  so a single `basal-omni-1.0` multimodal suggestion can appear when no text candidate is runnable. The API only offers
+  that card when its media Execution mode is compatible with the host. This explains selection, not model quality:
+  quality and speed labels are catalog heuristics, not measured benchmarks.
+  There are up to five slots: Recommended, Best quality, Fastest, Lightest and Multimodal. A slot with no eligible
+  candidate is omitted; Best quality and Fastest are also omitted when their model duplicates another core slot.
   Loads still enforce the configured Fleet budget, keep-free reserve and existing reservations; recommendations are
   estimates, not a reservation or an Inference test. A selected Backend opens its recommendation's load options for
   review, retaining the Saved revision and other inputs. Leave **Remember** unchecked to load this choice without
@@ -419,31 +505,30 @@ Optionally set **Unload idle models after minutes** in **Settings → Memory & s
 
 ### Dashboard
 
-The 15-minute or one-hour window shows **input tokens processed per second**, not generated output tokens, and
-requests/s, request-weighted mean latency, error rate, per-minute traffic and public endpoint attribution. These are
-recorded child-inference attempts from Playground, the API server and MCP, not all HTTP traffic: UI polling,
-pre-inference authentication/validation rejections, ordinary basal Batch, benchmarks and private Inference tests do not contribute. Comparison Batch Decisions do contribute.
+The Dashboard lets you select **1 hour**, **24 hours**, **7 days**, **30 days** or **All time** for recorded Decision
+traffic. The plot starts at the first Decision collected by this version and keeps offline periods as gaps. Dated totals
+sum the retained traffic series in the selected range; they are separate from lifetime Usage counters, which remain
+available in Model manager. Dated chart history is persisted for up to five years: minute buckets cover the newest
+24 hours, hourly buckets cover history through 90 days, then daily buckets retain older history. Resetting a model
+resetting all Usage restarts collection at the reset time. Endpoint attribution remains a separate recent,
+process-local 15-minute view.
 
-Recent traffic is in memory in this app process only, starts at observation, and is not restored from lifetime
-statistics or merged from other processes. Rates use observed elapsed time rather than inventing a full prior
-window. Minute-bucket boundaries are approximate; at most 60 minute buckets are retained. Endpoint p95 is labelled
-**sampled** because retained latency samples are bounded. Missing Engine token usage contributes zero, not an estimate.
-Failed traffic fetches show an unavailable notice and dashes instead of stale live rates. Missing lifetime statistics
-show dashes without disabling valid recent traffic; a failed status poll clears live model activity until recovery.
-The [traffic API contract](API.md#recent-decision-traffic) describes fields and sampling limits.
+The Dashboard display refresh defaults to the existing 1-second cadence and can be changed to 2, 5, 15 or 30 seconds;
+the choice is remembered in that browser. The central `app.js` status poll owns refreshes; the Dashboard renderer
+does not start a separate timer. Rates use the elapsed range, including offline gaps. Chart downsampling keeps each
+display bucket's peak. Input tokens are Engine-reported usage when present; missing usage contributes zero and is
+never estimated. The [traffic API contract](API.md#recent-decision-traffic) describes the live and dated series.
 
 ### Lifetime usage
 
 **Model manager → Usage by model** lists the Decisions basal-ui recorded per model: requests, questions, errors,
 average best-answer probability (the answer's `confidence`; `set_confidence` for `multi`; the largest probability
 for `tool`), lifetime mean latency, p95 over the last 1000 retained latencies, input tokens, last use and question types.
-Dashboard's **Model activity** uses these same lifetime counters, not a second recording path. The window totals may
-differ by time range, process and the legacy lifetime treatment of pre-inference errors.
-
-These totals live in `<settings stem>.stats.json`, survive restarts and merge across apps sharing that settings file.
-A model or global reset affects the shared lifetime totals and clears matching recent traffic in this app process;
-another process's in-memory traffic is not cleared. A reset discards older unflushed lifetime counts from other
-instances, but Decisions recorded after the reset remain counted.
+Dashboard's **Model activity** uses these same lifetime counters, not a second recording path. All time totals continue
+to come from Usage; the dated traffic series begins when collection starts. These totals live in
+`<settings stem>.stats.json`, survive restarts and merge across apps sharing that settings file. Resetting a model
+removes its Usage and dated traffic; resetting all Usage also restarts the collection-start timestamp. A reset
+discards older unflushed lifetime counts from other instances, but Decisions recorded after the reset remain counted.
 
 ### Benchmarks
 
@@ -509,6 +594,20 @@ otherwise Saved load settings. Reports show available identity digests, kept sou
 design effects, plus conformal coverage and mean set size. Missing fields in older reports are omitted.
 [Advanced calibration controls](images/calibration-advanced.png).
 
+The help beside the calibration choices explains the labelled JSONL input, shows how a Selected calibration changes a
+choice's confidence using the Engine's temperature scaling, and explains when it applies and how to return to the
+Shipped calibration.
+
+The input accepts one labelled Decision per JSONL line with a non-empty `questions` object, a `state`, and a `gold`
+answer for each question (simple `basal-run` records with `gold` are also accepted). For example, with choice
+probabilities 0.80 and 0.20 and a Selected calibration with effective temperature 2 for a two-option question, basal-serve maps each
+probability to `p^(1/T) / Σp^(1/T)`: the top confidence becomes `√0.80 / (√0.80 + √0.20) = 0.667` (66.7%) instead of
+80%, while the top choice stays the same. The Engine first selects the option-count bucket (2–10 options) and then uses
+its temperature; `temperature_per_prim` is only the fallback when no bucket applies. This illustrates the method, not a
+promised fit result. If a Shipped row is available, select it in the **Use** column to return to the calibration
+supplied for the execution configuration. When only saved rows are present and no local snapshot is available, no
+Shipped row appears. A loaded model needs a restart after changing the selection.
+
 ## Fine-tuning on labelled Decisions
 
 In **Model manager → Calibration → Fine-tune**, select a downloaded bf16 basal or Attached model, enter the path to labelled JSONL and a new output name, then choose epochs, learning rate, LoRA rank and alpha, held-out share, maximum sequence length, gradient checkpointing and an optional optimizer-step limit. The Engine must expose fine-tuning and its declared `finetune` add-on must be installed; use **Backends → Engine add-ons** and restart when prompted. The input format is the same labelled request format as Calibration. Native trains choice, noul, score and act questions and skips multi and task decisions. The preflight reports skipped types and requires both training decisions and held-out groups; the file is copied privately and never rewritten.
@@ -561,7 +660,7 @@ the statistics above (admin key only when keys are required — that is, basal-u
 | Max context length | `4096` | Passed to each vLLM and SGLang `basal-serve` (`512`–`131072`). |
 | CORS origins | Empty | Optional allowed browser origins, one per line; `*` allows every origin. |
 | Decision log | Empty (off) | Every `basal-serve` appends its decisions (propensity records) to this writable file. |
-| MCP at `/mcp` | Off | Adds the MCP streamable-HTTP endpoint when the MCP extra is installed. |
+| MCP at `/mcp` | Off | Adds the MCP streamable-HTTP endpoint when the optional MCP extra is installed. The API server's MCP group shows availability, endpoint URL and the client connection snippet. If the extra is missing, the checkbox is disabled with installation guidance. |
 
 **Security.** The server is loopback-only by default. Local-network exposure is unauthenticated unless **Require an API
 key** is enabled; use a key before selecting **Local network**. Keys are generated with the `bsl_` prefix, stored as
@@ -577,14 +676,15 @@ Library row, which reloads only that model. The app checks the chosen bind port 
 `port <port> on <host> is in use` if another process owns it.
 
 The **Connect** panel provides copy-ready examples for curl (both `/v1/systemone` and `/v1/decisions`), Python
-(httpx), TypeSafe and OpenAI SDKs, LiteLLM's `hosted_vllm` provider, and MCP. HTTP inference examples include the
-selected model's `"model"` id; when authentication is disabled they omit API-key headers. MCP configuration is
-available only while the API server is running with MCP enabled, and uses its streamable-HTTP `/mcp` endpoint.
-With Engine 2.5.0, MCP `decide` and `decide_many` take a `model` argument (`list_models` names the loaded ids) and
-answer with the first loaded model without one; with Engine 2.4.1 they always use the **first loaded model**: their
-schemas have no model argument or model-listing tool. Use the ordinary HTTP routes when you need named-model routing
-on 2.4.1. The Engine's stdio bridge needs `--model` (2.5.0) to reach the gateway, so the UI does not advertise it.
-Full request and response shapes, error envelopes and compatibility details are in the [HTTP API reference](API.md).
+(httpx), TypeSafe and OpenAI SDKs, and LiteLLM's `hosted_vllm` provider. MCP has its own group with availability,
+the `/mcp` endpoint and a client configuration snippet. The snippet is available while the API server is running with
+MCP enabled; saved settings apply after **Restart server**. HTTP inference examples include the selected model's
+`"model"` id; when authentication is disabled they omit API-key headers. With Engine 2.5.0, MCP `decide` and
+`decide_many` take a `model` argument (`list_models` names the loaded ids) and answer with the first loaded model
+without one; with Engine 2.4.1 they always use the **first loaded model**: their schemas have no model argument or
+model-listing tool. Use the ordinary HTTP routes when you need named-model routing on 2.4.1. The Engine's stdio
+bridge needs `--model` (2.5.0) to reach the gateway, so the UI does not advertise it. Full request and response shapes,
+error envelopes and compatibility details are in the [HTTP API reference](API.md).
 
 ## Serving models from basal-ui
 

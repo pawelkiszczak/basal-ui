@@ -2,6 +2,9 @@
 
 This release adds model orchestration, scheduled inference, and new ways to build, serve and revisit Decisions.
 
+## Interface
+
+- Share popover surfaces across Tools, Appearance and Playground Request settings. Escape closes either header menu and restores focus, theme selection returns focus to Appearance, Space remains the native checkbox toggle, and Enter on a form checkbox does not submit the form. [Tools in light English](images/issue-144-controls.png) and [Appearance in dark Polish](images/issue-144-appearance-dark-pl.png).
 - Serialize Scheduled Batch across instances sharing settings, compact malformed History rows at rotation, and improve
   Cascade name validation, dialog accessibility, and Polish start errors.
 - Require OpenTelemetry API 1.45.2 or newer to address CVE-2026-126360.
@@ -10,6 +13,8 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 
 ## Models and inference
 
+- Filter **All models** by name, download/load state, model compatibility, run availability and memory fit; clear all filters in one action. Setup and Unload use the shared secondary-action styling.
+- Show a translated, screen-reader-announced pending status during initial loading and foreground actions, including while sending a Decision. See the [English](images/loading-progress.png) and [Polish](images/loading-progress-pl.png) captures.
 - Create named escalation and Blend [Cascades](USAGE.md#cascades) from ready local models. Escalation supports an
   optional chat fallback. Playground and API responses identify the answering tier. Blend and fallback answers carry
   no automation certificate. Escalation without fallback also works in Batch.
@@ -22,15 +27,22 @@ This release adds model orchestration, scheduled inference, and new ways to buil
 - Schedule Batch over folders of JSONL files with local-time intervals, protected outputs, and run history. On Engines
   with Batch resume support, choose Resume or Restart after an interruption. Set the unanswered-line limit and use
   Engine question presets with automatic, Polish or English wording. [Batch](USAGE.md#batch)
+- Discard stale Batch row responses when a new run or result replaces the table.
+- Explain each Suggested card's compatibility, memory-fit and slot-ranking reasons. Keep **Browse all models** available
+  when no suggestion qualifies; memory estimates are labeled advisory. [Model suggestions](USAGE.md#browser-app-pick-a-model-for-your-hardware-and-try-it)
 
 ## Playground and History
 
+- Keep microphone recording active when clicking passive Playground content.
 - Build Decisions with editable Engine question sets, conditional questions, answer sets, abstention targets,
   and experimental rank questions when the installed Engine provides them.
 - Fetch a public HTTP(S) page into editable State with provenance. Replay restores the recorded State without a
   second fetch and preserves native question fields and truncation details.
+- Generate API examples beside the request inputs and copy the displayed snippet with its own control.
 - Record a microphone clip as PCM WAV in the Playground. History can retain bounded audio copies when explicitly
   enabled, and Replay retrieves retained clips on demand. [Recording audio](USAGE.md#recording-audio-in-the-playground)
+- Keep the Playground media picker within its panel and wrap full selected filenames; style **Compare models** as a
+  secondary action.
 - Import MCP tool catalogues into tool questions and shortlist locally. Import request and load presets from public URLs.
 - Keep Load options tied to the latest model and dialog, including immediate reopen. Send Engine errors to the matching
   question cards, distinguish overload, and retain persistent error toasts.
@@ -48,11 +60,41 @@ This release adds model orchestration, scheduled inference, and new ways to buil
   thresholds, inspect conformal levels, and preserve layout when refitting saved rows. Calibration warnings identify
   mismatches and invalid metadata. Benchmarks include the Identity gate, option-order checks, and active adapter/MLX
   settings where supported. [Calibration and benchmarks](USAGE.md#custom-calibration)
+- Explain the choice between Shipped and Selected calibration with an accessible worked example of the Engine's
+  temperature scaling, labelled input and how to return to Shipped calibration.
 - Use API-server MCP model routing on supported Engines. Gateway forwarding preserves typed errors and Retry-After,
   reports upstream read timeouts as 504, and cancels forwarding on disconnect. The Dashboard reports stalled calls and
   lane counts. Admins can read Prometheus metrics at `/metrics`. [API reference](API.md)
+- Show live host RAM, discrete GPU and Fleet RSS on Dashboard, plus Ollama's locally reported loaded models and memory;
+  identify unavailable context and cache breakdowns without treating context token limits as bytes or double-counting
+  unified memory.
+- Show live host RAM, discrete GPU and Fleet model RSS on Dashboard; identify unavailable context and cache breakdowns
+  without treating Engine context token limits as bytes or double-counting unified memory. LM Studio adds loaded model
+  identity from its local API and process RSS, including runtime overhead when the API is unavailable.
+  without treating Engine context token limits as bytes or double-counting unified memory. Show confirmed SGLang models
+  and process RSS, without treating KV-pool token counts or memory fractions as byte measurements.
+  [Live memory](USAGE.md#sglang-memory-observation)
+  without treating Engine context token limits as bytes or double-counting unified memory.
+- Add dated Dashboard traffic ranges with compact, persisted Decision aggregates and offline gaps. Keep lifetime Usage as
+  the source of All time totals, and remember the existing 1-second refresh cadence or choose 2, 5, 15 or 30 seconds.
+- Sample dated memory totals by runtime on the server while Dashboard is closed; view coverage and gaps beside traffic
+  using the same saved time range. [Memory history](USAGE.md#dashboard)
+- Show oMLX's confirmed loaded models and measured hot and disk-backed cache when its admin API is available. Fall back
+  to its loaded-model count and memory estimate from health. Label process RSS as including runtime overhead and mark
+  unavailable details explicitly.
+- Show confirmed vLLM model ids and available process RSS and KV-cache usage on Dashboard without treating cache
+  percentages as bytes. [Live memory](API.md#local-app-management-api)
+- Keep admin credentials out of child processes, authenticate the Batch proxy per job, and bound Comparison requests by
+  time and response size. Reserve Cascade ports through spawn and validate router health. Reject symlinked scheduled
+  inputs and outputs, and keep Attached models removable after changing the models directory.
+- Keep status snapshots coherent across model unloads, return Cascade error codes at the API top level, and reject
+  unsupported text codecs at the Fetch boundary.
+- Enforce the microphone recording size limit while chunks arrive, before buffering and decoding the full recording.
+- Group the API server's MCP setting with dependency availability, the `/mcp` endpoint and a copy-ready client snippet;
+  explain how to install the optional extra when it is missing. [API server](USAGE.md#api-server)
 - Unload idle models after a configurable timeout while preserving remembered loads. Local model children start with
   detached stdin. Startup errors show a bounded log excerpt, with full output available in Logs.
+- Preserve discovered Comparison models when an upstream returns a malformed listing.
 - Improve keyboard navigation, zoom, responsive layouts, hover behavior, colour contrast, and Polish localization.
   Inspect follows the saved language and supports keyboard History activation, reduced motion, and forced colors.
 - Run the release CI matrix after merges to `stage` and `main`. [Release process](../CONTRIBUTING.md#releasing)

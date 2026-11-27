@@ -1192,7 +1192,13 @@ def test_cascade_gateway_protocols_and_missing_fallback_probabilities(tmp_path, 
         assert invalid.status_code == 400 and len(received) == count
     assert all(path == "/v1/systemone" for path, _ in received)
     with httpx.Client(transport=transport) as child:
-        monkeypatch.setattr(fleet_module.httpx, "post", child.post)
+        monkeypatch.setattr(
+            fleet_module.httpx,
+            "post",
+            lambda url, **kwargs: child.post(
+                url, **{key: value for key, value in kwargs.items() if key != "trust_env"}
+            ),
+        )
         sync = fleet.decide("route", request, path="/v1/decisions", source="api")
     assert sync.status_code == 200 and sync.json()["answers"][0]["choice"] == "invoice"
     assert received[-1][0] == "/v1/systemone"

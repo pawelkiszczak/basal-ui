@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
-from .jobs import Cancelled, terminate
+from .jobs import Cancelled, child_environment, terminate
 
 ADDONS = {"media": "Media (image and audio)", "gguf": "GGUF (llama.cpp)", "finetune": "Fine-tuning (LoRA)"}
 ADDON_MODULES = {"media": ("PIL", "scipy", "torchvision"), "gguf": ("llama_cpp",), "finetune": ("peft",)}
@@ -410,7 +410,7 @@ class AddonManager:
                         ["--no-binary", "llama-cpp-python", "--no-cache", "--reinstall-package", "llama-cpp-python"]
                     )
                 command.extend(requirements)
-                environment = os.environ.copy()
+                environment = child_environment()
                 if extra == "gguf":
                     hw = self.hardware_fn()
                     environment.pop("CMAKE_ARGS", None)

@@ -19,7 +19,10 @@ PREVIEW_FIELDS = ("id", "state", "question", "type", "options", "questions", "go
 
 
 def open_input(path):
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    fd = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise IsADirectoryError(errno.EISDIR, "not a regular file", str(path))

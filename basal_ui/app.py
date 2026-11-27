@@ -33,7 +33,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import backends, catalog, engine, hardware, history_audio, settings
+from . import backends, catalog, engine, hardware, history_audio, memory, settings
 from . import options as load_options
 from .addons import AddonManager
 from .fetch import FetchError, FetchManager, explicit_loopback
@@ -42,6 +42,7 @@ from .gateway import Gateway
 from .history import History
 from .history_audio import BUDGET as HISTORY_AUDIO_BUDGET
 from .mcp_import import shortlist
+from .memory_sampler import MemorySampler
 from .stats import Stats
 
 STATIC = Path(__file__).parent / "static"
@@ -121,8 +122,23 @@ def create_app(
     preset_fetch_manager=None,
     mcp_importer=None,
     schedules=None,
+    memory_providers=None,
+    memory_sampler=None,
 ) -> FastAPI:
     stats = stats or Stats(settings_mod.stats_path())
+    sampler = (
+        memory_sampler
+        if memory_sampler is not None
+        else MemorySampler(
+            stats,
+            lambda: memory.snapshot(
+                fleet,
+                memory.PROVIDERS if memory_providers is None else memory_providers,
+                hardware_fn,
+                include_models=False,
+            ),
+        )
+    )
     history = history or History(settings_mod.history_path())
     fleet = fleet or Fleet(
         models_dir_fn=settings_mod.models_dir,
@@ -281,7 +297,12 @@ def create_app(
         schedule_thread = threading.Thread(target=schedule_timer, name="basal-ui-schedules", daemon=True)
         schedule_thread.start()
         _app.state.schedule_thread = schedule_thread
+        if sampler is not False:
+            sampler.start()
+            _app.state.memory_sampler = sampler
         yield
+        if sampler is not False:
+            await asyncio.to_thread(sampler.stop)
         schedule_stop.set()
         await mcp_importer.close()
         await preset_fetch_manager.close()
@@ -639,6 +660,17 @@ def create_app(
             raise HTTPException(404, str(exc)) from exc
         return {"deleted": name}
 
+    @app.get("/api/memory/live")
+    def live_memory():
+        return memory.snapshot(fleet, memory.PROVIDERS if memory_providers is None else memory_providers, hardware_fn)
+
+    @app.get("/api/memory/history")
+    def memory_history(range: str = "24h"):
+        try:
+            return stats.memory_history(range)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @app.get("/api/memory")
     def get_memory():
         current = hw()
@@ -771,11 +803,18 @@ def create_app(
             base = record.get("base")
             if base not in catalog.ATTACHABLE or model_id != "attached/" + base.lower().replace("/", "-"):
                 return feature_refusal(409, "invalid attached model record", "attach_error")
-            attached_root = settings_mod.models_dir() / "attached"
-            out_dir = attached_root / model_id.split("/", 1)[1]
-            if record.get("out_dir") != str(out_dir):
+            raw_out_dir = record.get("out_dir")
+            if not isinstance(raw_out_dir, str) or not Path(raw_out_dir).is_absolute():
+                return feature_refusal(409, "invalid attached model directory", "attach_error")
+            out_dir = Path(raw_out_dir)
+            attached_root = out_dir.parent
+            if attached_root.name != "attached" or out_dir.name != model_id.split("/", 1)[1]:
                 return feature_refusal(409, "invalid attached model directory", "attach_error")
             unsafe = attached_root.is_symlink() or out_dir.is_symlink()
+            try:
+                unsafe = unsafe or attached_root.resolve() != attached_root or out_dir.resolve() != out_dir
+            except (OSError, RuntimeError):
+                unsafe = True
             with fleet.jobs.lock:
                 working = any(j.running and j.model == model_id for j in fleet.jobs.jobs.values())
             if (
@@ -1129,13 +1168,22 @@ def create_app(
             "local_dir",
         )
         on_disk = {a.variant.id: catalog.downloaded_bytes(a.variant, cache_dir) for a in baseline}
+        compatible = {
+            a.variant.id: any(
+                backends.machine_reason(key, current_hw) is None and backends.matching_modes(key, a.variant, current_hw)
+                for key in backends.BACKENDS
+            )
+            for a in baseline
+        }
         return {
             "source": source,
             "recommendation_backends": installed,
             "recommendation_backend": backend,
             "recommendation_note": (
                 "Recommendation slots use catalog format and tier heuristics, not measured benchmarks. "
-                "Best quality means the largest fitting tier; fastest means the smallest tier."
+                "Best quality means the largest fitting tier; fastest means the smallest tier. "
+                "Up to five slots appear; a slot is omitted when no candidate qualifies, and Best quality or Fastest "
+                "is omitted when it duplicates another core slot."
             ),
             "suggestions": suggestions,
             "models_dir": str(Path(cache_dir).resolve()),
@@ -1143,6 +1191,7 @@ def create_app(
                 {
                     **{k: getattr(a.variant, k) for k in fields},
                     "runnable": a.runnable and (a.variant.family != "attached" or engine.feature("attach")),
+                    "model_compatible": compatible[a.variant.id],
                     "reason": "attached models need engine 2.5"
                     if a.variant.family == "attached" and not engine.feature("attach")
                     else a.reason,
@@ -1688,6 +1737,13 @@ def create_app(
         if minutes not in (15, 60):
             raise HTTPException(400, "minutes must be 15 or 60")
         return stats.traffic_snapshot(minutes)
+
+    @app.get("/api/traffic/history")
+    def get_traffic_history(range: str = "24h"):
+        try:
+            return stats.traffic_history(range)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.delete("/api/stats")
     def reset_stats():
@@ -2484,7 +2540,10 @@ def create_app(
     @app.post("/api/fetch")
     def fetch_url(request: Request, body: dict = Body(...)):
         try:
-            return anyio.from_thread.run(fetch_manager.run, body.get("url"), request)
+            url = body.get("url")
+            if not isinstance(url, str):
+                raise FetchError("Enter an absolute HTTP or HTTPS URL.", "fetch_address_refused", 400)
+            return anyio.from_thread.run(fetch_manager.run, url, request)
         except FetchError as exc:
             return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=exc.status)
 

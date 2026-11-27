@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import secrets
 import socket
 import stat
 import subprocess
@@ -111,8 +112,12 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
         def log_message(self, *args):
             pass
 
+        def send_error(self, code, message=None, explain=None):
+            if not server.closing:
+                super().send_error(code, message, explain)
+
         def do_GET(self):
-            if self.path != "/v1/models":
+            if self.path != f"/{credential}/v1/models":
                 self.send_error(404)
                 return
             content = json.dumps(
@@ -131,7 +136,7 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 origin = urlsplit(self.headers.get("Origin", ""))
                 allowed = {"127.0.0.1", "localhost", "::1"}
                 if (
-                    self.path != "/v1/systemone"
+                    self.path != f"/{credential}/v1/systemone"
                     or host.hostname not in allowed
                     or host.username is not None
                     or host.password is not None
@@ -170,6 +175,8 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 response = fleet.decide_runner(runner, model_id, body, source=source, endpoint=endpoint)
                 status, content = response.status_code, response.content
             except Exception:  # noqa: BLE001 — basal-run records an error for this item
+                if server.closing:
+                    return
                 status, content = 502, b'{"error":"Batch request failed","code":"UPSTREAM_ERROR"}'
             if inferred and not server.begin_delivery(self.connection):
                 return
@@ -245,11 +252,12 @@ def comparison_proxy(fleet, runner, model_id, source="batch", endpoint="/api/bat
                 with contextlib.suppress(OSError):
                     connection.shutdown(socket.SHUT_RDWR)
 
+    credential = secrets.token_urlsafe(32)
     server = Server(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, name="basal-ui-scheduled-batch", daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}"
+        yield f"http://127.0.0.1:{server.server_port}/{credential}"
     finally:
         server.shutdown()
         server.close_pending()
@@ -446,6 +454,10 @@ def start_scheduled(fleet, settings_mod, schedule_stop, spec, source, output, si
             validate_runner(runner)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
+        if source.is_symlink() or source.parent.resolve() != Path(spec["input_dir"]).resolve():
+            raise RuntimeError("input must stay inside its watched directory and must not be a symbolic link")
+        if output.is_symlink() or output.parent.resolve() != Path(spec["output_dir"]).resolve():
+            raise RuntimeError("output must stay inside its configured directory and must not be a symbolic link")
         if output.resolve() == source.resolve():
             raise RuntimeError("output must not be the input file")
         fd, name = tempfile.mkstemp(prefix=".basal-ui-schedule-", suffix=".jsonl", dir=output.parent)
@@ -458,7 +470,7 @@ def start_scheduled(fleet, settings_mod, schedule_stop, spec, source, output, si
             before = os.fstat(raw.fileno())
             if [before.st_size, before.st_mtime_ns] != signature:
                 raise RuntimeError("input changed while preparing the Batch")
-            first = True
+            has_requests = False
             for number, line in enumerate(stream, 1):
                 if schedule_stop.is_set():
                     return None
@@ -478,20 +490,19 @@ def start_scheduled(fleet, settings_mod, schedule_stop, spec, source, output, si
                     error = validate_comparison_item(item, runner)
                     if error:
                         raise RuntimeError({**error, "detail": f"{source.name}: line {number}: {error['detail']}"})
-                if first:
-                    try:
-                        _, reason = paths.row_shape(item)
-                    except RecursionError as exc:
-                        raise RuntimeError(
-                            f"{source.name}: line {number}: request nesting exceeds the parser limit"
-                        ) from exc
-                    if reason:
-                        raise RuntimeError(f"{source.name}: line {number}: {reason}")
-                    first = False
+                try:
+                    _, reason = paths.row_shape(item)
+                except RecursionError as exc:
+                    raise RuntimeError(
+                        f"{source.name}: line {number}: request nesting exceeds the parser limit"
+                    ) from exc
+                if reason:
+                    raise RuntimeError(f"{source.name}: line {number}: {reason}")
+                has_requests = True
             after = os.fstat(raw.fileno())
             if [after.st_size, after.st_mtime_ns] != signature:
                 raise RuntimeError("input changed while preparing the Batch")
-        if first:
+        if not has_requests:
             raise RuntimeError(f"{source.name}: no requests")
 
         def reserve():

@@ -77,7 +77,8 @@ def candidates(spec):
         (
             path
             for path in Path(spec["input_dir"]).iterdir()
-            if not path.is_dir()
+            if not path.is_symlink()
+            and not path.is_dir()
             and fnmatch.fnmatchcase(path.name, spec["pattern"])
             and not path.name.endswith(".answers.jsonl")
             and not path.name.startswith(".basal-ui-schedule-")
@@ -367,10 +368,15 @@ class Schedules:
                         outcome = "failed"
                         continue
                     processed = self.settings.schedule_state(sid).get("processed", {})
+                    input_root = Path(spec["input_dir"]).resolve()
 
-                    def signature(path):
+                    def signature(path, input_root=input_root):
                         try:
+                            if path.is_symlink():
+                                return str(path), None, None
                             resolved = path.resolve()
+                            if resolved.parent != input_root:
+                                return str(path), None, None
                             stat = resolved.stat()
                             return str(resolved), stat.st_size, stat.st_mtime_ns
                         except (OSError, RuntimeError):
@@ -443,7 +449,11 @@ class Schedules:
                 while queue:
                     matched = queue[0]
                     try:
+                        if matched.is_symlink():
+                            raise RuntimeError("scheduled input must not be a symbolic link")
                         path = matched.resolve()
+                        if path.parent != Path(spec["input_dir"]).resolve():
+                            raise RuntimeError("scheduled input escaped its watched directory")
                         stat = path.stat()
                         if not path.is_file():
                             if not self._settle_without_run(spec, matched):
